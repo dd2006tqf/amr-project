@@ -37,7 +37,7 @@ class PathTrackerNode : public rclcpp::Node {
   std::unique_ptr<amr_dispatcher_core::path_tracking::PurePursuitController> pp_controller_;
   std::unique_ptr<amr_dispatcher_core::path_tracking::StanleyController> stanley_controller_;
 
-  std::vector<amr_dispatcher_core::path_tracking::Waypoint2D> waypoints_;
+  std::vector<amr_dispatcher_core::path_tracking::Pose2D> waypoints_;
   amr_dispatcher_core::path_tracking::Pose2D current_pose_;
   double current_linear_speed_ = 0.0;
   bool has_odom_ = false;

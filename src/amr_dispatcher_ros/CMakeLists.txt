@@ -84,6 +84,7 @@ ament_target_dependencies(path_tracker_node
   geometry_msgs
   nav_msgs
   tf2
+  tf2_geometry_msgs
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )

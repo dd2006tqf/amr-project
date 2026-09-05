@@ -1,19 +1,9 @@
 #pragma once
 
 #include <cmath>
+#include "amr_dispatcher_core/path_tracking/path_geometry.hpp"
 
 namespace amr_dispatcher_core::path_tracking {
-
-// 角度规范化至 [-PI, PI)
-inline double NormalizeAngle(double angle) {
-  while (angle > M_PI) {
-    angle -= 2.0 * M_PI;
-  }
-  while (angle < -M_PI) {
-    angle += 2.0 * M_PI;
-  }
-  return angle;
-}
 
 // 角度差计算 (target - current)，自动归一化
 inline double AngleDifference(double target, double current) {

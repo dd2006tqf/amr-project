@@ -53,4 +53,6 @@ class ResourceTable {
   std::unordered_map<std::string, std::string> locks_;  // resource_id → owner
 };
 
+using TrafficReservationTable = ResourceTable;
+
 }  // namespace amr_dispatcher_core::dispatcher

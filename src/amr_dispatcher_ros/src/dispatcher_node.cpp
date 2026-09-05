@@ -230,12 +230,9 @@ void DispatcherNode::ReserveResourceCb(
     resp->message = "Reservation table uninitialized";
     return;
   }
-  std::chrono::milliseconds timeout = req->timeout_ms > 0
-                                          ? std::chrono::milliseconds(req->timeout_ms)
-                                          : 30000ms;
-  auto res = reservation_table_->Acquire(req->resource_id, req->holder_id, timeout);
+  auto res = reservation_table_->Reserve(req->holder_id, {req->resource_id});
   resp->success = res.success;
-  resp->token = res.token;
+  resp->token = req->holder_id;
   resp->message = res.message;
 }
 
@@ -247,9 +244,9 @@ void DispatcherNode::ReleaseResourceCb(
     resp->message = "Reservation table uninitialized";
     return;
   }
-  bool ok = reservation_table_->Release(req->resource_id, req->token);
-  resp->success = ok;
-  resp->message = ok ? "Resource released" : "Failed to release: token mismatch or not held";
+  auto res = reservation_table_->Release(req->holder_id);
+  resp->success = res.released;
+  resp->message = res.message;
 }
 
 void DispatcherNode::ScheduleTick() {
