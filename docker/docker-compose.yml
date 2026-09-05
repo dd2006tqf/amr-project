@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   amr_dispatcher:
     build:
@@ -9,7 +7,7 @@ services:
     privileged: true
     volumes:
       - /dev:/dev
-      - ../config:/workspace/src/amr_dispatcher/config
+      - ../config:/workspace/src/amr_dispatcher_all/config
     environment:
       - ROS_DOMAIN_ID=42
-    command: /bin/bash -c "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 launch amr_dispatcher_ros full_system.launch.py"
+    command: /bin/bash -c "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 launch /workspace/src/amr_dispatcher_all/launch/full_system.launch.py"
