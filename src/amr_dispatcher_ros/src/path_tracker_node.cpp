@@ -40,6 +40,7 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_raw", 10);
   error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
       "/tracking/error", 10);
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat", 10);
 
   const double rate_hz = get_parameter("control_rate_hz").as_double();
   timer_ = create_wall_timer(
@@ -114,6 +115,12 @@ void PathTrackerNode::ControlLoop() {
 
   cmd_vel_pub_->publish(cmd);
   error_pub_->publish(err_msg);
+
+  if (heartbeat_pub_) {
+    std_msgs::msg::Bool hb;
+    hb.data = true;
+    heartbeat_pub_->publish(hb);
+  }
 
   if (err_msg.arrived) {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Goal reached, stopping robot");

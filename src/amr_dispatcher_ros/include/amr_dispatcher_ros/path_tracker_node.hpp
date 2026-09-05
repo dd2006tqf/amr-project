@@ -8,6 +8,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 #include "amr_dispatcher_core/path_tracking/path_geometry.hpp"
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
@@ -30,6 +31,7 @@ class PathTrackerNode : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr error_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr heartbeat_pub_;
 
   rclcpp::TimerBase::SharedPtr timer_;
 

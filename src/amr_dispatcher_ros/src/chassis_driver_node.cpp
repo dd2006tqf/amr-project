@@ -44,6 +44,7 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("/odom", 20);
   health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
       "/chassis/link_health", 10);
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat", 10);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   const double poll_hz = get_parameter("poll_rate_hz").as_double();
@@ -173,6 +174,12 @@ void ChassisDriverNode::PublishHealth() {
       break;
   }
   health_pub_->publish(msg);
+
+  if (heartbeat_pub_) {
+    std_msgs::msg::Bool hb;
+    hb.data = true;
+    heartbeat_pub_->publish(hb);
+  }
 }
 
 }  // namespace amr_dispatcher_ros
