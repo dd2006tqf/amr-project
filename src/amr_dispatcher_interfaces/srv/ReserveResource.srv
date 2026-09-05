@@ -1,0 +1,7 @@
+string resource_id              # route_edge:A->B / route_node:A
+string holder_id                # mission_id 或 robot_id
+int64 timeout_ms
+---
+bool success
+string token
+string message

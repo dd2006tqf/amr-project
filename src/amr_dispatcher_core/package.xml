@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>amr_dispatcher_core</name>
+  <version>1.0.0</version>
+  <description>
+    ROS-free core library: chassis protocol/backends, link quality and recovery,
+    path tracking (Pure Pursuit / Stanley), mission scheduling with pluggable
+    comparators, traffic reservation, deadlock detection, safety gating,
+    configuration and logging.
+  </description>
+  <maintainer email="tanqf@example.com">tanqf</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>yaml-cpp</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

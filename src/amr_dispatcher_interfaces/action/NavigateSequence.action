@@ -1,0 +1,14 @@
+geometry_msgs/PoseStamped[] waypoints
+string[] station_names
+bool loop
+---
+bool success
+string message
+int32 completed_waypoints
+int32 failed_waypoints
+---
+int32 current_index
+int32 total_waypoints
+string current_station
+string state                    # NAVIGATING / AT_STATION / FAILED
+float64 distance_to_current_goal_m

@@ -1,0 +1,14 @@
+dispatcher:
+  queue_capacity: 128
+  comparator: "priority_fifo"      # priority_fifo / earliest_deadline / shortest_job / weighted_score
+  schedule_rate_hz: 10.0
+  deadlock_check_rate_hz: 1.0
+  max_active_missions: 4
+
+deadlock:
+  active_idle_threshold_seconds: 10
+  reservation_hold_threshold_seconds: 30
+
+recovery:
+  max_retries: 3
+  auto_cancel_on_exhausted: true

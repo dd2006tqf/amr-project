@@ -1,0 +1,6 @@
+string order_id
+string mission_id               # 若空则按 order_id 取消整单
+---
+bool success
+uint32 canceled_count
+string message

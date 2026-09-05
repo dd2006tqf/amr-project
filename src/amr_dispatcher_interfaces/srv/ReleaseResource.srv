@@ -1,0 +1,6 @@
+string resource_id
+string holder_id
+string token
+---
+bool success
+string message

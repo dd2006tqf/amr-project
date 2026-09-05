@@ -1,0 +1,12 @@
+scenario:
+  name: "deadlock_stress_test"
+  description: "Cross reservations competing on intersecting edges"
+  orders:
+    - mission_id: "robot_1_cross"
+      from: "station_pickup_A"
+      to: "station_dropoff_1"
+      priority: 1
+    - mission_id: "robot_2_cross"
+      from: "station_dropoff_1"
+      to: "station_pickup_A"
+      priority: 1

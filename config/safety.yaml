@@ -1,0 +1,7 @@
+safety:
+  max_linear_x_mps: 1.5
+  max_linear_y_mps: 1.0
+  max_angular_z_radps: 2.0
+  heartbeat_timeout_ms: 500
+  soft_timeout_ms: 2000
+  event_history_capacity: 256

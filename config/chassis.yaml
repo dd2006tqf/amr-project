@@ -1,0 +1,23 @@
+chassis:
+  serial_device: "/dev/ttyUSB0"
+  serial_baud: 115200
+  udp_host: "192.168.1.10"
+  udp_port: 9000
+  protocol: "text"
+  odom_frame_id: "odom"
+  base_frame_id: "base_link"
+  publish_tf: true
+  poll_rate_hz: 50.0
+  health_rate_hz: 2.0
+
+degradation:
+  warmup_samples: 8
+  demote_loss_rate: 0.30
+  cooldown_seconds: 30
+
+recovery:
+  initial_backoff_ms: 200
+  max_backoff_ms: 10000
+  backoff_multiplier: 2.0
+  jitter_ratio: 0.2
+  max_attempts: 10

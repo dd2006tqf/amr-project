@@ -1,0 +1,21 @@
+stations:
+  - id: "station_pickup_A"
+    x: 1.0
+    y: 2.0
+    yaw: 0.0
+    type: "pickup"
+  - id: "station_pickup_B"
+    x: 3.0
+    y: 2.0
+    yaw: 0.0
+    type: "pickup"
+  - id: "station_dropoff_1"
+    x: 8.0
+    y: 5.0
+    yaw: 1.5707
+    type: "dropoff"
+  - id: "station_charge_1"
+    x: 0.0
+    y: 0.0
+    yaw: 3.1415
+    type: "charge"

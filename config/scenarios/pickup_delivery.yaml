@@ -1,0 +1,12 @@
+scenario:
+  name: "normal_transport_loop"
+  repeat: 5
+  orders:
+    - mission_id: "task_01"
+      from: "station_pickup_A"
+      to: "station_dropoff_1"
+      priority: 10
+    - mission_id: "task_02"
+      from: "station_pickup_B"
+      to: "station_dropoff_1"
+      priority: 5

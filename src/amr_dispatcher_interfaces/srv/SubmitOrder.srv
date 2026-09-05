@@ -1,0 +1,12 @@
+string order_id
+string mission_id
+string mission_type             # transport / charge / patrol
+string pickup_station
+string dropoff_station
+int32 priority
+int64 deadline_unix_ms
+int32 expected_seconds
+---
+bool accepted
+string mission_id
+string message
