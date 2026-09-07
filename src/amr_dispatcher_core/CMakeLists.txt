@@ -36,6 +36,38 @@ add_library(${PROJECT_NAME}
   src/dispatcher/station_topology.cpp
   src/dispatcher/mission_cost_estimator.cpp
   src/dispatcher/dock_catalog.cpp
+  src/catalog/station_catalog.cpp
+  src/catalog/scenario_catalog.cpp
+  src/catalog/business_order_catalog.cpp
+  src/catalog/zone_catalog.cpp
+  src/fleet/fleet_catalog.cpp
+  src/fleet/fleet_runtime_state.cpp
+  src/facility/facility_catalog.cpp
+  src/facility/facility_reservation.cpp
+  src/facility/facility_workflow.cpp
+  src/workflow/mission_profile.cpp
+  src/workflow/order_payload.cpp
+  src/workflow/fulfillment_workflow.cpp
+  src/workflow/payload_workflow.cpp
+  src/workflow/mission_runtime_workflow.cpp
+  src/workflow/mission_result_workflow.cpp
+  src/workflow/mission_safety_workflow.cpp
+  src/workflow/mission_recovery_policy.cpp
+  src/workflow/mission_event_log.cpp
+  src/workflow/traffic_planning.cpp
+  src/workflow/workflow_control.cpp
+  src/workflow/mission_estimator.cpp
+  src/workflow/mission_preflight.cpp
+  src/workflow/station_transport_workflow.cpp
+  src/workflow/station_sequence_workflow.cpp
+  src/workflow/docking_workflow.cpp
+  src/workflow/mission_charging_workflow.cpp
+  src/workflow/mission_resource_cleanup.cpp
+  src/workflow/queued_mission.cpp
+  src/workflow/mission_profile_builders.cpp
+  src/workflow/operator_snapshot.cpp
+  src/workflow/dock_catalog.cpp
+  src/workflow/submit_order_router.cpp
   src/safety/cmd_vel_gate.cpp
   src/safety/watchdog.cpp
   src/safety/safety_sources.cpp
@@ -78,6 +110,38 @@ if(BUILD_TESTING)
     test_logger
     test_station_topology
     test_transport_and_diagnostics
+    test_mock_linear_planner
+    test_mission_profile
+    test_mission_profile_builders
+    test_queued_mission
+    test_order_payload
+    test_fulfillment_workflow
+    test_payload_workflow
+    test_mission_runtime_workflow
+    test_mission_result_workflow
+    test_mission_safety_workflow
+    test_mission_recovery_policy
+    test_workflow_mission_event_log
+    test_traffic_planning
+    test_workflow_control
+    test_station_transport_workflow
+    test_station_sequence_workflow
+    test_docking_workflow
+    test_mission_charging_workflow
+    test_mission_resource_cleanup
+    test_mission_preflight
+    test_operator_snapshot
+    test_dock_catalog
+    test_station_catalog
+    test_scenario_catalog
+    test_business_order_catalog
+    test_zone_catalog
+    test_fleet_catalog
+    test_fleet_runtime_state
+    test_facility_catalog
+    test_facility_reservation
+    test_facility_workflow
+    test_submit_order_router
     test_end_to_end_pipeline
   )
   foreach(test_name IN LISTS UNIT_TESTS)
