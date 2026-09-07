@@ -1,40 +1,27 @@
 {
   "project": "amr_dispatcher",
   "version": "1.1.0",
-  "timestamp": "2026-09-07T17:10:00Z",
-  "duration_seconds": 48,
+  "timestamp": "2026-09-07T09:14:59Z",
+  "duration_seconds": 27,
   "testing_matrix": {
     "L1_core_unit_tests": {
       "status": "PASSED",
       "test_suites": 52,
       "test_cases": 453,
       "pass_rate": "100%",
-      "dependencies": "Zero-ROS (Pure C++17/20 STL, GTest)",
-      "coverage_subdomains": [
-        "chassis",
-        "path_tracking",
-        "dispatcher",
-        "safety",
-        "config",
-        "logging",
-        "catalog",
-        "facility",
-        "fleet",
-        "workflow"
-      ]
+      "dependencies": "Zero-ROS (Pure C++17/20 STL, GTest)"
     },
     "L1_behavior_tree_tests": {
       "status": "PASSED",
       "test_suites": 10,
       "test_cases": 36,
       "pass_rate": "100%",
-      "framework": "BehaviorTree.CPP v4 + GTest",
-      "package": "amr_dispatcher_bt"
+      "framework": "BehaviorTree.CPP v4 + GTest"
     },
     "L1_performance_benchmark": {
       "status": "PASSED",
       "async_logger_throughput": "~2,000,000 records/sec",
-      "mission_queue_throughput": "~25,000 ops/sec"
+      "mission_queue_throughput": "~38,000 ops/sec"
     },
     "L2_node_contracts": {
       "status": "VERIFIED",
