@@ -11,7 +11,7 @@ RUN cp -r /workspace/src/amr_dispatcher_all/src/* /workspace/src/
 
 WORKDIR /workspace
 RUN source /opt/ros/jazzy/setup.bash && \
-    colcon build --packages-select amr_dispatcher_core amr_dispatcher_interfaces && \
+    colcon build --packages-select amr_dispatcher_core amr_dispatcher_interfaces amr_interfaces_core amr_interfaces_fleet amr_interfaces_safety && \
     source /workspace/install/setup.bash && \
     colcon build --packages-select amr_dispatcher_ros amr_dispatcher_tools --cmake-args -DCMAKE_BUILD_TYPE=Release
 

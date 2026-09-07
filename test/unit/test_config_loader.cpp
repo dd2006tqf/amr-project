@@ -94,3 +94,26 @@ TEST(ConfigLoaderTest, HotReloadTriggersOnChange) {
   EXPECT_TRUE(w.reloaded());
   std::remove(p.c_str());
 }
+
+TEST(ConfigLoaderTest, ObserverNotifiedOnRuntimeConfigChange) {
+  ConfigLoader loader;
+  std::string observed_key;
+  std::string observed_val;
+  int notify_count = 0;
+
+  loader.Subscribe("dispatcher.comparator", [&](const std::string& key, const std::string& val) {
+    observed_key = key;
+    observed_val = val;
+    notify_count++;
+  });
+
+  // 1. 触发订阅项变更
+  loader.NotifyChange("dispatcher.comparator", "EarliestDeadlineFirst");
+  EXPECT_EQ(notify_count, 1);
+  EXPECT_EQ(observed_key, "dispatcher.comparator");
+  EXPECT_EQ(observed_val, "EarliestDeadlineFirst");
+
+  // 2. 触发不相关项变更 -> 不被该观察者捕获
+  loader.NotifyChange("chassis.baud", "115200");
+  EXPECT_EQ(notify_count, 1);
+}

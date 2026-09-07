@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace amr_dispatcher_core::dispatcher {
@@ -38,6 +39,11 @@ class StationTopologyGraph {
   // 使用 Dijkstra 算法计算站点间最短拓扑路点序列
   std::optional<std::vector<std::string>> FindShortestPath(
       const std::string& from, const std::string& to) const;
+
+  // 动态避障重寻路：排除一组拥堵/死锁路段后，找一条不经过被封锁边的最短绕行路径
+  std::optional<std::vector<std::string>> FindShortestPathAvoiding(
+      const std::string& from, const std::string& to,
+      const std::unordered_set<std::string>& blocked_edges) const;
 
   // 估算总欧式/拓扑里程
   std::optional<double> EstimatePathDistance(

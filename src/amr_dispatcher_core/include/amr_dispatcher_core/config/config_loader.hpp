@@ -50,8 +50,14 @@ class ConfigLoader {
                           double fallback = 0.0);
   static bool GetBool(const YAML::Node& root, const std::string& key, bool fallback = false);
 
+  // 观察者模式 (Observer Pattern)：允许业务组件订阅配置项在线更新事件
+  using ConfigObserver = std::function<void(const std::string& key, const std::string& new_value)>;
+  void Subscribe(const std::string& key_prefix, ConfigObserver observer);
+  void NotifyChange(const std::string& key, const std::string& new_value);
+
  private:
   std::vector<FieldSchema> schemas_;
+  std::vector<std::pair<std::string, ConfigObserver>> observers_;
   std::mutex mutex_;
 };
 

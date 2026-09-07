@@ -21,6 +21,61 @@ TEST(DeadlockDetectorTest, EmptySnapshotNoFindings) {
   EXPECT_TRUE(d.Detect({}).empty());
 }
 
+TEST(DeadlockDetectorTest, TrueWaitForGraphCycleDetection) {
+  DeadlockDetector d;
+  DeadlockSnapshot snap;
+
+  // 场景：两台车发生经典交叉死锁：
+  // Robot A 持有 Edge 1，申请等待 Edge 2
+  // Robot B 持有 Edge 2，申请等待 Edge 1
+  snap.allocation_graph.held_by["edge_1"] = "robot_A";
+  snap.allocation_graph.held_by["edge_2"] = "robot_B";
+
+  snap.allocation_graph.waiting_for["robot_A"] = {"edge_2"};
+  snap.allocation_graph.waiting_for["robot_B"] = {"edge_1"};
+
+  snap.active_missions = {Active("robot_A"), Active("robot_B")};
+
+  const auto findings = d.Detect(snap);
+  ASSERT_FALSE(findings.empty());
+  EXPECT_EQ(findings[0].kind, DeadlockKind::kMutualBlock);
+  EXPECT_EQ(findings[0].mission_ids.size(), 2u);
+  EXPECT_NE(findings[0].description.find("Cycle detected"), std::string::npos);
+}
+
+TEST(DeadlockDetectorTest, MultiNodeCircularWaitCycle) {
+  DeadlockDetector d;
+  ResourceAllocationModel model;
+
+  // 3车环形死锁：A等B持有的R2，B等C持有的R3，C等A持有的R1
+  model.held_by["R1"] = "car_A";
+  model.held_by["R2"] = "car_B";
+  model.held_by["R3"] = "car_C";
+
+  model.waiting_for["car_A"] = {"R2"};
+  model.waiting_for["car_B"] = {"R3"};
+  model.waiting_for["car_C"] = {"R1"};
+
+  const auto cycles = d.DetectCycles(model);
+  ASSERT_EQ(cycles.size(), 1u);
+  EXPECT_EQ(cycles[0].size(), 3u);
+}
+
+TEST(DeadlockDetectorTest, NoCycleWhenWaitGraphIsDAG) {
+  DeadlockDetector d;
+  ResourceAllocationModel model;
+
+  // 有向无环图 (DAG)：A 等 B，B 等 C，C 不等待任何资源 -> 无死锁
+  model.held_by["R1"] = "car_B";
+  model.held_by["R2"] = "car_C";
+
+  model.waiting_for["car_A"] = {"R1"};
+  model.waiting_for["car_B"] = {"R2"};
+
+  const auto cycles = d.DetectCycles(model);
+  EXPECT_TRUE(cycles.empty());
+}
+
 TEST(DeadlockDetectorTest, TooManyActiveMissions) {
   DeadlockDetector d({.max_active_missions = 2});
   DeadlockSnapshot snap;

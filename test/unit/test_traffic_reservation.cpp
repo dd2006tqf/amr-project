@@ -3,45 +3,76 @@
 #include <gtest/gtest.h>
 
 using namespace amr_dispatcher_core::dispatcher;
+using namespace std::chrono_literals;
 
 TEST(ResourceTableTest, BuildLockIdsRouteEdges) {
-  const auto ids = ResourceTable::BuildLockIds({"A", "B", "C"}, false);
-  EXPECT_EQ(ids.size(), 2u);
-  // 字典序规范化：A__B / B__C
-  EXPECT_EQ(ids[0], "route_edge:A__B");
-  EXPECT_EQ(ids[1], "route_edge:B__C");
+  const auto locks = ResourceTable::BuildLockIds({"A", "B", "C"}, false);
+  ASSERT_EQ(locks.size(), 2u);
+  EXPECT_EQ(locks[0], "route_edge:A__B");
+  EXPECT_EQ(locks[1], "route_edge:B__C");
 }
 
 TEST(ResourceTableTest, BuildLockIdsWithNodes) {
-  const auto ids = ResourceTable::BuildLockIds({"A", "B", "C"}, true);
-  EXPECT_EQ(ids.size(), 5u);
+  const auto locks = ResourceTable::BuildLockIds({"A", "B"}, true);
+  ASSERT_EQ(locks.size(), 3u);
+  EXPECT_EQ(locks[0], "route_node:A");
+  EXPECT_EQ(locks[1], "route_node:B");
+  EXPECT_EQ(locks[2], "route_edge:A__B");
 }
 
 TEST(ResourceTableTest, ReserveSuccess) {
   ResourceTable t;
-  const auto r = t.Reserve("m1", {"route_edge:A__B", "route_node:B"});
+  const auto r = t.Reserve("m1", {"route_edge:A__B", "route_edge:B__C"});
   EXPECT_TRUE(r.success);
   EXPECT_EQ(r.newly_reserved.size(), 2u);
+  EXPECT_TRUE(t.Locked("route_edge:A__B"));
+  EXPECT_EQ(t.Owner("route_edge:A__B"), "m1");
 }
 
 TEST(ResourceTableTest, ReserveAtomicRollback) {
   ResourceTable t;
-  ASSERT_TRUE(t.Reserve("m1", {"route_edge:A__B"}).success);
-  const auto r = t.Reserve("m2", {"route_edge:X__Y", "route_edge:A__B"});
+  ASSERT_TRUE(t.Reserve("m1", {"route_edge:B__C"}).success);
+  const auto r = t.Reserve("m2", {"route_edge:A__B", "route_edge:B__C"});
   EXPECT_FALSE(r.success);
-  // 失败方不应污染
-  EXPECT_FALSE(t.Locked("route_edge:X__Y"));
-  EXPECT_TRUE(t.Locked("route_edge:A__B"));
-  EXPECT_EQ(t.Owner("route_edge:A__B").value(), "m1");
+  EXPECT_FALSE(t.Locked("route_edge:A__B"));  // atomic rollback
+  EXPECT_EQ(t.Owner("route_edge:B__C"), "m1");
+}
+
+TEST(ResourceTableTest, TimeSpaceReservationNoConflict) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+
+  // Car 1 在 [0s, 10s] 预约路段 A__B
+  std::string msg;
+  EXPECT_TRUE(t.ReserveTimeSpace("car_1", "route_edge:A__B", t0, t0 + 10s, &msg));
+
+  // Car 2 在 [15s, 25s] 错峰预约同一路段 A__B -> 应当成功！
+  EXPECT_TRUE(t.ReserveTimeSpace("car_2", "route_edge:A__B", t0 + 15s, t0 + 25s, &msg));
+}
+
+TEST(ResourceTableTest, TimeSpaceReservationOverlapConflict) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+
+  // Car 1 在 [0s, 10s] 预约路段 A__B
+  std::string msg;
+  EXPECT_TRUE(t.ReserveTimeSpace("car_1", "route_edge:A__B", t0, t0 + 10s, &msg));
+
+  // Car 2 试图在 [5s, 15s] 预约路段 A__B -> 发生时空重叠，应当被拦截！
+  EXPECT_FALSE(t.ReserveTimeSpace("car_2", "route_edge:A__B", t0 + 5s, t0 + 15s, &msg));
+  EXPECT_NE(msg.find("time-space contention"), std::string::npos);
 }
 
 TEST(ResourceTableTest, BlockAndUnblock) {
   ResourceTable t;
   std::string msg;
-  ASSERT_TRUE(t.Block("route_edge:A__B", "construction", &msg));
-  EXPECT_TRUE(t.IsTrafficBlockOwner(t.Owner("route_edge:A__B").value()));
-  ASSERT_TRUE(t.Unblock("route_edge:A__B", &msg));
+  EXPECT_TRUE(t.Block("route_edge:A__B", "maintenance", &msg));
+  EXPECT_TRUE(t.Locked("route_edge:A__B"));
+  EXPECT_FALSE(t.Reserve("m1", {"route_edge:A__B"}).success);
+
+  EXPECT_TRUE(t.Unblock("route_edge:A__B", &msg));
   EXPECT_FALSE(t.Locked("route_edge:A__B"));
+  EXPECT_TRUE(t.Reserve("m1", {"route_edge:A__B"}).success);
 }
 
 TEST(ResourceTableTest, BlockFailsIfAlreadyHeld) {

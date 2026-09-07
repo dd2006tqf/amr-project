@@ -124,6 +124,26 @@ bool ConfigLoader::GetBool(const YAML::Node& root, const std::string& key, bool 
   return fallback;
 }
 
+void ConfigLoader::Subscribe(const std::string& key_prefix, ConfigObserver observer) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  observers_.emplace_back(key_prefix, std::move(observer));
+}
+
+void ConfigLoader::NotifyChange(const std::string& key, const std::string& new_value) {
+  std::vector<ConfigObserver> matching;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [prefix, obs] : observers_) {
+      if (prefix.empty() || key.rfind(prefix, 0) == 0) {
+        matching.push_back(obs);
+      }
+    }
+  }
+  for (const auto& obs : matching) {
+    obs(key, new_value);
+  }
+}
+
 void ConfigValidator::Validate(YAML::Node root,
                                const std::vector<ConfigLoader::FieldSchema>& schemas) {
   for (const auto& s : schemas) {

@@ -32,6 +32,12 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   wd_cfg.soft_timeout = std::chrono::milliseconds(get_parameter("soft_timeout_ms").as_int());
   watchdog_ = std::make_unique<amr_dispatcher_core::safety::SafetyWatchdog>(wd_cfg);
 
+  amr_dispatcher_core::safety::SupervisorConfig sup_cfg;
+  sup_cfg.startup_grace = 2000ms;
+  sup_cfg.command_cooldown = 500ms;
+  sup_cfg.auto_clear = true;
+  fault_supervisor_ = std::make_unique<amr_dispatcher_core::safety::FaultSupervisor>(sup_cfg);
+
   watched_nodes_ = {"chassis_driver", "path_tracker"};
   for (const auto& node : watched_nodes_) {
     watchdog_->FeedHeartbeat(node);
@@ -40,6 +46,21 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   raw_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       "/cmd_vel_raw", 10,
       std::bind(&SafetyGateNode::RawCmdVelCallback, this, std::placeholders::_1));
+
+  teleop_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      "/cmd_vel_teleop", 10,
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        if (manual_takeover_active_) {
+          RawCmdVelCallback(msg);
+        }
+      });
+
+  manual_takeover_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/safety/manual_takeover", 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        manual_takeover_active_ = msg->data;
+        RCLCPP_INFO(get_logger(), "Manual takeover changed: %s", manual_takeover_active_ ? "ON" : "OFF");
+      });
 
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/safety/estop", 10,
@@ -52,6 +73,19 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   heartbeat_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/safety/heartbeat", 10,
       std::bind(&SafetyGateNode::WatchdogHeartbeatCallback, this, std::placeholders::_1));
+
+  link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+      "/chassis/link_health", 10,
+      [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+        chassis_healthy_ = msg->is_healthy;
+        chassis_loss_rate_ = msg->loss_rate;
+      });
+
+  topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+      "/dispatcher/topology_state", 10,
+      [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+        deadlock_active_ = msg->deadlock_detected;
+      });
 
   safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_safe", 10);
   safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
@@ -98,22 +132,47 @@ void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::Shared
 }
 
 void SafetyGateNode::WatchdogTick() {
-  if (!watchdog_ || !gate_) return;
+  if (!watchdog_ || !gate_ || !fault_supervisor_) return;
+
   auto events = watchdog_->Inspect(watched_nodes_);
+  watchdog_ok_ = events.empty();
   for (auto& ev : events) {
     gate_->PushEvent(ev);
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                          "Watchdog event: source=%s msg=%s", ev.source.c_str(), ev.message.c_str());
   }
+
+  // 聚合四大防御源至 Fault Supervisor Engine
+  amr_dispatcher_core::safety::MultiSourceHealthReport report;
+  report.chassis_healthy = chassis_healthy_;
+  report.chassis_loss_rate = chassis_loss_rate_;
+  report.watchdog_healthy = watchdog_ok_;
+  report.deadlock_detected = deadlock_active_;
+  report.manual_estop = estop_active_ || bumper_active_;
+  report.detail_message = watchdog_ok_ ? (chassis_healthy_ ? "healthy" : "chassis degraded") : "watchdog timeout";
+
+  fault_supervisor_->UpdateMultiSourceHealth(report);
+  fault_supervisor_->Tick();
+
+  // 根据 Fault Supervisor 综合裁决建议执行动作
+  auto rec = fault_supervisor_->recommendation();
+  if (rec == amr_dispatcher_core::safety::SystemActionRecommendation::kEmergencyStop) {
+    estop_active_ = true;
+  }
 }
 
 void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
-  if (!gate_) return;
+  if (!gate_ || !fault_supervisor_) return;
 
   amr_dispatcher_core::safety::CmdVelCommand cmd;
   cmd.linear_x_mps = msg->linear.x;
   cmd.linear_y_mps = msg->linear.y;
   cmd.angular_z_radps = msg->angular.z;
+
+  // 联动 Fault Supervisor 降级限速规则
+  if (fault_supervisor_->recommendation() == amr_dispatcher_core::safety::SystemActionRecommendation::kClampSpeed) {
+    cmd.linear_x_mps = std::clamp(cmd.linear_x_mps, -0.2, 0.2);
+  }
 
   auto decision = gate_->Evaluate(cmd);
 
@@ -145,6 +204,7 @@ void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVe
 
   if (estop_active_) state_msg.active_sources.push_back("estop");
   if (bumper_active_) state_msg.active_sources.push_back("bumper");
+  if (manual_takeover_active_) state_msg.active_sources.push_back("manual_takeover");
   if (!state_msg.active_sources.empty()) {
     state_msg.active_stop_source = state_msg.active_sources.front();
   }

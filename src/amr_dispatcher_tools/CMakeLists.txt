@@ -7,7 +7,9 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(amr_dispatcher_core REQUIRED)
 find_package(amr_dispatcher_interfaces REQUIRED)
 
@@ -35,6 +37,8 @@ target_include_directories(rest_gateway PUBLIC
 )
 ament_target_dependencies(rest_gateway
   rclcpp
+  ament_index_cpp
+  std_msgs
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )

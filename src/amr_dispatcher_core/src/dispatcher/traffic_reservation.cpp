@@ -85,6 +85,41 @@ ResourceTable::ReserveResult ResourceTable::Reserve(
   return result;
 }
 
+bool ResourceTable::ReserveTimeSpace(
+    const std::string& mission_id,
+    const std::string& resource_id,
+    std::chrono::steady_clock::time_point start,
+    std::chrono::steady_clock::time_point end,
+    std::string* message) {
+  if (start >= end) {
+    if (message) *message = "invalid time interval: start >= end";
+    return false;
+  }
+
+  // 1. 检查是否存在永久排他锁（人工封路等）
+  if (Locked(resource_id) && Owner(resource_id) != mission_id) {
+    if (message) *message = "resource statically locked by: " + *Owner(resource_id);
+    return false;
+  }
+
+  // 2. 检查该资源在目标时间区间内是否与其他任务的预约时段重叠
+  TimeInterval candidate_interval{start, end};
+  auto& reservations = time_space_reservations_[resource_id];
+  for (const auto& res : reservations) {
+    if (res.mission_id != mission_id && res.interval.OverlapsWith(candidate_interval)) {
+      if (message) {
+        *message = "time-space contention on " + resource_id + " with " + res.mission_id;
+      }
+      return false;
+    }
+  }
+
+  // 3. 无时空冲突，落入预约表
+  reservations.push_back(TimeSpaceReservation{mission_id, resource_id, candidate_interval});
+  if (message) *message = "time-space reservation confirmed";
+  return true;
+}
+
 ResourceTable::ReleaseResult ResourceTable::Release(const std::string& mission_id) {
   ReleaseResult result;
   for (auto lock = locks_.begin(); lock != locks_.end();) {
@@ -95,6 +130,20 @@ ResourceTable::ReleaseResult ResourceTable::Release(const std::string& mission_i
       ++lock;
     }
   }
+
+  // 清空该任务的所有时空预约
+  for (auto& [res_id, list] : time_space_reservations_) {
+    auto before_size = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&mission_id](const TimeSpaceReservation& r) {
+                                return r.mission_id == mission_id;
+                              }),
+               list.end());
+    if (list.size() < before_size) {
+      result.released = true;
+    }
+  }
+
   result.message =
       result.released ? "released resources of " + mission_id : "no resources held by " + mission_id;
   return result;
@@ -118,20 +167,20 @@ bool ResourceTable::Block(const std::string& resource_id, const std::string& rea
 }
 
 bool ResourceTable::Unblock(const std::string& resource_id, std::string* message) {
-  const auto lock = locks_.find(resource_id);
-  if (lock == locks_.end()) {
+  const auto existing = locks_.find(resource_id);
+  if (existing == locks_.end()) {
     if (message != nullptr) {
-      *message = "resource not found: " + resource_id;
+      *message = "resource not locked: " + resource_id;
     }
     return false;
   }
-  if (!IsTrafficBlockOwner(lock->second)) {
+  if (!IsTrafficBlockOwner(existing->second)) {
     if (message != nullptr) {
-      *message = "resource is reserved by mission: " + lock->second;
+      *message = "cannot unblock resource held by mission: " + existing->second;
     }
     return false;
   }
-  locks_.erase(lock);
+  locks_.erase(existing);
   if (message != nullptr) {
     *message = "unblocked " + resource_id;
   }
@@ -139,21 +188,23 @@ bool ResourceTable::Unblock(const std::string& resource_id, std::string* message
 }
 
 bool ResourceTable::Locked(const std::string& resource_id) const {
-  return locks_.count(resource_id) > 0;
+  return locks_.find(resource_id) != locks_.end();
 }
 
 std::optional<std::string> ResourceTable::Owner(const std::string& resource_id) const {
-  const auto lock = locks_.find(resource_id);
-  if (lock == locks_.end()) {
+  const auto it = locks_.find(resource_id);
+  if (it == locks_.end()) {
     return std::nullopt;
   }
-  return lock->second;
+  return it->second;
 }
 
 std::vector<std::pair<std::string, std::string>> ResourceTable::Snapshot() const {
-  std::vector<std::pair<std::string, std::string>> snapshot(locks_.begin(), locks_.end());
-  std::sort(snapshot.begin(), snapshot.end());
-  return snapshot;
+  std::vector<std::pair<std::string, std::string>> out(locks_.begin(), locks_.end());
+  std::sort(out.begin(), out.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.first < rhs.first;
+  });
+  return out;
 }
 
 }  // namespace amr_dispatcher_core::dispatcher

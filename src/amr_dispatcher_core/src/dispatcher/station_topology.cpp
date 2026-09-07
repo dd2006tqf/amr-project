@@ -95,6 +95,66 @@ std::optional<std::vector<std::string>> StationTopologyGraph::FindShortestPath(
   return path;
 }
 
+std::optional<std::vector<std::string>> StationTopologyGraph::FindShortestPathAvoiding(
+    const std::string& from, const std::string& to,
+    const std::unordered_set<std::string>& blocked_edges) const {
+  if (stations_.find(from) == stations_.end() || stations_.find(to) == stations_.end()) {
+    return std::nullopt;
+  }
+  if (from == to) {
+    return std::vector<std::string>{from};
+  }
+
+  using NodeDist = std::pair<double, std::string>;
+  std::priority_queue<NodeDist, std::vector<NodeDist>, std::greater<NodeDist>> pq;
+  std::unordered_map<std::string, double> min_dist;
+  std::unordered_map<std::string, std::string> parent;
+
+  min_dist[from] = 0.0;
+  pq.push({0.0, from});
+
+  while (!pq.empty()) {
+    auto [d, u] = pq.top();
+    pq.pop();
+
+    if (u == to) break;
+    if (d > min_dist[u]) continue;
+
+    auto it = adj_.find(u);
+    if (it == adj_.end()) continue;
+
+    for (const auto& [v, weight] : it->second) {
+      // 检查边 u->v 或 v->u 是否属于被封锁/死锁区域
+      std::string edge_key1 = u <= v ? "route_edge:" + u + "__" + v : "route_edge:" + v + "__" + u;
+      std::string edge_key2 = u + "->" + v;
+      if (blocked_edges.count(edge_key1) || blocked_edges.count(edge_key2)) {
+        continue; // 避开拥堵与死锁边
+      }
+
+      double new_dist = d + weight;
+      if (min_dist.find(v) == min_dist.end() || new_dist < min_dist[v]) {
+        min_dist[v] = new_dist;
+        parent[v] = u;
+        pq.push({new_dist, v});
+      }
+    }
+  }
+
+  if (min_dist.find(to) == min_dist.end()) {
+    return std::nullopt; // 无绕行可行路径
+  }
+
+  std::vector<std::string> path;
+  std::string curr = to;
+  while (curr != from) {
+    path.push_back(curr);
+    curr = parent[curr];
+  }
+  path.push_back(from);
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
 std::optional<double> StationTopologyGraph::EstimatePathDistance(
     const std::string& from, const std::string& to) const {
   auto path = FindShortestPath(from, to);

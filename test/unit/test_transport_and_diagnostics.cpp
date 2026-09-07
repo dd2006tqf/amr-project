@@ -96,3 +96,41 @@ TEST(FaultSupervisorTest, TransitionsThroughGraceAndFault) {
   supervisor.Tick();
   EXPECT_EQ(supervisor.state(), SupervisorState::kNormal);
 }
+
+TEST(FaultSupervisorTest, MultiSourceArbitrationRecommendations) {
+  SupervisorConfig cfg;
+  cfg.startup_grace = 50ms;
+  cfg.command_cooldown = 10ms;
+  cfg.auto_clear = true;
+  cfg.degraded_loss_rate_threshold = 0.15;
+  cfg.critical_loss_rate_threshold = 0.35;
+
+  FaultSupervisor supervisor(cfg);
+  std::this_thread::sleep_for(60ms);
+
+  // 1. 中度丢包率 20% -> 建议限速 ClampSpeed
+  MultiSourceHealthReport r1;
+  r1.chassis_healthy = false;
+  r1.chassis_loss_rate = 0.20;
+  supervisor.UpdateMultiSourceHealth(r1);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kClampSpeed);
+
+  // 2. 严重丢包率 40% -> 触发 FAULT 且建议 EmergencyStop
+  MultiSourceHealthReport r2;
+  r2.chassis_loss_rate = 0.40;
+  supervisor.UpdateMultiSourceHealth(r2);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kFault);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kEmergencyStop);
+  EXPECT_TRUE(supervisor.emergency_stop_requested());
+
+  // 3. 死锁检测激活 -> 建议 PauseDispatch 暂缓接单
+  MultiSourceHealthReport r3;
+  r3.deadlock_detected = true;
+  supervisor.UpdateMultiSourceHealth(r3);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kPauseDispatch);
+}
