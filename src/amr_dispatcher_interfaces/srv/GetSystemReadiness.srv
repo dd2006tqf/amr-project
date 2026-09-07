@@ -1,0 +1,7 @@
+---
+bool ready
+bool healthy
+string state           # INITIALIZING / READY / DEGRADED / FAULT
+string[] active_nodes
+string[] pending_nodes
+string message

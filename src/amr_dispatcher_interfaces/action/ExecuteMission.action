@@ -1,0 +1,18 @@
+# Goal: 提单目标与约束
+string mission_id
+uint8 priority                # 1 - 255 (高数值具有抢占优先权)
+string target_station         # 目标站点标识 (如: "station_dropoff_1")
+float64 deadline_seconds      # 截止时间约束 (供 EDF 算法计算)
+string[] required_resources   # 预申请的拓扑边或设施锁
+---
+# Result: 终态执行结果
+bool success
+int32 error_code              # 0: OK, 1: RESOURCE_DEADLOCK, 2: TIMEOUT, 3: PREEMPTED, 4: HARDWARE_ERROR
+string message
+float64 total_duration_sec
+---
+# Feedback: 运行时进度流式反馈
+uint8 state_code              # 0: QUEUED, 1: WAITING_LOCK, 2: EXECUTING, 3: YIELDING, 4: RECOVERING
+string current_node
+float32 percent_complete      # 0.0 - 100.0%
+float64 estimated_remaining_sec

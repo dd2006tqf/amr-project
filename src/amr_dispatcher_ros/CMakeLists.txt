@@ -13,6 +13,8 @@ find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -51,6 +53,7 @@ target_include_directories(dispatcher_node PUBLIC
 ament_target_dependencies(dispatcher_node
   rclcpp
   rclcpp_lifecycle
+  rclcpp_action
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
@@ -103,6 +106,39 @@ ament_target_dependencies(link_health_publisher
   amr_dispatcher_interfaces
 )
 
+# 6. dispatcher_visualizer_node
+add_executable(dispatcher_visualizer_node
+  src/dispatcher_visualizer_node.cpp
+)
+target_include_directories(dispatcher_visualizer_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(dispatcher_visualizer_node
+  rclcpp
+  geometry_msgs
+  std_msgs
+  visualization_msgs
+  amr_dispatcher_core
+  amr_dispatcher_interfaces
+)
+target_link_libraries(dispatcher_visualizer_node yaml-cpp)
+
+# 7. lifecycle_coordinator_node
+add_executable(lifecycle_coordinator_node
+  src/lifecycle_coordinator_node.cpp
+)
+target_include_directories(lifecycle_coordinator_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(lifecycle_coordinator_node
+  rclcpp
+  lifecycle_msgs
+  std_msgs
+  amr_dispatcher_interfaces
+)
+
 # 6. ros2_control hardware plugin
 add_library(amr_chassis_hardware_interface SHARED
   src/chassis_hardware_interface.cpp
@@ -127,6 +163,8 @@ install(TARGETS
   safety_gate_node
   path_tracker_node
   link_health_publisher
+  dispatcher_visualizer_node
+  lifecycle_coordinator_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

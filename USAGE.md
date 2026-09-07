@@ -80,30 +80,32 @@ python3 scripts/validate_config.py config/*.yaml config/scenarios/*.yaml
 cd ~/amr_dispatcher/docker
 docker compose up --build
 ```
-启动后，容器内自动编译全部 4 个 ROS 2 子包，并执行 `full_system.launch.py`，拉起以下 5 个核心服务：
-1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检。
-2. **`safety_gate_node`**：多源安全仲裁（急停、碰撞杠、软看门狗超时），输出限速或停止指令。
+启动后，容器内自动编译全部 4 个 ROS 2 子包，并执行 `full_system.launch.py`，拉起以下 6 个核心服务：
+1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检，并提供 `/dispatcher/execute_mission` Action 动作服务。
+2. **`safety_gate_node`**：多源安全仲裁（急停、人工接管、碰撞杠、软看门狗超时），输出限速或停止指令。
 3. **`chassis_driver_node`**：驱动底盘硬件通信、丢包监控、多级自动降级、发布 `/odom` 与 TF。
 4. **`path_tracker_node`**：Pure Pursuit / Stanley 控制器，跟踪 `/plan` 路径并输出速度。
-5. **`rest_gateway`**：监听在 `8080` 端口的轻量 HTTP REST 提单网关。
-
-### 3.2 后台运行与查看日志
-```bash
-# 后台运行
-docker compose up -d
-
-# 查看运行日志
-docker compose logs -f
-
-# 停止容器
-docker compose down
-```
+5. **`rest_gateway`**：监听在 `8080` 端口的轻量 HTTP REST 提单网关与静态 Web 页面服务。
+6. **`dispatcher_visualizer_node`**：向 RViz2 发布 3D 拓扑路网、绿色占用锁与红色死锁报警 Marker。
 
 ---
 
 ## 四、系统交互与日常使用
 
-系统启动后，可通过以下 4 种方式与调度与控制系统交互：
+系统启动后，可通过以下 5 种方式与调度与控制系统交互：
+
+### 4.0 浏览器 Web 运维控制台 (`operator_console.html`)（推荐首选）
+系统启动后，在任何主机的浏览器中访问：
+```text
+http://127.0.0.1:8080/
+# 或者直接双击本地打开 tools/operator_console.html
+```
+**功能特性**：
+- **调度大盘**：实时查看任务队列深度、当前生效调度算法、死锁警戒灯。
+- **安全监控**：实时查看急停状态、看门狗喂狗心跳、底盘通信后端（Serial/UDP/Mock）与滑动窗口丢包率。
+- **动态提单**：通过 UI 表单点选起点/终点与优先级，一键提单下发。
+- **一键急停**：右上角醒目的红色 `🚨 EMERGENCY STOP` 按钮，瞬间熔断系统输出。
+- **在线切换算法**：在下拉框中选择 `EarliestDeadlineFirst` 或 `WeightedScore`，点击即可无缝在线热更调度算法。
 
 ### 4.1 交互终端客户端 (`dispatcher_cli`)
 进入正在运行的容器（或新起终端）：
@@ -212,6 +214,53 @@ ros2 topic pub /safety/estop std_msgs/msg/Bool "data: false" --once
 ```bash
 ros2 service call /dispatcher/reserve_resource amr_dispatcher_interfaces/srv/ReserveResource \
   "{resource_id: 'route_edge:station_pickup_A->station_dropoff_1', holder_id: 'robot_01', timeout_ms: 30000}"
+```
+
+#### 5. 12 个核心 ROS 2 Service (/v2/*) 操作示例
+```bash
+# 1. 任务入队
+ros2 service call /v2/enqueue_mission amr_dispatcher_interfaces/srv/EnqueueMission \
+  "{mission_file: 'patrol_dock_a', priority: 10, start_if_idle: true}"
+
+# 2. 任务取消
+ros2 service call /v2/cancel_queued_mission amr_dispatcher_interfaces/srv/CancelQueuedMission \
+  "{mission_id: 'm_1', cancel_active: true}"
+
+# 3. 任务紧急抢占
+ros2 service call /v2/preempt_mission amr_dispatcher_interfaces/srv/PreemptMission \
+  "{mission_file: 'urgent_transport', priority: 120}"
+
+# 4. 调整排队优先级
+ros2 service call /v2/reprioritize_queued_mission amr_dispatcher_interfaces/srv/ReprioritizeQueuedMission \
+  "{mission_id: 'm_2', priority: 50}"
+
+# 5. 任务成本与电量前置估算
+ros2 service call /v2/estimate_mission_cost amr_dispatcher_interfaces/srv/EstimateMissionCost \
+  "{mission_file: 'patrol_loop', nominal_speed_mps: 0.5, battery_voltage: 24.0}"
+
+# 6. 人工临时封路
+ros2 service call /v2/block_station_route amr_dispatcher_interfaces/srv/BlockStationRoute \
+  "{from_station: 'station_pickup_A', to_station: 'station_pickup_B', reason: 'maintenance'}"
+
+# 7. 主动死锁环路诊断
+ros2 service call /v2/detect_traffic_deadlock amr_dispatcher_interfaces/srv/DetectTrafficDeadlock "{}"
+
+# 8. 查询所有拓扑站点
+ros2 service call /v2/list_stations amr_dispatcher_interfaces/srv/ListStations "{}"
+
+# 9. 查询全网所有交通锁占用
+ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}"
+
+# 10. 物理设施资源预约 (门/电梯/充电桩)
+ros2 service call /v2/reserve_facility_resource amr_dispatcher_interfaces/srv/ReserveFacilityResource \
+  "{resource_id: 'auto_door_1', holder_id: 'robot_01', mission_id: 'm_1', release_existing_for_holder: false}"
+
+# 11. 获取全局运营快照大盘
+ros2 service call /v2/get_operator_snapshot amr_dispatcher_interfaces/srv/GetOperatorSnapshot "{event_limit: 10}"
+
+# 12. 校验站点配置一致性
+ros2 service call /v2/validate_site_config amr_dispatcher_interfaces/srv/ValidateSiteConfig \
+  "{bundle_dir: 'config', version_id: 'v1.1.0'}"
 ```
 
 ---

@@ -13,6 +13,7 @@ set(msg_files
   "msg/MissionEvent.msg"
   "msg/TrackingError.msg"
   "msg/SafetyState.msg"
+  "msg/TopologyState.msg"
 )
 
 set(srv_files
@@ -22,10 +23,24 @@ set(srv_files
   "srv/ResumeMission.srv"
   "srv/ReserveResource.srv"
   "srv/ReleaseResource.srv"
+  "srv/GetSystemReadiness.srv"
+  "srv/EnqueueMission.srv"
+  "srv/CancelQueuedMission.srv"
+  "srv/PreemptMission.srv"
+  "srv/ReprioritizeQueuedMission.srv"
+  "srv/EstimateMissionCost.srv"
+  "srv/BlockStationRoute.srv"
+  "srv/DetectTrafficDeadlock.srv"
+  "srv/ListStations.srv"
+  "srv/ListTrafficReservations.srv"
+  "srv/ReserveFacilityResource.srv"
+  "srv/GetOperatorSnapshot.srv"
+  "srv/ValidateSiteConfig.srv"
 )
 
 set(action_files
   "action/NavigateSequence.action"
+  "action/ExecuteMission.action"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
