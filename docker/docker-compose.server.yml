@@ -24,6 +24,15 @@
 #   docker compose -f docker-compose.server.yml logs -f
 #   docker compose -f docker-compose.server.yml down
 
+# 显式指定项目名，隔离本栈与同目录下的其他 compose 项目。
+#
+# compose 默认用目录名当项目名，本文件所在目录是 docker/，项目名因此为 "docker"。
+# 若服务器上恰好也有其他 compose 栈使用同名项目（实测存在 tc_fcgi_app /
+# tc_fcgi_nginx_fastdfs / tc_fcgi_mysql 三个容器同属 "docker" 项目），则
+# `docker compose ... up -d --remove-orphans` 或 `down --remove-orphans`
+# 会把这些无关容器一并删除。显式命名后本栈完全独立。
+name: amr-dispatcher
+
 services:
   amr_dispatcher:
     image: amr-dispatcher:jazzy
