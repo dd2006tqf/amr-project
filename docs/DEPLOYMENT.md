@@ -259,7 +259,7 @@ $C "$S && timeout 12 ros2 topic echo /chassis/link_health --once" | grep -E 'fra
 ### 常用命令
 
 ```bash
-cd /opt/amr_dispatcher
+cd /home/ubuntu/amr_dispatcher
 C="docker compose -f docker/docker-compose.server.yml"
 
 $C ps                    # 状态
@@ -301,7 +301,7 @@ echo "--- 安全 ---";    timeout 5 ros2 topic echo /safety/state --once
 git add -A && git commit -m "..." && git push
 
 # 2. 服务器拉取
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && git pull'
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && git pull'
 
 # 3. 容器内重新构建(仅增量,通常 1–3 分钟)
 ssh ubuntu@<server-ip> 'docker exec amr_dispatcher bash -lc "
@@ -329,7 +329,7 @@ AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
 > 在重启之前,系统处于"部分节点已更新、部分仍是旧版"的混合状态。
 >
 > ```bash
-> ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
+> ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && \
 >   docker exec amr_dispatcher bash -lc "cd /workspace && source /opt/ros/jazzy/setup.bash && \
 >     colcon build --base-paths src --symlink-install --packages-select <包名> \
 >       --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release" && \
@@ -383,16 +383,16 @@ ssh ubuntu@<server-ip> 'ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_amr -N "" && 
 把公钥加到 GitHub 仓库 → **Settings → Deploy keys**，**务必勾选 "Allow write access"**，然后：
 
 ```bash
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && \
   git remote set-url origin git@github.com:dd2006tqf/amr-project.git && \
   ssh -T git@github.com && git push --dry-run origin main'
 ```
 
 注意：Deploy Key **只能绑定单个仓库**，且同一把公钥不能同时作为账号级 SSH key 使用。
 
-### 推荐的工作方式：就在 `/opt/amr_dispatcher` 里开发，养成"先推送"的习惯
+### 推荐的工作方式：就在 `/home/ubuntu/amr_dispatcher` 里开发，养成"先推送"的习惯
 
-容器挂载的就是 `/opt/amr_dispatcher`，直接在这里改代码最省事 —— 改完增量构建 +
+容器挂载的就是 `/home/ubuntu/amr_dispatcher`，直接在这里改代码最省事 —— 改完增量构建 +
 重启即可，不需要额外的工作副本。
 
 **要记住的一点：跑部署脚本前先把改动推到 `origin/main`。**
@@ -419,7 +419,7 @@ ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
 `server_setup.sh` 现在会检查未推送的提交与未提交的改动，**一发现就中止**并列出内容：
 
 ```
-[FAIL] /opt/amr_dispatcher 有未同步到 origin/main 的本地内容，已中止以免丢失：
+[FAIL] /home/ubuntu/amr_dispatcher 有未同步到 origin/main 的本地内容，已中止以免丢失：
 
         未推送的提交: 2 个
         未提交的改动: 1 个
@@ -427,10 +427,10 @@ ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
         git reset --hard 会丢弃这两类内容。请先处理：
 
           先推送（推荐）:
-            cd /opt/amr_dispatcher && git add -A && git commit -m "..." && git push origin main
+            cd /home/ubuntu/amr_dispatcher && git add -A && git commit -m "..." && git push origin main
 
           或先备份到别处:
-            cd /opt/amr_dispatcher && git stash push -u -m "部署前备份"
+            cd /home/ubuntu/amr_dispatcher && git stash push -u -m "部署前备份"
 
           确认要放弃这些改动（危险，只能靠 git reflog 找回）:
             AMR_FORCE_SYNC=1 ./scripts/server_setup.sh
@@ -443,7 +443,7 @@ ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
 ```bash
 S=ubuntu@<server-ip>
 
-# 1. 进入容器改代码（容器内 /workspace 就是宿主机的 /opt/amr_dispatcher）
+# 1. 进入容器改代码（容器内 /workspace 就是宿主机的 /home/ubuntu/amr_dispatcher）
 ssh $S 'docker exec -it amr_dispatcher bash -lc "cd /workspace && source /opt/ros/jazzy/setup.bash && bash"'
 
 # 2. 增量构建（单包实测约 29 秒）
@@ -452,13 +452,13 @@ ssh $S 'docker exec amr_dispatcher bash -lc "cd /workspace && source /opt/ros/ja
     --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release"'
 
 # 3. 重启使新构建生效（实测约 1 秒到就绪）
-ssh $S 'cd /opt/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+ssh $S 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
 
 # 4. 验证改动真的生效（看日志/话题，不要只看构建成功）
 ssh $S 'docker logs amr_dispatcher 2>&1 | tail -20'
 
 # 5. 提交并推送 —— 这一步是防丢的关键
-ssh $S 'cd /opt/amr_dispatcher && git add -A && git commit -m "..." && git push origin main'
+ssh $S 'cd /home/ubuntu/amr_dispatcher && git add -A && git commit -m "..." && git push origin main'
 ```
 
 > **第 2 步之后必须第 3 步。** `colcon build` 只更新磁盘上的二进制，运行中的进程
@@ -471,9 +471,9 @@ ssh $S 'cd /opt/amr_dispatcher && git add -A && git commit -m "..." && git push 
 #### 如果你更想分离开发与部署副本
 
 也可以另建一个副本（例如 `~/dev/amr_dispatcher`），在那边改代码、提交、推送，
-再让 `/opt/amr_dispatcher` 拉取。好处是两边互不干扰，代价是多一次同步。
+再让 `/home/ubuntu/amr_dispatcher` 拉取。好处是两边互不干扰，代价是多一次同步。
 
-`/opt/amr_dispatcher` 下的 `build/` `install/` `log/` 均已被 `.gitignore` 忽略，
+`/home/ubuntu/amr_dispatcher` 下的 `build/` `install/` `log/` 均已被 `.gitignore` 忽略，
 所以直接在里面开发时 `git status` 不会被构建产物污染。
 
 ---
@@ -556,9 +556,9 @@ Aborted  <<< amr_dispatcher_ros
 仓库已用 `.gitkeep` 修复。**若你遇到此错,说明服务器上的代码早于该修复:**
 
 ```bash
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && git pull --ff-only && sudo rm -rf build install log'
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && git pull --ff-only && sudo rm -rf build install log'
 # 然后重启容器
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
 ```
 
 判断构建是否真的成功,看这一行(它统计的是 `install/` 下的包目录,不受日志干扰):
@@ -654,7 +654,7 @@ ros2 service call /dispatcher_node/get_state lifecycle_msgs/srv/GetState "{}"
 |---|---|
 | 镜像 `amr-dispatcher:jazzy` | 1.7GB |
 | swapfile | 4.0GB |
-| 仓库 + 容器内构建产物(`/opt/amr_dispatcher`) | 159MB |
+| 仓库 + 容器内构建产物(`/home/ubuntu/amr_dispatcher`) | 159MB |
 | **新增合计** | **约 5.9GB** |
 | 部署前可用 | 17GB |
 | **部署后可用** | **11GB** ✅ |
@@ -688,10 +688,10 @@ ros2 service call /dispatcher_node/get_state lifecycle_msgs/srv/GetState "{}"
 
 ```bash
 # 停止并移除容器(保留镜像与代码)
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && docker compose -f docker/docker-compose.server.yml down'
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml down'
 
 # 回退代码到某个提交后重启
-ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && git log --oneline -10 && git checkout <sha> && docker restart amr_dispatcher'
+ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && git log --oneline -10 && git checkout <sha> && docker restart amr_dispatcher'
 
 # 删除 swapfile(若不再需要)
 ssh ubuntu@<server-ip> 'sudo swapoff /swapfile.amr && sudo rm /swapfile.amr && sudo sed -i "\|/swapfile.amr|d" /etc/fstab'

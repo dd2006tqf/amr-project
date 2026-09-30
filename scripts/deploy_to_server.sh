@@ -17,7 +17,7 @@
 # ----
 #   --no-build         跳过镜像构建，直接传输本地已有的 $AMR_IMAGE
 #   --image-tag TAG    指定镜像 tag（默认 amr-dispatcher:jazzy）
-#   --repo-dir DIR     服务器上的部署目录（默认 /opt/amr_dispatcher）
+#   --repo-dir DIR     服务器上的部署目录（默认 /home/ubuntu/amr_dispatcher）
 #   --swap-gb N        远端 swapfile 大小（默认 4，传 0 表示不创建）
 #   --allow-unpushed   不校验本地提交是否已推送（默认会校验并拒绝部署未推送的提交）
 #   -h, --help         显示帮助
@@ -36,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 IMAGE_TAG="${AMR_IMAGE:-amr-dispatcher:jazzy}"
-REPO_DIR="/opt/amr_dispatcher"
+REPO_DIR="/home/ubuntu/amr_dispatcher"
 SWAP_GB=4
 DO_BUILD=1
 ALLOW_UNPUSHED="${AMR_ALLOW_UNPUSHED:-0}"
@@ -57,6 +57,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 log()  { echo -e "\n=== $* ==="; }
+warn() { echo "[WARN] $*" >&2; }
 die()  { echo "[FAIL] $*" >&2; exit 1; }
 
 [ -n "$SERVER" ] || die "未指定服务器。请用 AMR_SERVER=ubuntu@<ip> 或位置参数传入。"

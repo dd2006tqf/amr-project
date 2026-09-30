@@ -4,7 +4,7 @@
 # 职责
 # ----
 # 1. 按需创建 swapfile（服务器内存仅 3.6GiB，swap 原已用 90%）
-# 2. 准备 /opt/amr_dispatcher：有则 git pull，无则 git clone
+# 2. 准备 /home/ubuntu/amr_dispatcher：有则 git pull，无则 git clone
 # 3. 用 docker/docker-compose.server.yml 拉起容器
 # 4. 打印状态与 SSH 隧道命令
 #
@@ -16,12 +16,12 @@
 # 用法（服务器上，或由 deploy_to_server.sh 经 ssh 调用）：
 #   ./scripts/server_setup.sh
 #   ./scripts/server_setup.sh --swap-gb 0        # 不创建 swap
-#   ./scripts/server_setup.sh --repo-dir /opt/amr_dispatcher
+#   ./scripts/server_setup.sh --repo-dir /home/ubuntu/amr_dispatcher
 
 set -euo pipefail
 
 REPO_URL="${AMR_REPO_URL:-https://github.com/dd2006tqf/amr-project.git}"
-REPO_DIR="${AMR_REPO_DIR:-/opt/amr_dispatcher}"
+REPO_DIR="${AMR_REPO_DIR:-/home/ubuntu/amr_dispatcher}"
 IMAGE="${AMR_IMAGE:-amr-dispatcher:jazzy}"
 COMPOSE_FILE="docker/docker-compose.server.yml"
 SWAP_GB=4
