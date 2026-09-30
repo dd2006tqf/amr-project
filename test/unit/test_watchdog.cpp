@@ -32,14 +32,14 @@ TEST(WatchdogTest, SoftTimeoutEmitsCritical) {
 }
 
 TEST(WatchdogTest, UnseenNodeIsCritical) {
-  SafetyWatchdog w({});
+  SafetyWatchdog w{};
   auto evs = w.Inspect({"never_seen"});
   ASSERT_EQ(evs.size(), 1u);
   EXPECT_EQ(evs[0].severity, SafetySeverity::kCritical);
 }
 
 TEST(WatchdogTest, ForgetRemovesTracking) {
-  SafetyWatchdog w({});
+  SafetyWatchdog w{};
   w.FeedHeartbeat("a");
   w.Forget("a");
   auto evs = w.Inspect({"a"});

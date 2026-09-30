@@ -6,7 +6,7 @@ using namespace amr_dispatcher_core::safety;
 using namespace std::chrono_literals;
 
 TEST(CmdVelGateTest, AllowsCmdUnderLimits) {
-  CmdVelGate gate({});
+  CmdVelGate gate{};
   CmdVelCommand cmd{.linear_x_mps = 0.5, .linear_y_mps = 0.3, .angular_z_radps = 0.4};
   const auto d = gate.Evaluate(cmd);
   EXPECT_TRUE(d.allowed);
@@ -15,7 +15,7 @@ TEST(CmdVelGateTest, AllowsCmdUnderLimits) {
 }
 
 TEST(CmdVelGateTest, ClampsOverSpeed) {
-  CmdVelGate gate({});
+  CmdVelGate gate{};
   CmdVelCommand cmd{.linear_x_mps = 5.0, .linear_y_mps = 0.0, .angular_z_radps = 5.0};
   const auto d = gate.Evaluate(cmd);
   EXPECT_DOUBLE_EQ(d.linear_x_mps, 1.5);
@@ -36,7 +36,7 @@ TEST(CmdVelGateTest, CriticalEventStopsMotion) {
 }
 
 TEST(CmdVelGateTest, WarnEventReducesSpeed) {
-  CmdVelGate gate({});
+  CmdVelGate gate{};
   gate.PushEvent({"battery", SafetySeverity::kWarn, "low"});
   const auto d = gate.Evaluate({.linear_x_mps = 1.0});
   EXPECT_TRUE(d.allowed);
@@ -45,7 +45,7 @@ TEST(CmdVelGateTest, WarnEventReducesSpeed) {
 }
 
 TEST(CmdVelGateTest, CriticalWithoutSourceBlockIgnored) {
-  CmdVelGate gate({});  // 没有 source_blocked 回调
+  CmdVelGate gate{};  // 没有 source_blocked 回调
   gate.PushEvent({"estop", SafetySeverity::kCritical, "pressed"});
   const auto d = gate.Evaluate({.linear_x_mps = 0.5});
   EXPECT_TRUE(d.allowed);
@@ -62,7 +62,7 @@ TEST(CmdVelGateTest, EventHistoryBounded) {
 }
 
 TEST(CmdVelGateTest, ClearEvents) {
-  CmdVelGate gate({});
+  CmdVelGate gate{};
   gate.PushEvent({"a", SafetySeverity::kWarn, "x"});
   gate.ClearEvents();
   EXPECT_TRUE(gate.recent_events().empty());

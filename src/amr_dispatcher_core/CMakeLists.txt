@@ -13,6 +13,17 @@ find_package(ament_cmake QUIET)
 find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
 
+# yaml-cpp 的 CMake 目标名在 0.7 与 0.8 之间变了，这里做版本兼容。
+#   0.7（Ubuntu 22.04）     只提供裸目标 yaml-cpp
+#   0.8（Ubuntu 24.04/Jazzy）提供带命名空间的 yaml-cpp::yaml-cpp
+# 本文件下方与 amr_dispatcher_ros 都用 yaml-cpp::yaml-cpp，在 0.7 上会直接报错：
+#   Target "amr_dispatcher_core" links to target "yaml-cpp::yaml-cpp" but the
+#   target was not found. Perhaps a find_package() call is missing...
+# 本库是零 ROS 依赖的核心库，应当能在任意发行版上独立构建，故补一个别名。
+if(TARGET yaml-cpp AND NOT TARGET yaml-cpp::yaml-cpp)
+  add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+endif()
+
 add_library(${PROJECT_NAME}
   src/chassis/chassis_packet.cpp
   src/chassis/chassis_packet_stream.cpp
