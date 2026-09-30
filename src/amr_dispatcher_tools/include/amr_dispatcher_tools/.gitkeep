@@ -1,0 +1,23 @@
+# 占位文件：保持本目录存在于 git 仓库中。
+#
+# 本目录是空的（amr_dispatcher_tools 当前没有公开头文件），但
+# amr_dispatcher_tools/CMakeLists.txt 有：
+#
+#   install(DIRECTORY include/
+#     DESTINATION include
+#   )
+#
+# git 不跟踪空目录，因此从仓库全新 clone（例如部署到新服务器）时本目录
+# 不会被创建，colcon build 会直接失败：
+#
+#   ament_cmake_symlink_install_directory() can't find
+#     '<workspace>/src/amr_dispatcher_tools/include/'
+#
+# 该失败会连带 amr_dispatcher_ros 一起中止（依赖链），最终 install/ 里缺包，
+# ros2 launch 报 "package 'amr_dispatcher_ros' not found"。
+#
+# 之所以只有"全新 clone"才暴露：开发机上该目录一直存在（历史遗留的本地目录），
+# 所以本地构建与测试全程正常，无法发现此问题。
+#
+# 不要删除本文件。若确实不再需要 include/ 安装，应改为删除 CMakeLists.txt
+# 中对应的 install(DIRECTORY ...) 语句。
