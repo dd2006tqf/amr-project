@@ -145,15 +145,16 @@ ssh $AMR_SERVER 'docker logs -f amr_dispatcher'
 
 看到 `[amr-entrypoint] 构建完成` 与 `启动完整系统` 后即就绪。
 
-**实测耗时(4 核 / `AMR_COLCON_WORKERS=2`,容器内首跳全量构建):**
+**实测耗时。** 服务器(4 核 / `AMR_COLCON_WORKERS=2`,容器内首跳全量构建):
 
 | 阶段 | 耗时 |
 |---|---|
-| 阶段 1:`amr_dispatcher_core` + `amr_dispatcher_interfaces` | **11 分 36 秒** |
-| 阶段 2:`amr_dispatcher_bt` + `amr_dispatcher_ros` + `amr_dispatcher_tools` | **10 分 51 秒** |
-| **合计** | **约 22 分钟** |
+| 阶段 1:`amr_dispatcher_core` + `amr_dispatcher_interfaces` | **2 分 11 秒** |
+| 阶段 2:`amr_dispatcher_bt` + `amr_dispatcher_ros` + `amr_dispatcher_tools` | **2 分 23 秒** |
+| **构建合计** | **约 4 分 35 秒** |
+| 构建完成 → 7 个节点就绪 | **约 4 秒** |
 
-构建期容器内存峰值仅约 270MB(远低于 1.4GB 可用),时间瓶颈在 CPU 而非内存。后续增量重建通常 1–3 分钟。
+作为参照,同一份代码在开发机(同时跑着其他容器)上首跳耗时约 22 分钟。构建期容器内存峰值仅约 270MB(远低于 1.8GB 可用),时间瓶颈在 CPU 而非内存。后续增量重建通常 1–3 分钟。
 
 ### 步骤 4：访问 Web 控制台
 
@@ -182,13 +183,46 @@ C="docker exec -it amr_dispatcher bash -lc"
 | 5 | 12 个 v2 服务 | `$C 'source install/setup.bash && ros2 service list \| grep -c /v2/'` | `12` |
 | 6 | 就绪探针 | `$C 'source install/setup.bash && ros2 service list \| grep -E "system/(ready\|healthy)"'` | 2 个 |
 | 7 | 生命周期 | `$C 'source install/setup.bash && ros2 lifecycle get /dispatcher_node'` | `active [3]` |
-| 8 | 底盘链路 | `$C 'source install/setup.bash && ros2 topic echo /chassis/link_health --once'` | `backend_name: "serial"`,`tier: HEALTHY` |
-| 9 | ODOM 有数据 | `$C 'source install/setup.bash && ros2 topic echo /odom --once'` | 有 `pose`/`twist` 数据 |
+| 8 | 底盘链路 | `$C 'source install/setup.bash && ros2 topic echo /chassis/link_health --once'` | `backend_name: "serial"`。`tier` 见下方说明 |
+| 9 | ODOM 有数据 | `$C 'source install/setup.bash && timeout 8 ros2 topic hz /odom'` | **约 50 Hz**(实测 49.0–49.5) |
 | 10 | 安全门 | `$C 'source install/setup.bash && ros2 topic info /safety/state --verbose'` | 有 1 个发布者 `safety_gate_node`。**空闲时 `echo` 无输出,见下方说明** |
 | 11 | Web 控制台 | 建隧道后 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/` | **200** |
-| 12 | 快照 API | `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/operator/snapshot` | **200** |
-| 13 | 端口未泄露 | 在服务器上 `curl -m 3 http://<公网IP>:8080/` | 超时/拒绝 |
+| 12 | 快照 API | `curl -s http://127.0.0.1:8080/api/operator/snapshot` | 返回 JSON,含 `"chassis_backend":"serial"` |
+| 13 | 端口未泄露 | 在服务器上 `curl -m 8 http://<公网IP>:8080/` | `000`(连接失败) |
 | 14 | 重启自恢复 | `docker compose -f docker/docker-compose.server.yml restart` 后重跑 4–7 | 全部通过 |
+
+#### 端到端功能验证（可选但推荐）
+
+上面的检查只证明节点起来了。要证明**指令链路真的通**,需下发速度指令:
+
+```bash
+C="docker exec amr_dispatcher bash -lc"
+S='source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash'
+
+# 1. 订阅 /safety/state 放到后台,再发指令(它只在收到指令时发布)
+$C "$S && (timeout 22 ros2 topic echo /safety/state > /tmp/safety.txt 2>&1 &) ; sleep 3 ; \
+     timeout 16 ros2 topic pub --rate 20 --times 20 /cmd_vel_raw geometry_msgs/msg/Twist '{linear: {x: 0.3}}'"
+
+# 2. 安全门放行证据: severity=INFO, motion_allowed=true, speed_scale=1.0
+$C "head -14 /tmp/safety.txt"
+
+# 3. 指令确实写入了串口: frames_success 随指令数增长
+$C "$S && timeout 12 ros2 topic echo /chassis/link_health --once" | grep -E 'frames_|tier|loss_rate'
+```
+
+实测结果:`/safety/state` 返回 `severity: INFO, motion_allowed: true, speed_scale: 1.0`(全速放行);
+`/chassis/link_health` 的 `frames_success` 与下发指令数一致、`loss_rate: 0.0`。
+
+> **`tier` 的预期值别搞错。** 判定逻辑在 `link_quality.cpp` 的 `RecomputeLocked()`:
+> `healthy_loss_rate` 达标 **且** `consecutive_success_ >= success_threshold` 才置 `kHealthy`,
+> 而 `success_threshold` 默认 **50**(`link_quality.hpp:16`)。
+>
+> 所以:
+> - 从未下发指令 → `tier: UNKNOWN`,`frames_total: 0`(正常,`frames_total` 统计的是**已下发的指令数**,不是读到的 odom 帧)
+> - 下发 1–49 条 → `tier: DEGRADED`,`is_healthy: false`(**正常预热**,不是故障)
+> - 下发 ≥50 条 → `tier: HEALTHY`,`is_healthy: true`
+>
+> 实测:21 条指令时 `tier: DEGRADED`;发到 81 条时转为 `tier: HEALTHY, is_healthy: true`。
 
 第 4 条的 7 个节点:
 
@@ -344,10 +378,38 @@ docker exec -it amr_dispatcher bash -lc 'python3 scripts/mock_physical_chassis.p
 
 ```bash
 docker logs --tail 100 amr_dispatcher
-docker inspect amr_dispatcher --format '{{.State.ExitCode}} {{.State.Error}}'
+docker inspect amr_dispatcher --format 'ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}} OOMKilled={{.State.OOMKilled}}'
 ```
 
 常见原因:构建失败(内存不足)、端口冲突、挂载路径不存在。把 `AMR_COLCON_WORKERS` 降到 `1` 再试。
+
+**若日志里是 `package 'amr_dispatcher_ros' not found`,先看这一条。** 这是实际遇到过的
+失败模式(容器重启 13 次,每次都在同一处):
+
+```
+ament_cmake_symlink_install_directory() can't find
+  '<workspace>/src/amr_dispatcher_tools/include/'
+Failed   <<< amr_dispatcher_tools
+Aborted  <<< amr_dispatcher_ros
+```
+
+根因是 git 不跟踪空目录 —— `src/amr_dispatcher_tools/include/` 下没有任何被跟踪文件,
+全新 clone 后目录不存在,而 `CMakeLists.txt` 要用 `install(DIRECTORY include/ ...)`。
+仓库已用 `.gitkeep` 修复。**若你遇到此错,说明服务器上的代码早于该修复:**
+
+```bash
+ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && git pull --ff-only && sudo rm -rf build install log'
+# 然后重启容器
+ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+```
+
+判断构建是否真的成功,看这一行(它统计的是 `install/` 下的包目录,不受日志干扰):
+
+```
+[amr-entrypoint] 构建完成，install/ 下已安装 5 个项目包
+```
+
+**看到 `3 个` 或更少就是失败了** —— 正常必须是 5 个(`core` / `interfaces` / `bt` / `ros` / `tools`)。
 
 ### 内存不足 / OOM
 
@@ -426,18 +488,20 @@ ros2 service call /dispatcher_node/get_state lifecycle_msgs/srv/GetState "{}"
 
 ---
 
-## 10. 资源预算
+## 10. 资源预算（实测）
 
 ### 服务器
 
 | 项 | 占用 |
 |---|---|
-| 镜像 | 1.68GB |
+| 镜像 `amr-dispatcher:jazzy` | 1.7GB |
 | swapfile | 4.0GB |
-| 代码 + 容器内构建产物 | ~0.6GB |
-| **新增合计** | **~6.3GB** |
-| 原可用 | 17GB |
-| **部署后可用** | **~10.7GB** ✅ |
+| 仓库 + 容器内构建产物(`/opt/amr_dispatcher`) | 159MB |
+| **新增合计** | **约 5.9GB** |
+| 部署前可用 | 17GB |
+| **部署后可用** | **11GB** ✅ |
+
+实测磁盘变化:部署前 `22G 已用 / 17G 可用` → 部署后 `28G 已用 / 11G 可用`。
 
 ### 开发机(临时,可回收)
 
@@ -445,11 +509,20 @@ ros2 service call /dispatcher_node/get_state lifecycle_msgs/srv/GetState "{}"
 |---|---|
 | `ros:jazzy-ros-base` 基础镜像 | 1.3GB |
 | `amr-dispatcher:jazzy` | 1.68GB |
-| gzip 管道(不落盘) | 0 |
+| gzip 管道(管道直传,不落盘) | 0 |
+
+镜像传输实测:1.7GB 镜像经 `docker save \| gzip -1 \| ssh` 管道,**95 秒**完成(含远端 `docker load`)。
 
 ### 运行时内存
 
-8 个节点峰值 RSS 约 500MB,加上 DDS 共享内存(`shm_size: 512m`),在 1.4GB 可用内存下运行是安全的。**瓶颈只在构建期,而构建已放到开发机。**
+实测容器 **287MB RSS / CPU 4.7%**(7 个节点 + PTY 模拟器,空闲态)。加上 DDS 共享内存
+(`shm_size: 512m`),在 1.8GB 可用内存下运行安全。
+
+**瓶颈只在构建期**:实测构建峰值内存约 270MB(4 核并行度 2),远低于可用内存,未触发 OOM
+(`OOMKilled=false`)。容器日志已限额(`max-size: 10m` × `max-file: 3`),长期运行不会撑爆磁盘。
+
+> 注意:服务器 swap 总用量在部署后从 1.7GiB 升至约 2.6GiB。其中大部分来自服务器上**原有的其他服务**
+> (vault / keycloak / temporal / minio / pgvector 等),本项目的容器只占 287MB。
 
 ---
 
@@ -481,6 +554,8 @@ ssh ubuntu@<server-ip> 'sudo swapoff /swapfile.amr && sudo rm /swapfile.amr && s
 | bridge 网络 + 回环端口绑定 | `docker/docker-compose.server.yml` | 替代 `network_mode: host` + `privileged: true` + `-v /dev:/dev`。见第 2 节 |
 | 容器日志限额 | `docker/docker-compose.server.yml` | `max-size: 10m` × 3,避免长跑占满 17GB 可用磁盘 |
 | `shm_size: 512m` | `docker/docker-compose.server.yml` | Fast DDS 走共享内存,默认 64MB 偏小 |
+| 补 `include/amr_dispatcher_tools/.gitkeep` | `src/amr_dispatcher_tools/include/amr_dispatcher_tools/` | **全新 clone 无法构建**:该目录下没有任何被跟踪文件,而 git 不跟踪空目录,于是全新 clone 后目录不存在,`amr_dispatcher_tools/CMakeLists.txt` 的 `install(DIRECTORY include/ ...)` 直接失败(`ament_cmake_symlink_install_directory() can't find ...`),并连带中止 `amr_dispatcher_ros`。最终 `install/` 缺两个包,`ros2 launch` 报 `package 'amr_dispatcher_ros' not found`。**该问题只在全新 clone 时暴露** —— 开发机上这个目录一直存在(历史遗留的本地目录),所以本地 cmake/colcon 构建与全部 453 个测试全程通过。服务器实测时容器因此反复重启 13 次,每次都在同一处失败 |
+| 显式 `name: amr-dispatcher` | `docker/docker-compose.server.yml` | compose 默认以所在目录名作项目名,本文件在 `docker/` 下故项目名为 `docker`。实测该服务器上 `tc_fcgi_app` / `tc_fcgi_nginx_fastdfs` / `tc_fcgi_mysql` 三个长期运行的容器**同属 `docker` 项目**,启动本栈时已出现 orphan containers 警告。一旦对同名项目执行 `--remove-orphans`,那三个无关容器会被一并删除 |
 
 ### 建议但本次未做的修复
 
