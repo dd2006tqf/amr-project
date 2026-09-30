@@ -334,7 +334,7 @@ AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
 
 ## 7.1 在服务器上直接开发与提交
 
-服务器已经可以**改代码、提交**,但**推送**需要一次性配置写凭据。
+服务器已具备完整的读写能力，可以直接改代码、提交并推送到远端。
 
 ### 当前状态（实测）
 
@@ -342,62 +342,54 @@ AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
 |---|---|
 | 完整运行项目 | ✅ 7 个业务节点 / 12 个 `/v2/` 服务 / `dispatcher_node` active |
 | 改代码并增量重建 | ✅ 单包约 29 秒；重启约 1 秒 |
-| `git commit` | ✅ 身份已配 `dd2006tqf <dd2006tqf@users.noreply.github.com>` |
-| `git pull` / `clone` | ✅ 仓库公开,匿名只读可用 |
-| **`git push`** | ❌ **未配置写凭据**,报 `could not read Username for 'https://github.com'` |
+| `git commit` | ✅ 身份 `dd2006tqf <dd2006tqf@users.noreply.github.com>` |
+| `git clone` / `pull` | ✅ |
+| **`git push`** | ✅ 已配置,写权限经临时分支实测确认 |
 
-`git push --dry-run` 的报错:
+### 凭据配置方式（HTTPS + credential store）
+
+服务器用 HTTPS 方式，凭据存在 `~/.git-credentials`（权限 `600`），
+`credential.helper = store`：
 
 ```
-fatal: could not read Username for 'https://github.com': No such device or address
+https://dd2006tqf:***@github.com
 ```
 
-原因:服务器上 `credential.helper` 未设置、无 `~/.git-credentials`,也没有配置
-GitHub 的 SSH 密钥（`~/.ssh/` 下只有一个与本仓库无关的 `id_board`）。
-clone/pull 之所以能work，是因为仓库是公开的、匿名可读；**写操作必须有凭据**。
+该 token 由开发机的 `~/.git-credentials` 同步而来（仅同步 `github.com` 那一条，
+未同步开发机上另一条代理条目）。
 
-### 方案 A：SSH Deploy Key（推荐，不落盘任何密钥字符串）
+**维护要点：**
+
+- 该 token 现在同时存在于**开发机与服务器**两处。若在 GitHub 上轮换或吊销，
+  两台机器都要同步更新，否则服务器推送会开始报认证失败。
+- 凭据是 GitHub **Personal Access Token**（不是账号密码），需要 `repo` 权限。
+- 若怀疑泄露，在 GitHub → Settings → Developer settings → Personal access tokens
+  中吊销即可，两台机器重新配置。
+
+### 替代方案：SSH Deploy Key
+
+若希望避免 token 落盘，可改用 Deploy Key：
 
 ```bash
-# 1. 在服务器上生成专用密钥
-ssh ubuntu@<server-ip>
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_amr -N "" -C "amr-dispatcher@VM-0-13"
-cat ~/.ssh/id_ed25519_amr.pub
+ssh ubuntu@<server-ip> 'ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_amr -N "" && cat ~/.ssh/id_ed25519_amr.pub'
 ```
 
-2. 复制上面输出的公钥 → GitHub 仓库 → **Settings → Deploy keys → Add deploy key**
-   **务必勾选 "Allow write access"**（不勾选只能读）。
+把公钥加到 GitHub 仓库 → **Settings → Deploy keys**，**务必勾选 "Allow write access"**，然后：
 
 ```bash
-# 3. 让本仓库走 SSH 而非 HTTPS
-cd /opt/amr_dispatcher
-git remote set-url origin git@github.com:dd2006tqf/amr-project.git
-ssh -T git@github.com          # 首次会问是否信任主机指纹,输 yes
-git push --dry-run origin main  # 应显示成功而非要用户名
+ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
+  git remote set-url origin git@github.com:dd2006tqf/amr-project.git && \
+  ssh -T git@github.com && git push --dry-run origin main'
 ```
 
-注意两点：GitHub 的 Deploy Key **只能绑定到一个仓库**（换仓库需另建密钥）；
-同一把公钥不能同时作为账号级 SSH key 和 Deploy Key 使用。
-
-### 方案 B：Personal Access Token
-
-```bash
-cd /opt/amr_dispatcher
-git remote set-url origin https://<用户名>:<PAT>@github.com/dd2006tqf/amr-project.git
-# 或改用凭据存储（避免 token 出现在 remote URL 里）：
-git config credential.helper store
-git push origin main   # 首次会提示输入用户名与 token，之后记住
-```
-
-Token 需勾选 `repo` 权限。**不要把 token 写进任何会被提交的文件**；
-方案 B 的缺点是 `~/.git-credentials` 以明文保存 token。
+注意：Deploy Key **只能绑定单个仓库**，且同一把公钥不能同时作为账号级 SSH key 使用。
 
 ### 推荐的工作方式
 
-服务器上的 `/opt/amr_dispatcher` 是绑进容器的**部署工作副本**。若要在此长期开发，
-建议区分两个副本，避免构建产物与开发改动互相干扰：
+`/opt/amr_dispatcher` 是绑进容器的**部署工作副本**。若要长期开发，建议另建开发副本，
+避免构建产物与开发改动互相干扰：
 
-```bash
+```
 /opt/amr_dispatcher          # 部署副本：容器挂载这里，保持与 origin/main 一致
 ~/dev/amr_dispatcher         # 开发副本：在这里改代码、提交、推送
 ```
@@ -405,9 +397,8 @@ Token 需勾选 `repo` 权限。**不要把 token 写进任何会被提交的文
 流程：在 `~/dev` 改完 → `git push` → 在 `/opt/amr_dispatcher` 里 `git pull` →
 容器内 `colcon build` → `docker compose restart`。
 
-若你更想直接在 `/opt/amr_dispatcher` 里开发，也可以，但注意：
-该目录下有 `build/` `install/` `log/`（均已被 `.gitignore` 忽略），
-所以 `git status` 不会被构建产物干扰。
+直接在 `/opt/amr_dispatcher` 里开发也可以：该目录下 `build/` `install/` `log/`
+均已被 `.gitignore` 忽略，`git status` 不会被构建产物干扰。
 
 ---
 
