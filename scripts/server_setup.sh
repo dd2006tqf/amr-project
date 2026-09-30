@@ -84,9 +84,62 @@ if [ -d "$REPO_DIR/.git" ]; then
 
   echo "拉取 origin/$BRANCH"
   git fetch origin "$BRANCH"
+
+  # 保护本地开发成果：reset --hard 会丢弃工作区改动，也会丢弃【未被推送】的提交。
+  # 实测确认：已 push 的提交在 reset --hard 后仍在（它们在 origin/main 上）；
+  # 但仅 commit 未 push 的提交会从分支上消失（只能靠 git reflog 捞回）。
+  # 所以这里必须显式拦住，而不是静默覆盖。
+  if [ "${AMR_FORCE_SYNC:-0}" != "1" ]; then
+    unpushed=$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)
+    # 只统计【已跟踪文件】的改动。未跟踪文件不在 reset --hard 的清理范围内
+    # （那需要 git clean），所以不该因为它们挡住部署 —— 例如容器写出的
+    # __pycache__、或本地随手放的文件。脚本后面会单独清掉 __pycache__。
+    dirty=$(git status --porcelain --untracked-files=no | wc -l)
+    untracked=$(git status --porcelain --untracked-files=normal | grep -c '^??' || true)
+
+    if [ "$unpushed" -gt 0 ] || [ "$dirty" -gt 0 ]; then
+      cat >&2 <<ERR
+
+[FAIL] $REPO_DIR 有未同步到 origin/$BRANCH 的本地内容，已中止以免丢失：
+
+        未推送的提交: $unpushed 个
+        已跟踪文件的改动: $dirty 个
+
+        git reset --hard 会丢弃这两类内容。请先处理：
+
+          先推送（推荐）:
+            cd $REPO_DIR && git add -A && git commit -m "..." && git push origin $BRANCH
+
+          或先备份到别处:
+            cd $REPO_DIR && git stash push -u -m "部署前备份"
+
+          确认要放弃这些改动（危险，只能靠 git reflog 找回）:
+            AMR_FORCE_SYNC=1 $0
+ERR
+      if [ "$unpushed" -gt 0 ]; then
+        echo "" >&2
+        echo "      未推送的提交如下：" >&2
+        git log --oneline "origin/$BRANCH..HEAD" | sed 's/^/        /' >&2
+      fi
+      if [ "$dirty" -gt 0 ]; then
+        echo "" >&2
+        echo "      改动的文件如下：" >&2
+        git status --porcelain --untracked-files=no | sed 's/^/        /' >&2
+      fi
+      exit 1
+    fi
+
+    # 未跟踪文件不影响同步，仅提示
+    if [ "$untracked" -gt 0 ]; then
+      echo "[INFO] 有 $untracked 个未跟踪文件，不受 reset --hard 影响，保留不动"
+    fi
+  else
+    echo "[WARN] AMR_FORCE_SYNC=1，将丢弃本地未同步的提交与改动"
+    echo "       如需事后找回: git reflog  （未被 gc 的提交可从 reflog 恢复）"
+  fi
+
   # 用 reset --hard 而非 pull：部署目标是让工作区严格等于远端，
   # 同时能覆盖同步过程可能残留的改动（如历史 tar 同步留下的差异）。
-  # -f 会在必要时丢弃本地改动——对部署副本这是期望行为。
   git checkout -f -q "$BRANCH" 2>/dev/null || true
   git reset --hard FETCH_HEAD
 

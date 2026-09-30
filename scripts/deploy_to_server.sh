@@ -137,7 +137,8 @@ if [ "$ALLOW_UNPUSHED" != "1" ]; then
       die "本地 HEAD ($(git rev-parse --short HEAD)) 尚未推送到 origin/$BRANCH。
 
 服务器将从这个远端分支拉取代码，未推送的提交不会被部署。
-请先推送，或加 --allow-unpushed（此时服务器会用远端旧代码）。"
+请先推送，或加 --allow-unpushed（注意：本地未推送的提交不会被部署，且服务器会因
+检测到本地改动而中止——见 server_setup.sh 的说明）。"
     fi
   else
     warn "本地没有 origin/$BRANCH 引用，跳过校验（请确认服务器能取到相同代码）"

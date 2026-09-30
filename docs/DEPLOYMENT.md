@@ -390,21 +390,91 @@ ssh ubuntu@<server-ip> 'cd /opt/amr_dispatcher && \
 
 注意：Deploy Key **只能绑定单个仓库**，且同一把公钥不能同时作为账号级 SSH key 使用。
 
-### 推荐的工作方式
+### 推荐的工作方式：就在 `/opt/amr_dispatcher` 里开发，养成"先推送"的习惯
 
-`/opt/amr_dispatcher` 是绑进容器的**部署工作副本**。若要长期开发，建议另建开发副本，
-避免构建产物与开发改动互相干扰：
+容器挂载的就是 `/opt/amr_dispatcher`，直接在这里改代码最省事 —— 改完增量构建 +
+重启即可，不需要额外的工作副本。
+
+**要记住的一点：跑部署脚本前先把改动推到 `origin/main`。**
+
+#### `git reset --hard` 会丢什么（实测结论）
+
+`server_setup.sh` 每次都会把工作区强制同步到 `origin/main`。实测确认：
+
+| 内容 | 是否会被丢弃 |
+|---|---|
+| 未提交的工作区改动 | **会丢** |
+| 已 `commit` 但**未 `push`** 的提交 | **会丢** —— 分支指针被移回远端位置，你的提交从分支上消失 |
+| 已 `push` 的提交 | **不会丢** —— 它们已在 `origin/main` 上，reset 的目标就是它们 |
+
+所以「只要 commit 过就安全」**是错的**：`reset --hard origin/main` 是按指针移动，
+不是按内容比对，未推送的提交照样会离开分支。**`git push` 才是真正的保护。**
+
+万一忘了推也不要紧：被 reset 掉的提交通常还能从 `git reflog` 找回（未被 gc 前）。
+实测 `git reflog` 能看到 `reset: moving to origin/main` 之前的 `commit` 记录，
+用其哈希 `git checkout <hash>` 即可恢复。
+
+#### 已有保护性拦截：不会静默覆盖
+
+`server_setup.sh` 现在会检查未推送的提交与未提交的改动，**一发现就中止**并列出内容：
 
 ```
-/opt/amr_dispatcher          # 部署副本：容器挂载这里，保持与 origin/main 一致
-~/dev/amr_dispatcher         # 开发副本：在这里改代码、提交、推送
+[FAIL] /opt/amr_dispatcher 有未同步到 origin/main 的本地内容，已中止以免丢失：
+
+        未推送的提交: 2 个
+        未提交的改动: 1 个
+
+        git reset --hard 会丢弃这两类内容。请先处理：
+
+          先推送（推荐）:
+            cd /opt/amr_dispatcher && git add -A && git commit -m "..." && git push origin main
+
+          或先备份到别处:
+            cd /opt/amr_dispatcher && git stash push -u -m "部署前备份"
+
+          确认要放弃这些改动（危险，只能靠 git reflog 找回）:
+            AMR_FORCE_SYNC=1 ./scripts/server_setup.sh
 ```
 
-流程：在 `~/dev` 改完 → `git push` → 在 `/opt/amr_dispatcher` 里 `git pull` →
-容器内 `colcon build` → `docker compose restart`。
+同一份检查也在 `deploy_to_server.sh` 里（校验本地 HEAD 是否为 `origin/main` 的祖先）。
 
-直接在 `/opt/amr_dispatcher` 里开发也可以：该目录下 `build/` `install/` `log/`
-均已被 `.gitignore` 忽略，`git status` 不会被构建产物干扰。
+#### 完整开发流程
+
+```bash
+S=ubuntu@<server-ip>
+
+# 1. 进入容器改代码（容器内 /workspace 就是宿主机的 /opt/amr_dispatcher）
+ssh $S 'docker exec -it amr_dispatcher bash -lc "cd /workspace && source /opt/ros/jazzy/setup.bash && bash"'
+
+# 2. 增量构建（单包实测约 29 秒）
+ssh $S 'docker exec amr_dispatcher bash -lc "cd /workspace && source /opt/ros/jazzy/setup.bash && \
+  colcon build --base-paths src --symlink-install --packages-select <包名> \
+    --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release"'
+
+# 3. 重启使新构建生效（实测约 1 秒到就绪）
+ssh $S 'cd /opt/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+
+# 4. 验证改动真的生效（看日志/话题，不要只看构建成功）
+ssh $S 'docker logs amr_dispatcher 2>&1 | tail -20'
+
+# 5. 提交并推送 —— 这一步是防丢的关键
+ssh $S 'cd /opt/amr_dispatcher && git add -A && git commit -m "..." && git push origin main'
+```
+
+> **第 2 步之后必须第 3 步。** `colcon build` 只更新磁盘上的二进制，运行中的进程
+> 仍是旧版本。重启之前系统处于"部分节点已更新、部分仍是旧版"的混合状态。
+> 已实测：在容器内改掉 `safety_gate_node` 的一条启动日志、构建成功后，容器日志里
+> 仍是旧文案；重启后才出现新文案。
+
+全程耗时参考：改一行代码 → 构建 29 秒 → 重启到就绪 1 秒，**约半分钟一轮**。
+
+#### 如果你更想分离开发与部署副本
+
+也可以另建一个副本（例如 `~/dev/amr_dispatcher`），在那边改代码、提交、推送，
+再让 `/opt/amr_dispatcher` 拉取。好处是两边互不干扰，代价是多一次同步。
+
+`/opt/amr_dispatcher` 下的 `build/` `install/` `log/` 均已被 `.gitignore` 忽略，
+所以直接在里面开发时 `git status` 不会被构建产物污染。
 
 ---
 
