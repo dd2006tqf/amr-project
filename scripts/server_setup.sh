@@ -68,14 +68,40 @@ fi
 
 # ------------------------------------------------------------- 代码仓库
 log "准备代码仓库 $REPO_DIR"
+BRANCH="${AMR_BRANCH:-main}"
+
 if [ -d "$REPO_DIR/.git" ]; then
-  echo "已存在 git 仓库，执行 pull"
-  git -C "$REPO_DIR" pull --ff-only || warn "pull 失败（可能有本地改动），继续使用现有工作区"
+  cd "$REPO_DIR"
+
+  # 自愈上游跟踪。历史上用 tar 同步 .git/ 会把开发机的 .git/config 覆盖到服务器，
+  # 而开发机的 config 里没有 [branch "main"] 段，导致服务器 git pull 报
+  # "There is no tracking information for the current branch"。
+  if [ "$(git config --get "branch.$BRANCH.remote" || true)" != "origin" ]; then
+    echo "修复 $BRANCH 的上游跟踪 -> origin/$BRANCH"
+    git config "branch.$BRANCH.remote" origin
+    git config "branch.$BRANCH.merge" "refs/heads/$BRANCH"
+  fi
+
+  echo "拉取 origin/$BRANCH"
+  git fetch origin "$BRANCH"
+  # 用 reset --hard 而非 pull：部署目标是让工作区严格等于远端，
+  # 同时能覆盖同步过程可能残留的改动（如历史 tar 同步留下的差异）。
+  # -f 会在必要时丢弃本地改动——对部署副本这是期望行为。
+  git checkout -f -q "$BRANCH" 2>/dev/null || true
+  git reset --hard FETCH_HEAD
+
+  # 清理容器以 root 身份写出的 .pyc。容器内 Python 启动 launch 文件时会在挂载的
+  # 仓库里生成 root 所有的 __pycache__，既会污染 git status 的整洁性，
+  # 也会让基于 tar 的同步因 "Cannot utime: Operation not permitted" 失败。
+  sudo find "$REPO_DIR" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+  echo "已同步到: $(git log --oneline -1)"
 else
   echo "克隆 $REPO_URL"
   sudo mkdir -p "$(dirname "$REPO_DIR")"
   sudo chown "$(id -u):$(id -g)" "$(dirname "$REPO_DIR")"
-  git clone "$REPO_URL" "$REPO_DIR"
+  git clone -b "$BRANCH" "$REPO_URL" "$REPO_DIR"
+  cd "$REPO_DIR"
 fi
 
 cd "$REPO_DIR"
