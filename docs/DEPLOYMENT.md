@@ -128,11 +128,17 @@ AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
 该脚本会依次完成:
 
 1. 前置检查(SSH 免密、远端 docker、基础镜像)
-2. `docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .`
+2. `docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .`(加 `--no-build` 则跳过)
 3. `docker save | gzip | ssh "gunzip | docker load"` —— **压缩管道直传,服务器不留中转 tar**(省约 2.5GB)
-4. `tar` 同步代码到 `/opt/amr_dispatcher`(排除 `build/` `install/` `log/` 与 3MB 简历 PDF)
-5. 配置远端 git 身份与 `safe.directory`
-6. 调用 `scripts/server_setup.sh`:建 swap → 保证镜像存在 → `compose up -d`
+4. 校验本地 HEAD 已推送到 `origin/main`(未推送则拒绝部署,可用 `--allow-unpushed` 跳过)
+5. 调用 `scripts/server_setup.sh`:建 swap → 服务器自行 `git fetch + reset --hard origin/main` 同步代码 → 保证镜像存在 → `compose up -d`
+
+> **为什么代码由服务器自己从 git 拉取,而不是从开发机推文件过去。**
+> 早先的实现用 `tar | ssh | tar x` 同步整个仓库(含 `.git/`),后果是服务器原有的
+> `.git/config` 被开发机版本覆盖,一次造成两处回归:上游跟踪丢失(服务器 `git pull`
+> 报 `There is no tracking information for the current branch`)、提交身份被改成开发机的
+> `tanqf`。根因是不该用文件同步去搬运 `.git/`。现在服务器保留自己的 `.git/config`
+> (含上游跟踪与凭据),代码的唯一来源是远端仓库。
 
 ### 步骤 3：等待首次构建完成
 
@@ -638,6 +644,9 @@ ssh ubuntu@<server-ip> 'sudo swapoff /swapfile.amr && sudo rm /swapfile.amr && s
 | `shm_size: 512m` | `docker/docker-compose.server.yml` | Fast DDS 走共享内存,默认 64MB 偏小 |
 | 补 `include/amr_dispatcher_tools/.gitkeep` | `src/amr_dispatcher_tools/include/amr_dispatcher_tools/` | **全新 clone 无法构建**:该目录下没有任何被跟踪文件,而 git 不跟踪空目录,于是全新 clone 后目录不存在,`amr_dispatcher_tools/CMakeLists.txt` 的 `install(DIRECTORY include/ ...)` 直接失败(`ament_cmake_symlink_install_directory() can't find ...`),并连带中止 `amr_dispatcher_ros`。最终 `install/` 缺两个包,`ros2 launch` 报 `package 'amr_dispatcher_ros' not found`。**该问题只在全新 clone 时暴露** —— 开发机上这个目录一直存在(历史遗留的本地目录),所以本地 cmake/colcon 构建与全部 453 个测试全程通过。服务器实测时容器因此反复重启 13 次,每次都在同一处失败 |
 | 显式 `name: amr-dispatcher` | `docker/docker-compose.server.yml` | compose 默认以所在目录名作项目名,本文件在 `docker/` 下故项目名为 `docker`。实测该服务器上 `tc_fcgi_app` / `tc_fcgi_nginx_fastdfs` / `tc_fcgi_mysql` 三个长期运行的容器**同属 `docker` 项目**,启动本栈时已出现 orphan containers 警告。一旦对同名项目执行 `--remove-orphans`,那三个无关容器会被一并删除 |
+| 代码改由服务器从 git 同步 | `scripts/deploy_to_server.sh`、`scripts/server_setup.sh` | 原先用 `tar \| ssh \| tar x` 推代码(含 `.git/`),会把服务器的 `.git/config` 覆盖成开发机版本,一次造成两处回归:上游跟踪丢失、提交身份被改成 `tanqf`。现改为服务器 `git fetch + reset --hard origin/main`,`.git/config` 逐字节不变(已用 md5 前后比对确认) |
+| 排除 `__pycache__` / `*.pyc` | `.dockerignore`、`scripts/server_setup.sh` | 容器以 root 运行,Python 启动 launch 文件时会在挂载的仓库里写出 root 所有的 `.pyc`。这些文件既污染 `git status`,也让基于 tar 的同步因 `Cannot utime: Operation not permitted` 失败并在 `set -e` 下中止部署(实测踩到过) |
+| 部署前校验本地已推送 | `scripts/deploy_to_server.sh` | 服务器只从 `origin/main` 取代码,未推送的提交不会被部署。脚本会检查 `HEAD` 是否为 `origin/main` 的祖先,否则拒绝执行(可用 `--allow-unpushed` 跳过),避免"改了代码却没生效"的困惑 |
 
 ### 建议但本次未做的修复
 
