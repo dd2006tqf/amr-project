@@ -1,0 +1,45 @@
+# Docker 构建上下文排除规则
+#
+# 背景：docker build 的 context 是仓库根目录，而根目录下有 415MB 的
+# build/ + install/ + log/ 构建产物（均已被 .gitignore 忽略）。
+# 没有本文件时，这些产物会被打进 build context 传输给 daemon。
+#
+# 注意：本文件【不能】排除 Dockerfile 实际 COPY 的路径
+# 即 docker/entrypoint.server.sh
+
+# ---- 构建产物：体积最大 ----
+build/
+install/
+log/
+
+# ---- git 元数据 ----
+.git/
+.github/
+
+# ---- 大体积非源码文件（3MB 简历 PDF）----
+*.pdf
+
+# ---- 文档：运行镜像不需要 ----
+docs/
+README.md
+USAGE.md
+ROADMAP_EVOLUTION.md
+*.md
+
+# ---- 空的占位目录 ----
+third_party/
+
+# ---- Docker 相关（只保留 entrypoint）----
+docker/Dockerfile
+docker/Dockerfile.jazzy
+docker/docker-compose.yml
+docker/docker-compose.server.yml
+
+# ---- Python 与编辑器临时文件 ----
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

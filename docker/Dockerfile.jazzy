@@ -1,0 +1,73 @@
+# 自包含的 AMR Dispatcher 运行镜像（ROS 2 Jazzy）
+#
+# 设计要点
+# --------
+# 1. 替代旧的 docker/Dockerfile —— 后者 `FROM robot-amr:latest` 依赖一个只存在于
+#    开发机、未随仓库分发的基础镜像，导致在任何新机器上构建直接失败。
+#
+# 2. 基础镜像用官方 `ros:jazzy-ros-base`（Ubuntu 24.04 noble / amd64），
+#    已实测可从本机拉取。
+#
+# 3. 只补装项目真正需要的依赖。全仓库 find_package 扫描 + 实测确认：
+#    base 镜像已含 15/17 项，仅 behaviortree_cpp 与 hardware_interface 缺失。
+#    清单保留全部项作为幂等兜底。
+#
+#    注意：base 镜像的 apt 源本来就是明文 http
+#    (http://packages.ros.org + http://archive.ubuntu.com)，实测可达，
+#    因此无需替换为国内镜像源。
+#
+# 4. 项目源码【不烘焙进镜像】：运行时由 /workspace 绑定挂载提供。
+#    这样避免 rest_gateway.cpp / dispatcher_visualizer_node.cpp 依赖的
+#    相对路径加载因工作目录不确定而失效，也让镜像与代码解耦。
+#
+# 构建（在仓库根目录）：
+#   docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-jazzy-behaviortree-cpp \
+      ros-jazzy-hardware-interface \
+      ros-jazzy-rclcpp-lifecycle \
+      ros-jazzy-rclcpp-action \
+      ros-jazzy-nav-msgs \
+      ros-jazzy-visualization-msgs \
+      ros-jazzy-tf2-ros \
+      ros-jazzy-tf2-geometry-msgs \
+      ros-jazzy-pluginlib \
+      ros-jazzy-ament-index-cpp \
+      ros-jazzy-ament-cmake-gtest \
+      ros-jazzy-rosidl-default-generators \
+      ros-jazzy-rosidl-default-runtime \
+      libyaml-cpp-dev \
+      libgtest-dev \
+      python3-colcon-common-extensions \
+      build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY docker/entrypoint.server.sh /workspace-docker/entrypoint.server.sh
+RUN chmod +x /workspace-docker/entrypoint.server.sh
+
+# /workspace 是项目根，运行时由绑定挂载填充
+WORKDIR /workspace
+
+# 入口脚本优先使用挂载进容器的那一份（/workspace/docker/entrypoint.server.sh），
+# 这样修改脚本只需 git pull + docker restart，不必重建镜像；镜像内烘焙的
+# 副本（/workspace-docker）作为未挂载仓库时的兜底。
+#
+# 注意：不要用 `COPY ... /usr/local/bin/` 后直接 ENTRYPOINT 那个路径 —— 那样
+# 脚本一经修改就必须重建镜像，否则容器会静默使用过期版本（这个坑踩过一次）。
+CMD ["/bin/bash", "-c", "\
+  if [ -x /workspace/docker/entrypoint.server.sh ]; then \
+    exec /workspace/docker/entrypoint.server.sh; \
+  else \
+    echo '[amr] WARN 未找到 /workspace/docker/entrypoint.server.sh，使用镜像内兜底副本' >&2; \
+    exec /workspace-docker/entrypoint.server.sh; \
+  fi"]
+
+# 交互式检查用，例如：
+#   docker run --rm -it -v "$PWD":/workspace amr-dispatcher:jazzy bash
+ENTRYPOINT []

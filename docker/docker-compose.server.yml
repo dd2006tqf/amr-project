@@ -1,0 +1,61 @@
+# 云服务器部署配置（AMR Dispatcher 完整系统）
+#
+# 与 docker/docker-compose.yml（开发机用）的关键差异
+# -------------------------------------------------
+# 1. 用 bridge 网络 + "127.0.0.1:8080:8080"，替代 network_mode: host。
+#    原因：rest_gateway.cpp:106 硬编码绑定 INADDR_ANY(0.0.0.0) 且没有 bind 地址
+#    参数，且该应用无任何认证机制。host 网络下无法用 ports 限制绑定地址，端口会
+#    直接暴露到公网；bridge + 回环绑定后，即使云安全组配错，8080 也只在服务器
+#    本机可达，配合 SSH 隧道使用。
+#    所有节点都跑在这一个容器内，DDS 通信不跨容器，bridge 网络完全够用。
+#
+# 2. 去掉 privileged: true 与 - /dev:/dev。容器内自带 PTY 模拟器提供底盘数据，
+#    不需要访问宿主设备树，也不需要有特权。
+#
+# 3. working_dir 固定为 /workspace。rest_gateway 与 dispatcher_visualizer_node 用
+#    相对路径加载 tools/operator_console.html 和 config/stations.yaml，工作目录
+#    不对会导致 Web 控制台 404、可视化回退到硬编码站点。
+#
+# 4. 不含 build: 段。服务器可用内存仅 1.4GiB，在此编译 ROS 2 C++ 有 OOM 风险。
+#    镜像应在开发机构建后传输加载（见 docs/DEPLOYMENT.md）。
+#
+# 用法（在 docker/ 目录下）：
+#   docker compose -f docker-compose.server.yml up -d
+#   docker compose -f docker-compose.server.yml logs -f
+#   docker compose -f docker-compose.server.yml down
+
+services:
+  amr_dispatcher:
+    image: amr-dispatcher:jazzy
+    container_name: amr_dispatcher
+    restart: unless-stopped
+
+    working_dir: /workspace
+    volumes:
+      # 仓库根目录（compose 文件的上一级）挂载为 /workspace。
+      # 首次启动会在此生成 build/ install/ log/。
+      - ../:/workspace
+
+    ports:
+      # 仅绑定回环。必须配合 SSH 隧道访问，公网不可达。
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      - ROS_DOMAIN_ID=42
+      # 无物理串口时自动启动 PTY 底盘模拟器（入口脚本负责解析 /dev/pts/N）
+      - AMR_USE_MOCK_CHASSIS=1
+      # 心跳周期 200ms，显著小于 safety_gate_node 的 heartbeat_timeout_ms=500ms，
+      # 避免"心跳间隔 == 超时阈值"导致的看门狗误触发
+      - AMR_HEALTH_RATE_HZ=5.0
+      # 服务器 4 核，首次构建限 2 并发以控制内存峰值
+      - AMR_COLCON_WORKERS=2
+
+    # Fast DDS 走共享内存，默认 64MB 偏小
+    shm_size: 512m
+
+    # 限制容器日志增长，避免占满 17GB 可用磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -4,10 +4,31 @@ from launch import LaunchDescription
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
-from launch.actions import RegisterEventHandler, EmitEvent
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler, EmitEvent
+from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 import lifecycle_msgs.msg
 
 def generate_launch_description():
+    # 可覆盖参数，默认值与改动前保持一致，不影响本机开发
+    serial_device = LaunchConfiguration('serial_device')
+    health_rate_hz = LaunchConfiguration('health_rate_hz')
+
+    declared_arguments = [
+        DeclareLaunchArgument(
+            'serial_device',
+            default_value='/dev/ttyUSB0',
+            description='底盘串口设备路径（服务器部署时由入口脚本传入 PTY 路径）',
+        ),
+        DeclareLaunchArgument(
+            'health_rate_hz',
+            default_value='2.0',
+            description='底盘链路健康/心跳发布频率。安全门的 heartbeat_timeout_ms '
+                        '默认 500ms，部署时应传入 ≥5.0 以避免"心跳间隔 == 超时阈值"'
+                        '导致的看门狗误触发。',
+        ),
+    ]
+
     dispatcher_node = LifecycleNode(
         package='amr_dispatcher_ros',
         executable='dispatcher_node',
@@ -67,13 +88,14 @@ def generate_launch_description():
         name='chassis_driver_node',
         output='screen',
         parameters=[{
-            'serial_device': '/dev/ttyUSB0',
+            'serial_device': serial_device,
             'serial_baud': 115200,
             'odom_frame_id': 'odom',
             'base_frame_id': 'base_link',
             'publish_tf': True,
             'poll_rate_hz': 50.0,
-            'health_rate_hz': 2.0,
+            # LaunchConfiguration 产出字符串，需显式声明为 double 以免参数类型不匹配
+            'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
         }]
     )
 
@@ -121,7 +143,7 @@ def generate_launch_description():
         }]
     )
 
-    return LaunchDescription([
+    return LaunchDescription(declared_arguments + [
         dispatcher_node,
         configure_event,
         activate_event,
