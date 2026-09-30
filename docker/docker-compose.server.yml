@@ -1,6 +1,9 @@
 # 云服务器部署配置（AMR Dispatcher 完整系统）
 #
-# 与 docker/docker-compose.yml（开发机用）的关键差异
+# 这是本仓库唯一的 compose 配置。旧的 docker/docker-compose.yml 与
+# docker/Dockerfile 已删除（它们依赖未随仓库分发的 robot-amr:latest 基础镜像）。
+#
+# 关键设计
 # -------------------------------------------------
 # 1. 用 bridge 网络 + "127.0.0.1:8080:8080"，替代 network_mode: host。
 #    原因：rest_gateway.cpp:106 硬编码绑定 INADDR_ANY(0.0.0.0) 且没有 bind 地址

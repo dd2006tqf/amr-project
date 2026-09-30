@@ -16,7 +16,7 @@
 ```
 amr_dispatcher/
 ├── config/                  # 业务与硬件配置文件 (chassis/safety/dispatcher/stations)
-├── docker/                  # Dockerfile 与 docker-compose.yml
+├── docker/                  # Dockerfile.jazzy 与 docker-compose.server.yml
 ├── docs/                    # 架构规范、技术决策(ADR)、API字典、路线图
 ├── launch/                  # 系统启动脚本 (full_system, core_only, bringup, ros2_control)
 ├── scripts/                 # 自动化脚本 (build, run_demo, benchmark, record_topics, validate_config)
@@ -77,10 +77,13 @@ python3 scripts/validate_config.py config/*.yaml config/scenarios/*.yaml
 
 ### 3.1 一键构建并启动全系统
 ```bash
-cd ~/amr_dispatcher/docker
-docker compose up --build
+# 若镜像尚未构建
+docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+
+# 启动（在仓库根目录执行）
+docker compose -f docker/docker-compose.server.yml up -d
 ```
-启动后，容器内自动编译全部 4 个 ROS 2 子包，并执行 `full_system.launch.py`，拉起以下 6 个核心服务：
+容器启动后会自动编译全部 4 个 ROS 2 子包（首跳约 4–5 分钟），然后执行 `full_system.launch.py`，拉起以下 7 个核心节点：
 1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检，并提供 `/dispatcher/execute_mission` Action 动作服务。
 2. **`safety_gate_node`**：多源安全仲裁（急停、人工接管、碰撞杠、软看门狗超时），输出限速或停止指令。
 3. **`chassis_driver_node`**：驱动底盘硬件通信、丢包监控、多级自动降级、发布 `/odom` 与 TF。
@@ -110,7 +113,7 @@ http://127.0.0.1:8080/
 ### 4.1 交互终端客户端 (`dispatcher_cli`)
 进入正在运行的容器（或新起终端）：
 ```bash
-docker exec -it docker-amr_dispatcher-1 bash
+docker exec -it amr_dispatcher bash
 source /opt/ros/jazzy/setup.bash
 source /workspace/install/setup.bash
 
@@ -295,7 +298,7 @@ ros2 service call /v2/validate_site_config amr_dispatcher_interfaces/srv/Validat
 ## 六、常见问题排查 (Troubleshooting)
 
 ### Q1: 在宿主机运行 `./scripts/build.sh` 提示没有 ROS 2 Jazzy？
-- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库（确保 130 个用例全过）。完整的 ROS 2 节点请通过 `docker compose up --build` 运行。
+- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库。完整的 ROS 2 节点请通过 `docker compose -f docker/docker-compose.server.yml up -d` 运行（详见 `docs/DEPLOYMENT.md`）。
 
 ### Q2: 真实小车连接后底盘驱动降级为 MockBackend？
 - 检查 `config/chassis.yaml` 中的 `serial_device` 设备权限（通常需要 `sudo chmod 666 /dev/ttyUSB0` 或加入 `dialout` 用户组）。

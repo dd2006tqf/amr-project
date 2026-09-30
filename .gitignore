@@ -8,3 +8,7 @@ __pycache__/
 .DS_Store
 install/
 log/
+
+# 个人简历等非项目文件，不应进入公开仓库
+*.pdf
+

@@ -29,10 +29,8 @@ ROADMAP_EVOLUTION.md
 # ---- 空的占位目录 ----
 third_party/
 
-# ---- Docker 相关（只保留 entrypoint）----
-docker/Dockerfile
+# ---- Docker 相关（镜像不 COPY 这些，排除以缩小构建上下文）----
 docker/Dockerfile.jazzy
-docker/docker-compose.yml
 docker/docker-compose.server.yml
 
 # ---- Python 与编辑器临时文件 ----

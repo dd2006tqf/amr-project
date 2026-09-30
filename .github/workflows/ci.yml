@@ -7,6 +7,9 @@ on:
     branches: [ main ]
 
 jobs:
+  # 零 ROS 核心：纯 CMake + GoogleTest，秒级完成。
+  # 保留在宿主机直接构建的方式，因为这是 amr_dispatcher_core 被设计成的使用形态
+  # （零 ROS 依赖，可脱离 ROS 环境独立编译测试）。
   build-and-test-core:
     runs-on: ubuntu-22.04
     steps:
@@ -25,3 +28,113 @@ jobs:
       - name: Run Core Tests
         run: |
           ctest --test-dir build/core --output-on-failure
+
+  # 完整 ROS 2 工作区：用官方 jazzy 镜像做 colcon 构建。
+  #
+  # 为什么必须有这个 job
+  # -------------------
+  # 上面那个零 ROS 的 job 覆盖不到 colcon 层面的问题。实际踩到过的例子：
+  # src/amr_dispatcher_tools/include/ 下没有任何被跟踪文件，而 git 不跟踪空目录，
+  # 于是从仓库全新 clone 后该目录不存在，amr_dispatcher_tools 的
+  # install(DIRECTORY include/ ...) 直接失败并连带中止 amr_dispatcher_ros。
+  # 该问题只在全新 clone 时暴露（开发机上那个目录一直存在），本地 cmake/colcon
+  # 构建与全部 453 个测试都能通过，一路溜到部署到服务器才炸。
+  # CI 每次都是全新 clone，因此这个 job 是发现此类问题的唯一关口。
+  build-ros2-jazzy:
+    runs-on: ubuntu-24.04
+    container:
+      image: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v3
+
+      # 基础镜像已含大部分依赖，这里只补 behaviortree_cpp 与 hardware_interface
+      # （与 docker/Dockerfile.jazzy 的清单保持一致）。
+      - name: Install Build Dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ros-jazzy-behaviortree-cpp \
+            ros-jazzy-hardware-interface \
+            build-essential \
+            libyaml-cpp-dev \
+            libgtest-dev
+          rm -rf /var/lib/apt/lists/*
+
+      # 两阶段构建：amr_dispatcher_bt / _ros / _tools 依赖 interfaces 生成的消息头，
+      # 必须先单独构建 core + interfaces。
+      # shell 必须是 bash —— 容器默认是 sh，`source` 不可用。
+      - name: Build All Packages (colcon)
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+          source install/setup.bash
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      # 这一步专门守住「装了但没装全」的情况：amr_dispatcher_tools 安装失败时
+      # colcon 仍可能以退出码 0 收尾，必须显式断言 5 个包都在。
+      - name: Verify All 5 Packages Installed
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+
+          installed=$(ls -d install/amr_dispatcher_* | wc -l)
+          echo "install/ 下的包数: $installed"
+          ls -d install/amr_dispatcher_*
+          if [ "$installed" -ne 5 ]; then
+            echo "::error::期望 install 5 个包，实际 $installed 个"
+            exit 1
+          fi
+
+          for p in amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_bt \
+                   amr_dispatcher_ros amr_dispatcher_tools; do
+            if ! ros2 pkg prefix "$p" >/dev/null 2>&1; then
+              echo "::error::ros2 找不到包 $p"
+              exit 1
+            fi
+            echo "OK  $p"
+          done
+
+      # 确认 9 个可执行文件都产出了（launch 文件依赖它们）
+      - name: Verify Expected Executables Exist
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          missing=0
+          for exe in chassis_driver_node dispatcher_node safety_gate_node \
+                     path_tracker_node link_health_publisher \
+                     dispatcher_visualizer_node lifecycle_coordinator_node; do
+            if [ ! -x "install/amr_dispatcher_ros/lib/amr_dispatcher_ros/$exe" ]; then
+              echo "::error::缺失可执行文件 $exe"
+              missing=1
+            fi
+          done
+          for exe in dispatcher_cli rest_gateway; do
+            if [ ! -x "install/amr_dispatcher_tools/lib/amr_dispatcher_tools/$exe" ]; then
+              echo "::error::缺失可执行文件 $exe"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "9 个可执行文件全部就位"
+          exit "$missing"
+
+      # 行为树与核心库的单测（与 scripts/build.sh 的 core 测试互补）
+      - name: Run Core and BT Unit Tests
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ctest --test-dir build/amr_dispatcher_core --output-on-failure
+          if [ -d build/amr_dispatcher_bt ]; then
+            ctest --test-dir build/amr_dispatcher_bt --output-on-failure
+          fi
