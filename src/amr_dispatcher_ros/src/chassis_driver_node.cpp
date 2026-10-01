@@ -91,11 +91,30 @@ void ChassisDriverNode::ReadPollLoop() {
   std::string err;
   auto data = backend_ctrl_->current()->Read(&err);
   if (!data || data->empty()) {
+    // 读路径失败计入丢帧：链路不活跃，链路质量滑窗需要感知
+    if (!err.empty()) {
+      backend_ctrl_->RecordLoss();
+    }
     return;
   }
   text_stream_.Append(*data);
   const auto packets = text_stream_.DrainPackets();
   const auto now = this->now();
+
+  // 解析失败行计入丢帧
+  const auto invalid_lines = text_stream_.InvalidLineCount();
+  for (std::size_t i = 0; i < invalid_lines; ++i) {
+    backend_ctrl_->RecordLoss();
+  }
+  if (invalid_lines > 0) {
+    text_stream_.ClearInvalidLineCount();
+  }
+
+  // 成功解析出有效包即证明链路活跃：读路径持续喂入成功率样本，
+  // 否则无 cmd_vel 时 frames_total 恒为 0，链路质量永远停在 UNKNOWN。
+  for (std::size_t i = 0; i < packets.size(); ++i) {
+    backend_ctrl_->RecordSuccess(0.0);
+  }
 
   for (const auto& pkt : packets) {
     if (pkt.kind != amr_dispatcher_core::chassis::ChassisPacketKind::kOdometry) {

@@ -13,6 +13,8 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("schedule_rate_hz", 10.0);
   declare_parameter("deadlock_check_rate_hz", 1.0);
   declare_parameter("max_active_missions", 4);
+  declare_parameter("stations_file", "config/stations.yaml");
+  declare_parameter("path_step_size_m", 0.1);
 }
 
 DispatcherNode::~DispatcherNode() = default;
@@ -31,10 +33,31 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
           10s, 30s});
   recovery_policy_ = std::make_unique<amr_dispatcher_core::dispatcher::RecoveryPolicy>();
 
+  // 站点目录与基准线性规划器：任务激活时把 pickup→dropoff 展开成 /plan 下发
+  const std::string stations_file = get_parameter("stations_file").as_string();
+  if (auto catalog = amr_dispatcher_core::catalog::LoadStationCatalog(stations_file)) {
+    station_catalog_ = *catalog;
+    station_catalog_loaded_ = true;
+    RCLCPP_INFO(get_logger(), "Loaded %zu stations from %s",
+                station_catalog_.stations.size(), stations_file.c_str());
+  } else {
+    RCLCPP_WARN(get_logger(), "Failed to load stations file %s; planning disabled", stations_file.c_str());
+  }
+  planner_ = std::make_unique<amr_dispatcher_core::MockLinearPlanner>(
+      get_parameter("path_step_size_m").as_double());
+
   state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::DispatcherState>(
       "/dispatcher/state", 10);
   event_pub_ = create_publisher<amr_dispatcher_interfaces::msg::MissionEvent>(
       "/dispatcher/events", 20);
+  plan_pub_ = create_publisher<nav_msgs::msg::Path>("/plan", 1);
+
+  // 位姿与到达信号订阅：path_tracker 的 TrackingError.arrived 驱动任务完成
+  odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      "/odom", 10, std::bind(&DispatcherNode::OdomCb, this, std::placeholders::_1));
+  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+      "/tracking/error", 10,
+      std::bind(&DispatcherNode::TrackingErrorCb, this, std::placeholders::_1));
 
   submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
       "/dispatcher/submit_order",
@@ -100,6 +123,7 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*state*/) {
   state_pub_->on_activate();
   event_pub_->on_activate();
+  plan_pub_->on_activate();
 
   const double sched_hz = get_parameter("schedule_rate_hz").as_double();
   schedule_timer_ = create_wall_timer(
@@ -123,6 +147,7 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   state_timer_.reset();
   state_pub_->on_deactivate();
   event_pub_->on_deactivate();
+  plan_pub_->on_deactivate();
   RCLCPP_INFO(get_logger(), "DispatcherNode deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -148,11 +173,17 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   validate_site_srv_.reset();
   state_pub_.reset();
   event_pub_.reset();
+  plan_pub_.reset();
+  tracking_error_sub_.reset();
+  odom_sub_.reset();
   queue_.reset();
   reservation_table_.reset();
   event_log_.reset();
   deadlock_detector_.reset();
   recovery_policy_.reset();
+  planner_.reset();
+  station_catalog_loaded_ = false;
+  tracking_mission_id_.clear();
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
 }
@@ -223,6 +254,19 @@ void DispatcherNode::CancelOrderCb(
     } else {
       auto it = active_missions_.find(req->mission_id);
       if (it != active_missions_.end()) {
+        // 释放资源锁；若该任务正在占用 /plan，发空路径停车
+        if (reservation_table_) {
+          reservation_table_->Release(req->mission_id);
+        }
+        if (tracking_mission_id_ == req->mission_id) {
+          tracking_mission_id_.clear();
+          if (plan_pub_ && plan_pub_->is_activated()) {
+            nav_msgs::msg::Path empty;
+            empty.header.stamp = now();
+            empty.header.frame_id = "map";
+            plan_pub_->publish(empty);
+          }
+        }
         active_missions_.erase(it);
         resp->success = true;
         resp->canceled_count = 1;
@@ -334,11 +378,25 @@ void DispatcherNode::CancelQueuedMissionCb(
     canceled = (queue_->CancelOrder(req->mission_id) > 0);
   }
   if (req->cancel_active) {
-    std::lock_guard<std::mutex> lock(active_missions_mutex_);
-    if (active_missions_.erase(req->mission_id) > 0) {
+    bool erased = false;
+    {
+      std::lock_guard<std::mutex> lock(active_missions_mutex_);
+      erased = (active_missions_.erase(req->mission_id) > 0);
+    }
+    if (erased) {
       canceled = true;
       if (reservation_table_) {
         reservation_table_->Release(req->mission_id);
+      }
+      // 若被取消的是正在跟踪 /plan 的任务，发空路径停车
+      if (tracking_mission_id_ == req->mission_id) {
+        tracking_mission_id_.clear();
+        if (plan_pub_ && plan_pub_->is_activated()) {
+          nav_msgs::msg::Path empty;
+          empty.header.stamp = now();
+          empty.header.frame_id = "map";
+          plan_pub_->publish(empty);
+        }
       }
     }
   }
@@ -524,6 +582,11 @@ void DispatcherNode::ScheduleTick() {
     return;
   }
 
+  // 单车执行模型：同时只有一条 /plan 在跟踪，其余任务保持 active 等待车辆空闲
+  if (!tracking_mission_id_.empty()) {
+    return;
+  }
+
   auto pop = queue_->PopNext();
   if (!pop.success || !pop.mission) {
     return;
@@ -531,11 +594,71 @@ void DispatcherNode::ScheduleTick() {
 
   amr_dispatcher_core::dispatcher::Mission m = *pop.mission;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kActive;
+
+  // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负
+  const amr_dispatcher_core::catalog::Station* from_st = nullptr;
+  const amr_dispatcher_core::catalog::Station* to_st = nullptr;
+  if (station_catalog_loaded_) {
+    if (!m.pickup_station.empty()) {
+      from_st = amr_dispatcher_core::catalog::FindStation(station_catalog_, m.pickup_station);
+    }
+    if (!m.dropoff_station.empty()) {
+      to_st = amr_dispatcher_core::catalog::FindStation(station_catalog_, m.dropoff_station);
+    }
+  }
+  if (m.dropoff_station.empty() || !to_st) {
+    RCLCPP_WARN(get_logger(), "Mission %s has no resolvable dropoff station (%s, catalog_loaded=%d), failing",
+                m.id.c_str(), m.dropoff_station.c_str(), station_catalog_loaded_);
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent msg;
+      msg.stamp = now();
+      msg.mission_id = m.id;
+      msg.order_id = m.order_id;
+      msg.event = "plan_failed";
+      msg.to_state = "FAILED";
+      msg.reason = "unknown dropoff station: " + m.dropoff_station;
+      event_pub_->publish(msg);
+    }
+    return;
+  }
+
   active_missions_[m.id] = m;
   mission_last_progress_[m.id] = std::chrono::steady_clock::now();
 
-  RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d)",
-              m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority);
+  // 生成并发布路径：path_tracker 订阅 /plan 后开始输出 /cmd_vel_raw
+  amr_dispatcher_core::Pose2D start;
+  if (from_st) {
+    start = {from_st->x, from_st->y, from_st->yaw};
+  } else if (has_odom_) {
+    start = {current_pose_.x, current_pose_.y, current_pose_.yaw};
+  }
+  const amr_dispatcher_core::Pose2D goal{to_st->x, to_st->y, to_st->yaw};
+
+  const auto waypoints = planner_ ? planner_->Plan(start, goal) : std::vector<amr_dispatcher_core::Pose2D>{};
+  if (waypoints.empty() || !plan_pub_ || !plan_pub_->is_activated()) {
+    FailMission(m.id, "planner returned empty path");
+    return;
+  }
+
+  nav_msgs::msg::Path path_msg;
+  path_msg.header.stamp = now();
+  path_msg.header.frame_id = "map";
+  path_msg.poses.reserve(waypoints.size());
+  for (const auto& wp : waypoints) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.header = path_msg.header;
+    ps.pose.position.x = wp.x;
+    ps.pose.position.y = wp.y;
+    ps.pose.orientation.z = std::sin(wp.theta / 2.0);
+    ps.pose.orientation.w = std::cos(wp.theta / 2.0);
+    path_msg.poses.push_back(ps);
+  }
+  plan_pub_->publish(path_msg);
+  tracking_mission_id_ = m.id;
+
+  RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints)",
+              m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority,
+              m.pickup_station.c_str(), m.dropoff_station.c_str(), waypoints.size());
 
   if (event_pub_ && event_pub_->is_activated()) {
     amr_dispatcher_interfaces::msg::MissionEvent msg;
@@ -546,6 +669,99 @@ void DispatcherNode::ScheduleTick() {
     msg.from_state = "PENDING";
     msg.to_state = "ACTIVE";
     msg.reason = "dispatched by scheduler";
+    event_pub_->publish(msg);
+  }
+}
+
+void DispatcherNode::OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg) {
+  current_pose_.x = msg->pose.pose.position.x;
+  current_pose_.y = msg->pose.pose.position.y;
+  current_pose_.yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
+      msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+  has_odom_ = true;
+}
+
+void DispatcherNode::TrackingErrorCb(
+    const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+  if (!msg->arrived || tracking_mission_id_.empty()) {
+    return;
+  }
+  const std::string finished_id = tracking_mission_id_;
+  tracking_mission_id_.clear();
+  mission_last_progress_[finished_id] = std::chrono::steady_clock::now();
+  CompleteMission(finished_id, "arrived at goal");
+}
+
+void DispatcherNode::CompleteMission(const std::string& mission_id, const std::string& reason) {
+  std::string order_id;
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    auto it = active_missions_.find(mission_id);
+    if (it == active_missions_.end()) {
+      return;
+    }
+    order_id = it->second.order_id;
+    active_missions_.erase(it);
+  }
+  if (reservation_table_) {
+    reservation_table_->Release(mission_id);
+  }
+  RCLCPP_INFO(get_logger(), "Mission completed: %s (%s)", mission_id.c_str(), reason.c_str());
+  if (event_pub_ && event_pub_->is_activated()) {
+    amr_dispatcher_interfaces::msg::MissionEvent msg;
+    msg.stamp = now();
+    msg.mission_id = mission_id;
+    msg.order_id = order_id;
+    msg.event = "completed";
+    msg.from_state = "ACTIVE";
+    msg.to_state = "FINISHED";
+    msg.reason = reason;
+    event_pub_->publish(msg);
+  }
+  if (event_log_) {
+    amr_dispatcher_core::dispatcher::MissionEvent evt;
+    evt.stamp = "now";
+    evt.mission_id = mission_id;
+    evt.event = "completed";
+    evt.message = reason;
+    event_log_->Append(evt);
+  }
+}
+
+void DispatcherNode::FailMission(const std::string& mission_id, const std::string& reason) {
+  std::string order_id;
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    auto it = active_missions_.find(mission_id);
+    if (it == active_missions_.end()) {
+      return;
+    }
+    order_id = it->second.order_id;
+    active_missions_.erase(it);
+  }
+  if (reservation_table_) {
+    reservation_table_->Release(mission_id);
+  }
+  if (tracking_mission_id_ == mission_id) {
+    tracking_mission_id_.clear();
+    // 发布空路径让 path_tracker 停下
+    if (plan_pub_ && plan_pub_->is_activated()) {
+      nav_msgs::msg::Path empty;
+      empty.header.stamp = now();
+      empty.header.frame_id = "map";
+      plan_pub_->publish(empty);
+    }
+  }
+  RCLCPP_WARN(get_logger(), "Mission failed: %s (%s)", mission_id.c_str(), reason.c_str());
+  if (event_pub_ && event_pub_->is_activated()) {
+    amr_dispatcher_interfaces::msg::MissionEvent msg;
+    msg.stamp = now();
+    msg.mission_id = mission_id;
+    msg.order_id = order_id;
+    msg.event = "failed";
+    msg.from_state = "ACTIVE";
+    msg.to_state = "FAILED";
+    msg.reason = reason;
     event_pub_->publish(msg);
   }
 }
@@ -579,6 +795,20 @@ void DispatcherNode::DeadlockTick() {
         queue_->PauseOrder(act.mission_id);
       } else if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kCancel) {
         active_missions_.erase(act.mission_id);
+        if (reservation_table_) {
+          reservation_table_->Release(act.mission_id);
+        }
+        // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
+        // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
+        if (tracking_mission_id_ == act.mission_id) {
+          tracking_mission_id_.clear();
+          if (plan_pub_ && plan_pub_->is_activated()) {
+            nav_msgs::msg::Path empty;
+            empty.header.stamp = now();
+            empty.header.frame_id = "map";
+            plan_pub_->publish(empty);
+          }
+        }
       } else if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kRetry) {
         mission_attempts_[act.mission_id]++;
         mission_last_progress_[act.mission_id] = std::chrono::steady_clock::now();

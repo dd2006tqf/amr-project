@@ -75,12 +75,26 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
       return;
     }
 
-    // 1. 获取 dispatcher_node 当前生命周期状态
-    auto req = std::make_shared<lifecycle_msgs::srv::GetState::Request>();
-    auto fut = dispatcher_get_state_cli_->async_send_request(req);
-    if (fut.wait_for(100ms) == std::future_status::ready) {
-      current_dispatcher_state_ = fut.get()->current_state.label;
+    // 1. 获取 dispatcher_node 当前生命周期状态。
+    //    单线程 executor 下 spin 期间不能嵌套 wait_for future（会永久阻塞），
+    //    必须异步发送 + 轮询 shared_future 的就绪位。
+    if (!pending_get_state_.valid()) {
+      auto req = std::make_shared<lifecycle_msgs::srv::GetState::Request>();
+      pending_get_state_ = dispatcher_get_state_cli_->async_send_request(req).share();
+      return;
     }
+
+    if (pending_get_state_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      // 尚未返回，下一拍再看；超时则放弃本次请求避免悬挂
+      if (++get_state_wait_ticks_ > 10) {
+        pending_get_state_ = {};
+        get_state_wait_ticks_ = 0;
+      }
+      return;
+    }
+    current_dispatcher_state_ = pending_get_state_.get()->current_state.label;
+    pending_get_state_ = {};
+    get_state_wait_ticks_ = 0;
 
     // 2. 自动级联提拉状态机: unconfigured -> inactive -> active
     if (auto_bringup_) {
@@ -129,6 +143,8 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
   std::string current_dispatcher_state_{"unknown"};
   bool safety_seen_{false};
   bool safety_healthy_{true};
+  std::shared_future<lifecycle_msgs::srv::GetState::Response::SharedPtr> pending_get_state_;
+  int get_state_wait_ticks_ = 0;
 
   rclcpp::Client<lifecycle_msgs::srv::GetState>::SharedPtr dispatcher_get_state_cli_;
   rclcpp::Client<lifecycle_msgs::srv::ChangeState>::SharedPtr dispatcher_change_state_cli_;

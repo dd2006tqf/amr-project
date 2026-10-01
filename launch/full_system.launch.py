@@ -41,6 +41,7 @@ def generate_launch_description():
             'schedule_rate_hz': 10.0,
             'deadlock_check_rate_hz': 1.0,
             'max_active_missions': 4,
+            'stations_file': 'config/stations.yaml',
         }]
     )
 

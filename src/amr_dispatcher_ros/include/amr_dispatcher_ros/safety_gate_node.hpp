@@ -30,6 +30,7 @@ class SafetyGateNode : public rclcpp::Node {
 
   void WatchdogTick();
   void PublishSafetyState(const amr_dispatcher_core::safety::CmdVelGateDecision& decision);
+  void PublishIdleSafetyState();
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr raw_cmd_vel_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr teleop_cmd_vel_sub_;
@@ -50,6 +51,7 @@ class SafetyGateNode : public rclcpp::Node {
   std::unique_ptr<amr_dispatcher_core::safety::FaultSupervisor> fault_supervisor_;
 
   bool estop_active_ = false;
+  bool auto_fault_latched_ = false;
   bool bumper_active_ = false;
   bool manual_takeover_active_ = false;
   bool watchdog_ok_ = true;
@@ -57,6 +59,8 @@ class SafetyGateNode : public rclcpp::Node {
   bool chassis_healthy_ = true;
   bool deadlock_active_ = false;
   std::vector<std::string> watched_nodes_;
+  // 最近一次门控裁决结果，供空闲周期播报与就绪探针使用
+  amr_dispatcher_core::safety::CmdVelGateDecision last_decision_{};
 };
 
 }  // namespace amr_dispatcher_ros

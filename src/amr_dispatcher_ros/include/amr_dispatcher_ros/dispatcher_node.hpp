@@ -17,11 +17,20 @@
 #include "amr_dispatcher_core/dispatcher/recovery_policy.hpp"
 #include "amr_dispatcher_core/dispatcher/station_topology.hpp"
 #include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
+#include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
+#include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
+#include "amr_dispatcher_core/planning/path_planner_interface.hpp"
+#include "amr_dispatcher_core/planning/mock_linear_planner.hpp"
+
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 
 #include "amr_dispatcher_interfaces/action/execute_mission.hpp"
 #include "amr_dispatcher_interfaces/msg/dispatcher_state.hpp"
 #include "amr_dispatcher_interfaces/msg/mission_event.hpp"
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
+#include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/pause_mission.hpp"
 #include "amr_dispatcher_interfaces/srv/release_resource.hpp"
@@ -141,6 +150,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ScheduleTick();
   void DeadlockTick();
   void PublishState();
+  void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+  void OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void CompleteMission(const std::string& mission_id, const std::string& reason);
+  void FailMission(const std::string& mission_id, const std::string& reason);
 
   std::unique_ptr<amr_dispatcher_core::dispatcher::MissionQueue> queue_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::TrafficReservationTable> reservation_table_;
@@ -155,6 +168,14 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::mutex active_missions_mutex_;
   std::uint64_t next_sequence_ = 1;
   bool deadlock_flag_ = false;
+
+  // 任务执行闭环：站点目录 + 规划器 + 最新里程计位姿
+  std::unique_ptr<amr_dispatcher_core::IPathPlanner> planner_;
+  amr_dispatcher_core::catalog::StationCatalog station_catalog_{};
+  bool station_catalog_loaded_ = false;
+  amr_dispatcher_core::path_tracking::Pose2D current_pose_{};
+  bool has_odom_ = false;
+  std::string tracking_mission_id_;  // 当前正在跟踪 /plan 的任务（单车一次一个）
 
   rclcpp::Service<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_srv_;
@@ -181,6 +202,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_pub_;
   rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_pub_;
   rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_pub_;
+
+  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
 
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;

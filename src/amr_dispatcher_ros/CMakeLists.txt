@@ -54,6 +54,8 @@ ament_target_dependencies(dispatcher_node
   rclcpp
   rclcpp_lifecycle
   rclcpp_action
+  nav_msgs
+  geometry_msgs
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )

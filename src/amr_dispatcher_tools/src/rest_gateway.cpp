@@ -57,6 +57,7 @@ class RestGatewayNode : public rclcpp::Node {
         [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_safety_ = *msg;
+          safety_seen_ = true;
         });
 
     link_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
@@ -336,7 +337,8 @@ class RestGatewayNode : public rclcpp::Node {
        << "\"active_mission_id\":\"" << latest_state_.active_mission_id << "\","
        << "\"deadlock\":" << (latest_state_.deadlock_detected ? "true" : "false") << ","
        << "\"deadlock_detected\":" << (latest_state_.deadlock_detected ? "true" : "false") << ","
-       << "\"estop_active\":" << (!latest_safety_.motion_allowed ? "true" : "false") << ","
+       // 未收到任何 SafetyState 时不渲染急停（默认值会误报 estop）
+       << "\"estop_active\":" << ((safety_seen_ && !latest_safety_.motion_allowed) ? "true" : "false") << ","
        << "\"safety_severity\":\"" << (latest_safety_.severity.empty() ? "INFO" : latest_safety_.severity) << "\","
        << "\"chassis_backend\":\"" << (latest_link_.backend_name.empty() ? "Serial/Mock" : latest_link_.backend_name) << "\","
        << "\"chassis_healthy\":" << (latest_link_.is_healthy ? "true" : "false") << ","
@@ -375,6 +377,7 @@ class RestGatewayNode : public rclcpp::Node {
   amr_dispatcher_interfaces::msg::SafetyState latest_safety_;
   amr_dispatcher_interfaces::msg::ChassisLinkHealth latest_link_;
   std::vector<amr_dispatcher_interfaces::msg::MissionEvent> recent_events_;
+  bool safety_seen_ = false;
 };
 
 }  // namespace amr_dispatcher_tools

@@ -19,7 +19,7 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   gate_cfg.max_linear_y_mps = get_parameter("max_linear_y_mps").as_double();
   gate_cfg.max_angular_z_radps = get_parameter("max_angular_z_radps").as_double();
   gate_cfg.source_blocked = [this](const std::string& src) {
-    if (src == "estop") return estop_active_;
+    if (src == "estop") return estop_active_ || auto_fault_latched_;
     if (src == "bumper") return bumper_active_;
     if (src.find("watchdog") != std::string::npos) return true;
     return false;
@@ -157,8 +157,15 @@ void SafetyGateNode::WatchdogTick() {
   // 根据 Fault Supervisor 综合裁决建议执行动作
   auto rec = fault_supervisor_->recommendation();
   if (rec == amr_dispatcher_core::safety::SystemActionRecommendation::kEmergencyStop) {
-    estop_active_ = true;
+    auto_fault_latched_ = true;
+  } else if (rec == amr_dispatcher_core::safety::SystemActionRecommendation::kNone && auto_fault_latched_) {
+    // 故障恢复且自动清除模式下解除自动急停锁存（若非人工急停按钮触发）
+    auto_fault_latched_ = false;
   }
+
+  // 空闲周期播报安全状态：无 cmd_vel 上游时也要让 /safety/state 持续可见，
+  // 否则 lifecycle_coordinator 的 safety_seen_ 永为 false，/system/ready 卡 INITIALIZING。
+  PublishIdleSafetyState();
 }
 
 void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
@@ -175,6 +182,7 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   }
 
   auto decision = gate_->Evaluate(cmd);
+  last_decision_ = decision;
 
   geometry_msgs::msg::Twist safe_cmd;
   safe_cmd.linear.x = decision.linear_x_mps;
@@ -183,6 +191,19 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   safe_cmd_vel_pub_->publish(safe_cmd);
 
   PublishSafetyState(decision);
+}
+
+void SafetyGateNode::PublishIdleSafetyState() {
+  // 无任何运动指令时构造零速裁决：allowed 由多源健康聚合决定，
+  // reason 标注 idle 以便运维区分"门控放行"与"门控阻断"。
+  amr_dispatcher_core::safety::CmdVelGateDecision idle;
+  const bool effective_estop = estop_active_ || auto_fault_latched_;
+  idle.allowed = watchdog_ok_ && !effective_estop && !bumper_active_ && !manual_takeover_active_;
+  idle.reason = idle.allowed ? "idle" : "idle_blocked";
+  idle.severity = effective_estop || bumper_active_ ? amr_dispatcher_core::safety::SafetySeverity::kCritical
+                                                 : (watchdog_ok_ ? amr_dispatcher_core::safety::SafetySeverity::kInfo
+                                                                 : amr_dispatcher_core::safety::SafetySeverity::kWarn);
+  PublishSafetyState(idle);
 }
 
 void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVelGateDecision& decision) {
@@ -202,7 +223,7 @@ void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVe
     state_msg.speed_scale = 1.0;
   }
 
-  if (estop_active_) state_msg.active_sources.push_back("estop");
+  if (estop_active_ || auto_fault_latched_) state_msg.active_sources.push_back("estop");
   if (bumper_active_) state_msg.active_sources.push_back("bumper");
   if (manual_takeover_active_) state_msg.active_sources.push_back("manual_takeover");
   if (!state_msg.active_sources.empty()) {

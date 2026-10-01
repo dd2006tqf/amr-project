@@ -61,9 +61,13 @@ def main():
             dt = now - last_pub
             if dt >= 0.02:  # 50Hz 周期性状态回传
                 last_pub = now
-                # 简单运动学前向积分
-                x += vx * dt
+                # 差速/阿克曼平面运动学积分 (考虑当前航向角 yaw)
+                import math
+                x += vx * math.cos(yaw) * dt
+                y += vx * math.sin(yaw) * dt
                 yaw += wz * dt
+                # 航向角正规化到 [-pi, pi]
+                yaw = math.atan2(math.sin(yaw), math.cos(yaw))
                 battery = max(20.0, battery - 0.0001)
 
                 odom_pkt = (

@@ -13,12 +13,17 @@ namespace amr_dispatcher_core::catalog {
 namespace {
 
 std::string Trim(const std::string& value) {
-  const auto first = value.find_first_not_of(" \t\r\n");
+  auto first = value.find_first_not_of(" \t\r\n");
   if (first == std::string::npos) {
     return "";
   }
-  const auto last = value.find_last_not_of(" \t\r\n");
-  return value.substr(first, last - first + 1);
+  auto last = value.find_last_not_of(" \t\r\n");
+  std::string s = value.substr(first, last - first + 1);
+  // 去除 YAML 引号包裹：例如 "station_pickup_A" 或 'station_pickup_A'
+  if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))) {
+    s = s.substr(1, s.size() - 2);
+  }
+  return s;
 }
 
 std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
