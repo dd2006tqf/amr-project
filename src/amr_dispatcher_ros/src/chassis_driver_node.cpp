@@ -85,7 +85,14 @@ void ChassisDriverNode::CmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
 }
 
 void ChassisDriverNode::ReadPollLoop() {
-  if (!backend_ctrl_ || !backend_ctrl_->current() || !backend_ctrl_->current()->IsOpen()) {
+  if (!backend_ctrl_) return;
+  if (!backend_ctrl_->current() || !backend_ctrl_->current()->IsOpen()) {
+    // 连接已断（切档 Open 失败或后端关闭）：仍需驱动控制器，
+    // 否则 LinkRecoveryPolicy 的退避重连永远不会被推进。
+    std::string reason;
+    if (backend_ctrl_->EvaluateAndMaybeSwitch(&reason)) {
+      RCLCPP_WARN(get_logger(), "Chassis backend reconnected: %s", reason.c_str());
+    }
     return;
   }
   std::string err;
@@ -155,10 +162,10 @@ void ChassisDriverNode::ReadPollLoop() {
     }
   }
 
-  // 周期性评估是否降级
+  // 周期性评估降级与回切
   std::string reason;
   if (backend_ctrl_->EvaluateAndMaybeSwitch(&reason)) {
-    RCLCPP_WARN(get_logger(), "Chassis backend degraded/switched: %s", reason.c_str());
+    RCLCPP_WARN(get_logger(), "Chassis backend switched: %s", reason.c_str());
   }
 }
 
