@@ -22,6 +22,7 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(amr_dispatcher_core REQUIRED)
 find_package(amr_dispatcher_interfaces REQUIRED)
+find_package(amr_dispatcher_bt REQUIRED)
 
 # 1. chassis_driver_node
 add_executable(chassis_driver_node
@@ -59,6 +60,8 @@ ament_target_dependencies(dispatcher_node
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+# 行为树编排层：订单路由、出队派发门控、恢复与结果决策
+target_link_libraries(dispatcher_node amr_dispatcher_bt::amr_dispatcher_bt)
 
 # 3. safety_gate_node
 add_executable(safety_gate_node

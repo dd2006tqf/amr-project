@@ -15,6 +15,8 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("max_active_missions", 4);
   declare_parameter("stations_file", "config/stations.yaml");
   declare_parameter("path_step_size_m", 0.1);
+  declare_parameter("recovery_dock_station", "station_charge_1");
+  recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
 }
 
 DispatcherNode::~DispatcherNode() = default;
@@ -203,6 +205,7 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   planner_.reset();
   catalog_reloader_.reset();
   reload_timer_.reset();
+  queue_start_requested_ = false;
   tracking_mission_id_.clear();
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
@@ -221,12 +224,29 @@ void DispatcherNode::SubmitOrderCb(
     return;
   }
 
+  // 订单路由：经 submit_order 行为树调用路由器，决定订单类型语义与字段回填。
+  // 未知/空类型由路由器统一拒绝（message 带 supported 列表）。
+  amr_dispatcher_bt::SubmitOrderBehaviorTreeInput route_input;
+  route_input.request.order_id = req->order_id.empty() ? req->mission_id : req->order_id;
+  route_input.request.order_type = req->mission_type.empty() ? "transport" : req->mission_type;
+  route_input.request.priority = req->priority;
+  const auto route_result = amr_dispatcher_bt::TickSubmitOrderBehaviorTree(route_input);
+  if (!route_result.success || !route_result.route) {
+    resp->accepted = false;
+    resp->mission_id = req->mission_id;
+    resp->message = "route rejected: " + route_result.message;
+    RCLCPP_WARN(get_logger(), "SubmitOrder rejected by router: %s", resp->message.c_str());
+    return;
+  }
+  const auto& route = *route_result.route;
+
   amr_dispatcher_core::dispatcher::Mission m;
   m.id = req->mission_id.empty() ? ("m_" + std::to_string(next_sequence_)) : req->mission_id;
   m.order_id = req->order_id.empty() ? ("ord_" + m.id) : req->order_id;
-  m.type = req->mission_type.empty() ? "transport" : req->mission_type;
-  m.pickup_station = req->pickup_station;
-  m.dropoff_station = req->dropoff_station;
+  m.type = route.normalized_order_type.empty() ? "transport" : route.normalized_order_type;
+  // 站点字段优先取请求显式值，路由器解析出的站点作兜底
+  m.pickup_station = req->pickup_station.empty() ? route.pickup_station : req->pickup_station;
+  m.dropoff_station = req->dropoff_station.empty() ? route.dropoff_station : req->dropoff_station;
   m.priority = req->priority;
   m.sequence = next_sequence_++;
   m.deadline_unix_ms = req->deadline_unix_ms;
@@ -238,6 +258,13 @@ void DispatcherNode::SubmitOrderCb(
   resp->message = res.message;
 
   if (res.accepted) {
+    if (route.start_if_idle) {
+      queue_start_requested_ = true;
+    }
+    RCLCPP_INFO(get_logger(),
+                "SubmitOrder routed via BT: branch=%s kind=%d type=%s start_if_idle=%d",
+                route_result.branch.c_str(), static_cast<int>(route.kind), m.type.c_str(),
+                route.start_if_idle ? 1 : 0);
     amr_dispatcher_core::dispatcher::MissionEvent evt;
     evt.stamp = "now";
     evt.mission_id = m.id;
@@ -297,6 +324,7 @@ void DispatcherNode::CancelOrderCb(
         resp->message = "Mission not found";
       }
     }
+    ReArmQueueStartRequest();  // 取消活动任务后，队列后续任务需重新武装启动请求
     return;
   }
   if (!req->order_id.empty()) {
@@ -304,6 +332,7 @@ void DispatcherNode::CancelOrderCb(
     resp->success = true;
     resp->canceled_count = static_cast<uint32_t>(count);
     resp->message = "Order canceled, count=" + std::to_string(count);
+    ReArmQueueStartRequest();
     return;
   }
   resp->success = false;
@@ -334,6 +363,7 @@ void DispatcherNode::ResumeMissionCb(
   queue_->ResumeOrder(req->mission_id);
   resp->success = true;
   resp->message = "Resumed order/mission: " + req->mission_id;
+  ReArmQueueStartRequest();  // 恢复后的暂停任务重新参与出队派发
 }
 
 void DispatcherNode::ReserveResourceCb(
@@ -382,6 +412,19 @@ void DispatcherNode::EnqueueMissionCb(
   resp->success = push_res.accepted;
   resp->message = push_res.accepted ? "Mission enqueued: " + m.id : push_res.message;
   resp->queue_size = static_cast<int32_t>(queue_->size());
+
+  if (push_res.accepted) {
+    // 启动决策走 queued_mission_start 行为树（start_if_idle 且当前空闲才立即启动）
+    amr_dispatcher_bt::QueuedMissionStartBehaviorTreeInput start_input;
+    start_input.request.start_if_idle = req->start_if_idle;
+    start_input.request.mission_active = !tracking_mission_id_.empty();
+    const auto start_bt = amr_dispatcher_bt::TickQueuedMissionStartBehaviorTree(start_input);
+    if (start_bt.success && start_bt.decision.request_queue_start) {
+      queue_start_requested_ = true;
+    }
+    RCLCPP_INFO(get_logger(), "EnqueueMission via BT: branch=%s request_queue_start=%d",
+                start_bt.branch.c_str(), start_bt.decision.request_queue_start ? 1 : 0);
+  }
 }
 
 void DispatcherNode::CancelQueuedMissionCb(
@@ -607,6 +650,17 @@ void DispatcherNode::ScheduleTick() {
     return;
   }
 
+  // 行为树出队派发门控：runtime 树按"空闲 + 启动请求"给派发决策，
+  // 未请求启动时即使队列有任务也不出队（启动请求由提单/入队/结果链武装）。
+  amr_dispatcher_bt::MissionRuntimeBehaviorTreeInput runtime_input;
+  runtime_input.tick.mission_active = !tracking_mission_id_.empty();
+  runtime_input.tick.queue_start_requested = queue_start_requested_;
+  const auto runtime_result = amr_dispatcher_bt::TickMissionRuntimeBehaviorTree(runtime_input);
+  if (!runtime_result.success || !runtime_result.decision.start_queued_mission) {
+    return;
+  }
+  queue_start_requested_ = false;  // 启动请求被本次派发消费
+
   auto pop = queue_->PopNext();
   if (!pop.success || !pop.mission) {
     return;
@@ -642,6 +696,7 @@ void DispatcherNode::ScheduleTick() {
       msg.reason = "unknown dropoff station: " + m.dropoff_station;
       event_pub_->publish(msg);
     }
+    ReArmQueueStartRequest();  // 本单丢弃后，队列中其余任务仍需能被派发
     return;
   }
 
@@ -726,8 +781,26 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
     order_id = it->second.order_id;
     active_missions_.erase(it);
   }
-  if (reservation_table_) {
-    reservation_table_->Release(mission_id);
+
+  // 结果处理走 mission_result 行为树：成功分支给资源释放与失败计数复位决策
+  amr_dispatcher_core::workflow::MissionResultWorkflowInput result_input;
+  result_input.code = amr_dispatcher_core::workflow::MissionActionResultCode::kSucceeded;
+  result_input.result_success = true;
+  result_input.result_message = reason;
+  const auto result_bt = amr_dispatcher_bt::TickMissionResultBehaviorTree(result_input);
+  RCLCPP_INFO(get_logger(), "Mission %s result via BT: branch=%s state=%s", mission_id.c_str(),
+              result_bt.branch.c_str(),
+              result_bt.success ? result_bt.decision.state.c_str() : "tree_failed");
+
+  // 树失败时回退旧行为（无条件释放），防树异常导致资源泄漏
+  if (!result_bt.success || result_bt.decision.release_all_resources) {
+    if (reservation_table_) {
+      reservation_table_->Release(mission_id);
+    }
+  }
+  if (result_bt.success && result_bt.decision.reset_failure_retry_count) {
+    mission_attempts_.erase(mission_id);
+    mission_last_progress_.erase(mission_id);
   }
   RCLCPP_INFO(get_logger(), "Mission completed: %s (%s)", mission_id.c_str(), reason.c_str());
   if (event_pub_ && event_pub_->is_activated()) {
@@ -749,10 +822,12 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
     evt.message = reason;
     event_log_->Append(evt);
   }
+  ReArmQueueStartRequest();  // 队列非空时重新武装 runtime 树的启动请求
 }
 
 void DispatcherNode::FailMission(const std::string& mission_id, const std::string& reason) {
   std::string order_id;
+  amr_dispatcher_core::dispatcher::Mission mission_copy;
   {
     std::lock_guard<std::mutex> lock(active_missions_mutex_);
     auto it = active_missions_.find(mission_id);
@@ -760,10 +835,21 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
       return;
     }
     order_id = it->second.order_id;
+    mission_copy = it->second;
     active_missions_.erase(it);
   }
-  if (reservation_table_) {
-    reservation_table_->Release(mission_id);
+
+  // 失败结果先经 mission_result 行为树分类：资源释放决策 + 失败处理标记
+  amr_dispatcher_core::workflow::MissionResultWorkflowInput result_input;
+  result_input.code = amr_dispatcher_core::workflow::MissionActionResultCode::kFailed;
+  result_input.result_success = false;
+  result_input.result_message = reason;
+  const auto result_bt = amr_dispatcher_bt::TickMissionResultBehaviorTree(result_input);
+
+  if (!result_bt.success || result_bt.decision.release_all_resources) {
+    if (reservation_table_) {
+      reservation_table_->Release(mission_id);
+    }
   }
   if (tracking_mission_id_ == mission_id) {
     tracking_mission_id_.clear();
@@ -787,6 +873,87 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
     msg.reason = reason;
     event_pub_->publish(msg);
   }
+
+  // 恢复策略走 mission_recovery 行为树：retry / dock / manual 三级决策
+  const bool handle_failure = !result_bt.success || result_bt.decision.handle_failure;
+  std::string recovery_action = "none";
+  std::string recovery_message;
+  if (handle_failure && queue_) {
+    amr_dispatcher_bt::MissionRecoveryBehaviorTreeInput rec_input;
+    rec_input.retry_count = mission_attempts_[mission_id];
+    rec_input.is_dock_mission = mission_copy.type == "charge";
+    rec_input.mission_id = mission_id;
+    rec_input.failure_message =
+        (result_bt.success && !result_bt.decision.failure_message.empty())
+            ? result_bt.decision.failure_message
+            : reason;
+    rec_input.recovery_priority = mission_copy.priority;
+    rec_input.next_queue_sequence = next_sequence_;
+    const auto rec_bt = amr_dispatcher_bt::TickMissionRecoveryBehaviorTree(rec_input);
+    recovery_action = rec_bt.decision.action;
+    recovery_message = rec_bt.decision.message;
+    RCLCPP_INFO(get_logger(), "Recovery via BT: branch=%s action=%s recoverable=%d (%s)",
+                rec_bt.branch.c_str(), rec_bt.decision.action.c_str(),
+                rec_bt.decision.recoverable ? 1 : 0, rec_bt.decision.message.c_str());
+
+    if (rec_bt.success && rec_bt.decision.action == "retry") {
+      auto retry = mission_copy;
+      retry.attempt += 1;
+      auto push = queue_->Push(retry);
+      if (push.accepted) {
+        mission_attempts_[mission_id] = rec_input.retry_count + 1;
+        queue_start_requested_ = true;
+      } else {
+        recovery_action = "manual";
+        recovery_message = "retry re-enqueue rejected: " + push.message;
+      }
+    } else if (rec_bt.success && rec_bt.decision.action == "dock") {
+      // 回坞：入队一条到充电站点的 charge 任务；站点缺失则降级为仅记录
+      const auto& catalog = catalog_reloader_ ? catalog_reloader_->catalog()
+                                              : amr_dispatcher_core::catalog::StationCatalog{};
+      const auto* dock_st = amr_dispatcher_core::catalog::FindStation(catalog, recovery_dock_station_);
+      if (dock_st) {
+        amr_dispatcher_core::dispatcher::Mission dock_m;
+        dock_m.id = "m_" + std::to_string(next_sequence_++);
+        dock_m.order_id = "dock_" + mission_id;
+        dock_m.type = "charge";
+        dock_m.dropoff_station = recovery_dock_station_;
+        dock_m.priority = mission_copy.priority;
+        dock_m.sequence = next_sequence_;
+        auto push = queue_->Push(dock_m);
+        if (push.accepted) {
+          queue_start_requested_ = true;
+        } else {
+          recovery_action = "manual";
+          recovery_message = "dock enqueue rejected: " + push.message;
+        }
+      } else {
+        recovery_action = "manual";
+        recovery_message = "dock station not found: " + recovery_dock_station_;
+      }
+    }
+
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent msg;
+      msg.stamp = now();
+      msg.mission_id = mission_id;
+      msg.order_id = order_id;
+      msg.event = "recovery";
+      msg.from_state = "FAILED";
+      msg.to_state = recovery_action == "manual" ? "MANUAL_INTERVENTION" : "RECOVERING";
+      msg.reason = recovery_action + ": " + recovery_message;
+      event_pub_->publish(msg);
+    }
+    if (event_log_) {
+      amr_dispatcher_core::dispatcher::MissionEvent evt;
+      evt.stamp = "now";
+      evt.mission_id = mission_id;
+      evt.event = "recovery";
+      evt.message = recovery_action + ": " + recovery_message;
+      event_log_->Append(evt);
+    }
+  }
+  ReArmQueueStartRequest();
 }
 
 void DispatcherNode::DeadlockTick() {
@@ -817,9 +984,21 @@ void DispatcherNode::DeadlockTick() {
       if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kPause) {
         queue_->PauseOrder(act.mission_id);
       } else if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kCancel) {
+        // 取消也走结果树：canceled 分支给资源释放决策，同时补发可观测事件
+        std::string canceled_order_id;
+        auto cancel_it = active_missions_.find(act.mission_id);
+        if (cancel_it != active_missions_.end()) {
+          canceled_order_id = cancel_it->second.order_id;
+        }
+        amr_dispatcher_core::workflow::MissionResultWorkflowInput cancel_input;
+        cancel_input.code = amr_dispatcher_core::workflow::MissionActionResultCode::kCanceled;
+        cancel_input.result_message = act.reason;
+        const auto cancel_bt = amr_dispatcher_bt::TickMissionResultBehaviorTree(cancel_input);
         active_missions_.erase(act.mission_id);
-        if (reservation_table_) {
-          reservation_table_->Release(act.mission_id);
+        if (!cancel_bt.success || cancel_bt.decision.release_all_resources) {
+          if (reservation_table_) {
+            reservation_table_->Release(act.mission_id);
+          }
         }
         // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
         // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
@@ -832,12 +1011,39 @@ void DispatcherNode::DeadlockTick() {
             plan_pub_->publish(empty);
           }
         }
+        if (event_pub_ && event_pub_->is_activated()) {
+          amr_dispatcher_interfaces::msg::MissionEvent msg;
+          msg.stamp = now();
+          msg.mission_id = act.mission_id;
+          msg.order_id = canceled_order_id;
+          msg.event = "canceled";
+          msg.to_state = "CANCELED";
+          msg.reason = act.reason;
+          event_pub_->publish(msg);
+        }
+        RCLCPP_WARN(get_logger(), "Deadlock cancel via BT: branch=%s state=%s reason=%s",
+                    cancel_bt.branch.c_str(),
+                    cancel_bt.success ? cancel_bt.decision.state.c_str() : "tree_failed",
+                    act.reason.c_str());
+        ReArmQueueStartRequest();
       } else if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kRetry) {
         mission_attempts_[act.mission_id]++;
         mission_last_progress_[act.mission_id] = std::chrono::steady_clock::now();
       }
     }
   }
+}
+
+void DispatcherNode::ReArmQueueStartRequest() {
+  // 结果/取消/恢复后重新武装 runtime 行为树的启动请求：
+  // 队列非空则置位（auto_start_queue 语义），队列清空则复位。
+  const auto decision = amr_dispatcher_core::workflow::PlanMissionPostResultQueue(
+      amr_dispatcher_core::workflow::MissionPostResultQueueRequest{
+          /*existing_queue_start_requested=*/queue_start_requested_,
+          /*auto_start_queue=*/true,
+          /*queue_running=*/true,
+          /*mission_queue_empty=*/queue_ == nullptr || queue_->empty()});
+  queue_start_requested_ = decision.queue_start_requested;
 }
 
 void DispatcherNode::PublishState() {

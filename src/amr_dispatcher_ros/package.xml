@@ -23,6 +23,7 @@
   <depend>pluginlib</depend>
   <depend>amr_dispatcher_core</depend>
   <depend>amr_dispatcher_interfaces</depend>
+  <depend>amr_dispatcher_bt</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

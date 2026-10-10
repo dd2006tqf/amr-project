@@ -139,5 +139,34 @@ TEST(SubmitOrderRouterTest, PlanVda5050StationOrder_IdenticalNodesRejects) {
   EXPECT_EQ(decision.message, "vda5050 pickup and dropoff node are identical: receiving");
 }
 
+
+// 运行时文档化类型 charge / patrol 必须能路由（SubmitOrder.srv 注释承诺
+// mission_type 取值 transport / charge / patrol），按站点搬运语义走 transport 分支。
+TEST(SubmitOrderRouterTest, BuildSubmitOrderRoute_ChargeType_RoutesAsTransport) {
+  std::string message;
+  SubmitOrderInput input;
+  input.order_id = "charge_1";
+  input.order_type = "charge";
+
+  const auto route = BuildSubmitOrderRoute(input, &message);
+
+  ASSERT_TRUE(route.has_value()) << message;
+  EXPECT_EQ(route->kind, SubmitOrderKind::kTransport);
+  EXPECT_EQ(route->normalized_order_type, "charge");
+}
+
+TEST(SubmitOrderRouterTest, BuildSubmitOrderRoute_PatrolType_RoutesAsTransport) {
+  std::string message;
+  SubmitOrderInput input;
+  input.order_id = "patrol_1";
+  input.order_type = "patrol";
+
+  const auto route = BuildSubmitOrderRoute(input, &message);
+
+  ASSERT_TRUE(route.has_value()) << message;
+  EXPECT_EQ(route->kind, SubmitOrderKind::kTransport);
+  EXPECT_EQ(route->normalized_order_type, "patrol");
+}
+
 }  // namespace
 }  // namespace amr_dispatcher_core::workflow

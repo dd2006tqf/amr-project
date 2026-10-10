@@ -50,6 +50,13 @@
 #include "amr_dispatcher_interfaces/srv/get_operator_snapshot.hpp"
 #include "amr_dispatcher_interfaces/srv/validate_site_config.hpp"
 
+// 行为树编排层：订单路由、出队派发门控、恢复与结果决策
+#include "amr_dispatcher_bt/mission_recovery_behavior_tree.hpp"
+#include "amr_dispatcher_bt/mission_result_behavior_tree.hpp"
+#include "amr_dispatcher_bt/mission_runtime_behavior_tree.hpp"
+#include "amr_dispatcher_bt/queued_mission_start_behavior_tree.hpp"
+#include "amr_dispatcher_bt/submit_order_behavior_tree.hpp"
+
 #include "amr_dispatcher_core/catalog/station_catalog.hpp"
 #include "amr_dispatcher_core/catalog/scenario_catalog.hpp"
 #include "amr_dispatcher_core/catalog/business_order_catalog.hpp"
@@ -150,6 +157,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ScheduleTick();
   void DeadlockTick();
   void PublishState();
+  // 结果/取消/恢复后重新武装队列启动请求（行为树 runtime 门控的输入）
+  void ReArmQueueStartRequest();
   void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
   void OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CompleteMission(const std::string& mission_id, const std::string& reason);
@@ -168,6 +177,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::mutex active_missions_mutex_;
   std::uint64_t next_sequence_ = 1;
   bool deadlock_flag_ = false;
+  // 出队派发门控：由提单/入队置位，runtime 行为树消费（派发时清除）
+  bool queue_start_requested_ = false;
+  // 恢复策略回坞目标站点（由参数配置，缺失时回坞降级为仅事件记录）
+  std::string recovery_dock_station_;
 
   // 任务执行闭环：站点目录（mtime 热重载） + 规划器 + 最新里程计位姿
   std::unique_ptr<amr_dispatcher_core::IPathPlanner> planner_;

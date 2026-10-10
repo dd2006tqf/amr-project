@@ -51,7 +51,10 @@ std::optional<SubmitOrderRoute> BuildSubmitOrderRoute(
     return std::nullopt;
   }
 
-  if (IsOneOf(route.normalized_order_type, {"transport", "transport_order"})) {
+  // charge / patrol 与 transport 同属"移动到站点"语义，站点参数由调用方
+  // （SubmitOrder srv 的 pickup/dropoff 字段）提供，路由到 transport 分支。
+  if (IsOneOf(route.normalized_order_type,
+              {"transport", "transport_order", "charge", "patrol"})) {
     route.kind = SubmitOrderKind::kTransport;
     route.frame_id = payload->GetString("frame_id", "map");
     route.pickup_x = payload->GetDouble("pickup_x", 0.0);
@@ -161,9 +164,9 @@ std::optional<SubmitOrderRoute> BuildSubmitOrderRoute(
   }
 
   *message = "unsupported order_type: " + input.order_type +
-             " (supported: transport, station_transport, station_order_batch, "
-             "station_sequence, fleet_station, business, scenario_task, scenario_workflow, "
-             "vda5050, picking_wave, replenishment, milk_run)";
+             " (supported: transport, charge, patrol, station_transport, "
+             "station_order_batch, station_sequence, fleet_station, business, "
+             "scenario_task, scenario_workflow, vda5050, picking_wave, replenishment, milk_run)";
   return std::nullopt;
 }
 
