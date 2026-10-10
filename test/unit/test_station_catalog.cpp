@@ -2,6 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdio>
+#include <fstream>
+#include <thread>
+
 namespace amr_dispatcher_core::workflow {
 using namespace amr_dispatcher_core::catalog;
 namespace {
@@ -38,3 +43,63 @@ TEST(StationCatalogTest, BuildStationRouteListProjection_PreservesRouteFields) {
 
 }  // namespace
 }  // namespace amr_dispatcher_core::workflow
+
+namespace {
+
+std::string WriteCatalogTemp(const std::string& content) {
+  std::string path = std::tmpnam(nullptr);
+  std::ofstream out(path);
+  out << content;
+  return path;
+}
+
+constexpr const char* kTwoStations =
+    "stations:\n"
+    "  - id: s1\n    x: 1.0\n    y: 2.0\n"
+    "  - id: s2\n    x: 3.0\n    y: 4.0\n";
+constexpr const char* kThreeStations =
+    "stations:\n"
+    "  - id: s1\n    x: 1.0\n    y: 2.0\n"
+    "  - id: s2\n    x: 3.0\n    y: 4.0\n"
+    "  - id: s3\n    x: 5.0\n    y: 6.0\n";
+constexpr const char* kDuplicateIds =
+    "stations:\n"
+    "  - id: s1\n    x: 1.0\n    y: 2.0\n"
+    "  - id: s1\n    x: 3.0\n    y: 4.0\n";
+
+}  // namespace
+
+// 构造即完成初始加载（等价节点 on_configure 的一次性读取）。
+TEST(StationCatalogReloaderTest, LoadsInitialCatalog) {
+  auto p = WriteCatalogTemp(kTwoStations);
+  amr_dispatcher_core::catalog::StationCatalogReloader reloader(p);
+  EXPECT_TRUE(reloader.loaded());
+  EXPECT_EQ(reloader.catalog().stations.size(), 2u);
+  EXPECT_FALSE(reloader.Tick());  // mtime 未变，不触发重载
+  std::remove(p.c_str());
+}
+
+// mtime 变化触发重载换新；schema 非法时保留旧目录不清空。
+TEST(StationCatalogReloaderTest, ReloadsOnMtimeChangeAndKeepsOldOnInvalid) {
+  auto p = WriteCatalogTemp(kTwoStations);
+  amr_dispatcher_core::catalog::StationCatalogReloader reloader(p);
+  ASSERT_TRUE(reloader.loaded());
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));  // 跨过文件系统 mtime 粒度
+  {
+    std::ofstream out(p, std::ios::trunc);
+    out << kThreeStations;
+  }
+  EXPECT_TRUE(reloader.Tick());
+  EXPECT_EQ(reloader.catalog().stations.size(), 3u);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  {
+    std::ofstream out(p, std::ios::trunc);
+    out << kDuplicateIds;
+  }
+  EXPECT_FALSE(reloader.Tick());                     // 校验失败，没有换新
+  EXPECT_EQ(reloader.catalog().stations.size(), 3u); // 旧目录仍在
+  EXPECT_FALSE(reloader.last_error().empty());
+  std::remove(p.c_str());
+}

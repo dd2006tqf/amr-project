@@ -33,15 +33,19 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
           10s, 30s});
   recovery_policy_ = std::make_unique<amr_dispatcher_core::dispatcher::RecoveryPolicy>();
 
-  // 站点目录与基准线性规划器：任务激活时把 pickup→dropoff 展开成 /plan 下发
+  // 站点目录与基准线性规划器：任务激活时把 pickup→dropoff 展开成 /plan 下发。
+  // 目录经 StationCatalogReloader 持有：构造时加载，mtime 变化自动热重载；
+  // 初始加载失败也照常挂监听，文件补齐后下一个 Tick 即生效。
   const std::string stations_file = get_parameter("stations_file").as_string();
-  if (auto catalog = amr_dispatcher_core::catalog::LoadStationCatalog(stations_file)) {
-    station_catalog_ = *catalog;
-    station_catalog_loaded_ = true;
+  catalog_reloader_ =
+      std::make_unique<amr_dispatcher_core::catalog::StationCatalogReloader>(stations_file);
+  if (catalog_reloader_->loaded()) {
     RCLCPP_INFO(get_logger(), "Loaded %zu stations from %s",
-                station_catalog_.stations.size(), stations_file.c_str());
+                catalog_reloader_->catalog().stations.size(), stations_file.c_str());
   } else {
-    RCLCPP_WARN(get_logger(), "Failed to load stations file %s; planning disabled", stations_file.c_str());
+    RCLCPP_WARN(get_logger(),
+                "Failed to load stations file %s; planning disabled until hot reload succeeds",
+                stations_file.c_str());
   }
   planner_ = std::make_unique<amr_dispatcher_core::MockLinearPlanner>(
       get_parameter("path_step_size_m").as_double());
@@ -137,6 +141,20 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
 
   state_timer_ = create_wall_timer(500ms, std::bind(&DispatcherNode::PublishState, this));
 
+  // 1Hz 驱动站点目录 mtime 热重载（HotReloadWatcher 由调用方驱动）
+  reload_timer_ = create_wall_timer(1s, [this]() {
+    if (!catalog_reloader_) return;
+    if (catalog_reloader_->Tick()) {
+      RCLCPP_INFO(get_logger(), "Station catalog hot-reloaded: %zu stations",
+                  catalog_reloader_->catalog().stations.size());
+    } else if (!catalog_reloader_->last_error().empty()) {
+      // 重载失败（YAML 解析或校验不过）：旧目录继续生效，节流告警提示修复文件
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                           "Station catalog reload failed, keeping previous: %s",
+                           catalog_reloader_->last_error().c_str());
+    }
+  });
+
   RCLCPP_INFO(get_logger(), "DispatcherNode activated");
   return CallbackReturn::SUCCESS;
 }
@@ -145,6 +163,7 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   schedule_timer_.reset();
   deadlock_timer_.reset();
   state_timer_.reset();
+  reload_timer_.reset();
   state_pub_->on_deactivate();
   event_pub_->on_deactivate();
   plan_pub_->on_deactivate();
@@ -182,7 +201,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   deadlock_detector_.reset();
   recovery_policy_.reset();
   planner_.reset();
-  station_catalog_loaded_ = false;
+  catalog_reloader_.reset();
+  reload_timer_.reset();
   tracking_mission_id_.clear();
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
@@ -598,17 +618,20 @@ void DispatcherNode::ScheduleTick() {
   // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负
   const amr_dispatcher_core::catalog::Station* from_st = nullptr;
   const amr_dispatcher_core::catalog::Station* to_st = nullptr;
-  if (station_catalog_loaded_) {
+  const bool catalog_loaded =
+      catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+  if (catalog_loaded) {
+    const auto& catalog = catalog_reloader_->catalog();
     if (!m.pickup_station.empty()) {
-      from_st = amr_dispatcher_core::catalog::FindStation(station_catalog_, m.pickup_station);
+      from_st = amr_dispatcher_core::catalog::FindStation(catalog, m.pickup_station);
     }
     if (!m.dropoff_station.empty()) {
-      to_st = amr_dispatcher_core::catalog::FindStation(station_catalog_, m.dropoff_station);
+      to_st = amr_dispatcher_core::catalog::FindStation(catalog, m.dropoff_station);
     }
   }
   if (m.dropoff_station.empty() || !to_st) {
     RCLCPP_WARN(get_logger(), "Mission %s has no resolvable dropoff station (%s, catalog_loaded=%d), failing",
-                m.id.c_str(), m.dropoff_station.c_str(), station_catalog_loaded_);
+                m.id.c_str(), m.dropoff_station.c_str(), catalog_loaded);
     if (event_pub_ && event_pub_->is_activated()) {
       amr_dispatcher_interfaces::msg::MissionEvent msg;
       msg.stamp = now();

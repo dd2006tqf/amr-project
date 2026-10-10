@@ -426,4 +426,39 @@ StationRouteListProjection BuildStationRouteListProjection(const StationCatalog&
   return projection;
 }
 
+// ---- StationCatalogReloader：mtime 轮询热重载，校验失败保留旧目录 ----
+StationCatalogReloader::StationCatalogReloader(std::filesystem::path path)
+    : path_(std::move(path)),
+      watcher_(path_.string(), [this](const YAML::Node&) { TryLoad(true); }) {
+  TryLoad(false);   // 初始加载等价节点 on_configure 的一次性读取
+  watcher_.Tick();  // 建立 mtime 基线：首拍只记基线不回调，之后的变化才重载
+}
+
+bool StationCatalogReloader::Tick() {
+  const auto before = reload_count_;
+  watcher_.Tick();
+  if (!watcher_.last_error().empty()) {
+    last_error_ = watcher_.last_error();  // YAML 解析失败：回调未触发，旧目录保持
+  }
+  return reload_count_ > before;
+}
+
+std::string StationCatalogReloader::last_error() const {
+  return last_error_;
+}
+
+void StationCatalogReloader::TryLoad(bool count_as_reload) {
+  if (auto loaded = LoadStationCatalog(path_)) {
+    catalog_ = std::move(*loaded);
+    loaded_ = true;
+    if (count_as_reload) {
+      ++reload_count_;
+    }
+    last_error_.clear();
+  } else {
+    // 校验失败（空目录、重复 id、非法位姿等）：保留旧目录，记录错误
+    last_error_ = "station catalog invalid or unreadable: " + path_.string();
+  }
+}
+
 }  // namespace amr_dispatcher_core::catalog

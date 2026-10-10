@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "amr_dispatcher_core/config/config_loader.hpp"
+
 namespace amr_dispatcher_core::catalog {
 
 struct Station {
@@ -55,5 +57,29 @@ std::optional<std::vector<std::string>> FindRoutePath(
 bool ValidateStationCatalog(const StationCatalog& catalog, std::string* message);
 StationListProjection BuildStationListProjection(const StationCatalog& catalog);
 StationRouteListProjection BuildStationRouteListProjection(const StationCatalog& catalog);
+
+// 站点目录热重载器：构造时加载初始目录，Tick 按文件 mtime 变化重载；
+// 新目录校验失败时保留旧目录（不清空），错误经 last_error 暴露。
+class StationCatalogReloader {
+ public:
+  explicit StationCatalogReloader(std::filesystem::path path);
+
+  // 驱动一次 mtime 检查；返回本次是否完成换新。
+  bool Tick();
+
+  const StationCatalog& catalog() const { return catalog_; }
+  bool loaded() const { return loaded_; }
+  std::string last_error() const;
+
+ private:
+  void TryLoad(bool count_as_reload);
+
+  std::filesystem::path path_;
+  StationCatalog catalog_{};
+  bool loaded_ = false;
+  std::size_t reload_count_ = 0;
+  std::string last_error_;
+  config::HotReloadWatcher watcher_;
+};
 
 }  // namespace amr_dispatcher_core::catalog

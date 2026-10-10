@@ -169,10 +169,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::uint64_t next_sequence_ = 1;
   bool deadlock_flag_ = false;
 
-  // 任务执行闭环：站点目录 + 规划器 + 最新里程计位姿
+  // 任务执行闭环：站点目录（mtime 热重载） + 规划器 + 最新里程计位姿
   std::unique_ptr<amr_dispatcher_core::IPathPlanner> planner_;
-  amr_dispatcher_core::catalog::StationCatalog station_catalog_{};
-  bool station_catalog_loaded_ = false;
+  std::unique_ptr<amr_dispatcher_core::catalog::StationCatalogReloader> catalog_reloader_;
   amr_dispatcher_core::path_tracking::Pose2D current_pose_{};
   bool has_odom_ = false;
   std::string tracking_mission_id_;  // 当前正在跟踪 /plan 的任务（单车一次一个）
@@ -210,6 +209,7 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;
   rclcpp::TimerBase::SharedPtr state_timer_;
+  rclcpp::TimerBase::SharedPtr reload_timer_;  // 1Hz 驱动站点目录 mtime 热重载
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 };
 
