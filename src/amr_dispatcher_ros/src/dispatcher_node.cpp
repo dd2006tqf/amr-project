@@ -221,6 +221,7 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   nav_client_.reset();
   execute_goal_handles_.clear();
   mission_dispatch_start_.clear();
+  mission_dispatch_time_.clear();
   pending_nav_mission_id_.clear();
   pending_nav_goal_handle_.reset();
   state_pub_.reset();
@@ -326,15 +327,8 @@ void DispatcherNode::CancelOrderCb(
   if (!req->mission_id.empty()) {
     bool ok = queue_->Cancel(req->mission_id);
     if (ok) {
-      // action 提交的任务在排队中被取消：释放 HandleGoal 预占的 required_resources
-      // 并终结 ExecuteMission goal（handle 未受理 action cancel，降级 abort(3 PREEMPTED)）
-      if (execute_goal_handles_.count(req->mission_id) > 0) {
-        if (reservation_table_) {
-          reservation_table_->Release(req->mission_id);
-        }
-        FinishExecuteGoal(req->mission_id, ExecuteFinish::kCanceled,
-                          "mission canceled by operator", 3);
-      }
+      // action 提交的任务在排队中被取消：helper 终结 handle + 释放 HandleGoal 预占
+      CleanupMissionCancel(req->mission_id, "mission canceled by operator");
       resp->success = true;
       resp->canceled_count = 1;
       resp->message = "Mission canceled from queue";
@@ -355,16 +349,9 @@ void DispatcherNode::CancelOrderCb(
           }
         }
         active_missions_.erase(it);
-        // action 模式级联：取消在途 NavigateSequence goal 并清 pending 标记
-        if (navigation_backend_ == "action" && pending_nav_mission_id_ == req->mission_id) {
-          if (nav_client_ && pending_nav_goal_handle_) {
-            nav_client_->async_cancel_goal(pending_nav_goal_handle_);
-          }
-          pending_nav_mission_id_.clear();
-          pending_nav_goal_handle_.reset();
-        }
-        // 服务侧取消未受理 action cancel（handle 不在 CANCELING），由 helper 降级 abort(3 PREEMPTED)
-        FinishExecuteGoal(req->mission_id, ExecuteFinish::kCanceled, "mission canceled by operator", 3);
+        // helper：终结 ExecuteMission goal（未受理 action cancel → 降级 abort(3)）
+        // 并级联取消在途 NavigateSequence goal（清 pending_nav_*）
+        CleanupMissionCancel(req->mission_id, "mission canceled by operator");
         resp->success = true;
         resp->canceled_count = 1;
         resp->message = "Active mission canceled";
@@ -378,7 +365,20 @@ void DispatcherNode::CancelOrderCb(
     return;
   }
   if (!req->order_id.empty()) {
+    // 整单批量取消：取消前对在队任务取证（仅存在 action handle 时取证，plan 模式零开销），
+    // 取消成功后逐个收口 handle/预占/pending_nav（审查 I5）
+    std::vector<std::string> action_mission_ids;
+    if (!execute_goal_handles_.empty()) {
+      for (const auto& qm : queue_->Snapshot()) {
+        if (qm.order_id == req->order_id) {
+          action_mission_ids.push_back(qm.id);
+        }
+      }
+    }
     std::size_t count = queue_->CancelOrder(req->order_id);
+    for (const auto& id : action_mission_ids) {
+      CleanupMissionCancel(id, "mission canceled by operator");
+    }
     resp->success = true;
     resp->canceled_count = static_cast<uint32_t>(count);
     resp->message = "Order canceled, count=" + std::to_string(count);
@@ -487,8 +487,24 @@ void DispatcherNode::CancelQueuedMissionCb(
     return;
   }
   bool canceled = queue_->Cancel(req->mission_id);
-  if (!canceled) {
-    canceled = (queue_->CancelOrder(req->mission_id) > 0);
+  if (canceled) {
+    // 排队取消命中：收口该任务的 action goal/handle 预占/pending_nav（审查 I5）
+    CleanupMissionCancel(req->mission_id, "mission canceled by operator");
+  } else {
+    // 按整单取消：取消前取证该订单在队任务，取消成功后逐个收口（审查 I5）
+    std::vector<std::string> action_mission_ids;
+    if (!execute_goal_handles_.empty()) {
+      for (const auto& qm : queue_->Snapshot()) {
+        if (qm.order_id == req->mission_id) {
+          action_mission_ids.push_back(qm.id);
+        }
+      }
+    }
+    const std::size_t order_count = queue_->CancelOrder(req->mission_id);
+    canceled = (order_count > 0);
+    for (const auto& id : action_mission_ids) {
+      CleanupMissionCancel(id, "mission canceled by operator");
+    }
   }
   if (req->cancel_active) {
     bool erased = false;
@@ -511,6 +527,8 @@ void DispatcherNode::CancelQueuedMissionCb(
           plan_pub_->publish(empty);
         }
       }
+      // 活动任务取消同样收口 action goal 与在途导航 goal（cancel_active 路径，审查 I5）
+      CleanupMissionCancel(req->mission_id, "mission canceled by operator");
     }
   }
   resp->success = canceled;
@@ -794,6 +812,17 @@ void DispatcherNode::FinishExecuteGoal(const std::string& mission_id, ExecuteFin
   }
   auto handle = it->second;
   execute_goal_handles_.erase(it);
+
+  // total_duration_sec：按派发时刻计时（排队中取消等未派发场景为 0），
+  // 计时后即遗忘时间戳，防止 map 长期驻留
+  double duration_sec = 0.0;
+  auto dispatch_time = mission_dispatch_time_.find(mission_id);
+  if (dispatch_time != mission_dispatch_time_.end()) {
+    duration_sec = std::chrono::duration<double>(
+                       std::chrono::steady_clock::now() - dispatch_time->second)
+                       .count();
+    mission_dispatch_time_.erase(dispatch_time);
+  }
   if (!handle || !handle->is_active()) {
     return;
   }
@@ -802,7 +831,7 @@ void DispatcherNode::FinishExecuteGoal(const std::string& mission_id, ExecuteFin
   result->success = (kind == ExecuteFinish::kSucceed);
   result->error_code = error_code;
   result->message = message;
-  result->total_duration_sec = 0.0;  // 未记录派发起始时刻（见报告 concerns）
+  result->total_duration_sec = duration_sec;
   try {
     if (handle->is_canceling()) {
       // 已受理 action cancel：只能走 canceled()（rclcpp_action 状态机约束）
@@ -823,6 +852,31 @@ void DispatcherNode::FinishExecuteGoal(const std::string& mission_id, ExecuteFin
                 mission_id.c_str(), static_cast<int>(kind), message.c_str());
   } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "FinishExecuteGoal(%s) failed: %s", mission_id.c_str(), ex.what());
+  }
+}
+
+void DispatcherNode::CleanupMissionCancel(const std::string& mission_id,
+                                          const std::string& reason) {
+  // HandleGoal 预占的 required_resources 随任务取消一并释放（plan 模式无 handle 时
+  // Release 对无锁持有者是无操作，与既有行为一致）
+  const bool has_handle = execute_goal_handles_.count(mission_id) > 0;
+  if (has_handle && reservation_table_) {
+    reservation_table_->Release(mission_id);
+  }
+  // action 模式级联：取消在途 NavigateSequence goal 并清 pending 标记
+  if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
+    if (nav_client_ && pending_nav_goal_handle_) {
+      nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+    }
+    pending_nav_mission_id_.clear();
+    pending_nav_goal_handle_.reset();
+  }
+  if (has_handle) {
+    // 服务侧取消未受理 action cancel（handle 不在 CANCELING），降级 abort(3 PREEMPTED)
+    // （total_duration_sec 的时间戳由 FinishExecuteGoal 计时后遗忘）
+    FinishExecuteGoal(mission_id, ExecuteFinish::kCanceled, reason, 3);
+  } else {
+    mission_dispatch_time_.erase(mission_id);
   }
 }
 
@@ -892,6 +946,24 @@ void DispatcherNode::NavGoalResponseCb(const std::string& mission_id,
     }
     // FailMission 内部会清理 tracking 槽位与空路径停车
     FailMission(mission_id, "navigate_sequence goal rejected by bridge");
+    return;
+  }
+  // goal 响应到达时任务可能已被取消/完结：孤儿 goal 直接取消，
+  // 否则 bridge 盲跑 + pending 句柄残留（审查 I4）
+  bool mission_alive;
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    mission_alive = active_missions_.count(mission_id) > 0;
+  }
+  if (!mission_alive) {
+    RCLCPP_WARN(get_logger(),
+                "Stale NavigateSequence goal response for %s (mission gone); canceling orphan goal",
+                mission_id.c_str());
+    nav_client_->async_cancel_goal(goal_handle);
+    if (pending_nav_mission_id_ == mission_id) {
+      pending_nav_mission_id_.clear();
+      pending_nav_goal_handle_.reset();
+    }
     return;
   }
   pending_nav_goal_handle_ = goal_handle;
@@ -1032,6 +1104,8 @@ void DispatcherNode::ScheduleTick() {
 
   // 记录派发起点：ExecuteMission feedback 按此直线距离折算 percent_complete
   mission_dispatch_start_[m.id] = {start.x, start.y, start.theta};
+  // 派发时刻：ExecuteMission result.total_duration_sec 由此计时
+  mission_dispatch_time_[m.id] = std::chrono::steady_clock::now();
 
   // 执行后端：action 模式不发 /plan，改为向 /navigate_sequence 发单点 goal
   //（waypoint=规划终点，station_names=[dropoff]）；默认 plan 模式以下路径不变。
@@ -1136,6 +1210,12 @@ void DispatcherNode::OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg) {
 
 void DispatcherNode::TrackingErrorCb(
     const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+  // action 模式的到达信号归 bridge 消费、结果由 NavResultCb 收口：
+  // dispatcher 若自行 CompleteMission 会对同一 NavigateSequence goal 发
+  // async_cancel_goal，把已完成 goal 打成 CANCELED（审查 I2）
+  if (navigation_backend_ == "action") {
+    return;
+  }
   if (!msg->arrived || tracking_mission_id_.empty()) {
     return;
   }
@@ -1146,6 +1226,11 @@ void DispatcherNode::TrackingErrorCb(
 }
 
 void DispatcherNode::CompleteMission(const std::string& mission_id, const std::string& reason) {
+  // 单车执行槽位兜底释放：plan 模式由 TrackingErrorCb 先清（幂等）、
+  // action 模式由 NavResultCb 收口——此处不清则槽位残留，后续任务永远无法派发（审查 C1）
+  if (tracking_mission_id_ == mission_id) {
+    tracking_mission_id_.clear();
+  }
   std::string order_id;
   {
     std::lock_guard<std::mutex> lock(active_missions_mutex_);
@@ -1158,6 +1243,7 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
   }
   // ExecuteMission goal 成功收口；action 模式清在途导航 goal（result 到达前的兜底取消）
   FinishExecuteGoal(mission_id, ExecuteFinish::kSucceed, reason, 0);
+  mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
   if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
     if (nav_client_ && pending_nav_goal_handle_) {
       nav_client_->async_cancel_goal(pending_nav_goal_handle_);
@@ -1224,6 +1310,7 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
   }
   // ExecuteMission goal 失败收口（error_code=1）；action 模式取消在途导航 goal
   FinishExecuteGoal(mission_id, ExecuteFinish::kAbort, reason, 1);
+  mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
   if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
     if (nav_client_ && pending_nav_goal_handle_) {
       nav_client_->async_cancel_goal(pending_nav_goal_handle_);
@@ -1402,6 +1489,7 @@ void DispatcherNode::DeadlockTick() {
           pending_nav_goal_handle_.reset();
         }
         FinishExecuteGoal(act.mission_id, ExecuteFinish::kAbort, act.reason, 1);
+        mission_dispatch_time_.erase(act.mission_id);  // plan 模式无 handle 时的派发时刻遗忘
         // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
         // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
         if (tracking_mission_id_ == act.mission_id) {

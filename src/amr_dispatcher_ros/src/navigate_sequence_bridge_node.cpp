@@ -213,6 +213,17 @@ void NavigateSequenceBridgeNode::PublishSeqFeedback(const std::string& state,
   current_goal_->publish_feedback(fb);
 }
 
+void NavigateSequenceBridgeNode::StopFallbackMotion() {
+  if (use_nav2_ || !plan_pub_) {
+    return;  // Nav2 模式没有 /plan 链，无需空路径停车
+  }
+  nav_msgs::msg::Path empty;
+  empty.header.stamp = now();
+  empty.header.frame_id = "map";
+  plan_pub_->publish(empty);
+  RCLCPP_INFO(get_logger(), "Published empty %s to stop fallback motion", plan_topic_.c_str());
+}
+
 void NavigateSequenceBridgeNode::CancelPollTick() {
   if (!current_goal_ || !current_goal_->is_canceling()) {
     return;
@@ -223,6 +234,8 @@ void NavigateSequenceBridgeNode::CancelPollTick() {
     nav2_client_->async_cancel_all_goals();
   }
 #endif
+  // fallback 运动中被取消：发空 /plan 停车，否则 path_tracker 继续追旧航点（审查 I3）
+  StopFallbackMotion();
   auto result = std::make_shared<NavigateSequence::Result>();
   result->success = false;
   result->message = "canceled by client";
@@ -251,6 +264,7 @@ void NavigateSequenceBridgeNode::SendNav2GoalForCurrentIndex() {
     result->failed_waypoints = failed_waypoints_;
     RCLCPP_ERROR(get_logger(), "%s (waypoint %zu/%zu)", result->message.c_str(),
                  current_index_ + 1, nav_poses_.size());
+    StopFallbackMotion();  // 终结路径统一停车（use_nav2_ 下为空操作）
     current_goal_->abort(result);
     current_goal_.reset();
     waiting_arrival_ = false;
@@ -315,6 +329,7 @@ void NavigateSequenceBridgeNode::Nav2ResultCb(
   res->failed_waypoints = failed_waypoints_;
   RCLCPP_ERROR(get_logger(), "%s (code=%d)", res->message.c_str(),
                static_cast<int>(result.code));
+  StopFallbackMotion();  // 终结路径统一停车（use_nav2_ 下为空操作）
   current_goal_->abort(res);
   current_goal_.reset();
   waiting_arrival_ = false;

@@ -163,6 +163,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 因此服务侧取消（未受理 action cancel）降级为 abort(error_code)。
   void FinishExecuteGoal(const std::string& mission_id, ExecuteFinish kind,
                          const std::string& message, std::int32_t error_code);
+  // 服务侧/批量取消路径共用收口：终结 handle + 释放 HandleGoal 预占 +
+  // 清 action 模式在途 NavigateSequence goal（CancelOrder/CancelQueued/整单批量复用）
+  void CleanupMissionCancel(const std::string& mission_id, const std::string& reason);
   // 受理过的 action 取消（HandleCancel 返回 ACCEPT 后 goal 才进入 CANCELING）的延迟处理
   void ProcessActionCancels();
 
@@ -213,7 +216,6 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveResource>::SharedPtr reserve_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
-  rclcpp_action::Server<ExecuteMission>::SharedPtr action_server_;
   // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
   rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
   // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）
@@ -222,6 +224,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unordered_map<std::string, std::shared_ptr<GoalHandleExecute>> execute_goal_handles_;
   // mission_id -> 派发起点（PublishState 里按直线距离折算 percent_complete）
   std::unordered_map<std::string, amr_dispatcher_core::path_tracking::Pose2D> mission_dispatch_start_;
+  // mission_id -> 派发时刻（ExecuteMission result.total_duration_sec 计算用，
+  // 终态时在 FinishExecuteGoal/CompleteMission/FailMission/取消收口里遗忘）
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> mission_dispatch_time_;
   // 导航后端：plan（默认，原 /plan 路径不变）| action（发 /navigate_sequence 单点 goal）
   std::string navigation_backend_{"plan"};
   // action 模式在途导航 goal 的归属任务与句柄（取消/终态时级联 async_cancel_goal）

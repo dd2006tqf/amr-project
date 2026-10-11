@@ -57,6 +57,9 @@ class NavigateSequenceBridgeNode : public rclcpp::Node {
   // rclcpp_action 在 HandleCancel 返回 ACCEPT 之后才把 goal 迁移到 CANCELING，
   // 而 canceled() 只允许在 CANCELING 态调用，因此终结动作必须延后一拍。
   void CancelPollTick();
+  // fallback 终结停车：goal 在运动中被 cancel/abort 终结时发空 /plan，
+  // 让 path_tracker 停下，否则继续追踪已失效的旧航点（Nav2 模式为空操作）
+  void StopFallbackMotion();
 
 #ifdef AMR_HAVE_NAV2_MSGS
   void SendNav2GoalForCurrentIndex();
