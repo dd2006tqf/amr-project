@@ -23,6 +23,8 @@ find_package(pluginlib REQUIRED)
 find_package(amr_dispatcher_core REQUIRED)
 find_package(amr_dispatcher_interfaces REQUIRED)
 find_package(amr_dispatcher_bt REQUIRED)
+# nav2_msgs 可选：镜像缺包时 QUIET 跳过，桥接节点 Nav2 分支条件编译，容器构建永不因 Nav2 挂掉
+find_package(nav2_msgs QUIET)
 
 # 1. chassis_driver_node
 add_executable(chassis_driver_node
@@ -62,6 +64,28 @@ ament_target_dependencies(dispatcher_node
 )
 # 行为树编排层：订单路由、出队派发门控、恢复与结果决策
 target_link_libraries(dispatcher_node amr_dispatcher_bt::amr_dispatcher_bt)
+
+# 2.1 navigate_sequence_bridge_node
+# /navigate_sequence action server：fallback 转 /plan（复用 path_tracker 链），
+# use_nav2:=true 时条件编译走 Nav2 navigate_to_pose（镜像缺 nav2_msgs 则自动降级）
+add_executable(navigate_sequence_bridge_node
+  src/navigate_sequence_bridge_node.cpp
+)
+target_include_directories(navigate_sequence_bridge_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(navigate_sequence_bridge_node
+  rclcpp
+  rclcpp_action
+  nav_msgs
+  geometry_msgs
+  amr_dispatcher_interfaces
+)
+if(nav2_msgs_FOUND)
+  target_compile_definitions(navigate_sequence_bridge_node PRIVATE AMR_HAVE_NAV2_MSGS)
+  ament_target_dependencies(navigate_sequence_bridge_node nav2_msgs)
+endif()
 
 # 3. safety_gate_node
 add_executable(safety_gate_node
@@ -165,6 +189,7 @@ pluginlib_export_plugin_description_file(hardware_interface chassis_hardware_int
 install(TARGETS
   chassis_driver_node
   dispatcher_node
+  navigate_sequence_bridge_node
   safety_gate_node
   path_tracker_node
   link_health_publisher

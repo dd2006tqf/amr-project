@@ -1,6 +1,10 @@
 #include "amr_dispatcher_ros/dispatcher_node.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <utility>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -16,6 +20,7 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("stations_file", "config/stations.yaml");
   declare_parameter("path_step_size_m", 0.1);
   declare_parameter("recovery_dock_station", "station_charge_1");
+  declare_parameter("navigation_backend", "plan");
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
 }
 
@@ -122,7 +127,27 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
       "/v2/validate_site_config",
       std::bind(&DispatcherNode::ValidateSiteConfigCb, this, std::placeholders::_1, std::placeholders::_2));
 
-  RCLCPP_INFO(get_logger(), "DispatcherNode configured (capacity=%zu, comparator=%s)", cap, comp_name.c_str());
+  // 导航后端：默认 plan（行为与既有代码逐字节一致）；action 模式派发改发 NavigateSequence 单点 goal
+  navigation_backend_ = get_parameter("navigation_backend").as_string();
+  if (navigation_backend_ != "plan" && navigation_backend_ != "action") {
+    RCLCPP_WARN(get_logger(), "Unknown navigation_backend '%s', falling back to 'plan'",
+                navigation_backend_.c_str());
+    navigation_backend_ = "plan";
+  }
+  // ExecuteMission action server：HandleGoal 校验（非空/不重复/资源可预占），
+  // HandleAccepted 只做入队 + 存 goal handle（不起线程）
+  execute_action_server_ = rclcpp_action::create_server<ExecuteMission>(
+      this, "/execute_mission",
+      std::bind(&DispatcherNode::HandleGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&DispatcherNode::HandleCancel, this, std::placeholders::_1),
+      std::bind(&DispatcherNode::HandleAccepted, this, std::placeholders::_1));
+  if (navigation_backend_ == "action") {
+    nav_client_ = rclcpp_action::create_client<NavigateSequence>(this, "/navigate_sequence");
+  }
+
+  RCLCPP_INFO(get_logger(),
+              "DispatcherNode configured (capacity=%zu, comparator=%s, navigation_backend=%s)",
+              cap, comp_name.c_str(), navigation_backend_.c_str());
   return CallbackReturn::SUCCESS;
 }
 
@@ -192,6 +217,12 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   reserve_facility_srv_.reset();
   snapshot_srv_.reset();
   validate_site_srv_.reset();
+  execute_action_server_.reset();
+  nav_client_.reset();
+  execute_goal_handles_.clear();
+  mission_dispatch_start_.clear();
+  pending_nav_mission_id_.clear();
+  pending_nav_goal_handle_.reset();
   state_pub_.reset();
   event_pub_.reset();
   plan_pub_.reset();
@@ -295,6 +326,15 @@ void DispatcherNode::CancelOrderCb(
   if (!req->mission_id.empty()) {
     bool ok = queue_->Cancel(req->mission_id);
     if (ok) {
+      // action 提交的任务在排队中被取消：释放 HandleGoal 预占的 required_resources
+      // 并终结 ExecuteMission goal（handle 未受理 action cancel，降级 abort(3 PREEMPTED)）
+      if (execute_goal_handles_.count(req->mission_id) > 0) {
+        if (reservation_table_) {
+          reservation_table_->Release(req->mission_id);
+        }
+        FinishExecuteGoal(req->mission_id, ExecuteFinish::kCanceled,
+                          "mission canceled by operator", 3);
+      }
       resp->success = true;
       resp->canceled_count = 1;
       resp->message = "Mission canceled from queue";
@@ -315,6 +355,16 @@ void DispatcherNode::CancelOrderCb(
           }
         }
         active_missions_.erase(it);
+        // action 模式级联：取消在途 NavigateSequence goal 并清 pending 标记
+        if (navigation_backend_ == "action" && pending_nav_mission_id_ == req->mission_id) {
+          if (nav_client_ && pending_nav_goal_handle_) {
+            nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+          }
+          pending_nav_mission_id_.clear();
+          pending_nav_goal_handle_.reset();
+        }
+        // 服务侧取消未受理 action cancel（handle 不在 CANCELING），由 helper 降级 abort(3 PREEMPTED)
+        FinishExecuteGoal(req->mission_id, ExecuteFinish::kCanceled, "mission canceled by operator", 3);
         resp->success = true;
         resp->canceled_count = 1;
         resp->message = "Active mission canceled";
@@ -636,7 +686,269 @@ void DispatcherNode::ValidateSiteConfigCb(
   resp->message = "Site configuration validation passed (topology & params consistent)";
 }
 
+rclcpp_action::GoalResponse DispatcherNode::HandleGoal(
+    const rclcpp_action::GoalUUID& /*uuid*/,
+    std::shared_ptr<const ExecuteMission::Goal> goal) {
+  if (!goal || goal->mission_id.empty()) {
+    RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: empty mission_id");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  if ((queue_ && queue_->Contains(goal->mission_id)) ||
+      active_missions_.count(goal->mission_id) > 0) {
+    RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: duplicate mission_id %s",
+                goal->mission_id.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  // required_resources 可预占：Reserve 原子性（不落任何锁即失败），失败即 REJECT
+  if (!goal->required_resources.empty()) {
+    if (!reservation_table_) {
+      RCLCPP_WARN(get_logger(),
+                  "ExecuteMission goal rejected: reservation table unavailable for %s",
+                  goal->mission_id.c_str());
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    auto res = reservation_table_->Reserve(goal->mission_id, goal->required_resources);
+    if (!res.success) {
+      RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: reserve failed for %s: %s",
+                  goal->mission_id.c_str(), res.message.c_str());
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+  }
+  // DEFER + HandleAccepted 里显式 execute()：不受框架是否隐式 execute 影响的稳妥路径
+  return rclcpp_action::GoalResponse::ACCEPT_AND_DEFER;
+}
+
+rclcpp_action::CancelResponse DispatcherNode::HandleCancel(
+    const std::shared_ptr<GoalHandleExecute> goal_handle) {
+  if (execute_goal_handles_.find(goal_handle->get_goal()->mission_id) ==
+      execute_goal_handles_.end()) {
+    return rclcpp_action::CancelResponse::REJECT;
+  }
+  // 只受理取消请求：rclcpp_action 在本回调返回 ACCEPT 之后才把 goal 迁移到
+  // CANCELING，而 canceled() 只允许在 CANCELING 态调用——
+  // 实际的任务取消与 goal 终结延后到 ProcessActionCancels（ScheduleTick 内）。
+  return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void DispatcherNode::HandleAccepted(const std::shared_ptr<GoalHandleExecute> goal_handle) {
+  const auto goal = goal_handle->get_goal();
+  // ACCEPTED -> EXECUTING：后续 publish_feedback/succeed/abort 的前置条件
+  goal_handle->execute();
+
+  if (!queue_) {
+    if (reservation_table_) {
+      reservation_table_->Release(goal->mission_id);
+    }
+    auto result = std::make_shared<ExecuteMission::Result>();
+    result->success = false;
+    result->error_code = 1;
+    result->message = "dispatcher not configured";
+    goal_handle->abort(result);
+    return;
+  }
+
+  amr_dispatcher_core::dispatcher::Mission m;
+  m.id = goal->mission_id;
+  m.order_id = goal->mission_id;  // 订单号=任务号，保证整单取消可寻址
+  m.priority = goal->priority;
+  m.dropoff_station = goal->target_station;
+  if (goal->deadline_seconds > 0.0) {
+    m.deadline_unix_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count() +
+        static_cast<std::int64_t>(goal->deadline_seconds * 1000.0);
+  }
+  m.state = amr_dispatcher_core::dispatcher::MissionState::kPending;
+  m.sequence = next_sequence_++;
+
+  auto push = queue_->Push(m);
+  if (!push.accepted) {
+    // 入队失败回滚 HandleGoal 的资源预占并 abort（死锁风险下的显式失败出口）
+    if (reservation_table_) {
+      reservation_table_->Release(m.id);
+    }
+    auto result = std::make_shared<ExecuteMission::Result>();
+    result->success = false;
+    result->error_code = 1;
+    result->message = "enqueue rejected: " + push.message;
+    goal_handle->abort(result);
+    RCLCPP_WARN(get_logger(), "ExecuteMission enqueue rejected for %s: %s", m.id.c_str(),
+                push.message.c_str());
+    return;
+  }
+
+  execute_goal_handles_[m.id] = goal_handle;
+  queue_start_requested_ = true;  // action 提交的任务武装 runtime 出队启动请求
+  RCLCPP_INFO(get_logger(),
+              "ExecuteMission accepted: %s -> queued (target=%s, prio=%d, resources=%zu)",
+              m.id.c_str(), m.dropoff_station.c_str(), m.priority,
+              goal->required_resources.size());
+}
+
+void DispatcherNode::FinishExecuteGoal(const std::string& mission_id, ExecuteFinish kind,
+                                        const std::string& message, std::int32_t error_code) {
+  auto it = execute_goal_handles_.find(mission_id);
+  if (it == execute_goal_handles_.end()) {
+    return;
+  }
+  auto handle = it->second;
+  execute_goal_handles_.erase(it);
+  if (!handle || !handle->is_active()) {
+    return;
+  }
+
+  auto result = std::make_shared<ExecuteMission::Result>();
+  result->success = (kind == ExecuteFinish::kSucceed);
+  result->error_code = error_code;
+  result->message = message;
+  result->total_duration_sec = 0.0;  // 未记录派发起始时刻（见报告 concerns）
+  try {
+    if (handle->is_canceling()) {
+      // 已受理 action cancel：只能走 canceled()（rclcpp_action 状态机约束）
+      handle->canceled(result);
+    } else if (handle->is_executing()) {
+      if (kind == ExecuteFinish::kSucceed) {
+        handle->succeed(result);
+      } else {
+        // kAbort 与服务侧取消（未进入 CANCELING 无法 canceled()）降级为 abort
+        handle->abort(result);
+      }
+    } else {
+      // ACCEPTED 未执行的兜底：先 execute 再 abort，避免 rclcpp_action 状态断言
+      handle->execute();
+      handle->abort(result);
+    }
+    RCLCPP_INFO(get_logger(), "ExecuteMission goal finished: %s kind=%d (%s)",
+                mission_id.c_str(), static_cast<int>(kind), message.c_str());
+  } catch (const std::exception& ex) {
+    RCLCPP_ERROR(get_logger(), "FinishExecuteGoal(%s) failed: %s", mission_id.c_str(), ex.what());
+  }
+}
+
+void DispatcherNode::ProcessActionCancels() {
+  if (execute_goal_handles_.empty()) {
+    return;
+  }
+  std::vector<std::string> canceling;
+  canceling.reserve(execute_goal_handles_.size());
+  for (const auto& [id, handle] : execute_goal_handles_) {
+    if (handle && handle->is_canceling()) {
+      canceling.push_back(id);
+    }
+  }
+  for (const auto& id : canceling) {
+    RCLCPP_INFO(get_logger(), "ExecuteMission cancel accepted by action client: %s", id.c_str());
+    bool canceled = false;
+    if (queue_ && queue_->Cancel(id)) {
+      // 排队中任务被 action 取消：连带释放 HandleGoal 预占的 required_resources
+      if (reservation_table_) {
+        reservation_table_->Release(id);
+      }
+      canceled = true;
+    } else {
+      auto it = active_missions_.find(id);
+      if (it != active_missions_.end()) {
+        if (reservation_table_) {
+          reservation_table_->Release(id);
+        }
+        if (tracking_mission_id_ == id) {
+          tracking_mission_id_.clear();
+          if (plan_pub_ && plan_pub_->is_activated()) {
+            nav_msgs::msg::Path empty;
+            empty.header.stamp = now();
+            empty.header.frame_id = "map";
+            plan_pub_->publish(empty);
+          }
+        }
+        active_missions_.erase(it);
+        canceled = true;
+      }
+    }
+    // action 模式级联：取消在途的 NavigateSequence goal 并清 pending 标记
+    if (navigation_backend_ == "action" && pending_nav_mission_id_ == id) {
+      if (nav_client_ && pending_nav_goal_handle_) {
+        nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+      }
+      pending_nav_mission_id_.clear();
+      pending_nav_goal_handle_.reset();
+    }
+    // 此时 handle 已确认 is_canceling()，canceled() 状态合法
+    FinishExecuteGoal(id, ExecuteFinish::kCanceled, "mission canceled by action client", 3);
+    if (canceled) {
+      ReArmQueueStartRequest();
+    }
+  }
+}
+
+void DispatcherNode::NavGoalResponseCb(const std::string& mission_id,
+                                       const GoalHandleNavigate::SharedPtr& goal_handle) {
+  if (!goal_handle) {
+    RCLCPP_WARN(get_logger(), "NavigateSequence goal rejected by bridge for mission %s",
+                mission_id.c_str());
+    if (pending_nav_mission_id_ == mission_id) {
+      pending_nav_mission_id_.clear();
+      pending_nav_goal_handle_.reset();
+    }
+    // FailMission 内部会清理 tracking 槽位与空路径停车
+    FailMission(mission_id, "navigate_sequence goal rejected by bridge");
+    return;
+  }
+  pending_nav_goal_handle_ = goal_handle;
+}
+
+void DispatcherNode::NavFeedbackCb(
+    const std::string& mission_id, const GoalHandleNavigate::SharedPtr& /*goal_handle*/,
+    const std::shared_ptr<const NavigateSequence::Feedback> feedback) {
+  mission_last_progress_[mission_id] = std::chrono::steady_clock::now();  // 喂死锁 idle 启发式
+  if (!feedback) {
+    return;
+  }
+  // NavigateSequence feedback -> ExecuteMission feedback 映射
+  // （current_index/total -> state_code=2 EXECUTING + percent=index/total*100）
+  auto hit = execute_goal_handles_.find(mission_id);
+  if (hit == execute_goal_handles_.end() || !hit->second || !hit->second->is_executing()) {
+    return;
+  }
+  auto fb = std::make_shared<ExecuteMission::Feedback>();
+  fb->state_code = 2;  // EXECUTING
+  fb->current_node = feedback->current_station;
+  fb->percent_complete =
+      feedback->total_waypoints > 0
+          ? static_cast<float>(100.0 * static_cast<double>(feedback->current_index) /
+                               static_cast<double>(feedback->total_waypoints))
+          : 0.0f;
+  fb->estimated_remaining_sec = 0.0;
+  hit->second->publish_feedback(fb);
+}
+
+void DispatcherNode::NavResultCb(const std::string& mission_id,
+                                 const GoalHandleNavigate::WrappedResult& result) {
+  if (pending_nav_mission_id_ == mission_id) {
+    pending_nav_mission_id_.clear();
+    pending_nav_goal_handle_.reset();
+  }
+  if (result.code == rclcpp_action::ResultCode::SUCCEEDED && result.result &&
+      result.result->success) {
+    CompleteMission(mission_id, "navigate_sequence succeeded");
+    return;
+  }
+  std::string msg;
+  if (result.result && !result.result->message.empty()) {
+    msg = result.result->message;
+  } else if (result.code == rclcpp_action::ResultCode::CANCELED) {
+    msg = "navigate_sequence canceled";
+  } else if (result.code == rclcpp_action::ResultCode::ABORTED) {
+    msg = "navigate_sequence aborted";
+  } else {
+    msg = "navigate_sequence failed";
+  }
+  FailMission(mission_id, msg);
+}
+
 void DispatcherNode::ScheduleTick() {
+  // 已受理的 ExecuteMission action 取消需在提前返回之前处理（10Hz 延迟 ≤100ms）
+  ProcessActionCancels();
   if (!queue_ || queue_->empty()) {
     return;
   }
@@ -718,6 +1030,69 @@ void DispatcherNode::ScheduleTick() {
     return;
   }
 
+  // 记录派发起点：ExecuteMission feedback 按此直线距离折算 percent_complete
+  mission_dispatch_start_[m.id] = {start.x, start.y, start.theta};
+
+  // 执行后端：action 模式不发 /plan，改为向 /navigate_sequence 发单点 goal
+  //（waypoint=规划终点，station_names=[dropoff]）；默认 plan 模式以下路径不变。
+  if (navigation_backend_ == "action") {
+    if (!nav_client_) {
+      FailMission(m.id, "navigate_sequence client not configured");
+      return;
+    }
+    if (!nav_client_->action_server_is_ready()) {
+      FailMission(m.id, "navigate_sequence action server not available (is bridge running?)");
+      return;
+    }
+    const auto& wp = waypoints.back();
+    NavigateSequence::Goal nav_goal;
+    geometry_msgs::msg::PoseStamped ps;
+    ps.header.stamp = now();
+    ps.header.frame_id = "map";
+    ps.pose.position.x = wp.x;
+    ps.pose.position.y = wp.y;
+    ps.pose.orientation.z = std::sin(wp.theta / 2.0);
+    ps.pose.orientation.w = std::cos(wp.theta / 2.0);
+    nav_goal.waypoints.push_back(ps);
+    nav_goal.station_names.push_back(m.dropoff_station);
+    nav_goal.loop = false;
+
+    rclcpp_action::Client<NavigateSequence>::SendGoalOptions opts;
+    const std::string mission_id = m.id;
+    opts.goal_response_callback = [this, mission_id](const GoalHandleNavigate::SharedPtr& gh) {
+      NavGoalResponseCb(mission_id, gh);
+    };
+    opts.feedback_callback = [this, mission_id](const GoalHandleNavigate::SharedPtr& gh,
+                                                const std::shared_ptr<const NavigateSequence::Feedback> fb) {
+      NavFeedbackCb(mission_id, gh, fb);
+    };
+    opts.result_callback = [this, mission_id](const GoalHandleNavigate::WrappedResult& result) {
+      NavResultCb(mission_id, result);
+    };
+    // 先占住单车执行槽位再发 goal，避免 goal 响应回调前的派发空窗
+    pending_nav_mission_id_ = m.id;
+    tracking_mission_id_ = m.id;
+    nav_client_->async_send_goal(nav_goal, opts);
+
+    RCLCPP_INFO(get_logger(),
+                "Dispatched mission via NavigateSequence: %s (order=%s, type=%s, prio=%d, %s->%s)",
+                m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority,
+                m.pickup_station.c_str(), m.dropoff_station.c_str());
+
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent msg;
+      msg.stamp = now();
+      msg.mission_id = m.id;
+      msg.order_id = m.order_id;
+      msg.event = "active";
+      msg.from_state = "PENDING";
+      msg.to_state = "ACTIVE";
+      msg.reason = "dispatched by scheduler";
+      event_pub_->publish(msg);
+    }
+    return;
+  }
+
   nav_msgs::msg::Path path_msg;
   path_msg.header.stamp = now();
   path_msg.header.frame_id = "map";
@@ -781,6 +1156,15 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
     order_id = it->second.order_id;
     active_missions_.erase(it);
   }
+  // ExecuteMission goal 成功收口；action 模式清在途导航 goal（result 到达前的兜底取消）
+  FinishExecuteGoal(mission_id, ExecuteFinish::kSucceed, reason, 0);
+  if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
+    if (nav_client_ && pending_nav_goal_handle_) {
+      nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+    }
+    pending_nav_mission_id_.clear();
+    pending_nav_goal_handle_.reset();
+  }
 
   // 结果处理走 mission_result 行为树：成功分支给资源释放与失败计数复位决策
   amr_dispatcher_core::workflow::MissionResultWorkflowInput result_input;
@@ -837,6 +1221,15 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
     order_id = it->second.order_id;
     mission_copy = it->second;
     active_missions_.erase(it);
+  }
+  // ExecuteMission goal 失败收口（error_code=1）；action 模式取消在途导航 goal
+  FinishExecuteGoal(mission_id, ExecuteFinish::kAbort, reason, 1);
+  if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
+    if (nav_client_ && pending_nav_goal_handle_) {
+      nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+    }
+    pending_nav_mission_id_.clear();
+    pending_nav_goal_handle_.reset();
   }
 
   // 失败结果先经 mission_result 行为树分类：资源释放决策 + 失败处理标记
@@ -1000,6 +1393,15 @@ void DispatcherNode::DeadlockTick() {
             reservation_table_->Release(act.mission_id);
           }
         }
+        // 死锁恢复取消的级联：清在途 NavigateSequence goal + 终结 ExecuteMission goal
+        if (navigation_backend_ == "action" && pending_nav_mission_id_ == act.mission_id) {
+          if (nav_client_ && pending_nav_goal_handle_) {
+            nav_client_->async_cancel_goal(pending_nav_goal_handle_);
+          }
+          pending_nav_mission_id_.clear();
+          pending_nav_goal_handle_.reset();
+        }
+        FinishExecuteGoal(act.mission_id, ExecuteFinish::kAbort, act.reason, 1);
         // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
         // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
         if (tracking_mission_id_ == act.mission_id) {
@@ -1064,6 +1466,40 @@ void DispatcherNode::PublishState() {
   }
   if (!msg.active_mission_ids.empty()) {
     msg.active_mission_id = msg.active_mission_ids.front();
+  }
+
+  // ExecuteMission 进度反馈：按派发起点的直线距离折算 percent_complete
+  //（state_code=1 WAITING_LOCK 为计划定死的周期反馈语义；导航中的高频反馈由 NavFeedbackCb 发 state_code=2）
+  for (const auto& [id, handle] : execute_goal_handles_) {
+    if (!handle || !handle->is_executing()) {
+      continue;
+    }
+    auto ait = active_missions_.find(id);
+    if (ait == active_missions_.end()) {
+      continue;  // 任务已终态（finish 时会查表移除 handle）
+    }
+    double percent = 0.0;
+    auto sit = mission_dispatch_start_.find(id);
+    const bool catalog_loaded = catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+    if (sit != mission_dispatch_start_.end() && has_odom_ && catalog_loaded &&
+        !ait->second.dropoff_station.empty()) {
+      const auto* to_st = amr_dispatcher_core::catalog::FindStation(
+          catalog_reloader_->catalog(), ait->second.dropoff_station);
+      if (to_st) {
+        const double total = std::hypot(to_st->x - sit->second.x, to_st->y - sit->second.y);
+        const double covered =
+            std::hypot(current_pose_.x - sit->second.x, current_pose_.y - sit->second.y);
+        if (total > 1e-6) {
+          percent = std::min(100.0, 100.0 * covered / total);
+        }
+      }
+    }
+    auto fb = std::make_shared<ExecuteMission::Feedback>();
+    fb->state_code = 1;  // WAITING_LOCK（计划定死的周期反馈状态）
+    fb->current_node = ait->second.dropoff_station;
+    fb->percent_complete = static_cast<float>(percent);
+    fb->estimated_remaining_sec = 0.0;
+    handle->publish_feedback(fb);
   }
 
   state_pub_->publish(msg);

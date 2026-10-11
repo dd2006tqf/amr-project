@@ -27,6 +27,7 @@
 #include <nav_msgs/msg/path.hpp>
 
 #include "amr_dispatcher_interfaces/action/execute_mission.hpp"
+#include "amr_dispatcher_interfaces/action/navigate_sequence.hpp"
 #include "amr_dispatcher_interfaces/msg/dispatcher_state.hpp"
 #include "amr_dispatcher_interfaces/msg/mission_event.hpp"
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
@@ -145,6 +146,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   using ExecuteMission = amr_dispatcher_interfaces::action::ExecuteMission;
   using GoalHandleExecute = rclcpp_action::ServerGoalHandle<ExecuteMission>;
+  using NavigateSequence = amr_dispatcher_interfaces::action::NavigateSequence;
+  using GoalHandleNavigate = rclcpp_action::ClientGoalHandle<NavigateSequence>;
 
   rclcpp_action::GoalResponse HandleGoal(
       const rclcpp_action::GoalUUID& uuid,
@@ -152,7 +155,22 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp_action::CancelResponse HandleCancel(
       const std::shared_ptr<GoalHandleExecute> goal_handle);
   void HandleAccepted(const std::shared_ptr<GoalHandleExecute> goal_handle);
-  void ExecuteActionTask(const std::shared_ptr<GoalHandleExecute> goal_handle);
+
+  // ExecuteMission goal 终结方式：成功 succeed / 失败 abort / 取消 canceled
+  enum class ExecuteFinish { kSucceed, kAbort, kCanceled };
+  // 在 CompleteMission/FailMission/取消路径里查表终结 execute_goal_handles_ 中的 handle。
+  // rclcpp_action 状态机约束：succeed/abort 仅 EXECUTING、canceled 仅 CANCELING，
+  // 因此服务侧取消（未受理 action cancel）降级为 abort(error_code)。
+  void FinishExecuteGoal(const std::string& mission_id, ExecuteFinish kind,
+                         const std::string& message, std::int32_t error_code);
+  // 受理过的 action 取消（HandleCancel 返回 ACCEPT 后 goal 才进入 CANCELING）的延迟处理
+  void ProcessActionCancels();
+
+  // NavigateSequence 客户端回调（navigation_backend=action 派发链）
+  void NavGoalResponseCb(const std::string& mission_id, const GoalHandleNavigate::SharedPtr& goal_handle);
+  void NavFeedbackCb(const std::string& mission_id, const GoalHandleNavigate::SharedPtr& goal_handle,
+                     const std::shared_ptr<const NavigateSequence::Feedback> feedback);
+  void NavResultCb(const std::string& mission_id, const GoalHandleNavigate::WrappedResult& result);
 
   void ScheduleTick();
   void DeadlockTick();
@@ -196,6 +214,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveResource>::SharedPtr reserve_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
   rclcpp_action::Server<ExecuteMission>::SharedPtr action_server_;
+  // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
+  rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
+  // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）
+  rclcpp_action::Client<NavigateSequence>::SharedPtr nav_client_;
+  // mission_id -> 仍在执行的 ExecuteMission goal handle（终态时查表 finish 并移除）
+  std::unordered_map<std::string, std::shared_ptr<GoalHandleExecute>> execute_goal_handles_;
+  // mission_id -> 派发起点（PublishState 里按直线距离折算 percent_complete）
+  std::unordered_map<std::string, amr_dispatcher_core::path_tracking::Pose2D> mission_dispatch_start_;
+  // 导航后端：plan（默认，原 /plan 路径不变）| action（发 /navigate_sequence 单点 goal）
+  std::string navigation_backend_{"plan"};
+  // action 模式在途导航 goal 的归属任务与句柄（取消/终态时级联 async_cancel_goal）
+  std::string pending_nav_mission_id_;
+  GoalHandleNavigate::SharedPtr pending_nav_goal_handle_;
 
   // 12 Core Services SharedPtrs
   rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;
