@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "amr_dispatcher_core/workflow/traffic_planning.hpp"
+
 using namespace std::chrono_literals;
 
 namespace amr_dispatcher_ros {
@@ -222,6 +224,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   execute_goal_handles_.clear();
   mission_dispatch_start_.clear();
   mission_dispatch_time_.clear();
+  pending_wait_.clear();
+  mission_reserved_at_.clear();
   pending_nav_mission_id_.clear();
   pending_nav_goal_handle_.reset();
   state_pub_.reset();
@@ -878,6 +882,15 @@ void DispatcherNode::CleanupMissionCancel(const std::string& mission_id,
   } else {
     mission_dispatch_time_.erase(mission_id);
   }
+  ForgetMissionDispatchState(mission_id);
+}
+
+void DispatcherNode::ForgetMissionDispatchState(const std::string& mission_id) {
+  // 路由锁预留记账、排队等待记录与派发起点同步遗忘：
+  // 幂等，供 Complete/Fail/取消/死锁取消/预占判负等终态路径共用
+  mission_reserved_at_.erase(mission_id);
+  pending_wait_.erase(mission_id);
+  mission_dispatch_start_.erase(mission_id);
 }
 
 void DispatcherNode::ProcessActionCancels() {
@@ -919,6 +932,7 @@ void DispatcherNode::ProcessActionCancels() {
         canceled = true;
       }
     }
+    ForgetMissionDispatchState(id);  // 取消终态：路由锁记账/等待记录/派发起点遗忘
     // action 模式级联：取消在途的 NavigateSequence goal 并清 pending 标记
     if (navigation_backend_ == "action" && pending_nav_mission_id_ == id) {
       if (nav_client_ && pending_nav_goal_handle_) {
@@ -1045,6 +1059,52 @@ void DispatcherNode::ScheduleTick() {
   }
   queue_start_requested_ = false;  // 启动请求被本次派发消费
 
+  // Peek→Reserve→Pop（节点单线程，Peek 与 Pop 之间无竞态）：
+  // 先为队首任务规划路由锁并预留，成功才出队继续派发；失败则任务留在队列、
+  // 发 reservation_denied 事件、重新武装启动请求后本 tick 返回——既不丢任务也不违反封路。
+  const auto* peeked = queue_->Peek();
+  if (!peeked) {
+    return;  // 队列任务全部暂停：与 PopNext 失败等价，本 tick 结束
+  }
+  const std::string candidate_id = peeked->id;
+  const std::string candidate_order_id = peeked->order_id;
+  std::vector<std::string> route_locks;
+  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
+    route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
+        catalog_reloader_->catalog(), peeked->pickup_station, peeked->dropoff_station);
+  }
+  if (!route_locks.empty() && reservation_table_) {
+    auto reserve = reservation_table_->Reserve(candidate_id, route_locks);
+    if (!reserve.success) {
+      pending_wait_[candidate_id] = route_locks;  // WFG：该任务在等这批锁
+      RCLCPP_WARN(get_logger(), "Reservation denied for queued mission %s: %s",
+                  candidate_id.c_str(), reserve.message.c_str());
+      if (event_pub_ && event_pub_->is_activated()) {
+        amr_dispatcher_interfaces::msg::MissionEvent msg;
+        msg.stamp = now();
+        msg.mission_id = candidate_id;
+        msg.order_id = candidate_order_id;
+        msg.event = "reservation_denied";
+        msg.from_state = "PENDING";
+        msg.to_state = "PENDING";  // 任务留在队列，状态不变
+        msg.reason = reserve.message;
+        event_pub_->publish(msg);
+      }
+      if (event_log_) {
+        amr_dispatcher_core::dispatcher::MissionEvent evt;
+        evt.stamp = "now";
+        evt.mission_id = candidate_id;
+        evt.event = "reservation_denied";
+        evt.message = reserve.message;
+        event_log_->Append(evt);
+      }
+      ReArmQueueStartRequest();  // 队列非空 -> 稍后锁释放时重试派发
+      return;
+    }
+    mission_reserved_at_[candidate_id] = std::chrono::steady_clock::now();
+  }
+  pending_wait_.erase(candidate_id);  // 预留通过（或本轮无锁），历史等待记录作废
+
   auto pop = queue_->PopNext();
   if (!pop.success || !pop.mission) {
     return;
@@ -1080,8 +1140,26 @@ void DispatcherNode::ScheduleTick() {
       msg.reason = "unknown dropoff station: " + m.dropoff_station;
       event_pub_->publish(msg);
     }
+    // 本单已出队但被判负丢弃：Peek 阶段预留的路由锁须就地释放
+    //（任务不进 active_missions_，走不到 Complete/Fail 的终态清理）
+    if (reservation_table_) {
+      reservation_table_->Release(m.id);
+    }
+    ForgetMissionDispatchState(m.id);
     ReArmQueueStartRequest();  // 本单丢弃后，队列中其余任务仍需能被派发
     return;
+  }
+
+  // 预留成功：持有锁列表（逗号连接）回填任务，供死锁检测长持锁启发式取证
+  if (!route_locks.empty()) {
+    std::string joined_locks;
+    for (const auto& lock_id : route_locks) {
+      if (!joined_locks.empty()) {
+        joined_locks += ",";
+      }
+      joined_locks += lock_id;
+    }
+    m.reservation_id = joined_locks;
   }
 
   active_missions_[m.id] = m;
@@ -1244,6 +1322,7 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
   // ExecuteMission goal 成功收口；action 模式清在途导航 goal（result 到达前的兜底取消）
   FinishExecuteGoal(mission_id, ExecuteFinish::kSucceed, reason, 0);
   mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
+  ForgetMissionDispatchState(mission_id);    // 路由锁记账/等待记录/派发起点遗忘
   if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
     if (nav_client_ && pending_nav_goal_handle_) {
       nav_client_->async_cancel_goal(pending_nav_goal_handle_);
@@ -1311,6 +1390,7 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
   // ExecuteMission goal 失败收口（error_code=1）；action 模式取消在途导航 goal
   FinishExecuteGoal(mission_id, ExecuteFinish::kAbort, reason, 1);
   mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
+  ForgetMissionDispatchState(mission_id);    // 路由锁记账/等待记录/派发起点遗忘
   if (navigation_backend_ == "action" && pending_nav_mission_id_ == mission_id) {
     if (nav_client_ && pending_nav_goal_handle_) {
       nav_client_->async_cancel_goal(pending_nav_goal_handle_);
@@ -1442,10 +1522,32 @@ void DispatcherNode::DeadlockTick() {
   }
 
   amr_dispatcher_core::dispatcher::DeadlockSnapshot snap;
+  // 等待记录只对仍在排队的任务有效：被批量取消/离场的等待者不进 waiting_for
+  //（防 WFG 残留幽灵等待者；派发成功/终态路径已即时遗忘，此处兜底清扫）
+  if (queue_) {
+    for (auto wait = pending_wait_.begin(); wait != pending_wait_.end();) {
+      if (queue_->Contains(wait->first)) {
+        ++wait;
+      } else {
+        wait = pending_wait_.erase(wait);
+      }
+    }
+  }
   for (const auto& [id, m] : active_missions_) {
     snap.active_missions.push_back(m);
     snap.last_progress[id] = mission_last_progress_[id];
   }
+  // WFG 数据上环：held_by 与预留资源集合来自预约表快照（resource -> owner），
+  // waiting_for 来自 Peek 预留失败的排队任务，长持锁取证时刻来自任务预留记账
+  //（人工 ReserveResourceCb 不记，避免长持锁误报）
+  if (reservation_table_) {
+    for (const auto& [resource_id, owner_id] : reservation_table_->Snapshot()) {
+      snap.allocation_graph.held_by[resource_id] = owner_id;
+      snap.reserved_resource_ids.insert(resource_id);
+    }
+  }
+  snap.allocation_graph.waiting_for = pending_wait_;
+  snap.reservation_acquired_at = mission_reserved_at_;
 
   const auto findings = deadlock_detector_->Detect(snap);
   deadlock_flag_ = !findings.empty();
@@ -1490,6 +1592,7 @@ void DispatcherNode::DeadlockTick() {
         }
         FinishExecuteGoal(act.mission_id, ExecuteFinish::kAbort, act.reason, 1);
         mission_dispatch_time_.erase(act.mission_id);  // plan 模式无 handle 时的派发时刻遗忘
+        ForgetMissionDispatchState(act.mission_id);    // 路由锁记账/等待记录/派发起点遗忘
         // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
         // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
         if (tracking_mission_id_ == act.mission_id) {

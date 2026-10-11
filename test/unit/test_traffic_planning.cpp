@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+
 namespace amr_dispatcher_core::workflow {
 
 TEST(TrafficReservationTest, RouteLockId_SortsEndpointsForSharedEdge) {
@@ -288,6 +290,40 @@ TEST(TrafficReservationTest, ReleaseRouteLocksForMission_OrphanOwnedLocks_AreRem
   EXPECT_EQ(route_locks.count("route_node:receiving"), 0U);
   EXPECT_EQ(route_locks.count("route_edge:receiving__storage_a"), 0U);
   EXPECT_EQ(route_locks["route_node:packing"], "mission_b");
+}
+
+TEST(TrafficPlanningTest, PlanMissionRouteLocks_LinkedStations_ReturnNodesAndEdge) {
+  catalog::StationCatalog catalog;
+  catalog.stations.push_back({"receiving"});
+  catalog.stations.push_back({"packing"});
+  catalog.edges.push_back({"receiving", "packing", 5.0, true, true});
+
+  const auto lock_ids = PlanMissionRouteLocks(catalog, "receiving", "packing");
+
+  ASSERT_EQ(lock_ids.size(), 3U);
+  EXPECT_EQ(lock_ids[0], "route_node:receiving");
+  EXPECT_EQ(lock_ids[1], "route_node:packing");
+  EXPECT_EQ(lock_ids[2], "route_edge:packing__receiving");
+}
+
+TEST(TrafficPlanningTest, PlanMissionRouteLocks_EmptyFrom_LocksOnlyDestinationNode) {
+  catalog::StationCatalog catalog;
+  catalog.stations.push_back({"packing"});
+
+  const auto lock_ids = PlanMissionRouteLocks(catalog, "", "packing");
+
+  ASSERT_EQ(lock_ids.size(), 1U);
+  EXPECT_EQ(lock_ids[0], "route_node:packing");
+}
+
+TEST(TrafficPlanningTest, PlanMissionRouteLocks_NoPath_ReturnsEmptyLockSet) {
+  catalog::StationCatalog catalog;
+  catalog.stations.push_back({"receiving"});
+  catalog.stations.push_back({"packing"});
+
+  const auto lock_ids = PlanMissionRouteLocks(catalog, "receiving", "packing");
+
+  EXPECT_TRUE(lock_ids.empty());
 }
 
 }  // namespace amr_dispatcher_core::workflow

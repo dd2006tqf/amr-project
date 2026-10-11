@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+
 namespace amr_dispatcher_core::workflow {
 
 struct RouteLockReservation {
@@ -66,6 +68,12 @@ TrafficClearDecision PlanTrafficReservationClear(
 TrafficDeadlockDecision PlanTrafficDeadlockDetection(const RouteLockMap& route_locks);
 std::vector<std::string> BuildRouteLockIds(
     const std::vector<std::string>& station_path, bool include_intersection_locks);
+// 派发前的路由锁规划（Peek→Reserve→Pop 的输入）：
+// from/to 均非空 -> FindRoutePath 站点序列 + 路口锁；from 空 -> 仅目的站节点锁；
+// 无路（nullopt）或 to 为空 -> 空锁集（派发照旧无锁，保持现网行为）。
+std::vector<std::string> PlanMissionRouteLocks(
+    const amr_dispatcher_core::catalog::StationCatalog& catalog,
+    const std::string& from_station, const std::string& to_station);
 bool ReserveRouteLocksForMission(
     RouteLockMap& route_locks, RouteLockReservationMap& route_locks_by_mission,
     const std::string& mission_id, const std::vector<std::string>& route_lock_ids,

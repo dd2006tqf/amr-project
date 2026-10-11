@@ -194,6 +194,25 @@ std::vector<std::string> BuildRouteLockIds(
   return lock_ids;
 }
 
+std::vector<std::string> PlanMissionRouteLocks(
+    const amr_dispatcher_core::catalog::StationCatalog& catalog,
+    const std::string& from_station, const std::string& to_station) {
+  if (to_station.empty()) {
+    // 目的站缺失：不预留任何锁，派发链随后按未知站点判负（保持现网行为）
+    return {};
+  }
+  if (from_station.empty()) {
+    // 无取货站（车辆当前位姿作起点）：只锁目的站节点，无法预知途经路段
+    return {RouteNodeLockId(to_station)};
+  }
+  const auto path = amr_dispatcher_core::catalog::FindRoutePath(catalog, from_station, to_station);
+  if (!path.has_value()) {
+    // 目录断开/站点未知 -> 空锁集，照旧无锁派发
+    return {};
+  }
+  return BuildRouteLockIds(*path, /*include_intersection_locks=*/true);
+}
+
 bool ReserveRouteLocksForMission(
     RouteLockMap& route_locks, RouteLockReservationMap& route_locks_by_mission,
     const std::string& mission_id, const std::vector<std::string>& route_lock_ids,

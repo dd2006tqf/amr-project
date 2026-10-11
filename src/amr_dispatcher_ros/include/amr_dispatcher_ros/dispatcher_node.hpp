@@ -166,6 +166,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 服务侧/批量取消路径共用收口：终结 handle + 释放 HandleGoal 预占 +
   // 清 action 模式在途 NavigateSequence goal（CancelOrder/CancelQueued/整单批量复用）
   void CleanupMissionCancel(const std::string& mission_id, const std::string& reason);
+  // 终态收口：遗忘任务的路由锁预留记账与派发起点
+  //（Complete/Fail/取消/死锁取消/预占判负等路径共用，幂等）
+  void ForgetMissionDispatchState(const std::string& mission_id);
   // 受理过的 action 取消（HandleCancel 返回 ACCEPT 后 goal 才进入 CANCELING）的延迟处理
   void ProcessActionCancels();
 
@@ -232,6 +235,13 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // action 模式在途导航 goal 的归属任务与句柄（取消/终态时级联 async_cancel_goal）
   std::string pending_nav_mission_id_;
   GoalHandleNavigate::SharedPtr pending_nav_goal_handle_;
+
+  // Peek→Reserve→Pop：排队任务预留路由锁失败 -> 该任务仍在等的锁列表
+  //（喂 DeadlockSnapshot.allocation_graph.waiting_for，终态/取消时遗忘）
+  std::unordered_map<std::string, std::vector<std::string>> pending_wait_;
+  // mission_id -> 路由锁预留成功时刻（喂 DeadlockSnapshot.reservation_acquired_at，
+  // 长持锁启发式取证；仅任务派发预留记账，人工 ReserveResourceCb 不记，避免误报）
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> mission_reserved_at_;
 
   // 12 Core Services SharedPtrs
   rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;
