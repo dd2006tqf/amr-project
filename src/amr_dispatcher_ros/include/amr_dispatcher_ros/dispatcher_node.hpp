@@ -180,6 +180,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   void ScheduleTick();
   void DeadlockTick();
+  // 死锁快照组包（DeadlockTick 与 DetectTrafficDeadlockCb 共用，保证两处结论不分叉）：
+  // 清点排队等待记录 + 活跃任务/进度 + 预约表 WFG 数据；不自带锁，调用方沿用各自约定
+  amr_dispatcher_core::dispatcher::DeadlockSnapshot BuildDeadlockSnapshot();
   void PublishState();
   // 结果/取消/恢复后重新武装队列启动请求（行为树 runtime 门控的输入）
   void ReArmQueueStartRequest();

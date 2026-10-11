@@ -58,7 +58,47 @@ TEST(DeadlockDetectorTest, MultiNodeCircularWaitCycle) {
 
   const auto cycles = d.DetectCycles(model);
   ASSERT_EQ(cycles.size(), 1u);
-  EXPECT_EQ(cycles[0].size(), 3u);
+  // 交替格式：任务、其等待的资源、持有者 …… 末位闭合回起始任务
+  EXPECT_EQ(cycles[0], (std::vector<std::string>{"car_A", "R2", "car_B", "R3", "car_C", "R1",
+                                                 "car_A"}));
+}
+
+TEST(DeadlockDetectorTest, MutualBlockFindingPathKeepsResourcesAndMissionsApart) {
+  DeadlockDetector d;
+  DeadlockSnapshot snap;
+
+  // 两车互持互等：cycle_path 必须带资源 id（Task 3 deadlocked_nodes 端到端解析依赖），
+  // mission_ids 必须只含任务 id（recovery 按任务 id 下发暂停/取消）
+  snap.allocation_graph.held_by["route_edge:A__B"] = "robot_A";
+  snap.allocation_graph.held_by["route_node:C"] = "robot_B";
+  snap.allocation_graph.waiting_for["robot_A"] = {"route_node:C"};
+  snap.allocation_graph.waiting_for["robot_B"] = {"route_edge:A__B"};
+  snap.active_missions = {Active("robot_A"), Active("robot_B")};
+
+  const auto findings = d.Detect(snap);
+  ASSERT_FALSE(findings.empty());
+  EXPECT_EQ(findings[0].kind, DeadlockKind::kMutualBlock);
+  EXPECT_EQ(findings[0].cycle_path,
+            (std::vector<std::string>{"robot_A", "route_node:C", "robot_B", "route_edge:A__B",
+                                      "robot_A"}));
+  EXPECT_EQ(findings[0].mission_ids, (std::vector<std::string>{"robot_A", "robot_B"}));
+}
+
+TEST(DeadlockDetectorTest, DetectCycles_MultipleResourcesSameHolder_EmitsSingleEdge) {
+  DeadlockDetector d;
+  ResourceAllocationModel model;
+
+  // car_A 等 car_B 持有的两把锁：任务对 (A->B) 只建一条等待边，
+  // 否则同一环会因每把锁重复上报（与改前 set 去重语义一致）
+  model.held_by["R1"] = "car_B";
+  model.held_by["R2"] = "car_B";
+  model.held_by["R3"] = "car_A";
+  model.waiting_for["car_A"] = {"R1", "R2"};
+  model.waiting_for["car_B"] = {"R3"};
+
+  const auto cycles = d.DetectCycles(model);
+  ASSERT_EQ(cycles.size(), 1u);
+  EXPECT_EQ(cycles[0], (std::vector<std::string>{"car_A", "R1", "car_B", "R3", "car_A"}));
 }
 
 TEST(DeadlockDetectorTest, NoCycleWhenWaitGraphIsDAG) {

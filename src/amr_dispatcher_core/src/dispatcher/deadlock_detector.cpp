@@ -1,8 +1,8 @@
 #include "amr_dispatcher_core/dispatcher/deadlock_detector.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace amr_dispatcher_core::dispatcher {
 
@@ -13,22 +13,38 @@ std::vector<std::vector<std::string>> DeadlockDetector::DetectCycles(
     const ResourceAllocationModel& wfg_model) const {
   std::vector<std::vector<std::string>> cycles;
 
-  // 1. 构建 Mission -> Set<Mission> 的任务等待图 (Wait-For Graph)
-  // 如果任务 M1 等待资源 R，而资源 R 当前被 M2 持有，则建立有向边: M1 -> M2
-  std::unordered_map<std::string, std::unordered_set<std::string>> adj;
+  // 1. 构建任务等待图 (Wait-For Graph)：
+  // 任务 M1 等待资源 R，而 R 当前被 M2 持有 -> 有向边 M1 -> M2，并记下触发该边的资源
+  //（环路径要以 waiter -> resource -> holder 交替记录）。
+  // 同一 (等待者, 持有者) 只建一条边：多把锁指向同一持有者时不重复上报同一环，
+  // 与改前 std::set 去重语义一致。
+  struct WaitEdge {
+    std::string holder;
+    std::string resource_id;
+  };
+  std::unordered_map<std::string, std::vector<WaitEdge>> adj;
   for (const auto& [waiter_m, requested_resources] : wfg_model.waiting_for) {
     for (const auto& res_id : requested_resources) {
       auto it = wfg_model.held_by.find(res_id);
-      if (it != wfg_model.held_by.end() && it->second != waiter_m) {
-        adj[waiter_m].insert(it->second);
+      if (it == wfg_model.held_by.end() || it->second == waiter_m) {
+        continue;
+      }
+      auto& edges = adj[waiter_m];
+      const bool duplicated =
+          std::any_of(edges.begin(), edges.end(),
+                      [&it](const WaitEdge& edge) { return edge.holder == it->second; });
+      if (!duplicated) {
+        edges.push_back(WaitEdge{it->second, res_id});
       }
     }
   }
 
   // 2. 使用 DFS 进行拓扑三色标记法或路径回溯检测有向图环
   // 0: 未访问, 1: 正在当前递归栈中 (在探索), 2: 已完成探索
+  // path 只记任务节点；path_res[i] 记 path[i] -> path[i+1] 所等待的资源。
   std::unordered_map<std::string, int> visit_state;
   std::vector<std::string> path;
+  std::vector<std::string> path_res;
 
   auto dfs = [&](auto& self, const std::string& u) -> void {
     visit_state[u] = 1;
@@ -36,17 +52,30 @@ std::vector<std::vector<std::string>> DeadlockDetector::DetectCycles(
 
     auto it = adj.find(u);
     if (it != adj.end()) {
-      for (const auto& v : it->second) {
+      for (const auto& edge : it->second) {
+        const std::string& v = edge.holder;
         if (visit_state[v] == 1) {
-          // 找到环！提取从 v 开始到当前节点 u 的成环路径
-          auto cycle_start = std::find(path.begin(), path.end(), v);
+          // 找到环！自栈上 v 起提取到当前 u，段间用 path_res 的资源，
+          // 末段用回边 (u -> v) 的资源并闭合回 v：
+          //   [v, res, ..., u, res, v] —— 任务与资源交替，死锁可视化的
+          //   deadlocked_nodes 由其中的 route_edge:/route_node: 项解析而来。
+          const auto cycle_start = std::find(path.begin(), path.end(), v);
           if (cycle_start != path.end()) {
-            std::vector<std::string> cycle_nodes(cycle_start, path.end());
-            // 规范化以避免重复记录 (记录最小旋转表示)
-            cycles.push_back(cycle_nodes);
+            const auto start_index =
+                static_cast<std::size_t>(std::distance(path.begin(), cycle_start));
+            std::vector<std::string> cycle;
+            for (std::size_t index = start_index; index < path.size(); ++index) {
+              cycle.push_back(path[index]);
+              cycle.push_back(index + 1 < path.size() ? path_res[index]
+                                                      : edge.resource_id);
+            }
+            cycle.push_back(path[start_index]);  // 闭合回起始任务
+            cycles.push_back(cycle);
           }
         } else if (visit_state[v] == 0) {
+          path_res.push_back(edge.resource_id);
           self(self, v);
+          path_res.pop_back();
         }
       }
     }
@@ -55,7 +84,14 @@ std::vector<std::vector<std::string>> DeadlockDetector::DetectCycles(
     visit_state[u] = 2;
   };
 
+  // 起点按字典序遍历：同一张图的环报告次序可复现（unordered_map 顺序不稳定）
+  std::vector<std::string> start_nodes;
+  start_nodes.reserve(adj.size());
   for (const auto& [node, _] : adj) {
+    start_nodes.push_back(node);
+  }
+  std::sort(start_nodes.begin(), start_nodes.end());
+  for (const auto& node : start_nodes) {
     if (visit_state[node] == 0) {
       dfs(dfs, node);
     }
@@ -74,14 +110,18 @@ std::vector<DeadlockFinding> DeadlockDetector::Detect(
   for (const auto& cycle : cycles) {
     DeadlockFinding f;
     f.kind = DeadlockKind::kMutualBlock;
-    f.mission_ids = cycle;
     f.cycle_path = cycle;
+    // cycle_path 为任务/资源交替且首尾闭合：偶数位是任务，奇数位是资源，
+    // mission_ids 只取任务（recovery 据此对任务下发暂停/取消，不能混入资源 id）
+    for (std::size_t i = 0; i + 1 < cycle.size(); i += 2) {
+      f.mission_ids.push_back(cycle[i]);
+    }
     std::string desc = "Wait-For Graph Cycle detected: [";
     for (size_t i = 0; i < cycle.size(); ++i) {
       desc += cycle[i];
       if (i + 1 < cycle.size()) desc += " -> ";
     }
-    desc += " -> " + cycle.front() + "]";
+    desc += "]";  // cycle_path 自身闭合回起始任务
     f.description = desc;
     findings.push_back(std::move(f));
   }

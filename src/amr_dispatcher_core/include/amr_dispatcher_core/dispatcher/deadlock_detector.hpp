@@ -48,7 +48,9 @@ struct DeadlockFinding {
   std::vector<std::string> mission_ids;  // 涉及的 mission_id
   DeadlockKind kind = DeadlockKind::kIdleActive;
   std::string description;
-  std::vector<std::string> cycle_path;   // 具体的成环路径，例如: [m1 -> r2 -> m2 -> r1 -> m1]
+  std::vector<std::string> cycle_path;   // 具体的成环路径：任务与资源交替并闭合回起始
+                                          // 任务，例如 [m1, route_edge:A__B, m2,
+                                          // route_node:C, m1]（偶数位任务、奇数位资源）
 };
 
 /**
@@ -66,7 +68,8 @@ class DeadlockDetector {
   /**
    * @brief 纯图论有向图环检测算法 (DFS 实现)
    * @param wfg_model 资源持有与等待模型
-   * @return std::vector<std::vector<std::string>> 检测到的所有死锁环 (mission 节点序列)
+   * @return std::vector<std::vector<std::string>> 检测到的所有死锁环，
+   *         每个环为 waiter -> resource -> holder 交替序列并闭合回起始任务
    */
   std::vector<std::vector<std::string>> DetectCycles(
       const ResourceAllocationModel& wfg_model) const;

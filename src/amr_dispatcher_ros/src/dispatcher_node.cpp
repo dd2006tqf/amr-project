@@ -623,13 +623,12 @@ void DispatcherNode::DetectTrafficDeadlockCb(
     resp->message = "Deadlock detector unconfigured";
     return;
   }
+  // 快照组包与 DeadlockTick 共用 helper：服务入口与定时检测结论不分叉；
+  // 沿用本回调既有的 active_missions_ 加锁约定（helper 自身不带锁）
   amr_dispatcher_core::dispatcher::DeadlockSnapshot snap;
   {
     std::lock_guard<std::mutex> lock(active_missions_mutex_);
-    for (const auto& [id, m] : active_missions_) {
-      snap.active_missions.push_back(m);
-      snap.last_progress[id] = mission_last_progress_[id];
-    }
+    snap = BuildDeadlockSnapshot();
   }
   const auto findings = deadlock_detector_->Detect(snap);
   resp->success = true;
@@ -639,8 +638,9 @@ void DispatcherNode::DetectTrafficDeadlockCb(
     for (const auto& mid : f.mission_ids) {
       resp->mission_ids.push_back(mid);
     }
-    for (const auto& edge : f.cycle_path) {
-      resp->conflict_resource_ids.push_back(edge);
+    // cycle_path 为任务/资源交替闭合序列：奇数位才是资源 id（任务 id 不得混入）
+    for (std::size_t i = 1; i < f.cycle_path.size(); i += 2) {
+      resp->conflict_resource_ids.push_back(f.cycle_path[i]);
     }
     resp->descriptions.push_back(f.description);
   }
@@ -1155,6 +1155,11 @@ void DispatcherNode::ScheduleTick() {
       reservation_table_->Release(m.id);
     }
     ForgetMissionDispatchState(m.id);
+    // ExecuteMission goal 须就地 abort：该分支不经 Complete/Fail，不收口则
+    // action 客户端永久悬挂、handle 残留在 execute_goal_handles_（终审 F8）
+    //（mission_dispatch_time_ 此刻尚未写入，无需额外遗忘）
+    FinishExecuteGoal(m.id, ExecuteFinish::kAbort,
+                      "unknown dropoff station: " + m.dropoff_station, 1);
     ReArmQueueStartRequest();  // 本单丢弃后，队列中其余任务仍需能被派发
     return;
   }
@@ -1525,11 +1530,7 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
   ReArmQueueStartRequest();
 }
 
-void DispatcherNode::DeadlockTick() {
-  if (!deadlock_detector_ || !recovery_policy_) {
-    return;
-  }
-
+amr_dispatcher_core::dispatcher::DeadlockSnapshot DispatcherNode::BuildDeadlockSnapshot() {
   amr_dispatcher_core::dispatcher::DeadlockSnapshot snap;
   // 等待记录只对仍在排队的任务有效：被批量取消/离场的等待者不进 waiting_for
   //（防 WFG 残留幽灵等待者；派发成功/终态路径已即时遗忘，此处兜底清扫）
@@ -1557,6 +1558,15 @@ void DispatcherNode::DeadlockTick() {
   }
   snap.allocation_graph.waiting_for = pending_wait_;
   snap.reservation_acquired_at = mission_reserved_at_;
+  return snap;
+}
+
+void DispatcherNode::DeadlockTick() {
+  if (!deadlock_detector_ || !recovery_policy_) {
+    return;
+  }
+
+  const auto snap = BuildDeadlockSnapshot();
 
   const auto findings = deadlock_detector_->Detect(snap);
   deadlock_flag_ = !findings.empty();
