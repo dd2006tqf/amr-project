@@ -9,6 +9,7 @@
 | `/chassis/link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 底盘硬件通信链路健康指标（丢包率、CRC错、RTT时延） |
 | `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态） |
 | `/dispatcher/events` | `amr_dispatcher_interfaces/msg/MissionEvent` | 事件触发 | 任务生命周期状态跃迁审计事件 |
+| `/dispatcher/topology_state` | `amr_dispatcher_interfaces/msg/TopologyState` | 2 Hz | 动态路网拓扑状态（任务活跃边、预约锁边及持有者、死锁站点、死锁标志），供 safety_gate 与 RViz 可视化消费 |
 | `/cmd_vel_safe` | `geometry_msgs/msg/Twist` | 50 Hz | 经过安全门控仲裁后的最终安全控制速度（下发至底盘驱动） |
 | `/safety/state` | `amr_dispatcher_interfaces/msg/SafetyState` | 10 Hz | 安全门控运行状态（是否允许运动、当前限速比例、阻断源） |
 | `/tracking/error` | `amr_dispatcher_interfaces/msg/TrackingError` | 20 Hz | 循迹跟踪误差（横向误差、航向误差、前视距离、到达标记） |

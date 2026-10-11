@@ -201,6 +201,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::mutex active_missions_mutex_;
   std::uint64_t next_sequence_ = 1;
   bool deadlock_flag_ = false;
+  // 最近一次 DeadlockTick 的环路径快照（findings[].cycle_path；无死锁时清空），
+  // PublishState 据此投影 /dispatcher/topology_state 的死锁输入
+  std::vector<std::vector<std::string>> last_deadlock_findings_;
   // 出队派发门控：由提单/入队置位，runtime 行为树消费（派发时清除）
   bool queue_start_requested_ = false;
   // 恢复策略回坞目标站点（由参数配置，缺失时回坞降级为仅事件记录）

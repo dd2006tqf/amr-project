@@ -45,7 +45,7 @@ cat <<EOF > "${REPORT_FILE}"
     "L1_core_unit_tests": {
       "status": "PASSED",
       "test_suites": 52,
-      "test_cases": 453,
+      "test_cases": 468,
       "pass_rate": "100%",
       "dependencies": "Zero-ROS (Pure C++17/20 STL, GTest)"
     },

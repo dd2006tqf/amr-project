@@ -45,6 +45,7 @@ add_library(${PROJECT_NAME}
   src/dispatcher/deadlock_detector.cpp
   src/dispatcher/recovery_policy.cpp
   src/dispatcher/station_topology.cpp
+  src/dispatcher/topology_projection.cpp
   src/dispatcher/mission_cost_estimator.cpp
   src/dispatcher/dock_catalog.cpp
   src/catalog/station_catalog.cpp
@@ -153,6 +154,7 @@ if(BUILD_TESTING)
     test_facility_reservation
     test_facility_workflow
     test_submit_order_router
+    test_topology_projection
     test_end_to_end_pipeline
   )
   foreach(test_name IN LISTS UNIT_TESTS)

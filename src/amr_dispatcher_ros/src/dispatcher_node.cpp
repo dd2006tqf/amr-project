@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
 
 using namespace std::chrono_literals;
@@ -64,6 +66,9 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   event_pub_ = create_publisher<amr_dispatcher_interfaces::msg::MissionEvent>(
       "/dispatcher/events", 20);
   plan_pub_ = create_publisher<nav_msgs::msg::Path>("/plan", 1);
+  // 拓扑状态：safety_gate（deadlock_active_）与 visualizer（绿锁边/红警戒柱）的死锁输入
+  topology_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TopologyState>(
+      "/dispatcher/topology_state", 10);
 
   // 位姿与到达信号订阅：path_tracker 的 TrackingError.arrived 驱动任务完成
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -157,6 +162,7 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
   state_pub_->on_activate();
   event_pub_->on_activate();
   plan_pub_->on_activate();
+  topology_pub_->on_activate();
 
   const double sched_hz = get_parameter("schedule_rate_hz").as_double();
   schedule_timer_ = create_wall_timer(
@@ -196,6 +202,7 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   state_pub_->on_deactivate();
   event_pub_->on_deactivate();
   plan_pub_->on_deactivate();
+  topology_pub_->on_deactivate();
   RCLCPP_INFO(get_logger(), "DispatcherNode deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -231,6 +238,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   state_pub_.reset();
   event_pub_.reset();
   plan_pub_.reset();
+  topology_pub_.reset();
+  last_deadlock_findings_.clear();
   tracking_error_sub_.reset();
   odom_sub_.reset();
   queue_.reset();
@@ -1552,6 +1561,14 @@ void DispatcherNode::DeadlockTick() {
   const auto findings = deadlock_detector_->Detect(snap);
   deadlock_flag_ = !findings.empty();
 
+  // 拓扑状态投影的死锁输入：存各 finding 的环路径，无死锁时清空
+  last_deadlock_findings_.clear();
+  for (const auto& finding : findings) {
+    if (!finding.cycle_path.empty()) {
+      last_deadlock_findings_.push_back(finding.cycle_path);
+    }
+  }
+
   if (deadlock_flag_) {
     RCLCPP_WARN(get_logger(), "Deadlock findings count: %zu", findings.size());
     auto actions = recovery_policy_->Decide(
@@ -1694,6 +1711,28 @@ void DispatcherNode::PublishState() {
   }
 
   state_pub_->publish(msg);
+
+  // /dispatcher/topology_state：safety_gate 与 visualizer 的死锁/锁边输入
+  //（快照全量透传，active 仅任务持有的 route_edge，deadlocked_nodes 解析成站点 id）
+  if (topology_pub_ && topology_pub_->is_activated()) {
+    std::unordered_set<std::string> active_ids;
+    for (const auto& [id, _] : active_missions_) {
+      active_ids.insert(id);
+    }
+    const std::vector<std::pair<std::string, std::string>> snapshot =
+        reservation_table_ ? reservation_table_->Snapshot()
+                           : std::vector<std::pair<std::string, std::string>>{};
+    const auto topology = amr_dispatcher_core::dispatcher::BuildTopologyProjection(
+        snapshot, active_ids, last_deadlock_findings_);
+    amr_dispatcher_interfaces::msg::TopologyState topology_msg;
+    topology_msg.stamp = now();
+    topology_msg.active_edges = topology.active_edges;
+    topology_msg.locked_edges = topology.locked_edges;
+    topology_msg.edge_owners = topology.edge_owners;
+    topology_msg.deadlocked_nodes = topology.deadlocked_nodes;
+    topology_msg.deadlock_detected = topology.deadlock_detected;
+    topology_pub_->publish(topology_msg);
+  }
 }
 
 }  // namespace amr_dispatcher_ros
