@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **468/468 unit and integration tests passing in ~9 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow).
+   - **470/470 unit and integration tests passing in ~5 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow).
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) pre-configured with baseline mock implementations for zero-friction algorithm injection.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
