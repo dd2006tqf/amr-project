@@ -19,7 +19,6 @@ struct PeriodicPublishInput {
   bool estop_or_fault = false;
   bool bumper = false;
   bool decision_critical = false;
-  bool decision_warned = false;
   bool has_decision = false;              // 是否已收到过至少一条 /cmd_vel_raw
   bool has_last_raw_stamp = false;        // last_raw_stamp 是否有效
   std::chrono::steady_clock::time_point last_raw_stamp{};

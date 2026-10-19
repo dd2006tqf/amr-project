@@ -191,6 +191,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void CompleteMission(const std::string& mission_id, const std::string& reason);
   void FailMission(const std::string& mission_id, const std::string& reason);
 
+  // M7：线程模型约束——queue_（MissionQueue 非线程安全）、reservation_table_、
+  // active_missions_ 与参数热更回调共享状态，安全性依赖 main() 的单线程
+  // rclcpp::spin（所有回调串行执行）。若未来改用 MultiThreadedExecutor，
+  // 必须先为上述共享状态补齐互斥。
   std::unique_ptr<amr_dispatcher_core::dispatcher::MissionQueue> queue_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::TrafficReservationTable> reservation_table_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::MissionEventLog> event_log_;

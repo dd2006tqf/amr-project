@@ -81,6 +81,10 @@ class SafetyGateNode : public rclcpp::Node {
   // 供 WatchdogTick 计算报告新鲜度 —— 上游发布者死亡后时效戳不再被调用周期续命。
   // key 约定："chassis"（/chassis/link_health）、"watchdog"（两条分源心跳）。
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_data_arrival_;
+  // M4：构造期缓存的参数（10Hz/50Hz 周期路径不再重复 get_parameter）
+  std::chrono::milliseconds heartbeat_timeout_{500};
+  // M5：降级限速线速度阈值（kClampSpeed 时生效，可按车型配置）
+  double degraded_max_linear_x_mps_ = 0.2;
 };
 
 }  // namespace amr_dispatcher_ros

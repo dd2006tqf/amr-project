@@ -127,6 +127,10 @@ bool ResourceTable::ReserveTimeSpace(
     return false;
   }
 
+  // M3：入口先剪除过期时空预约，与 Reserve/Release 保持一致——
+  // 否则已结束的时段仍会参与冲突判断，误拒时间重叠的回溯候选。
+  PruneExpiredTimeSpace(time_space_reservations_, std::chrono::steady_clock::now());
+
   // 1. 检查是否存在永久排他锁（人工封路等）
   if (Locked(resource_id) && Owner(resource_id) != mission_id) {
     if (message) *message = "resource statically locked by: " + *Owner(resource_id);

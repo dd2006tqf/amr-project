@@ -16,6 +16,14 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("max_angular_z_radps", 2.0);
   declare_parameter("heartbeat_timeout_ms", 500);
   declare_parameter("soft_timeout_ms", 2000);
+  // M5：降级限速阈值参数化（原为硬编码 ±0.2，与 max_* 参数体系脱节）
+  declare_parameter("degraded_max_linear_x_mps", 0.2);
+
+  // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
+  // 周期路径（10Hz/50Hz）不再重复 get_parameter。
+  heartbeat_timeout_ =
+      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
 
   amr_dispatcher_core::safety::CmdVelGateConfig gate_cfg;
   gate_cfg.max_linear_x_mps = get_parameter("max_linear_x_mps").as_double();
@@ -31,7 +39,7 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   gate_ = std::make_unique<amr_dispatcher_core::safety::CmdVelGate>(gate_cfg);
 
   amr_dispatcher_core::safety::WatchdogConfig wd_cfg;
-  wd_cfg.heartbeat_timeout = std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  wd_cfg.heartbeat_timeout = heartbeat_timeout_;
   wd_cfg.soft_timeout = std::chrono::milliseconds(get_parameter("soft_timeout_ms").as_int());
   watchdog_ = std::make_unique<amr_dispatcher_core::safety::SafetyWatchdog>(wd_cfg);
 
@@ -192,10 +200,8 @@ void SafetyGateNode::WatchdogTick() {
 
   // I1：时效戳只在真实数据到达时刷新（订阅回调打点），巡检周期不续命——
   // 上游 link_health / 心跳发布者死亡后，对应源会按陈旧降级限速。
-  const auto tolerance =
-      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   const auto fresh = MakeReportFreshness(last_data_arrival_, std::chrono::steady_clock::now(),
-                                         tolerance);
+                                         heartbeat_timeout_);
   fault_supervisor_->UpdateMultiSourceHealth(report, fresh.chassis, fresh.watchdog);
   fault_supervisor_->Tick();
 
@@ -221,9 +227,10 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   cmd.linear_y_mps = msg->linear.y;
   cmd.angular_z_radps = msg->angular.z;
 
-  // 联动 Fault Supervisor 降级限速规则
+  // 联动 Fault Supervisor 降级限速规则（M5：阈值取自 degraded_max_linear_x_mps 参数）
   if (fault_supervisor_->recommendation() == amr_dispatcher_core::safety::SystemActionRecommendation::kClampSpeed) {
-    cmd.linear_x_mps = std::clamp(cmd.linear_x_mps, -0.2, 0.2);
+    const double limit = degraded_max_linear_x_mps_;
+    cmd.linear_x_mps = std::clamp(cmd.linear_x_mps, -limit, limit);
   }
 
   auto decision = gate_->Evaluate(cmd);
@@ -258,8 +265,7 @@ void SafetyGateNode::PeriodicPublishTick() {
   in.has_last_raw_stamp = has_raw_cmd_stamp_;
   in.last_raw_stamp = last_raw_cmd_stamp_;
   in.now = std::chrono::steady_clock::now();
-  in.heartbeat_timeout =
-      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  in.heartbeat_timeout = heartbeat_timeout_;
   in.last_linear_x_mps = last_decision_.linear_x_mps;
   in.last_linear_y_mps = last_decision_.linear_y_mps;
   in.last_angular_z_radps = last_decision_.angular_z_radps;

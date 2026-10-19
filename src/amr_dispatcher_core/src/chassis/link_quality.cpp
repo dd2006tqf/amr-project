@@ -60,6 +60,9 @@ void LinkQualityMonitor::RecordCrcError() {
   if (window_filled_ < config_.window_size) {
     ++window_filled_;
   }
+  // M2：收到 CRC 错帧本身就是"链路有活动"的证据，同样刷新 last_seen，
+  // 否则纯 CRC 错误流会被误判为链路静默（stale）。
+  last_seen_ = std::chrono::steady_clock::now();
   ++total_crc_error_;
   ++total_lost_;
   consecutive_success_ = 0;

@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <thread>
+
 using namespace amr_dispatcher_core::chassis;
 
 TEST(LinkQualityTest, EmptyIsUnknown) {
@@ -165,4 +168,14 @@ TEST(LinkQualityTest, NewLossClearsPendingRecoverySignal) {
   }
   EXPECT_TRUE(q.ConsumeRecoverySignal());
   EXPECT_FALSE(q.ConsumeRecoverySignal());
+}
+
+// M2：CRC 错帧同样是"链路有活动"的证据 —— RecordCrcError 必须刷新 last_seen
+TEST(LinkQualityTest, RecordCrcErrorRefreshesLastSeen) {
+  LinkQualityMonitor q({.window_size = 8, .success_threshold = 4});
+  q.RecordSuccess(1.0);
+  const auto first = q.Snapshot().last_seen;
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  q.RecordCrcError();
+  EXPECT_GT(q.Snapshot().last_seen, first);
 }

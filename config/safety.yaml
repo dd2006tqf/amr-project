@@ -8,3 +8,5 @@ safety_gate_node:
     # B1：双心跳源（chassis_driver / path_tracker）共用超时阈值
     heartbeat_timeout_ms: 500
     soft_timeout_ms: 2000
+    # M5：Fault Supervisor 降级限速（kClampSpeed）时的线速度阈值
+    degraded_max_linear_x_mps: 0.2

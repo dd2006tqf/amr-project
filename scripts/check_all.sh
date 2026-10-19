@@ -83,6 +83,8 @@ fi
 # L1 压测层：基准压测（依赖 L1 构建产物）
 # ---------------------------------------------------------------------------
 BENCH_LOG="$(mktemp)"
+# M6：脚本早退路径也要清理 benchmark 临时文件
+trap 'rm -f "${BENCH_LOG}"' EXIT
 BENCH_QUEUE_NOTE="not measured (benchmark stage not executed)"
 BENCH_LOGGER_NOTE="not measured (benchmark stage not executed)"
 if [ "$CORE_STATUS" = "PASSED" ]; then

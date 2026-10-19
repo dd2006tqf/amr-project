@@ -149,7 +149,8 @@ TEST(ResourceTableTest, ExpiredTimeSpacePrunedOnNextReserveOrRelease) {
   std::string msg;
   ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", now - 10s, now - 5s, &msg));
   ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:C__D", now - 8s, now - 3s, &msg));
-  EXPECT_EQ(t.TimeSpaceReservationCount(), 2u);
+  // M3 语义：ReserveTimeSpace 入口即剪过期——第二次插入时第一条（已过期）已被剪除
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 1u);
 
   // 静态 Reserve 入口触发 prune：全部过期条目清零
   ASSERT_TRUE(t.Reserve("m2", {"route_node:B"}).success);
@@ -158,7 +159,20 @@ TEST(ResourceTableTest, ExpiredTimeSpacePrunedOnNextReserveOrRelease) {
   // Release 入口同样 prune：过期条目清除、未过期条目保留
   ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", now - 10s, now - 5s, &msg));
   ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:E__F", now + 5s, now + 15s, &msg));
-  EXPECT_EQ(t.TimeSpaceReservationCount(), 2u);
+  // M3 语义：插入未来时段时入口剪掉此前的过期条目 → 只剩未过期的 E__F
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 1u);
   t.Release("m2");
   EXPECT_EQ(t.TimeSpaceReservationCount(), 1u);
+}
+
+// M3：ReserveTimeSpace 入口同样剪除过期条目 —— 过期预约不得误拒时间重叠的回溯候选
+TEST(ResourceTableTest, ReserveTimeSpacePrunesExpiredAtEntry) {
+  ResourceTable t;
+  const auto now = std::chrono::steady_clock::now();
+  std::string msg;
+  // m1 的过期条目（时段已结束）
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", now - 10s, now - 5s, &msg));
+  // m2 的回溯候选与过期条目时间上重叠：入口 prune 后应成功（否则说明过期条目仍在参与冲突判断）
+  EXPECT_TRUE(t.ReserveTimeSpace("m2", "route_edge:A__B", now - 7s, now - 2s, &msg))
+      << "msg=" << msg;
 }
