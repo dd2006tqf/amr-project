@@ -107,8 +107,14 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
   std::pair<double, double> pending_point{0.0, 0.0};
   bool point_has_x = false;
   bool point_has_y = false;
+  // 折线严格解析失败标记：半截点/坏点/未知条目一律让加载失败，
+  // 而不是静默丢弃折线后仍报告加载成功。
+  bool malformed = false;
 
   auto flush_polyline_point = [&]() {
+    if (point_has_x != point_has_y) {
+      malformed = true;  // 半截点（缺 x 或缺 y）：不静默丢弃
+    }
     if (point_has_x && point_has_y) {
       current_edge.polyline.push_back(pending_point);
     }
@@ -162,6 +168,9 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
 
   std::string line;
   while (std::getline(input, line)) {
+    if (malformed) {
+      return std::nullopt;  // 折线块内已记录的非法结构：快速失败
+    }
     line = Trim(line);
     if (line.empty() || line.front() == '#') {
       continue;
@@ -196,31 +205,42 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
     if (line.rfind("- ", 0) == 0) {
       const std::string content = Trim(line.substr(2));
       if (in_polyline && !content.empty() && content.front() == '[') {
-        // flow 风格折线点：- [x, y]
-        if (auto point = ParseFlowPoint(content)) {
-          flush_polyline_point();
-          current_edge.polyline.push_back(*point);
+        // flow 风格折线点：- [x, y]；坏点（如 - [broken]）严格失败，不静默丢弃
+        const auto point = ParseFlowPoint(content);
+        if (!point) {
+          return std::nullopt;
         }
+        flush_polyline_point();
+        current_edge.polyline.push_back(*point);
         continue;
       }
       if (in_polyline && (ValueAfterColon(content, "x") || ValueAfterColon(content, "y"))) {
         // map 风格折线点起始：- x: ... / - y: ...
         flush_polyline_point();
         if (auto value = ValueAfterColon(content, "x")) {
-          if (auto parsed = ParseDouble(*value)) {
-            pending_point.first = *parsed;
-            point_has_x = true;
+          const auto parsed = ParseDouble(*value);
+          if (!parsed) {
+            return std::nullopt;
           }
+          pending_point.first = *parsed;
+          point_has_x = true;
         } else if (auto value = ValueAfterColon(content, "y")) {
-          if (auto parsed = ParseDouble(*value)) {
-            pending_point.second = *parsed;
-            point_has_y = true;
+          const auto parsed = ParseDouble(*value);
+          if (!parsed) {
+            return std::nullopt;
           }
+          pending_point.second = *parsed;
+          point_has_y = true;
         }
         continue;
       }
       if (in_polyline) {
-        // 折线块内的其他 "- " 条目：结束折线并开始下一条边
+        // 折线块内既不是合法折线点、也不是已知 edge 字段/新 polyline 键的
+        // "- " 条目（如嵌套块序列）：严格失败。此前会当成新边起点，
+        // 把整条折线静默吞掉却仍报告加载成功。
+        if (!IsEdgeFieldKey(content) && !ValueAfterColon(content, "polyline")) {
+          return std::nullopt;
+        }
         flush_edge();
         in_edge = true;
       } else if (section == "edges" || section == "routes") {
@@ -247,22 +267,34 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
       if (in_polyline) {
         if (IsEdgeFieldKey(line)) {
           flush_polyline_point();
+          if (malformed) {
+            return std::nullopt;
+          }
           in_polyline = false;  // 折线块结束，继续按 edge 字段解析本行
         } else if (auto value = ValueAfterColon(line, "x")) {
-          flush_polyline_point();
-          if (auto parsed = ParseDouble(*value)) {
-            pending_point.first = *parsed;
-            point_has_x = true;
+          if (point_has_x) {
+            flush_polyline_point();  // 未走 "- " 的连续 x：先结算上一个点
           }
+          const auto parsed = ParseDouble(*value);
+          if (!parsed) {
+            return std::nullopt;
+          }
+          pending_point.first = *parsed;
+          point_has_x = true;
           continue;
         } else if (auto value = ValueAfterColon(line, "y")) {
-          if (auto parsed = ParseDouble(*value)) {
-            pending_point.second = *parsed;
-            point_has_y = true;
+          if (point_has_y) {
+            flush_polyline_point();  // 未走 "- " 的连续 y：先结算上一个点
           }
+          const auto parsed = ParseDouble(*value);
+          if (!parsed) {
+            return std::nullopt;
+          }
+          pending_point.second = *parsed;
+          point_has_y = true;
           continue;
         } else {
-          continue;  // 折线块内的其余行忽略
+          return std::nullopt;  // 折线块内未知行：严格失败，不再静默忽略
         }
       }
       if (auto value = ValueAfterColon(line, "from")) {
@@ -366,6 +398,9 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
   flush_station();
   flush_road_node();
   flush_edge();
+  if (malformed) {
+    return std::nullopt;  // 文件末尾结算时发现半截折线点
+  }
 
   std::string message;
   if (!ValidateStationCatalog(catalog, &message)) {

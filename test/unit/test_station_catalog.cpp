@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <thread>
 
 namespace amr_dispatcher_core::workflow {
@@ -168,6 +169,56 @@ constexpr const char* kCrossDuplicateIds =
     "edges:\n"
     "  - from: s1\n    to: s1\n    distance_m: 1.0\n";
 
+// M2：polyline 块之后仍跟正常 edge 字段（IsEdgeFieldKey 退出折线的路径）
+constexpr const char* kEdgeFieldsAfterPolyline =
+    "stations:\n"
+    "  - id: s1\n    x: 0.0\n    y: 0.0\n"
+    "  - id: s2\n    x: 1.5\n    y: 0.0\n"
+    "edges:\n"
+    "  - from: s1\n"
+    "    to: s2\n"
+    "    polyline:\n"
+    "      - [0.0, 0.0]\n"
+    "      - [1.5, 0.0]\n"
+    "    distance_m: 3.0\n"
+    "    bidirectional: true\n"
+    "    enabled: true\n";
+
+// I1：折线点损坏（- [broken]）必须让加载失败，而不是静默丢弃折线后报告成功
+constexpr const char* kBrokenFlowPolylinePoint =
+    "stations:\n"
+    "  - id: s1\n    x: 0.0\n    y: 0.0\n"
+    "  - id: s2\n    x: 1.0\n    y: 0.0\n"
+    "edges:\n"
+    "  - from: s1\n    to: s2\n    distance_m: 1.0\n"
+    "    polyline:\n"
+    "      - [broken]\n"
+    "      - [1.0, 0.0]\n";
+
+// I1：折线块内出现嵌套块序列（非 flow 点、非 map 点、非 edge 字段）→ 严格失败
+constexpr const char* kNestedBlockSequencePolyline =
+    "stations:\n"
+    "  - id: s1\n    x: 0.0\n    y: 0.0\n"
+    "  - id: s2\n    x: 1.0\n    y: 0.0\n"
+    "edges:\n"
+    "  - from: s1\n    to: s2\n    distance_m: 1.0\n"
+    "    polyline:\n"
+    "      -\n"
+    "        - 1.5\n"
+    "        - 2.0\n";
+
+// I1：map 风格半截点（缺 y 分量）不静默丢弃 → 加载失败
+constexpr const char* kIncompleteMapPolylinePoint =
+    "stations:\n"
+    "  - id: s1\n    x: 0.0\n    y: 0.0\n"
+    "  - id: s2\n    x: 1.0\n    y: 0.0\n"
+    "edges:\n"
+    "  - from: s1\n    to: s2\n    distance_m: 1.0\n"
+    "    polyline:\n"
+    "      - x: 0.0\n"
+    "        y: 0.0\n"
+    "      - x: 1.0\n";
+
 TEST(StationCatalogMixedGraphTest, LoadStationCatalog_ParsesVersionRoadNodesAndPolyline) {
   const auto path = WriteCatalogTemp(kMixedGraphCatalog);
   const auto catalog = LoadStationCatalog(path);
@@ -211,6 +262,47 @@ TEST(StationCatalogMixedGraphTest, LoadStationCatalog_ParsesVersionRoadNodesAndP
 
 TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsCrossSetDuplicateIds) {
   const auto path = WriteCatalogTemp(kCrossDuplicateIds);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  EXPECT_FALSE(catalog.has_value());
+}
+
+// M2：折线块之后的 distance_m/bidirectional/enabled 仍被正常解析
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_ParsesEdgeFieldsAfterPolylineBlock) {
+  const auto path = WriteCatalogTemp(kEdgeFieldsAfterPolyline);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  ASSERT_TRUE(catalog.has_value());
+  ASSERT_EQ(catalog->edges.size(), 1u);
+  EXPECT_EQ(catalog->edges[0].from, "s1");
+  EXPECT_EQ(catalog->edges[0].to, "s2");
+  EXPECT_DOUBLE_EQ(catalog->edges[0].distance_m, 3.0);
+  EXPECT_TRUE(catalog->edges[0].bidirectional);
+  EXPECT_TRUE(catalog->edges[0].enabled);
+  ASSERT_EQ(catalog->edges[0].polyline.size(), 2u);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[0].first, 0.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[1].first, 1.5);
+}
+
+// I1：坏 flow 点（- [broken]）→ 加载严格失败
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsBrokenFlowPolylinePoint) {
+  const auto path = WriteCatalogTemp(kBrokenFlowPolylinePoint);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  EXPECT_FALSE(catalog.has_value());
+}
+
+// I1：折线块内嵌套块序列 → 加载严格失败，不再被当成新边静默吞掉折线
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsNestedBlockSequencePolyline) {
+  const auto path = WriteCatalogTemp(kNestedBlockSequencePolyline);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  EXPECT_FALSE(catalog.has_value());
+}
+
+// I1：map 风格半截点（缺 y）→ 加载严格失败
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsIncompleteMapPolylinePoint) {
+  const auto path = WriteCatalogTemp(kIncompleteMapPolylinePoint);
   const auto catalog = LoadStationCatalog(path);
   std::remove(path.c_str());
   EXPECT_FALSE(catalog.has_value());
