@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using namespace amr_dispatcher_core::dispatcher;
 using namespace std::chrono_literals;
 
@@ -113,4 +115,50 @@ TEST(ResourceTableTest, SnapshotIsSorted) {
   const auto snap = t.Snapshot();
   ASSERT_EQ(snap.size(), 2u);
   EXPECT_LT(snap[0].first, snap[1].first);
+}
+
+// A7(b)：同任务重复预约已持有锁 —— 成功但不计入 newly_reserved
+TEST(ResourceTableTest, ReserveOwnExistingLockNotReportedNewlyReserved) {
+  ResourceTable t;
+  ASSERT_TRUE(t.Reserve("m1", {"route_edge:A__B"}).success);
+
+  const auto r = t.Reserve("m1", {"route_edge:A__B", "route_edge:B__C"});
+
+  EXPECT_TRUE(r.success);
+  ASSERT_EQ(r.newly_reserved.size(), 1u);
+  EXPECT_EQ(r.newly_reserved[0], "route_edge:B__C");
+  EXPECT_EQ(t.Owner("route_edge:B__C"), "m1");
+}
+
+// A7(c)：id 列表含重复 —— 去重后只计入一次
+TEST(ResourceTableTest, ReserveDuplicateIdsCountedOnce) {
+  ResourceTable t;
+
+  const auto r = t.Reserve("m1", {"route_edge:A__B", "route_edge:A__B", "route_node:B"});
+
+  EXPECT_TRUE(r.success);
+  ASSERT_EQ(r.newly_reserved.size(), 2u);
+  EXPECT_EQ(std::count(r.newly_reserved.begin(), r.newly_reserved.end(), "route_edge:A__B"), 1);
+  EXPECT_EQ(t.size(), 2u);
+}
+
+// A7(a)：过期时空预约（end < now）在下次 Reserve/Release 入口被剪除，表大小不随时间累积
+TEST(ResourceTableTest, ExpiredTimeSpacePrunedOnNextReserveOrRelease) {
+  ResourceTable t;
+  const auto now = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", now - 10s, now - 5s, &msg));
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:C__D", now - 8s, now - 3s, &msg));
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 2u);
+
+  // 静态 Reserve 入口触发 prune：全部过期条目清零
+  ASSERT_TRUE(t.Reserve("m2", {"route_node:B"}).success);
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 0u);
+
+  // Release 入口同样 prune：过期条目清除、未过期条目保留
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", now - 10s, now - 5s, &msg));
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:E__F", now + 5s, now + 15s, &msg));
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 2u);
+  t.Release("m2");
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 1u);
 }

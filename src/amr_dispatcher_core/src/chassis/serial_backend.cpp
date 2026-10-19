@@ -115,14 +115,25 @@ bool SerialBackend::WriteCommand(const ChassisCommand& command, std::string* err
                          : text_packet.data();
   const std::size_t size = config_.protocol == "mick_binary" ? binary_packet.size()
                                                              : text_packet.size();
-  const ssize_t written = write(fd_, data, size);
-  if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+  // 非阻塞 fd：部分写必须循环写完；EAGAIN/EWOULDBLOCK 视为本帧丢失
+  // （返回 false 由上层计入丢包），不阻塞调用方、也不再"假装成功"。
+  std::size_t offset = 0;
+  while (offset < size) {
+    const ssize_t written = write(fd_, data + offset, size - offset);
+    if (written > 0) {
+      offset += static_cast<std::size_t>(written);
+      continue;
+    }
+    if (written < 0 && errno == EINTR) {
+      continue;  // 被信号打断：重试
+    }
+    // written == 0（字符设备不应发生）或 would-block 或硬错误：本帧按丢失处理
     if (error != nullptr) {
-      *error = std::strerror(errno);
+      *error = written < 0 ? std::strerror(errno) : "serial write made no progress";
     }
     return false;
   }
-  return written >= 0 || errno == EAGAIN || errno == EWOULDBLOCK;
+  return true;
 }
 
 std::optional<std::string> SerialBackend::Read(std::string* error) {

@@ -103,6 +103,26 @@ TEST(FacilityReservationTest, ReserveFacilityResource_ReleaseExistingForHolder_C
   EXPECT_EQ(reservations["door_c"].mission_id, "mission_new");
 }
 
+// A6：先查后放 —— 抢占他人独占资源失败时不得有副作用，holder 自己的既有持有必须保留
+TEST(FacilityReservationTest, ReserveFacilityResource_FailedConflictKeepsHolderOwnResources) {
+  FacilityReservationMap reservations{
+      {"door_a", ResourceReservation{"holder_new", "mission_own", "reserved"}},
+      {"door_b", ResourceReservation{"holder_other", "mission_other", "reserved"}},
+  };
+  const auto resource = MakeResource("door_b");  // 他人独占
+
+  const auto result =
+      ReserveFacilityResource(reservations, resource, "holder_new", "mission_new", true);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.holder_id, "holder_other");
+  // 关键断言：失败的预约不得释放 holder_new 自己持有的 door_a
+  ASSERT_EQ(reservations.count("door_a"), 1U);
+  EXPECT_EQ(reservations["door_a"].holder_id, "holder_new");
+  EXPECT_EQ(reservations["door_a"].mission_id, "mission_own");
+  EXPECT_EQ(reservations["door_b"].mission_id, "mission_other");
+}
+
 TEST(FacilityReservationTest, ReleaseFacilityResource_MatchingHolder_ReleasesReservation) {
   FacilityReservationMap reservations{
       {"door_a", ResourceReservation{"holder_a", "mission_a", "reserved"}}};

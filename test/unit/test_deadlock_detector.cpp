@@ -122,7 +122,8 @@ TEST(DeadlockDetectorTest, TooManyActiveMissions) {
   snap.active_missions = {Active("a"), Active("b"), Active("c")};
   const auto findings = d.Detect(snap);
   ASSERT_FALSE(findings.empty());
-  EXPECT_EQ(findings[0].kind, DeadlockKind::kMutualBlock);
+  // A8：超容量是派发过载而非互斥死锁，独立 kind 供 recovery 区分处置
+  EXPECT_EQ(findings[0].kind, DeadlockKind::kOverCapacity);
   EXPECT_EQ(findings[0].mission_ids.size(), 3u);
 }
 

@@ -86,14 +86,16 @@ LiftSessionResult ReserveLiftSessionResource(
   result.session_id = session_id;
   result.lift_id = lift.id;
 
-  if (release_existing_for_holder) {
-    ReleaseResourcesForHolder(reservations, holder_id);
-  }
   const auto existing = reservations.find(lift.id);
   if (existing != reservations.end() && existing->second.holder_id != holder_id) {
+    // A6 先查后放（同型修复）：冲突失败不得释放 holder 的既有持有
     result.status = existing->second.status;
     result.message = "lift already reserved by " + existing->second.holder_id;
     return result;
+  }
+  // 冲突检查通过后才释放 holder 的旧持有
+  if (release_existing_for_holder) {
+    ReleaseResourcesForHolder(reservations, holder_id);
   }
 
   reservations[lift.id] = ResourceReservation{holder_id, session_id, "lift_session", true};

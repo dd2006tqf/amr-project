@@ -126,11 +126,11 @@ std::vector<DeadlockFinding> DeadlockDetector::Detect(
     findings.push_back(std::move(f));
   }
 
-  // 2. 启发式活跃任务过多检测
+  // 2. 启发式活跃任务过多检测（派发过载，独立于互斥死锁 kind，避免 recovery 误 pause）
   if (config_.max_active_missions > 0 &&
       snapshot.active_missions.size() > config_.max_active_missions) {
     DeadlockFinding f;
-    f.kind = DeadlockKind::kMutualBlock;
+    f.kind = DeadlockKind::kOverCapacity;
     f.description = "too many active missions: " +
                     std::to_string(snapshot.active_missions.size());
     for (const auto& m : snapshot.active_missions) {

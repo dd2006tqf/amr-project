@@ -42,6 +42,7 @@ enum class DeadlockKind {
   kIdleActive,            // ACTIVE 任务在 idle_threshold 内无 progress
   kLongReservationHold,   // 持有资源超过阈值
   kMutualBlock,           // 依赖环死锁 (Wait-For Graph 存在环)
+  kOverCapacity,          // 活跃任务数超限：派发过载而非互斥死锁，recovery 不得 pause
 };
 
 struct DeadlockFinding {

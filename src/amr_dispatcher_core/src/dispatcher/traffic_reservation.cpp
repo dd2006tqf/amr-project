@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <unordered_set>
 
 namespace amr_dispatcher_core::dispatcher {
 namespace {
@@ -11,6 +12,25 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
 }
 
 constexpr const char* kBlockPrefix = "traffic_block:";
+
+// A7：剪除已过期的时空预约（end < now），防止历史条目在表中无限累积
+void PruneExpiredTimeSpace(
+    std::unordered_map<std::string, std::vector<TimeSpaceReservation>>& reservations,
+    const std::chrono::steady_clock::time_point now) {
+  for (auto it = reservations.begin(); it != reservations.end();) {
+    auto& list = it->second;
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [now](const TimeSpaceReservation& reservation) {
+                                return reservation.interval.end < now;
+                              }),
+               list.end());
+    if (list.empty()) {
+      it = reservations.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
 
 }  // namespace
 
@@ -65,6 +85,8 @@ ResourceTable::ReserveResult ResourceTable::Reserve(
     result.message = "mission id must not be empty";
     return result;
   }
+  // A7：入口先剪除过期时空预约，表大小不随历史条目累积
+  PruneExpiredTimeSpace(time_space_reservations_, std::chrono::steady_clock::now());
   for (const auto& resource_id : resource_ids) {
     const auto existing = locks_.find(resource_id);
     if (existing != locks_.end() && existing->second != mission_id) {
@@ -74,12 +96,21 @@ ResourceTable::ReserveResult ResourceTable::Reserve(
       return result;  // 未落任何锁，原子性成立
     }
   }
+  // A7：写入前过滤同任务已持有锁与列表内重复，newly_reserved 只记真正新增
+  std::unordered_set<std::string> counted;
   for (const auto& resource_id : resource_ids) {
+    if (!counted.insert(resource_id).second) {
+      continue;  // 列表内重复不重复计入
+    }
+    const auto existing = locks_.find(resource_id);
+    if (existing != locks_.end() && existing->second == mission_id) {
+      continue;  // 同任务已持有，不算新增
+    }
     locks_[resource_id] = mission_id;
     result.newly_reserved.push_back(resource_id);
   }
   std::ostringstream oss;
-  oss << "reserved " << resource_ids.size() << " resource(s)";
+  oss << "reserved " << result.newly_reserved.size() << " resource(s)";
   result.success = true;
   result.message = oss.str();
   return result;
@@ -122,6 +153,8 @@ bool ResourceTable::ReserveTimeSpace(
 
 ResourceTable::ReleaseResult ResourceTable::Release(const std::string& mission_id) {
   ReleaseResult result;
+  // A7：入口先剪除过期时空预约
+  PruneExpiredTimeSpace(time_space_reservations_, std::chrono::steady_clock::now());
   for (auto lock = locks_.begin(); lock != locks_.end();) {
     if (lock->second == mission_id) {
       lock = locks_.erase(lock);
@@ -197,6 +230,14 @@ std::optional<std::string> ResourceTable::Owner(const std::string& resource_id) 
     return std::nullopt;
   }
   return it->second;
+}
+
+std::size_t ResourceTable::TimeSpaceReservationCount() const {
+  std::size_t total = 0;
+  for (const auto& entry : time_space_reservations_) {
+    total += entry.second.size();
+  }
+  return total;
 }
 
 std::vector<std::pair<std::string, std::string>> ResourceTable::Snapshot() const {

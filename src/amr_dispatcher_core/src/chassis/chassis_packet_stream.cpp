@@ -10,14 +10,13 @@ ChassisPacketStream::ChassisPacketStream(const std::size_t max_buffer_bytes)
     : max_buffer_bytes_(max_buffer_bytes) {}
 
 void ChassisPacketStream::Append(const char* data, const std::size_t size) {
-  if (overflowed_) {
-    return;
-  }
+  // A9：与二进制流统一 —— 溢出只置事件标志并清缓冲，不在此提前返回，
+  // 否则流被永久哑掉、后续正常行再也解不出包。
   buffer_.append(data, size);
   if (buffer_.size() > max_buffer_bytes_) {
+    // 丢弃超长坏行/积压（含本次刚追加的数据），置"曾发生溢出"事件位
     buffer_.clear();
     overflowed_ = true;
-    return;
   }
   // 同步解析完整行：每解析完一行就从 buffer 摘掉，
   // 让 InvalidLineCount() 在 Append 之后即可见（无须 DrainPackets）。

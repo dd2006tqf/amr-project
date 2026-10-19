@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace amr_dispatcher_core::safety {
@@ -38,6 +39,8 @@ struct SupervisorConfig {
   double degraded_loss_rate_threshold = 0.15; // 丢包率 > 15% 触发 kDegraded 限速
   double critical_loss_rate_threshold = 0.35; // 丢包率 > 35% 触发 kFault 急停
   bool auto_clear = true;
+  // 上报时效：超过该时长未刷新的数据源视为不可信（按降级限速仲裁，不采信其"健康"结论）
+  std::chrono::milliseconds staleness_timeout{std::chrono::milliseconds(2000)};
 };
 
 /**
@@ -49,14 +52,16 @@ class FaultSupervisor {
  public:
   explicit FaultSupervisor(SupervisorConfig config = {});
 
-  // 1. 基础健康上报接口 (向后兼容)
+  // 1. 基础健康上报接口 (向后兼容，只承载 chassis/watchdog 两个源)
   void UpdateHealth(bool system_healthy, const std::string& error_message);
 
-  // 2. 多数据源聚合上报接口
+  // 2. 多数据源聚合上报接口（刷新 chassis/watchdog/deadlock/estop 四个源的时效时戳）
   void UpdateMultiSourceHealth(const MultiSourceHealthReport& report);
 
   // 核心周期巡检 Tick (建议 10Hz~50Hz 调用)
   void Tick();
+  // 显式指定判定时刻的重载（供测试注入时间，避免真实 sleep）
+  void Tick(std::chrono::steady_clock::time_point now);
 
   SupervisorState state() const { return state_; }
   std::string state_string() const;
@@ -77,6 +82,9 @@ class FaultSupervisor {
 
   bool health_seen_ = false;
   MultiSourceHealthReport latest_report_;
+  // 各数据源最后一次上报时刻（chassis/watchdog/deadlock/estop）。
+  // 缺失记录的源从未上报过，不参与时效判定（避免对从未上报的源误判）。
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_report_time_;
 
   std::chrono::steady_clock::time_point start_time_;
   std::chrono::steady_clock::time_point last_command_time_;

@@ -1,6 +1,18 @@
 #include "amr_dispatcher_core/safety/fault_supervisor.hpp"
 
+#include <vector>
+
 namespace amr_dispatcher_core::safety {
+
+namespace {
+
+// 四个防御数据源的固定键（与 last_report_time_ 对应）
+constexpr const char* kSourceChassis = "chassis";
+constexpr const char* kSourceWatchdog = "watchdog";
+constexpr const char* kSourceDeadlock = "deadlock";
+constexpr const char* kSourceEstop = "estop";
+
+}  // namespace
 
 FaultSupervisor::FaultSupervisor(SupervisorConfig config)
     : config_(config), start_time_(std::chrono::steady_clock::now()) {}
@@ -14,21 +26,32 @@ bool FaultSupervisor::CooldownReady() const {
 }
 
 void FaultSupervisor::UpdateHealth(bool system_healthy, const std::string& error_message) {
-  MultiSourceHealthReport report;
-  report.chassis_healthy = system_healthy;
-  report.watchdog_healthy = system_healthy;
-  report.detail_message = error_message;
-  UpdateMultiSourceHealth(report);
+  // 基础接口只承载 chassis/watchdog 两个源，不代打 deadlock/estop 时戳，
+  // 使从未上报的源不参与时效判定（避免被误判为过期急停/死锁）。
+  health_seen_ = true;
+  latest_report_ = MultiSourceHealthReport{};
+  latest_report_.chassis_healthy = system_healthy;
+  latest_report_.watchdog_healthy = system_healthy;
+  latest_report_.detail_message = error_message;
+  const auto now = std::chrono::steady_clock::now();
+  last_report_time_[kSourceChassis] = now;
+  last_report_time_[kSourceWatchdog] = now;
 }
 
 void FaultSupervisor::UpdateMultiSourceHealth(const MultiSourceHealthReport& report) {
   health_seen_ = true;
   latest_report_ = report;
+  // 聚合上报视为四个源同时刷新
+  const auto now = std::chrono::steady_clock::now();
+  last_report_time_[kSourceChassis] = now;
+  last_report_time_[kSourceWatchdog] = now;
+  last_report_time_[kSourceDeadlock] = now;
+  last_report_time_[kSourceEstop] = now;
 }
 
-void FaultSupervisor::Tick() {
-  const auto now = std::chrono::steady_clock::now();
+void FaultSupervisor::Tick() { Tick(std::chrono::steady_clock::now()); }
 
+void FaultSupervisor::Tick(std::chrono::steady_clock::time_point now) {
   if (!health_seen_) {
     state_ = SupervisorState::kWaiting;
     recommendation_ = SystemActionRecommendation::kNone;
@@ -38,10 +61,28 @@ void FaultSupervisor::Tick() {
 
   const bool in_grace = (now - start_time_) < config_.startup_grace;
 
+  // 0. 上报时效：缺失记录 = 从未上报，不参与判定；超时 = 该源数据不可信。
+  //    （不可信不等于故障：过期源不能触发急停，但其"健康"结论也不再采信）
+  const auto stale = [&](const char* source) {
+    const auto it = last_report_time_.find(source);
+    if (it == last_report_time_.end()) {
+      return false;  // 从未上报的源不参与时效判定
+    }
+    return (now - it->second) > config_.staleness_timeout;
+  };
+  const bool chassis_stale = stale(kSourceChassis);
+  const bool watchdog_stale = stale(kSourceWatchdog);
+  const bool deadlock_stale = stale(kSourceDeadlock);
+  const bool estop_stale = stale(kSourceEstop);
+  const bool any_stale = chassis_stale || watchdog_stale || deadlock_stale || estop_stale;
+
   // 1. 判断是否属于严重硬件/人身故障 (E-Stop, Bumper, Watchdog 丢失, 高危丢包率 > 35%)
+  //    人工急停/看门狗按最后已知值锁存（安全信号不因报告过期而清除）；
+  //    高危丢包率只在该源数据仍新鲜时采信，过期数据不升级为急停。
   bool critical_fault = latest_report_.manual_estop ||
                         !latest_report_.watchdog_healthy ||
-                        (latest_report_.chassis_loss_rate >= config_.critical_loss_rate_threshold);
+                        (!chassis_stale &&
+                         latest_report_.chassis_loss_rate >= config_.critical_loss_rate_threshold);
 
   if (critical_fault) {
     if (in_grace && !latest_report_.manual_estop) {
@@ -59,6 +100,25 @@ void FaultSupervisor::Tick() {
       estop_requested_ = true;
       last_command_time_ = now;
     }
+    return;
+  }
+
+  // 1.5 上报时效仲裁：任一源过期 -> 降级限速（不采信过期源的健康结论，
+  //     也不将过期数据升级为急停/死锁，避免"停止上报"反而触发硬故障）。
+  if (any_stale) {
+    std::vector<std::string> stale_sources;
+    if (chassis_stale) stale_sources.emplace_back(kSourceChassis);
+    if (watchdog_stale) stale_sources.emplace_back(kSourceWatchdog);
+    if (deadlock_stale) stale_sources.emplace_back(kSourceDeadlock);
+    if (estop_stale) stale_sources.emplace_back(kSourceEstop);
+    std::string joined;
+    for (std::size_t i = 0; i < stale_sources.size(); ++i) {
+      if (i > 0) joined += ",";
+      joined += stale_sources[i];
+    }
+    state_ = SupervisorState::kDegraded;
+    recommendation_ = SystemActionRecommendation::kClampSpeed;
+    message_ = "health report stale: " + joined;
     return;
   }
 
@@ -115,6 +175,7 @@ void FaultSupervisor::Reset() {
   message_ = "reset";
   health_seen_ = false;
   estop_requested_ = false;
+  last_report_time_.clear();  // 各源时效时戳一并清空，重新等待上报
   start_time_ = std::chrono::steady_clock::now();
 }
 

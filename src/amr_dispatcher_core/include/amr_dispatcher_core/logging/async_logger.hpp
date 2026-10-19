@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -40,6 +42,8 @@ class SyncLogger {
 };
 
 // 异步日志器：单写线程 + 队列。Log() 仅入队；析构/Stop() 时 flush 并 join。
+// 出队写盘全程持 queue_mutex_（Flush 观察到空队列即代表已全部落盘入 stream_）；
+// 队列满丢弃计入 dropped_count()，不静默丢失。
 class AsyncLogger {
  public:
   struct Config {
@@ -60,6 +64,9 @@ class AsyncLogger {
 
   void Stop();
 
+  // 因队列满被丢弃的日志条数（原子计数，多线程 Log 下精确）
+  std::uint64_t dropped_count() const { return dropped_count_.load(); }
+
  private:
   void WriterLoop();
 
@@ -69,6 +76,7 @@ class AsyncLogger {
   std::condition_variable queue_cv_;
   std::queue<LogRecord> queue_;
   bool stop_ = false;
+  std::atomic<std::uint64_t> dropped_count_{0};
   std::thread writer_;
 };
 

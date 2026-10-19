@@ -162,6 +162,24 @@ TEST(FacilityWorkflowTest, ReserveLiftSessionResource_ReleaseExistingForHolder_C
   EXPECT_EQ(reservations["lift_a"].mission_id, "session_new");
 }
 
+// A6（同型缺陷）：抢占他人电梯会话失败时不得释放 holder 自己的既有持有
+TEST(FacilityWorkflowTest, ReserveLiftSessionResource_FailedConflictKeepsHolderOwnResources) {
+  FacilityReservationMap reservations{
+      {"door_a", ResourceReservation{"operator_new", "mission_own", "reserved"}},
+      {"lift_b", ResourceReservation{"operator_other", "session_other", "lift_session", true}},
+  };
+  const auto lift = MakeResource("lift_b", "elevator");  // 他人已占用
+
+  const auto result =
+      ReserveLiftSessionResource(reservations, lift, "session_new", "operator_new", true);
+
+  EXPECT_FALSE(result.success);
+  // 失败的预约不得释放 operator_new 自己持有的 door_a
+  ASSERT_EQ(reservations.count("door_a"), 1U);
+  EXPECT_EQ(reservations["door_a"].holder_id, "operator_new");
+  EXPECT_EQ(reservations["lift_b"].mission_id, "session_other");
+}
+
 TEST(FacilityWorkflowTest, ReleaseLiftSessionResource_MissingLift_ReturnsAvailable) {
   FacilityReservationMap reservations;
 

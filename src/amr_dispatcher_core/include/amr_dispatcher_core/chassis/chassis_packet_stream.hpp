@@ -10,6 +10,8 @@ namespace amr_dispatcher_core::chassis {
 
 // 将字节流切分为文本协议数据包（每行一条，以 '\n' 结尾）。
 // 内部维护粘包/半包缓冲：Append() 可任意切分追加，DrainPackets() 一次取干。
+// 溢出语义（与 MickBinaryPacketStream 统一）：超限时清缓冲并置 Overflowed()
+// 事件标志，流继续解析后续数据（不永久哑掉），ClearOverflow() 显式复位。
 class ChassisPacketStream {
  public:
   explicit ChassisPacketStream(std::size_t max_buffer_bytes = 4096);
@@ -32,6 +34,7 @@ class ChassisPacketStream {
 };
 
 // 将字节流切分为 Mick 二进制帧（0xAE 0xEA ... 0xEF 0xFE），带校验和。
+// 溢出语义同 ChassisPacketStream：清缓冲 + Overflowed() 事件标志，不阻断后续解帧。
 class MickBinaryPacketStream {
  public:
   explicit MickBinaryPacketStream(std::size_t max_buffer_bytes = 4096);

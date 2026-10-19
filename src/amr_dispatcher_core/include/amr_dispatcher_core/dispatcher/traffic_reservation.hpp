@@ -61,6 +61,9 @@ class ResourceTable {
   std::optional<std::string> Owner(const std::string& resource_id) const;
   std::size_t size() const { return locks_.size(); }
 
+  // 时空预约表当前有效条目总数（过期回收的可观测指标）
+  std::size_t TimeSpaceReservationCount() const;
+
   std::vector<std::pair<std::string, std::string>> Snapshot() const;  // 已排序
 
   // 资源命名规则。

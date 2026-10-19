@@ -2,7 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 #include "amr_dispatcher_core/catalog/station_catalog.hpp"
+#include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
 
 namespace amr_dispatcher_core::workflow {
 
@@ -48,6 +52,37 @@ TEST(TrafficReservationTest, BuildRouteLockIds_WithoutIntersectionLocks_AddsEdge
 TEST(TrafficReservationTest, IsTrafficBlockOwner_RecognizesOnlyTrafficBlocks) {
   EXPECT_TRUE(IsTrafficBlockOwner("traffic_block:maintenance"));
   EXPECT_FALSE(IsTrafficBlockOwner("mission_a"));
+}
+
+// A10：跨命名空间 round-trip —— workflow 生成的锁 id 能被 dispatcher
+// ParseRouteEdge/IsTrafficBlockOwner 正确解析，反之亦然（两侧必须收敛到同一实现）
+TEST(TrafficReservationTest, CrossNamespaceRouteLockRoundTrip) {
+  namespace dispatcher = amr_dispatcher_core::dispatcher;
+
+  // workflow 生成 -> dispatcher 解析
+  const auto parsed_by_dispatcher =
+      dispatcher::ResourceTable::ParseRouteEdge(RouteLockId("storage_b", "packing"));
+  ASSERT_TRUE(parsed_by_dispatcher.has_value());
+  EXPECT_EQ(parsed_by_dispatcher->first, "packing");
+  EXPECT_EQ(parsed_by_dispatcher->second, "storage_b");
+  EXPECT_TRUE(
+      dispatcher::ResourceTable::IsTrafficBlockOwner(TrafficBlockOwnerId("maintenance")));
+  EXPECT_FALSE(dispatcher::ResourceTable::IsTrafficBlockOwner("mission_a"));
+
+  // dispatcher 生成 -> workflow 解析
+  const auto parsed_by_workflow =
+      ParseRouteLock(dispatcher::ResourceTable::RouteEdgeId("storage_b", "packing"));
+  ASSERT_TRUE(parsed_by_workflow.has_value());
+  EXPECT_EQ(parsed_by_workflow->first, "packing");
+  EXPECT_EQ(parsed_by_workflow->second, "storage_b");
+  EXPECT_TRUE(IsTrafficBlockOwner(TrafficBlockOwnerId("maintenance")));
+
+  // 节点锁 id 与整条路径锁 id 集两侧逐项一致
+  EXPECT_EQ(RouteNodeLockId("storage_a"), dispatcher::ResourceTable::RouteNodeId("storage_a"));
+  EXPECT_EQ(BuildRouteLockIds({"receiving", "storage_a", "packing"}, true),
+            dispatcher::ResourceTable::BuildLockIds({"receiving", "storage_a", "packing"}, true));
+  EXPECT_EQ(BuildRouteLockIds({"receiving", "storage_a"}, false),
+            dispatcher::ResourceTable::BuildLockIds({"receiving", "storage_a"}, false));
 }
 
 TEST(TrafficReservationTest, PlanTrafficBlock_UnknownStationRejects) {

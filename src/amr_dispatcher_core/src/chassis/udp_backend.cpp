@@ -64,13 +64,21 @@ bool UdpBackend::WriteCommand(const ChassisCommand& command, std::string* error)
   const ssize_t sent =
       sendto(fd_, data, size, 0,
              reinterpret_cast<const sockaddr*>(&remote_addr_), sizeof(remote_addr_));
-  if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+  // 数据报语义：sendto 要么整报发出要么失败，不存在可重试的"部分发送"（不做分片循环，
+  // 否则短计数会把一帧拆成多个数据报）。would-block 同串口语义按本帧丢失处理。
+  if (sent < 0) {
     if (error != nullptr) {
       *error = std::strerror(errno);
     }
     return false;
   }
-  return sent >= 0 || errno == EAGAIN || errno == EWOULDBLOCK;
+  if (static_cast<std::size_t>(sent) != size) {
+    if (error != nullptr) {
+      *error = "UDP send returned short count";
+    }
+    return false;
+  }
+  return true;
 }
 
 std::optional<std::string> UdpBackend::Read(std::string* error) {

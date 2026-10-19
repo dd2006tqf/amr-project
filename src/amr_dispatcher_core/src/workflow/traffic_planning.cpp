@@ -6,43 +6,30 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
+
 namespace amr_dispatcher_core::workflow {
-namespace {
 
-bool StartsWith(const std::string& value, const std::string& prefix) {
-  return value.rfind(prefix, 0) == 0;
-}
+namespace dispatcher = amr_dispatcher_core::dispatcher;
 
-}  // namespace
+// A10：路由锁 id 单一实现收敛于 dispatcher::ResourceTable —— workflow 侧改为薄封装，
+// 删除逐行重复体，保证生成/解析两侧永远同源（跨命名空间 round-trip 测试锁定）。
 
 std::string RouteLockId(const std::string& from, const std::string& to) {
-  return from <= to ? "route_edge:" + from + "__" + to : "route_edge:" + to + "__" + from;
+  return dispatcher::ResourceTable::RouteEdgeId(from, to);
 }
 
 std::string RouteNodeLockId(const std::string& station_id) {
-  return "route_node:" + station_id;
+  return dispatcher::ResourceTable::RouteNodeId(station_id);
 }
 
 std::optional<std::pair<std::string, std::string>> ParseRouteLock(
     const std::string& resource_id) {
-  const std::string prefix = "route_edge:";
-  if (!StartsWith(resource_id, prefix)) {
-    return std::nullopt;
-  }
-  const auto separator = resource_id.find("__", prefix.size());
-  if (separator == std::string::npos) {
-    return std::nullopt;
-  }
-  const auto first = resource_id.substr(prefix.size(), separator - prefix.size());
-  const auto second = resource_id.substr(separator + 2);
-  if (first.empty() || second.empty()) {
-    return std::nullopt;
-  }
-  return std::make_pair(first, second);
+  return dispatcher::ResourceTable::ParseRouteEdge(resource_id);
 }
 
 bool IsTrafficBlockOwner(const std::string& owner_id) {
-  return StartsWith(owner_id, "traffic_block:");
+  return dispatcher::ResourceTable::IsTrafficBlockOwner(owner_id);
 }
 
 std::string TrafficBlockOwnerId(const std::string& reason) {
@@ -182,16 +169,8 @@ TrafficDeadlockDecision PlanTrafficDeadlockDetection(const RouteLockMap& route_l
 
 std::vector<std::string> BuildRouteLockIds(
     const std::vector<std::string>& station_path, const bool include_intersection_locks) {
-  std::vector<std::string> lock_ids;
-  if (include_intersection_locks) {
-    for (const auto& station_id : station_path) {
-      lock_ids.push_back(RouteNodeLockId(station_id));
-    }
-  }
-  for (std::size_t index = 1; index < station_path.size(); ++index) {
-    lock_ids.push_back(RouteLockId(station_path[index - 1], station_path[index]));
-  }
-  return lock_ids;
+  // A10：薄封装 —— 与 dispatcher::ResourceTable::BuildLockIds 同一实现
+  return dispatcher::ResourceTable::BuildLockIds(station_path, include_intersection_locks);
 }
 
 std::vector<std::string> PlanMissionRouteLocks(

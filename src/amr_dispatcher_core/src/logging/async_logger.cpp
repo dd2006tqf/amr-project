@@ -82,7 +82,8 @@ void AsyncLogger::Log(const LogLevel level, const std::string& component,
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (queue_.size() >= config_.queue_capacity) {
-      // 队列满：丢弃（不阻塞调用方）。生产环境应监控 drop count。
+      // 队列满：丢弃（不阻塞调用方），原子计数供监控告警
+      dropped_count_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
     queue_.push(std::move(r));
@@ -91,7 +92,9 @@ void AsyncLogger::Log(const LogLevel level, const std::string& component,
 }
 
 void AsyncLogger::Flush() {
-  // 等待队列清空，但有上限防止队列长持续写入卡死
+  // 等待队列清空，但有上限防止队列长持续写入卡死。
+  // 写线程 pop+write 全程持锁，故空队列 ⇒ 没有"已出队未写盘"的记录；
+  // 返回前在锁内 flush stream_，保证返回时数据已在文件上。
   std::unique_lock<std::mutex> lock(queue_mutex_);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   queue_cv_.wait_until(lock, deadline,
@@ -117,20 +120,26 @@ void AsyncLogger::Stop() {
 
 void AsyncLogger::WriterLoop() {
   while (true) {
-    LogRecord record;
+    bool should_exit = false;
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
       queue_cv_.wait_for(lock, config_.flush_interval,
                          [this] { return !queue_.empty() || stop_; });
-      if (queue_.empty()) {
-        if (stop_) return;
-        continue;
+      // 出队与写盘同持 queue_mutex_：消掉"已 pop 但未写 stream_"的竞态窗口，
+      // 使 Flush 只依赖 queue_.empty() 即可断言已全部写入 stream_。
+      while (!queue_.empty()) {
+        const LogRecord record = std::move(queue_.front());
+        queue_.pop();
+        if (stream_.is_open()) {
+          stream_ << FormatLogRecord(record) << "\n";
+        }
       }
-      record = std::move(queue_.front());
-      queue_.pop();
+      should_exit = stop_;
     }
-    if (stream_.is_open()) {
-      stream_ << FormatLogRecord(record) << "\n";
+    // 队列已排空：唤醒等待落盘的 Flush，避免其空等到超时
+    queue_cv_.notify_all();
+    if (should_exit) {
+      return;
     }
   }
 }

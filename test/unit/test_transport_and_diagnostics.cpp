@@ -134,3 +134,79 @@ TEST(FaultSupervisorTest, MultiSourceArbitrationRecommendations) {
   EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
   EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kPauseDispatch);
 }
+
+// A3(a)：上报健康后停止刷新超过 staleness_timeout，Tick 将该数据视为不可信 -> 降级限速
+TEST(FaultSupervisorTest, StaleReportDegradesAfterTimeout) {
+  SupervisorConfig cfg;
+  cfg.startup_grace = 0ms;
+  cfg.staleness_timeout = 50ms;
+  FaultSupervisor supervisor(cfg);
+
+  MultiSourceHealthReport r;  // 全部健康（默认值）
+  supervisor.UpdateMultiSourceHealth(r);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kNormal);
+
+  // 数据源停止刷新超过 staleness_timeout：健康值不采信 -> 降级限速，不急停
+  std::this_thread::sleep_for(70ms);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kClampSpeed);
+  EXPECT_FALSE(supervisor.emergency_stop_requested());
+}
+
+// A3(b)：持续上报（间隔 < staleness_timeout）的源不受时效仲裁影响
+TEST(FaultSupervisorTest, FreshReportsKeepNormal) {
+  SupervisorConfig cfg;
+  cfg.startup_grace = 0ms;
+  cfg.staleness_timeout = 80ms;
+  FaultSupervisor supervisor(cfg);
+
+  MultiSourceHealthReport r;
+  for (int i = 0; i < 4; ++i) {
+    supervisor.UpdateMultiSourceHealth(r);  // 持续上报
+    std::this_thread::sleep_for(30ms);
+    supervisor.Tick();
+    EXPECT_EQ(supervisor.state(), SupervisorState::kNormal);
+    EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kNone);
+  }
+}
+
+// A3(c)：从未上报过的源不参与时效判定 —— 不误判为急停/死锁，只按现状保持等待或降级
+TEST(FaultSupervisorTest, NeverReportedSourcesAreNotJudged) {
+  SupervisorConfig cfg;
+  cfg.staleness_timeout = 50ms;
+  FaultSupervisor supervisor(cfg);
+
+  // 从未上报：停留在 WAITING，不产生任何故障判定
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kWaiting);
+
+  // 只经基础接口上报 chassis/watchdog（estop/deadlock 源从未上报）。
+  // 超时后 chassis/watchdog 不可信 -> 降级限速；未上报的 estop 源不得被误判为急停。
+  supervisor.UpdateHealth(true, "ok");
+  std::this_thread::sleep_for(70ms);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kClampSpeed);
+  EXPECT_FALSE(supervisor.emergency_stop_requested());
+}
+
+// A3：人工急停按最后已知值锁存 —— 报告过期不清除安全信号
+TEST(FaultSupervisorTest, StaleReportKeepsActiveEstopLatched) {
+  SupervisorConfig cfg;
+  cfg.staleness_timeout = 50ms;
+  FaultSupervisor supervisor(cfg);
+
+  MultiSourceHealthReport r;
+  r.manual_estop = true;
+  supervisor.UpdateMultiSourceHealth(r);
+  supervisor.Tick();
+  ASSERT_EQ(supervisor.state(), SupervisorState::kFault);
+  ASSERT_TRUE(supervisor.emergency_stop_requested());
+
+  std::this_thread::sleep_for(70ms);  // 报告过期
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kFault);
+  EXPECT_TRUE(supervisor.emergency_stop_requested());
+}

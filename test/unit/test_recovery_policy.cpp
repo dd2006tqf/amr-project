@@ -50,6 +50,17 @@ TEST(RecoveryPolicyTest, MutualBlockAlwaysPauses) {
   }
 }
 
+// A8：超容量不误伤活跃任务 —— 不 pause，转为 kNone（暂缓派发类处置）
+TEST(RecoveryPolicyTest, OverCapacityEmitsNoneInsteadOfPause) {
+  RecoveryPolicy p;
+  std::vector<DeadlockFinding> fs{Make(DeadlockKind::kOverCapacity, {"a", "b"})};
+  auto acts = p.Decide(fs, [](const std::string&) { return 0; });
+  ASSERT_EQ(acts.size(), 2u);
+  for (const auto& a : acts) {
+    EXPECT_EQ(a.kind, RecoveryAction::Kind::kNone);
+  }
+}
+
 TEST(RecoveryPolicyTest, DedupAcrossFindings) {
   RecoveryPolicy p;
   std::vector<DeadlockFinding> fs{

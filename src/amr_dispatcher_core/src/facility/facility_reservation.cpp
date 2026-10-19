@@ -98,16 +98,18 @@ FacilityReservationResult ReserveFacilityResource(
     result.message = "facility resource disabled: " + resource.id;
     return result;
   }
-  if (release_existing_for_holder) {
-    ReleaseResourcesForHolder(reservations, holder_id);
-  }
   const auto existing = reservations.find(resource.id);
   if (resource.exclusive && existing != reservations.end() &&
       existing->second.holder_id != holder_id) {
+    // A6 先查后放：冲突未通过则直接失败，不得有任何副作用（holder 的既有持有必须保留）
     result.holder_id = existing->second.holder_id;
     result.status = existing->second.status;
     result.message = "facility resource already reserved: " + resource.id;
     return result;
+  }
+  // 冲突检查全部通过后才释放 holder 的旧持有，避免预约失败连带丢锁
+  if (release_existing_for_holder) {
+    ReleaseResourcesForHolder(reservations, holder_id);
   }
 
   reservations[resource.id] = ResourceReservation{holder_id, mission_id, "reserved"};

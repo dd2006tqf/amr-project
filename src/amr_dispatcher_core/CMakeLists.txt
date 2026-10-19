@@ -113,6 +113,7 @@ if(BUILD_TESTING)
     test_link_quality
     test_link_recovery
     test_backend_degradation
+    test_serial_udp_backend
     test_deadlock_detector
     test_recovery_policy
     test_cmd_vel_gate

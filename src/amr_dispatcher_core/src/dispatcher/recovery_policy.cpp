@@ -37,6 +37,11 @@ std::vector<RecoveryAction> RecoveryPolicy::Decide(
         case DeadlockKind::kMutualBlock:
           action.kind = RecoveryAction::Kind::kPause;
           break;
+        case DeadlockKind::kOverCapacity:
+          // A8：超容量是派发过载不是死锁 —— 不 pause 活跃任务（暂缓派发由
+          // 派发侧限流负责），动作枚举中最贴近 hold 的处置是 kNone
+          action.kind = RecoveryAction::Kind::kNone;
+          break;
       }
       actions.push_back(std::move(action));
     }

@@ -40,6 +40,8 @@ struct CmdVelGateConfig {
   double max_angular_z_radps = 2.0;
   std::function<bool(const std::string&)> source_blocked;
   std::size_t event_history_capacity = 256;
+  // 事件 TTL：Evaluate 时刻超过 stamp + event_ttl 的事件视为已失效，不再触发阻止/降速
+  std::chrono::milliseconds event_ttl{std::chrono::milliseconds(2000)};
 };
 
 class CmdVelGate {
@@ -49,7 +51,10 @@ class CmdVelGate {
   void PushEvent(SafetyEvent event);
   void ClearEvents();
 
-  CmdVelGateDecision Evaluate(const CmdVelCommand& command) const;
+  // now 用于事件 TTL 判定；默认取当前时刻（与旧行为兼容）
+  CmdVelGateDecision Evaluate(
+      const CmdVelCommand& command,
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const;
 
   const std::vector<SafetyEvent>& recent_events() const { return recent_events_; }
 
