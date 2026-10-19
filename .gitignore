@@ -13,3 +13,9 @@ log/
 *.pdf
 *简历知识库.md
 
+# 工作流计划与审查产物（不入库）
+docs/superpowers/
+
+# check_all.sh 每次运行生成的测试矩阵（由脚本如实重写，只作本地产物）
+test_report_matrix.json
+

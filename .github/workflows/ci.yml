@@ -13,21 +13,30 @@ jobs:
   build-and-test-core:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ libyaml-cpp-dev libgtest-dev
 
+      # 与 scripts/build.sh 的 cmake 参数保持一致（含 -DCMAKE_BUILD_TYPE=Release），
+      # 这样后面 check_all.sh 内部再次 configure 时是 no-op，不会触发二次全量编译。
       - name: Build Core
         run: |
-          cmake -S src/amr_dispatcher_core -B build/core -DBUILD_TESTING=ON -DCMAKE_CXX_FLAGS="-std=c++20"
+          cmake -S src/amr_dispatcher_core -B build/core -DBUILD_TESTING=ON \
+                -DCMAKE_CXX_FLAGS="-std=c++20" -DCMAKE_BUILD_TYPE=Release
           cmake --build build/core -j$(nproc)
 
       - name: Run Core Tests
         run: |
           ctest --test-dir build/core --output-on-failure
+
+      # 全链路自检：复用上面已构建好的 build/core（增量，几乎无重复编译）。
+      # 纯宿主机（ubuntu-22.04，无 ROS）下 BT/colcon 阶段如实记为 SKIPPED，不算失败；
+      # verdict=FAILED 时脚本以非零退出使 CI 变红；测试矩阵写入 test_report_matrix.json。
+      - name: Run Full Check Pipeline (check_all.sh)
+        run: ./scripts/check_all.sh
 
   # 完整 ROS 2 工作区：用官方 jazzy 镜像做 colcon 构建。
   #
@@ -38,14 +47,14 @@ jobs:
   # 于是从仓库全新 clone 后该目录不存在，amr_dispatcher_tools 的
   # install(DIRECTORY include/ ...) 直接失败并连带中止 amr_dispatcher_ros。
   # 该问题只在全新 clone 时暴露（开发机上那个目录一直存在），本地 cmake/colcon
-  # 构建与全部 453 个测试都能通过，一路溜到部署到服务器才炸。
+  # 构建与全部测试都能通过（测试数量随开发演进，不写死具体数字），一路溜到部署到服务器才炸。
   # CI 每次都是全新 clone，因此这个 job 是发现此类问题的唯一关口。
   build-ros2-jazzy:
     runs-on: ubuntu-24.04
     container:
       image: ros:jazzy-ros-base
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       # 基础镜像已含大部分依赖，这里只补 behaviortree_cpp 与 hardware_interface
       # （与 docker/Dockerfile.jazzy 的清单保持一致）。
@@ -102,7 +111,7 @@ jobs:
             echo "OK  $p"
           done
 
-      # 确认 9 个可执行文件都产出了（launch 文件依赖它们）
+      # 确认 10 个可执行文件都产出了（launch 文件依赖它们）
       - name: Verify Expected Executables Exist
         shell: bash
         run: |
@@ -112,7 +121,8 @@ jobs:
           missing=0
           for exe in chassis_driver_node dispatcher_node safety_gate_node \
                      path_tracker_node link_health_publisher \
-                     dispatcher_visualizer_node lifecycle_coordinator_node; do
+                     dispatcher_visualizer_node lifecycle_coordinator_node \
+                     navigate_sequence_bridge_node; do
             if [ ! -x "install/amr_dispatcher_ros/lib/amr_dispatcher_ros/$exe" ]; then
               echo "::error::缺失可执行文件 $exe"
               missing=1
@@ -124,7 +134,7 @@ jobs:
               missing=1
             fi
           done
-          [ "$missing" -eq 0 ] && echo "9 个可执行文件全部就位"
+          [ "$missing" -eq 0 ] && echo "10 个可执行文件全部就位"
           exit "$missing"
 
       # 行为树与核心库的单测（与 scripts/build.sh 的 core 测试互补）

@@ -15,7 +15,7 @@
 # 旧的 amr-dispatcher:latest / robot-amr:latest 是已废弃的 7GB 镜像，
 # 对应的 docker/Dockerfile 与 docker/docker-compose.yml 已从仓库移除。
 
-set -e
+set -euo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 ROOT_DIR="$DIR/.."

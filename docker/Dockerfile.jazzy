@@ -23,6 +23,11 @@
 # 构建（在仓库根目录）：
 #   docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
 
+# 滚动 tag 风险：ros:jazzy-ros-base 未钉 digest，上游重建会静默改变镜像内容
+# （CI 的 build-ros2-jazzy job 使用同一镜像）。有条件时用
+# `docker manifest inspect ros:jazzy-ros-base` 取 digest 钉死，形如：
+#   FROM ros:jazzy-ros-base@sha256:<digest>
+# 当前环境无法访问 registry（manifest inspect 超时），暂保持滚动 tag 并依赖 CI 把关。
 FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
