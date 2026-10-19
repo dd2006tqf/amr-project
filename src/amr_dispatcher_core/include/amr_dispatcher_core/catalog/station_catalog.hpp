@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "amr_dispatcher_core/config/config_loader.hpp"
@@ -17,17 +18,33 @@ struct Station {
   double yaw = 0.0;
 };
 
+// 骨架路网通行节点（路口/转折点）：与站点共用同一 id 空间，
+// 使 FindRoutePath 能在 stations + road_nodes 混合图上寻路。
+struct RoadNode {
+  std::string id;
+  std::string frame_id = "map";
+  double x = 0.0;
+  double y = 0.0;
+  double yaw = 0.0;
+};
+
 struct CatalogStationEdge {
   std::string from;
   std::string to;
   double distance_m = 0.0;
   bool bidirectional = true;
   bool enabled = true;
+  // 沿骨架提取的真实几何折线（世界坐标米制），供 SkeletonPlanner 循迹展开
+  std::vector<std::pair<double, double>> polyline{};
 };
 
 struct StationCatalog {
   std::vector<Station> stations;
   std::vector<CatalogStationEdge> edges;
+  // 地图包内容指纹与路网算法版本，供调度侧版本门禁比对
+  std::string map_hash;
+  std::string graph_version;
+  std::vector<RoadNode> road_nodes;
 };
 
 struct StationListProjection {

@@ -103,3 +103,207 @@ TEST(StationCatalogReloaderTest, ReloadsOnMtimeChangeAndKeepsOldOnInvalid) {
   EXPECT_FALSE(reloader.last_error().empty());
   std::remove(p.c_str());
 }
+
+// ---- Task 1：road_nodes / polyline / version 混合图扩展 ----
+
+namespace amr_dispatcher_core::catalog {
+namespace {
+
+// 完整 schema：version 段 + 站点 + 通行节点 + flow/map 两种 polyline 写法
+constexpr const char* kMixedGraphCatalog = R"(version:
+  map_hash: "deadbeefcafe"
+  graph_version: "v1_skeleton"
+
+stations:
+  - id: s1
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  - id: s2
+    x: 10.0
+    y: 0.0
+    yaw: 3.14159
+
+road_nodes:
+  - id: n1
+    x: 5.0
+    y: 0.0
+    yaw: 1.5708
+  - id: n2
+    x: 5.0
+    y: 5.0
+    frame_id: map
+
+edges:
+  - from: s1
+    to: n1
+    distance_m: 5.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [0.0, 0.0]
+      - [5.0, 0.0]
+  - from: n1
+    to: n2
+    distance_m: 5.0
+    polyline:
+      - x: 5.0
+        y: 0.0
+      - x: 5.0
+        y: 5.0
+  - from: n2
+    to: s2
+    distance_m: 7.071
+    polyline:
+      - [5.0, 5.0]
+      - [10.0, 0.0]
+)";
+
+// road_node 与 station 撞 id：混合 id 空间不允许任何重复
+constexpr const char* kCrossDuplicateIds =
+    "stations:\n"
+    "  - id: s1\n    x: 0.0\n    y: 0.0\n"
+    "road_nodes:\n"
+    "  - id: s1\n    x: 1.0\n    y: 1.0\n"
+    "edges:\n"
+    "  - from: s1\n    to: s1\n    distance_m: 1.0\n";
+
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_ParsesVersionRoadNodesAndPolyline) {
+  const auto path = WriteCatalogTemp(kMixedGraphCatalog);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  ASSERT_TRUE(catalog.has_value());
+
+  EXPECT_EQ(catalog->map_hash, "deadbeefcafe");
+  EXPECT_EQ(catalog->graph_version, "v1_skeleton");
+
+  ASSERT_EQ(catalog->stations.size(), 2u);
+  ASSERT_EQ(catalog->road_nodes.size(), 2u);
+  EXPECT_EQ(catalog->road_nodes[0].id, "n1");
+  EXPECT_DOUBLE_EQ(catalog->road_nodes[0].x, 5.0);
+  EXPECT_DOUBLE_EQ(catalog->road_nodes[0].y, 0.0);
+  EXPECT_DOUBLE_EQ(catalog->road_nodes[0].yaw, 1.5708);
+  EXPECT_EQ(catalog->road_nodes[0].frame_id, "map");
+  EXPECT_EQ(catalog->road_nodes[1].id, "n2");
+  EXPECT_DOUBLE_EQ(catalog->road_nodes[1].x, 5.0);
+  EXPECT_DOUBLE_EQ(catalog->road_nodes[1].y, 5.0);
+  EXPECT_EQ(catalog->road_nodes[1].frame_id, "map");
+
+  ASSERT_EQ(catalog->edges.size(), 3u);
+  // flow 序列写法 - [x, y]
+  ASSERT_EQ(catalog->edges[0].polyline.size(), 2u);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[0].first, 0.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[0].second, 0.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[1].first, 5.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[0].polyline[1].second, 0.0);
+  // map 写法 - x: ... / y: ...
+  ASSERT_EQ(catalog->edges[1].polyline.size(), 2u);
+  EXPECT_DOUBLE_EQ(catalog->edges[1].polyline[0].first, 5.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[1].polyline[0].second, 0.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[1].polyline[1].first, 5.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[1].polyline[1].second, 5.0);
+  // 后续边不受前一条边 polyline 块影响
+  EXPECT_DOUBLE_EQ(catalog->edges[2].distance_m, 7.071);
+  ASSERT_EQ(catalog->edges[2].polyline.size(), 2u);
+  EXPECT_DOUBLE_EQ(catalog->edges[2].polyline[1].first, 10.0);
+  EXPECT_DOUBLE_EQ(catalog->edges[2].polyline[1].second, 0.0);
+}
+
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsCrossSetDuplicateIds) {
+  const auto path = WriteCatalogTemp(kCrossDuplicateIds);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  EXPECT_FALSE(catalog.has_value());
+}
+
+TEST(StationCatalogMixedGraphTest, FindRoutePath_SpansStationsAndRoadNodes) {
+  StationCatalog catalog;
+  catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  catalog.stations.push_back(Station{"s2", "map", 10.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(RoadNode{"n1", "map", 5.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(RoadNode{"n2", "map", 5.0, 5.0, 0.0});
+  // 短路径途经 road_nodes，长直连边兜底确保必须真的走混合图
+  catalog.edges.push_back(CatalogStationEdge{"s1", "n1", 2.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"n1", "n2", 2.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"n2", "s2", 2.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"s1", "s2", 100.0, true, true});
+
+  std::string message;
+  ASSERT_TRUE(ValidateStationCatalog(catalog, &message)) << message;
+
+  const auto path = FindRoutePath(catalog, "s1", "s2");
+  ASSERT_TRUE(path.has_value());
+  EXPECT_EQ(*path, (std::vector<std::string>{"s1", "n1", "n2", "s2"}));
+
+  const auto distance = EstimateRouteDistance(catalog, "s1", "s2");
+  ASSERT_TRUE(distance.has_value());
+  EXPECT_DOUBLE_EQ(*distance, 6.0);
+
+  // 起终点本身可以是 road_node
+  const auto node_path = FindRoutePath(catalog, "n1", "n2");
+  ASSERT_TRUE(node_path.has_value());
+  EXPECT_EQ(*node_path, (std::vector<std::string>{"n1", "n2"}));
+
+  // 未知端点仍然拒绝
+  EXPECT_FALSE(FindRoutePath(catalog, "s1", "missing").has_value());
+}
+
+TEST(StationCatalogMixedGraphTest, ValidateStationCatalog_AcceptsRoadNodeEndpoints) {
+  StationCatalog catalog;
+  catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(RoadNode{"n1", "map", 5.0, 0.0, 0.0});
+  catalog.edges.push_back(CatalogStationEdge{"s1", "n1", 5.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"n1", "s1", 5.0, true, true});
+
+  std::string message;
+  EXPECT_TRUE(ValidateStationCatalog(catalog, &message)) << message;
+
+  // 未知端点仍拒绝
+  catalog.edges.push_back(CatalogStationEdge{"n1", "ghost", 1.0, true, true});
+  EXPECT_FALSE(ValidateStationCatalog(catalog, &message));
+  EXPECT_NE(message.find("ghost"), std::string::npos);
+}
+
+TEST(StationCatalogMixedGraphTest, ValidateStationCatalog_RejectsDuplicateIdsAcrossSets) {
+  StationCatalog catalog;
+  catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(RoadNode{"s1", "map", 1.0, 1.0, 0.0});  // 与站点撞 id
+  std::string message;
+  EXPECT_FALSE(ValidateStationCatalog(catalog, &message));
+  EXPECT_NE(message.find("duplicate"), std::string::npos);
+
+  // road_nodes 内部重复
+  StationCatalog nodes_only;
+  nodes_only.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  nodes_only.road_nodes.push_back(RoadNode{"n1", "map", 1.0, 1.0, 0.0});
+  nodes_only.road_nodes.push_back(RoadNode{"n1", "map", 2.0, 2.0, 0.0});
+  EXPECT_FALSE(ValidateStationCatalog(nodes_only, &message));
+  EXPECT_NE(message.find("duplicate"), std::string::npos);
+}
+
+TEST(StationCatalogMixedGraphTest, ValidateStationCatalog_RejectsNonFinitePolylinePoint) {
+  StationCatalog catalog;
+  catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  catalog.stations.push_back(Station{"s2", "map", 1.0, 0.0, 0.0});
+  catalog.edges.push_back(CatalogStationEdge{"s1", "s2", 1.0, true, true});
+  catalog.edges.back().polyline.push_back({0.0, 0.0});
+  catalog.edges.back().polyline.push_back(
+      {std::numeric_limits<double>::quiet_NaN(), 1.0});
+
+  std::string message;
+  EXPECT_FALSE(ValidateStationCatalog(catalog, &message));
+  EXPECT_NE(message.find("polyline"), std::string::npos);
+}
+
+TEST(StationCatalogMixedGraphTest, ValidateStationCatalog_RejectsNonFiniteRoadNodePose) {
+  StationCatalog catalog;
+  catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(
+      RoadNode{"n1", "map", std::numeric_limits<double>::infinity(), 0.0, 0.0});
+  std::string message;
+  EXPECT_FALSE(ValidateStationCatalog(catalog, &message));
+  EXPECT_NE(message.find("n1"), std::string::npos);
+}
+
+}  // namespace
+}  // namespace amr_dispatcher_core::catalog
