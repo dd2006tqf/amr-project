@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "amr_dispatcher_ros/safety_publish_decision.hpp"
+#include "amr_dispatcher_ros/report_freshness.hpp"
 
 using namespace std::chrono_literals;
 
@@ -89,6 +90,8 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
         chassis_healthy_ = msg->is_healthy;
         chassis_loss_rate_ = msg->loss_rate;
+        // I1：链路健康数据到达打点（发布者死亡后该源将按陈旧处理）
+        last_data_arrival_["chassis"] = std::chrono::steady_clock::now();
       });
 
   topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
@@ -141,6 +144,8 @@ void SafetyGateNode::BumperCallback(const std_msgs::msg::Bool::SharedPtr msg) {
 
 void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr /*msg*/,
                                                const std::string& source) {
+  // I1：心跳到达即打点（真实数据到达点，而非巡检周期）
+  last_data_arrival_["watchdog"] = std::chrono::steady_clock::now();
   // B1 分源喂狗：只 Feed 回调登记的来源，watched_nodes_ 里每个源独立计时。
   if (watchdog_) {
     watchdog_->FeedHeartbeat(source);
@@ -158,6 +163,24 @@ void SafetyGateNode::WatchdogTick() {
                          "Watchdog event: source=%s msg=%s", ev.source.c_str(), ev.message.c_str());
   }
 
+  // C1(b)：锁存中的 estop/bumper 每 tick 重推事件以刷新 stamp。
+  // 锁存状态可能无限期为 true，而门控事件带 TTL —— 不重推则事件先于锁存"消失"，
+  // 事件历史与真实安全状态脱节（发布路径已由 ApplyLatchedBlocks 兜底，此处保持语义自洽）。
+  if (estop_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "estop";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Emergency stop button pressed";
+    gate_->PushEvent(evt);
+  }
+  if (bumper_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "bumper";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Front bumper triggered collision";
+    gate_->PushEvent(evt);
+  }
+
   // 聚合四大防御源至 Fault Supervisor Engine
   amr_dispatcher_core::safety::MultiSourceHealthReport report;
   report.chassis_healthy = chassis_healthy_;
@@ -167,7 +190,13 @@ void SafetyGateNode::WatchdogTick() {
   report.manual_estop = estop_active_ || bumper_active_;
   report.detail_message = watchdog_ok_ ? (chassis_healthy_ ? "healthy" : "chassis degraded") : "watchdog timeout";
 
-  fault_supervisor_->UpdateMultiSourceHealth(report);
+  // I1：时效戳只在真实数据到达时刷新（订阅回调打点），巡检周期不续命——
+  // 上游 link_health / 心跳发布者死亡后，对应源会按陈旧降级限速。
+  const auto tolerance =
+      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  const auto fresh = MakeReportFreshness(last_data_arrival_, std::chrono::steady_clock::now(),
+                                         tolerance);
+  fault_supervisor_->UpdateMultiSourceHealth(report, fresh.chassis, fresh.watchdog);
   fault_supervisor_->Tick();
 
   // 根据 Fault Supervisor 综合裁决建议执行动作
@@ -198,6 +227,10 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   }
 
   auto decision = gate_->Evaluate(cmd);
+  // 锁存型安全源（estop/自动故障/bumper）不依赖门控事件 TTL：事件过期 ≠ 故障解除。
+  // 不做这层覆写，raw 路径会在事件过期后重新放行非零速度，与 50Hz 周期帧的
+  // 零速交替发布——E-stop 按住期间底盘仍可能蠕动。
+  ApplyLatchedBlocks(estop_active_ || auto_fault_latched_, bumper_active_, decision);
   last_decision_ = decision;
   // B1：记录 raw 到达时刻与裁决结果，供 50Hz 周期兜底判定 stale / 重放。
   last_raw_cmd_stamp_ = std::chrono::steady_clock::now();

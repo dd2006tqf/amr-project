@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <geometry_msgs/msg/twist.hpp>
@@ -76,6 +77,10 @@ class SafetyGateNode : public rclcpp::Node {
   bool has_raw_cmd_stamp_ = false;
   // B1：是否已产生过至少一次门控裁决（周期发布重放 last_decision_ 的前置条件）
   bool has_decision_ = false;
+  // I1：各数据源最后一次**真实数据到达**时刻（在订阅回调处打点，而非巡检周期），
+  // 供 WatchdogTick 计算报告新鲜度 —— 上游发布者死亡后时效戳不再被调用周期续命。
+  // key 约定："chassis"（/chassis/link_health）、"watchdog"（两条分源心跳）。
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_data_arrival_;
 };
 
 }  // namespace amr_dispatcher_ros

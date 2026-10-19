@@ -38,15 +38,21 @@ void FaultSupervisor::UpdateHealth(bool system_healthy, const std::string& error
   last_report_time_[kSourceWatchdog] = now;
 }
 
-void FaultSupervisor::UpdateMultiSourceHealth(const MultiSourceHealthReport& report) {
+void FaultSupervisor::UpdateMultiSourceHealth(const MultiSourceHealthReport& report,
+                                              bool fresh_chassis, bool fresh_watchdog) {
   health_seen_ = true;
   latest_report_ = report;
-  // 聚合上报视为四个源同时刷新
+  // 只对"本调用确有新数据到达"的周期性源打点（I1：调用周期 ≠ 数据到达——
+  // 每 tick 无条件续命会让上游发布者死亡后的失联检测完全失效）。
+  // deadlock/estop 不打点：前者随拓扑快照评估，后者是一次性锁存信号，
+  // 对锁存源打点会把 latched QoS 的"不重复发送"误判为过期。
   const auto now = std::chrono::steady_clock::now();
-  last_report_time_[kSourceChassis] = now;
-  last_report_time_[kSourceWatchdog] = now;
-  last_report_time_[kSourceDeadlock] = now;
-  last_report_time_[kSourceEstop] = now;
+  if (fresh_chassis) {
+    last_report_time_[kSourceChassis] = now;
+  }
+  if (fresh_watchdog) {
+    last_report_time_[kSourceWatchdog] = now;
+  }
 }
 
 void FaultSupervisor::Tick() { Tick(std::chrono::steady_clock::now()); }

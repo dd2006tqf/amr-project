@@ -3,6 +3,8 @@
 #include <chrono>
 #include <string>
 
+#include "amr_dispatcher_core/safety/cmd_vel_gate.hpp"
+
 namespace amr_dispatcher_ros {
 
 // 安全门 50Hz 周期发布的纯判定逻辑（B1）：
@@ -67,6 +69,22 @@ inline PeriodicPublishOutput ComputePeriodicPublish(const PeriodicPublishInput& 
   out.linear_y_mps = in.last_linear_y_mps;
   out.angular_z_radps = in.last_angular_z_radps;
   return out;
+}
+
+// 锁存型安全源覆写：estop / 自动故障锁存 / bumper 属于"状态"而非"瞬时事件"。
+// 门控事件带 TTL（防止瞬态故障永久锁存），但锁存状态不随 TTL 解除——
+// 若只依赖 gate 事件，事件过期后 raw 路径会重新放行非零速度，与周期帧的
+// 零速形成交替发布，E-stop 期间底盘仍可能蠕动。因此 raw 裁决路径必须在
+// 门控之后再做一次锁存覆写，与 ComputePeriodicPublish 的首分支语义对齐。
+inline void ApplyLatchedBlocks(bool estop_or_fault, bool bumper,
+                               amr_dispatcher_core::safety::CmdVelGateDecision& decision) {
+  if (!estop_or_fault && !bumper) return;
+  decision.allowed = false;
+  decision.linear_x_mps = 0.0;
+  decision.linear_y_mps = 0.0;
+  decision.angular_z_radps = 0.0;
+  decision.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+  decision.reason = estop_or_fault ? "estop" : "bumper";
 }
 
 }  // namespace amr_dispatcher_ros

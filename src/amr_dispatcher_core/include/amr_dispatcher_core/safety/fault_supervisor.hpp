@@ -55,8 +55,14 @@ class FaultSupervisor {
   // 1. 基础健康上报接口 (向后兼容，只承载 chassis/watchdog 两个源)
   void UpdateHealth(bool system_healthy, const std::string& error_message);
 
-  // 2. 多数据源聚合上报接口（刷新 chassis/watchdog/deadlock/estop 四个源的时效时戳）
-  void UpdateMultiSourceHealth(const MultiSourceHealthReport& report);
+  // 2. 多数据源聚合上报接口。
+  // fresh_chassis / fresh_watchdog：本次调用时对应源是否有**新数据到达**（由调用方
+  // 按真实消息到达点判定，而不是按调用周期）。只有标记为 fresh 的源才刷新时效时戳；
+  // deadlock/estop 不参与时效判定——estop 属一次性锁存信号（latched QoS 语义），
+  // 对其打点会把"发布者不再重复发送"误判为过期。
+  // 默认 true 保持调用即刷新的旧语义（单测/简单部署）；生产节点应传真实新鲜度。
+  void UpdateMultiSourceHealth(const MultiSourceHealthReport& report,
+                               bool fresh_chassis = true, bool fresh_watchdog = true);
 
   // 核心周期巡检 Tick (建议 10Hz~50Hz 调用)
   void Tick();

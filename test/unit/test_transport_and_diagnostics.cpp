@@ -210,3 +210,28 @@ TEST(FaultSupervisorTest, StaleReportKeepsActiveEstopLatched) {
   EXPECT_EQ(supervisor.state(), SupervisorState::kFault);
   EXPECT_TRUE(supervisor.emergency_stop_requested());
 }
+
+// I1：调用方标记源无新数据（fresh=false）时不刷新时效时戳 ——
+// "上游发布者停止发送"必须被检测为过期降级，而不是被调用周期续命
+TEST(FaultSupervisorTest, UnfreshSourceGoesStaleDespiteContinuousCalls) {
+  SupervisorConfig cfg;
+  cfg.startup_grace = 0ms;
+  cfg.staleness_timeout = 50ms;
+  FaultSupervisor supervisor(cfg);
+
+  MultiSourceHealthReport r;  // 全部健康
+  supervisor.UpdateMultiSourceHealth(r, /*fresh_chassis=*/true, /*fresh_watchdog=*/true);
+  supervisor.Tick();
+  EXPECT_EQ(supervisor.state(), SupervisorState::kNormal);
+
+  // 模拟 ROS 集成层：巡检周期照常调用，但 chassis 数据已停止到达（fresh=false），
+  // watchdog 心跳仍在（fresh=true）。超时后 chassis 结论不可信 -> 降级限速。
+  for (int i = 0; i < 3; ++i) {
+    std::this_thread::sleep_for(30ms);
+    supervisor.UpdateMultiSourceHealth(r, /*fresh_chassis=*/false, /*fresh_watchdog=*/true);
+    supervisor.Tick();
+  }
+  EXPECT_EQ(supervisor.state(), SupervisorState::kDegraded);
+  EXPECT_EQ(supervisor.recommendation(), SystemActionRecommendation::kClampSpeed);
+  EXPECT_FALSE(supervisor.emergency_stop_requested());
+}

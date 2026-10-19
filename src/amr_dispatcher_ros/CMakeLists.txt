@@ -207,6 +207,7 @@ if(BUILD_TESTING)
     test_safety_publish_decision
     test_nav_pose_builder
     test_mission_identity
+    test_report_freshness
   )
   foreach(test_name IN LISTS ROS_UNIT_TESTS)
     set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
