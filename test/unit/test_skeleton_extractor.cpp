@@ -425,5 +425,113 @@ TEST(SkeletonExtractorTest, LongDeadEndBranch_NotPruned) {
   EXPECT_EQ(CountComponents(pruned), 1);
 }
 
+// ---------------------------------------------------------------------------
+// 用例 7 (C1 回归): 正交 2 像素毛刺紧邻主线 —— 追踪不得斜向逃逸到主线
+//   主线：row 6, col 0..29（1 像素宽）
+//   毛刺：(20,5)、(20,4) 垂直悬挂；基座像素 (20,5) 与主线像素 (19,6)、
+//         (21,6) 8 邻接。旧实现按固定环序先考察 SE=(21,6) 再考察 S=
+//         (20,6)，追踪从毛刺横向逃逸到主线并沿主线走到端点，毛刺漏剪。
+// ---------------------------------------------------------------------------
+
+TEST(SkeletonExtractorTest, OrthogonalTwoPixelBristle_PrunedNoLateralEscape) {
+  BinaryGrid skeleton = MakeGrid(30, 12);
+  for (int col = 0; col < 30; ++col) {
+    skeleton.SetValue(col, 6, 1);  // 主干：row 6, col 0..29
+  }
+  skeleton.SetValue(20, 5, 1);
+  skeleton.SetValue(20, 4, 1);  // 2 像素垂直毛刺
+
+  PruneConfig config;
+  const BinaryGrid pruned = PruneSkeletonProtected(skeleton, {}, config);
+
+  // 毛刺被剪除。
+  EXPECT_EQ(pruned.GetValue(20, 4), 0);
+  EXPECT_EQ(pruned.GetValue(20, 5), 0);
+  // 主线 30 像素全部完好（含原分叉点 (20,6)）。
+  for (int col = 0; col < 30; ++col) {
+    EXPECT_EQ(pruned.GetValue(col, 6), 1) << "col=" << col;
+  }
+  EXPECT_EQ(CountSkeleton(pruned), 30);
+  EXPECT_EQ(CountComponents(pruned), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 用例 8 (C1 回归): 方环 + 两个对称水平短毛刺 —— 毛刺剪除且环无缺口
+//   环：cols 2..6 × rows 2..6 的 1 像素外框（16 像素）
+//   毛刺：左侧 (0,4)、(1,4)；右侧 (7,4)、(8,4)
+//   旧实现从毛刺横向逃逸上环后沿环追踪至另一分叉点，visited 误吞环像素
+//   并将其整段剪除（环出现缺口）。
+// ---------------------------------------------------------------------------
+
+TEST(SkeletonExtractorTest, RingWithTwoSymmetricSpurs_BothPrunedRingIntact) {
+  BinaryGrid skeleton = MakeGrid(10, 10);
+  for (int col = 2; col <= 6; ++col) {
+    skeleton.SetValue(col, 2, 1);  // 上边
+    skeleton.SetValue(col, 6, 1);  // 下边
+  }
+  for (int row = 3; row <= 5; ++row) {
+    skeleton.SetValue(2, row, 1);  // 左边
+    skeleton.SetValue(6, row, 1);  // 右边
+  }
+  skeleton.SetValue(0, 4, 1);
+  skeleton.SetValue(1, 4, 1);  // 左毛刺
+  skeleton.SetValue(7, 4, 1);
+  skeleton.SetValue(8, 4, 1);  // 右毛刺
+
+  PruneConfig config;
+  const BinaryGrid pruned = PruneSkeletonProtected(skeleton, {}, config);
+
+  // 两个毛刺均被剪除。
+  EXPECT_EQ(pruned.GetValue(0, 4), 0);
+  EXPECT_EQ(pruned.GetValue(1, 4), 0);
+  EXPECT_EQ(pruned.GetValue(7, 4), 0);
+  EXPECT_EQ(pruned.GetValue(8, 4), 0);
+  // 环完整无缺口：16 个环像素全部保留。
+  int ring_count = 0;
+  for (int col = 2; col <= 6; ++col) {
+    ring_count += pruned.GetValue(col, 2) ? 1 : 0;
+    ring_count += pruned.GetValue(col, 6) ? 1 : 0;
+  }
+  for (int row = 3; row <= 5; ++row) {
+    ring_count += pruned.GetValue(2, row) ? 1 : 0;
+    ring_count += pruned.GetValue(6, row) ? 1 : 0;
+  }
+  EXPECT_EQ(ring_count, 16) << "环上不允许出现缺口";
+  EXPECT_EQ(CountSkeleton(pruned), 16);
+  EXPECT_EQ(CountComponents(pruned), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 用例 9 (C1 回归): 阶梯对角毛刺 —— 命中分叉候选立即停止追踪
+//   主线：row 6, col 0..29
+//   毛刺：阶梯 (20,5)、(19,4)、(18,3)。基座像素 (20,5) 的非来向候选中，
+//         S=(20,6) 是分叉点而 SE=(21,6) 是直线方向上的主线像素——纯方向
+//         选择会沿 SE 逃逸上主线，必须优先命中分叉候选。
+// ---------------------------------------------------------------------------
+
+TEST(SkeletonExtractorTest, DiagonalStaircaseBristle_PrunedMainLineIntact) {
+  BinaryGrid skeleton = MakeGrid(30, 12);
+  for (int col = 0; col < 30; ++col) {
+    skeleton.SetValue(col, 6, 1);  // 主干：row 6, col 0..29
+  }
+  skeleton.SetValue(20, 5, 1);
+  skeleton.SetValue(19, 4, 1);
+  skeleton.SetValue(18, 3, 1);  // 3 像素阶梯对角毛刺
+
+  PruneConfig config;
+  const BinaryGrid pruned = PruneSkeletonProtected(skeleton, {}, config);
+
+  // 阶梯毛刺被完整剪除。
+  EXPECT_EQ(pruned.GetValue(18, 3), 0);
+  EXPECT_EQ(pruned.GetValue(19, 4), 0);
+  EXPECT_EQ(pruned.GetValue(20, 5), 0);
+  // 主线完好。
+  for (int col = 0; col < 30; ++col) {
+    EXPECT_EQ(pruned.GetValue(col, 6), 1) << "col=" << col;
+  }
+  EXPECT_EQ(CountSkeleton(pruned), 30);
+  EXPECT_EQ(CountComponents(pruned), 1);
+}
+
 }  // namespace
 }  // namespace amr_dispatcher_core::planning

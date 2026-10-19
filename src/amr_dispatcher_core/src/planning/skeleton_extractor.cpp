@@ -17,6 +17,9 @@ constexpr int kDCol[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 // 附近，1.5 像素（默认 0.075m）容差足以吸收亚像素舍入。
 constexpr double kProtectedDistancePx = 1.5;
 
+// 对角步长：分支推进时用于把 8 方向步向量归一化，比较与来向的夹角余弦。
+constexpr double kSqrt2 = 1.41421356237309504880;
+
 // 骨架像素坐标（整数栅格）。
 struct Pixel {
   int col = 0;
@@ -244,20 +247,53 @@ BinaryGrid PruneSkeletonProtected(const BinaryGrid& skeleton,
             reached_other_end = true;
             break;
           }
-          // 连通组数 == 2：分支中段，继续沿非来向邻居推进。
+          // 连通组数 == 2：分支中段，沿与来向最接近的方向推进。
+          // 固定环序（N,NE,E,SE,S,SW,W,NW）会把"斜向紧邻的旁侧结构"排在
+          // 直线延续之前（如垂直毛刺基座像素的 SE 邻居先于 S 被考察），导致
+          // 追踪横向逃逸到相邻主线：毛刺因此漏剪，或整段主线被误当分支剪
+          // 除。改为：
+          //   1. 优先推进到本身即分叉（连通组数 >= 3）的候选 —— 命中分叉
+          //      立即停止追踪（分支不含分叉点）；
+          //   2. 其余候选中选与来向 (cur - prev) 夹角最小者（归一化点积最
+          //      大），即直线延续优先于斜向逃逸。
           visited.push_back({cur_col, cur_row});
+          const int dir_col = cur_col - prev_col;
+          const int dir_row = cur_row - prev_row;
+          int next_col = -1;
+          int next_row = -1;
+          bool next_is_junction = false;
+          double next_best_cos = -2.0;
           for (int i = 0; i < 8; ++i) {
             const int ncol = cur_col + kDCol[i];
             const int nrow = cur_row + kDRow[i];
-            if ((ncol != prev_col || nrow != prev_row) &&
-                result.GetValue(ncol, nrow)) {
-              prev_col = cur_col;
-              prev_row = cur_row;
-              cur_col = ncol;
-              cur_row = nrow;
-              break;
+            if ((ncol == prev_col && nrow == prev_row) ||
+                !result.GetValue(ncol, nrow)) {
+              continue;
+            }
+            const int step_col = ncol - cur_col;
+            const int step_row = nrow - cur_row;
+            // |dir| 对所有候选为公共因子，比较 cos 时可省略；仅归一化步长。
+            const double step_len =
+                (step_col == 0 || step_row == 0) ? 1.0 : kSqrt2;
+            const double cos_angle =
+                (dir_col * step_col + dir_row * step_row) / step_len;
+            const bool is_junction = CrossingNumber(result, ncol, nrow) >= 3;
+            if (next_col == -1 || (is_junction && !next_is_junction) ||
+                (is_junction == next_is_junction &&
+                 cos_angle > next_best_cos)) {
+              next_col = ncol;
+              next_row = nrow;
+              next_is_junction = is_junction;
+              next_best_cos = cos_angle;
             }
           }
+          if (next_col == -1) {
+            break;  // 防御：连通组数 == 2 必有非来向邻居，不应发生。
+          }
+          prev_col = cur_col;
+          prev_row = cur_row;
+          cur_col = next_col;
+          cur_row = next_row;
         }
         if (!reached_junction || reached_other_end) {
           continue;
