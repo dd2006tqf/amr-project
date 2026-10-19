@@ -5,7 +5,8 @@ from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, EmitEvent
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.parameter_descriptions import ParameterValue
 import lifecycle_msgs.msg
 
@@ -13,6 +14,12 @@ def generate_launch_description():
     # 可覆盖参数，默认值与改动前保持一致，不影响本机开发
     serial_device = LaunchConfiguration('serial_device')
     health_rate_hz = LaunchConfiguration('health_rate_hz')
+    # Task 8：可选地图导入链路（默认关闭，完全向后兼容）
+    use_map_server = LaunchConfiguration('use_map_server')
+    map_yaml = LaunchConfiguration('map_yaml')
+    markers_file = LaunchConfiguration('markers_file')
+    # C1：站点目录路径可覆盖，默认值随 use_map_server 在静态/生成目录间切换
+    stations_file = LaunchConfiguration('stations_file')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -26,6 +33,24 @@ def generate_launch_description():
             description='底盘链路健康/心跳发布频率。安全门的 heartbeat_timeout_ms '
                         '默认 500ms，5Hz 留足 2.5 倍心跳余量避免看门狗误触发（B1）。',
         ),
+        DeclareLaunchArgument(
+            'use_map_server',
+            default_value='false',
+            description='为 true 时拉起 nav2_map_server 发布 /map 并启动 map_ingest_node '
+                        '自动生成 stations.yaml 与拓扑 Marker（默认 false，保持向后兼容）。',
+        ),
+        DeclareLaunchArgument(
+            'map_yaml',
+            default_value='',
+            description='nav2 map_server 的地图 yaml 路径（use_map_server:=true 时必填，'
+                        '指向含 map.yaml/map.pgm 的地图包目录内 yaml 文件）。',
+        ),
+        DeclareLaunchArgument(
+            'markers_file',
+            default_value='',
+            description='站点语义 anchors yaml（id/type/x/y/yaw 列表），供 map_ingest_node '
+                        '吸附生成业务站点；为空时 map_ingest_node 等待有效文件。',
+        ),
     ]
 
     # B7：节点参数文件集中放 share/amr_dispatcher_ros/config/，launch 只负责注入；
@@ -35,6 +60,27 @@ def generate_launch_description():
     dispatcher_yaml = os.path.join(ros_share, 'config', 'dispatcher.yaml')
     chassis_yaml = os.path.join(ros_share, 'config', 'chassis.yaml')
     safety_yaml = os.path.join(ros_share, 'config', 'safety.yaml')
+    # Task 8：map_ingest_node 的生成产物目录（节点负责 create_directories，
+    # tmp+rename 原子写出后由 StationCatalogReloader 按 mtime 热重载）。
+    generated_stations_share = os.path.join(ros_share, 'config', 'generated', 'stations.yaml')
+
+    # C1：stations_file 默认值随 use_map_server 切换——开启地图导入后，调度与
+    # 可视化必须监听 map_ingest 的生成目录，否则 StationCatalogReloader 一直
+    # 盯着旧的静态 config/stations.yaml，生成链路与调度链路脱节。
+    # 判定与 IfCondition 同款布尔词表，保证 use_map_server:=1/True 等写法一致。
+    stations_file_default = PythonExpression([
+        "'", generated_stations_share, "' if str('", use_map_server,
+        "').lower() in ('true', '1', 'yes', 'on') else '", stations_file_share, "'",
+    ])
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'stations_file',
+            default_value=stations_file_default,
+            description='站点目录 YAML 路径。默认 use_map_server:=true 时指向 '
+                        'config/generated/stations.yaml（map_ingest 生成物，闭环热重载），'
+                        '否则指向静态 config/stations.yaml；可显式覆盖。',
+        )
+    )
 
     dispatcher_node = LifecycleNode(
         package='amr_dispatcher_ros',
@@ -44,8 +90,9 @@ def generate_launch_description():
         output='screen',
         parameters=[
             dispatcher_yaml,
-            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖
-            {'stations_file': stations_file_share},
+            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖；
+            # C1：默认随 use_map_server 指向 map_ingest 生成目录（见上方参数声明）。
+            {'stations_file': stations_file},
         ]
     )
 
@@ -140,8 +187,9 @@ def generate_launch_description():
         parameters=[{
             'frame_id': 'map',
             'marker_topic': '/dispatcher/markers',
-            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7）
-            'stations_file': stations_file_share,
+            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7），
+            # 且 C1 下默认随 use_map_server 指向生成目录。
+            'stations_file': stations_file,
         }]
     )
 
@@ -156,6 +204,64 @@ def generate_launch_description():
         }]
     )
 
+    # ---- Task 8：可选地图导入链路（use_map_server:=true 时启用，默认关闭） ----
+    # nav2_map_server 按官方格式解析 map.yaml/map.pgm 并以 latched 语义发布 /map。
+    map_server_node = LifecycleNode(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        namespace='',
+        output='screen',
+        condition=IfCondition(use_map_server),
+        parameters=[{
+            'yaml_filename': map_yaml,
+            'topic_name': 'map',
+            'frame_id': 'map',
+        }],
+    )
+
+    map_server_configure_event = EmitEvent(
+        condition=IfCondition(use_map_server),
+        event=ChangeState(
+            lifecycle_node_matcher=lambda node: node == map_server_node,
+            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+        )
+    )
+
+    map_server_activate_event = RegisterEventHandler(
+        condition=IfCondition(use_map_server),
+        event_handler=OnStateTransition(
+            target_lifecycle_node=map_server_node,
+            goal_state='inactive',
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda node: node == map_server_node,
+                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
+        )
+    )
+
+    # map_ingest_node：订阅 /map，跑核心库算法流水线，原子写出
+    # share/config/generated/stations.yaml 并发布 RViz 拓扑 Marker。
+    map_ingest_node = Node(
+        package='amr_dispatcher_ros',
+        executable='map_ingest_node',
+        name='map_ingest_node',
+        namespace='',
+        output='screen',
+        condition=IfCondition(use_map_server),
+        parameters=[{
+            'map_topic': '/map',
+            'markers_file': markers_file,
+            'output_stations_file': generated_stations_share,
+            'publish_markers': True,
+            'marker_topic': '/dispatcher/topology_markers',
+        }],
+    )
+
     return LaunchDescription(declared_arguments + [
         dispatcher_node,
         configure_event,
@@ -167,4 +273,8 @@ def generate_launch_description():
         rest_gateway_node,
         dispatcher_visualizer_node,
         lifecycle_coordinator_node,
+        map_server_node,
+        map_server_configure_event,
+        map_server_activate_event,
+        map_ingest_node,
     ])

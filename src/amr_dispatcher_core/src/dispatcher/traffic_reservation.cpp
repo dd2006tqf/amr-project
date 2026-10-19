@@ -67,13 +67,19 @@ bool ResourceTable::IsTrafficBlockOwner(const std::string& owner_id) {
 std::vector<std::string> ResourceTable::BuildLockIds(
     const std::vector<std::string>& station_path, const bool include_intersection_locks) {
   std::vector<std::string> lock_ids;
+  std::unordered_set<std::string> seen;  // 保序去重：重复节点/边只保留首次出现
+  const auto append_once = [&lock_ids, &seen](const std::string& lock_id) {
+    if (seen.insert(lock_id).second) {
+      lock_ids.push_back(lock_id);
+    }
+  };
   if (include_intersection_locks) {
     for (const auto& station_id : station_path) {
-      lock_ids.push_back(RouteNodeId(station_id));
+      append_once(RouteNodeId(station_id));
     }
   }
   for (std::size_t index = 1; index < station_path.size(); ++index) {
-    lock_ids.push_back(RouteEdgeId(station_path[index - 1], station_path[index]));
+    append_once(RouteEdgeId(station_path[index - 1], station_path[index]));
   }
   return lock_ids;
 }

@@ -168,6 +168,26 @@ ament_target_dependencies(lifecycle_coordinator_node
   amr_dispatcher_interfaces
 )
 
+# 8. map_ingest_node（Task 8）：/map -> 核心库算法流水线（安全空间腐蚀、
+# 骨架细化、受保护剪枝、拓扑构建）-> 原子写出 stations.yaml + 拓扑 Marker。
+add_executable(map_ingest_node
+  src/map_ingest_node.cpp
+)
+target_include_directories(map_ingest_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(map_ingest_node
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  std_msgs
+  visualization_msgs
+  amr_dispatcher_core
+)
+# yaml-cpp：解析 markers_file 的 anchors 段（与 dispatcher_visualizer 同一链接方式）
+target_link_libraries(map_ingest_node yaml-cpp)
+
 # 6. ros2_control hardware plugin
 add_library(amr_chassis_hardware_interface SHARED
   src/chassis_hardware_interface.cpp
@@ -230,6 +250,7 @@ install(TARGETS
   link_health_publisher
   dispatcher_visualizer_node
   lifecycle_coordinator_node
+  map_ingest_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

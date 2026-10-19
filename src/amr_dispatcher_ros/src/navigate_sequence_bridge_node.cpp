@@ -289,7 +289,7 @@ void NavigateSequenceBridgeNode::Nav2FeedbackCb(
   if (!locked || locked != current_goal_ || !nav2_pending_) {
     return;
   }
-  PublishSeqFeedback("NAVIGATING", fb ? static_cast<double>(fb->feedback.distance_remaining) : 0.0);
+  PublishSeqFeedback("NAVIGATING", fb ? static_cast<double>(fb->distance_remaining) : 0.0);
 }
 
 void NavigateSequenceBridgeNode::Nav2ResultCb(
@@ -301,7 +301,7 @@ void NavigateSequenceBridgeNode::Nav2ResultCb(
   }
   nav2_pending_ = false;
   if (result.code == rclcpp_action::ResultCode::SUCCEEDED && result.result &&
-      result.result->success) {
+      result.result->error_code == 0) {
     PublishSeqFeedback("AT_STATION", 0.0);
     AdvanceAfterArrival();
     return;

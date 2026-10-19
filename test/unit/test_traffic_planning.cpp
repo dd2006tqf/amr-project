@@ -361,4 +361,40 @@ TEST(TrafficPlanningTest, PlanMissionRouteLocks_NoPath_ReturnsEmptyLockSet) {
   EXPECT_TRUE(lock_ids.empty());
 }
 
+TEST(TrafficPlanningTest, PlanMissionRouteLocks_MixedGraph_GeneratesCompleteDeduplicatedLocks) {
+  catalog::StationCatalog catalog;
+  catalog.stations.push_back({"s1", "map", 0.0, 0.0, 0.0, "normal"});
+  catalog.stations.push_back({"s2", "map", 10.0, 0.0, 0.0, "normal"});
+  catalog.road_nodes.push_back({"rn1", "map", 2.0, 0.0, 0.0});
+  catalog.road_nodes.push_back({"rn2", "map", 6.0, 0.0, 0.0});
+
+  catalog.edges.push_back({"s1", "rn1", 2.0, true, true});
+  catalog.edges.push_back({"rn1", "rn2", 4.0, true, true});
+  catalog.edges.push_back({"rn2", "s2", 4.0, true, true});
+
+  const auto lock_ids = PlanMissionRouteLocks(catalog, "s1", "s2");
+
+  // 4 个节点锁 + 3 条边锁 = 7 个锁，去重且保序
+  ASSERT_EQ(lock_ids.size(), 7U);
+  EXPECT_EQ(lock_ids[0], "route_node:s1");
+  EXPECT_EQ(lock_ids[1], "route_node:rn1");
+  EXPECT_EQ(lock_ids[2], "route_node:rn2");
+  EXPECT_EQ(lock_ids[3], "route_node:s2");
+  EXPECT_EQ(lock_ids[4], RouteLockId("s1", "rn1"));
+  EXPECT_EQ(lock_ids[5], RouteLockId("rn1", "rn2"));
+  EXPECT_EQ(lock_ids[6], RouteLockId("rn2", "s2"));
+}
+
+TEST(TrafficReservationTest, BuildRouteLockIds_DeduplicatesWhilePreservingOrder) {
+  // 路径经过重复节点：A -> B -> A
+  const auto lock_ids = BuildRouteLockIds({"A", "B", "A"}, true);
+
+  // 节点：A, B （A 不重复）
+  // 边：A__B, B__A （同一条边，不重复）
+  ASSERT_EQ(lock_ids.size(), 3U);
+  EXPECT_EQ(lock_ids[0], "route_node:A");
+  EXPECT_EQ(lock_ids[1], "route_node:B");
+  EXPECT_EQ(lock_ids[2], RouteLockId("A", "B"));
+}
+
 }  // namespace amr_dispatcher_core::workflow

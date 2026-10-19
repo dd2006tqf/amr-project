@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "amr_dispatcher_core/config/config_loader.hpp"
@@ -10,6 +11,18 @@
 namespace amr_dispatcher_core::catalog {
 
 struct Station {
+  std::string id;
+  std::string frame_id = "map";
+  double x = 0.0;
+  double y = 0.0;
+  double yaw = 0.0;
+  // 业务语义类型（"pickup"/"dropoff"/"charge"/"normal" 等），透传自 AnchorStation。
+  std::string type = "normal";
+};
+
+// 骨架路网通行节点（路口/转折点）：与站点共用同一 id 空间，
+// 使 FindRoutePath 能在 stations + road_nodes 混合图上寻路。
+struct RoadNode {
   std::string id;
   std::string frame_id = "map";
   double x = 0.0;
@@ -23,11 +36,17 @@ struct CatalogStationEdge {
   double distance_m = 0.0;
   bool bidirectional = true;
   bool enabled = true;
+  // 沿骨架提取的真实几何折线（世界坐标米制），供 SkeletonPlanner 循迹展开
+  std::vector<std::pair<double, double>> polyline{};
 };
 
 struct StationCatalog {
   std::vector<Station> stations;
   std::vector<CatalogStationEdge> edges;
+  // 地图包内容指纹与路网算法版本，供调度侧版本门禁比对
+  std::string map_hash;
+  std::string graph_version;
+  std::vector<RoadNode> road_nodes;
 };
 
 struct StationListProjection {
@@ -59,12 +78,14 @@ StationListProjection BuildStationListProjection(const StationCatalog& catalog);
 StationRouteListProjection BuildStationRouteListProjection(const StationCatalog& catalog);
 
 // 站点目录热重载器：构造时加载初始目录，Tick 按文件 mtime 变化重载；
+// 构造时缺失的文件在后续 Tick 中晚出现也会补加载（覆盖 map_ingest 先启动
+// 于 dispatcher 之前写出 generated 目录的闭环场景）；
 // 新目录校验失败时保留旧目录（不清空），错误经 last_error 暴露。
 class StationCatalogReloader {
  public:
   explicit StationCatalogReloader(std::filesystem::path path);
 
-  // 驱动一次 mtime 检查；返回本次是否完成换新。
+  // 驱动一次 mtime 检查；返回本次是否完成换新（含晚出现文件的补加载）。
   bool Tick();
 
   const StationCatalog& catalog() const { return catalog_; }
