@@ -81,6 +81,26 @@
 - **请求参数**: `string resource_id`, `string holder_id`, `string token`
 - **响应参数**: `bool success`, `string message`
 
+### `/v2/*` 核心调度服务（12 个）
+
+与上方 legacy 服务并存，均由 `dispatcher_node` 提供；字段以 `src/amr_dispatcher_interfaces/srv/*.srv` 定义为准。
+实现状态：「完整实现」= 字段全部来自真实计算；「基础实现」= 服务可正常调通、字段已生成，但部分输出当前为占位/最小实现，正在完善中。
+
+| 服务名 | srv 类型 | 请求字段 | 响应字段 | 实现状态 |
+|---|---|---|---|---|
+| `/v2/enqueue_mission` | `EnqueueMission` | `mission_file`, `priority`, `start_if_idle` | `success`, `message`, `queue_size` | 完整实现 |
+| `/v2/cancel_queued_mission` | `CancelQueuedMission` | `mission_id`, `cancel_active` | `success`, `message`, `queue_size` | 完整实现 |
+| `/v2/preempt_mission` | `PreemptMission` | `mission_file`, `priority` | `success`, `message`, `mission_id`, `queue_size` | 完整实现 |
+| `/v2/reprioritize_queued_mission` | `ReprioritizeQueuedMission` | `mission_id`, `priority` | `success`, `message`, `queue_size` | 完整实现 |
+| `/v2/estimate_mission_cost` | `EstimateMissionCost` | `mission_file`, `nominal_speed_mps`, `battery_voltage` | `success`, `message`, `mission_id`, `waypoint_count`, `distance_m`, `eta_sec`, `battery_drop_v`, `projected_battery_voltage`, `battery_sufficient` | 基础实现 |
+| `/v2/block_station_route` | `BlockStationRoute` | `from_station`, `to_station`, `reason` | `success`, `message`, `resource_id` | 完整实现 |
+| `/v2/detect_traffic_deadlock` | `DetectTrafficDeadlock` | （无请求字段） | `success`, `message`, `deadlocked`, `mission_ids[]`, `conflict_resource_ids[]`, `conflict_station_ids[]`, `descriptions[]` | 完整实现 |
+| `/v2/list_stations` | `ListStations` | （无请求字段） | `success`, `message`, `station_ids[]`, `frame_ids[]`, `x[]`, `y[]`, `yaw[]` | 基础实现 |
+| `/v2/list_traffic_reservations` | `ListTrafficReservations` | （无请求字段） | `success`, `message`, `resource_ids[]`, `owner_ids[]`, `reservation_types[]` | 完整实现 |
+| `/v2/reserve_facility_resource` | `ReserveFacilityResource` | `resource_id`, `holder_id`, `mission_id`, `release_existing_for_holder` | `success`, `message`, `resource_id`, `holder_id`, `status`（`RESERVED`/`OCCUPIED`） | 完整实现 |
+| `/v2/get_operator_snapshot` | `GetOperatorSnapshot` | `event_limit` | `success`, `message`, `mission_state`, `active_mission_id`, `mission_active`, `paused`, `queue_size`, `queued_*`, `paused_workflow_order_ids[]`, `fleet_*`, `remote_task_*`, `facility_*`, `business_*`, `recent_event_*`（完整字段见 `.srv`） | 基础实现 |
+| `/v2/validate_site_config` | `ValidateSiteConfig` | `bundle_dir`, `version_id` | `success`, `message`, `version_id`, `checked_files[]`, `errors[]`, `diff_report` | 基础实现 |
+
 ---
 
 ## 3. ROS 2 Action 接口 (Actions)
@@ -102,6 +122,25 @@
   - `string message`: 最终报告
   - `int32 completed_waypoints`: 成功到达的路点数
   - `int32 failed_waypoints`: 失败的路点数
+
+### `/execute_mission` (`amr_dispatcher_interfaces/action/ExecuteMission`)
+长时任务派发的主入口：排队 → 抢锁 → 执行全生命周期流式反馈，支持客户端取消与优先级抢占。
+- **Goal**:
+  - `string mission_id`: 任务唯一标识（留空、或与在途任务重复，goal 将被 REJECT）
+  - `uint8 priority`: 优先级 1–255（数值越大越优先，具备抢占权）
+  - `string target_station`: 目标站点标识（如 `station_dropoff_1`）
+  - `float64 deadline_seconds`: 截止时间约束（供 EDF 调度策略计算）
+  - `string[] required_resources`: 预申请的拓扑边或设施锁（须全部原子预约成功，任一失败即 REJECT，不残留部分锁）
+- **Feedback**:
+  - `uint8 state_code`: 0 `QUEUED` / 1 `WAITING_LOCK` / 2 `EXECUTING` / 3 `YIELDING` / 4 `RECOVERING`
+  - `string current_node`: 当前经过的拓扑节点
+  - `float32 percent_complete`: 完成百分比 0.0–100.0
+  - `float64 estimated_remaining_sec`: 预估剩余秒数
+- **Result**:
+  - `bool success`: 任务是否顺利完成
+  - `int32 error_code`: 0 `OK` / 1 `RESOURCE_DEADLOCK` / 2 `TIMEOUT` / 3 `PREEMPTED` / 4 `HARDWARE_ERROR`
+  - `string message`: 终态描述
+  - `float64 total_duration_sec`: 端到端总耗时
 
 ---
 
@@ -138,3 +177,45 @@
   "mission_id": "task_1001"
 }
 ```
+
+### `GET /api/operator/snapshot`
+查询完整运营快照大盘（与 `GET /api/v1/state` 为同一实现、同一响应体，路由别名）。
+- **Response**:
+```json
+{
+  "comparator": "priority_fifo",
+  "strategy": "priority_fifo",
+  "queue_size": 3,
+  "queue_capacity": 128,
+  "active_count": 1,
+  "active_mission_id": "m_1",
+  "deadlock": false,
+  "deadlock_detected": false,
+  "estop_active": false,
+  "safety_severity": "INFO",
+  "chassis_backend": "Serial",
+  "chassis_healthy": true,
+  "chassis_loss_rate": 0.0,
+  "recent_events": [
+    { "mission_id": "m_1", "event": "ACCEPTED", "reason": "" }
+  ]
+}
+```
+
+### `POST /api/operator/estop`
+一键急停：向 `/safety/estop` 话题发布 `true`，全系统安全链随即熔断。
+- **Response**: `{"status": "ok", "estop_engaged": true}`
+- *注：发布即返回，不含下游执行确认；解除急停请走 ROS 2 话题或安全门接口。*
+
+### `GET /api/system/ready`
+系统就绪探针（代理 `/system/ready` 服务），供上层业务系统与负载均衡做健康检查。
+- **Response (Ready)**: `{"ready": true, "healthy": true, "state": "READY", "message": "..."}`
+  （`state` 取值：`INITIALIZING` / `READY` / `DEGRADED` / `FAULT`；网关仅回写 ready/healthy/state/message 四个字段）
+- **Not Ready** → `503 Service Unavailable`，如 `{"ready": false, "state": "INITIALIZING", "message": "Lifecycle Coordinator not ready"}`
+- **Probe Timeout** → `504 Gateway Timeout`，`{"error": "readiness_probe_timeout"}`
+
+### `POST /api/workflows/cancel`
+按任务 ID 取消排队任务（别名 `POST /api/v1/cancel`；后端调用 `/dispatcher/cancel_order`）。
+- **Query Parameters**: `id` — 任务/订单 ID
+- **Response**: `{"status": "ok", "canceled": true}`（`canceled` 反映 CancelOrder 的 `success`）
+- **错误**: 下游服务不可用 → `503` `{"error": "service_unavailable"}`；调用超时 → `504` `{"error": "timeout"}`

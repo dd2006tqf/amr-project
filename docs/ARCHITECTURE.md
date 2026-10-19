@@ -30,7 +30,7 @@
 |  - LinkRecovery                    - RecoveryPolicy         |
 |  - Degradation                     - MissionEventLog (环形缓冲)
 |  [safety]        [config]          [logging]                |
-|  - CmdVelGate    - ConfigLoader    - AsyncLogger (无锁队列) |
+|  - CmdVelGate    - ConfigLoader    - AsyncLogger (异步低阻塞队列)|
 |  - Watchdog      - HotReload       - SyncLogger             |
 +-------------------------------------------------------------+
                               ▲

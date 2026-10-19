@@ -22,11 +22,12 @@ amr_dispatcher/
 ├── scripts/                 # 自动化脚本 (build, run_demo, benchmark, record_topics, validate_config)
 ├── src/
 │   ├── amr_dispatcher_core/        # 核心算法与协议库 (纯 C++, 零 ROS 依赖)
+│   ├── amr_dispatcher_bt/          # 行为树编排层 (BehaviorTree.CPP v4)
 │   ├── amr_dispatcher_interfaces/  # 自定义 ROS 2 msg/srv/action
 │   ├── amr_dispatcher_ros/         # ROS 2 运行时节点与 ros2_control 硬件插件
 │   └── amr_dispatcher_tools/       # CLI 诊断客户端与 REST HTTP 网关
 ├── test/
-│   ├── unit/                # 19 个单元测试套件
+│   ├── unit/                # 52 个单元测试文件
 │   └── integration/         # 端到端全链路集成测试
 ├── CMakeLists.txt           # 顶层工作区 CMake
 ├── USAGE.md                 # 本操作手册
@@ -46,8 +47,8 @@ cd ~/amr_dispatcher
 ```
 **运行内容**：
 - 自动完成 `amr_dispatcher_core` 的 CMake 配置与 Release 编译。
-- 自动运行全部 **21 个测试套件，共 130 个单元与集成测试用例（100% Passed）**。
-- 典型运行时间约为 **4 秒**。
+- 自动运行全部 **53 个测试文件，共 500 个单元与集成测试用例（100% Passed）**（数量随测试增补演进，以实际运行为准）。
+- 典型运行时间约为 **5 秒**。
 
 若需要单独构建核心库：
 ```bash
@@ -61,8 +62,8 @@ ctest --test-dir build/core --output-on-failure
 ./scripts/benchmark.sh
 ```
 **压测指标**：
-- **任务队列**：10,000 个任务高频入队与出队打分（实测吞吐约 **25,000 ops/s**）。
-- **异步日志**：50,000 条日志高频写入（实测吞吐约 **2,000,000 ops/s**，完全无锁入队，不阻塞主控制循环）。
+- **任务队列**：10,000 个任务高频入队与出队打分（吞吐量随机器而异，以本次实测输出为准）。
+- **异步日志**：50,000 条日志高频写入（吞吐量随机器而异，以本次实测输出为准；异步低阻塞入队，不阻塞主控制循环）。
 
 ### 2.3 校验 YAML 配置文件合法性
 ```bash

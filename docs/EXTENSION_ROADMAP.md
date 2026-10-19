@@ -10,7 +10,7 @@
 - [x] 硬件通信多级降级控制器（Serial -> UDP -> Mock）与指数退避重连
 - [x] 多源安全仲裁门控（CmdVelGate）与节点心跳软看门狗
 - [x] 强类型 YAML 配置加载器、Schema 校验与文件变动热重载
-- [x] 异步无锁日志器与同步双实现
+- [x] 异步低阻塞日志器与同步双实现
 - [x] ROS 2 Lifecycle 调度节点、底盘驱动节点、安全门节点、循迹节点
 - [x] 基于 hardware_interface::SystemInterface 的 ros2_control 硬件插件
 - [x] 交互式 CLI 诊断客户端与 RESTful HTTP 提单网关（带幂等性校验）
