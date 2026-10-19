@@ -1,0 +1,10 @@
+# demo_warehouse 标准 ROS 2 nav2_map_server 地图描述（Task 9 端到端验收地图包）
+# 物理区域: 200x140 px @ 0.05 m/px = 10m x 7m
+# L 弯走廊: 横向 x∈[1.0,8.0] y=2.0 + 纵向 x=8.0 y∈[2.0,6.0]，宽 1.2m，
+# 其余区域为黑色障碍物。生成的 PGM 见 map.pgm（P5 二进制，254=通行 0=障碍）。
+image: map.pgm
+resolution: 0.05
+origin: [0.0, 0.0, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

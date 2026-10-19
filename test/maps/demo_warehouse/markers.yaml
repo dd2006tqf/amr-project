@@ -1,0 +1,14 @@
+# demo_warehouse 站点语义标注（map_ingest_node markers_file 输入）
+# station_pickup_A 位于横向走廊起点附近；station_dropoff_B 位于纵向走廊内，
+# 任务路径必须沿 L 弯折线绕行，任何直线捷径都会穿墙。
+anchors:
+  - id: "station_pickup_A"
+    type: "pickup"
+    x: 1.5
+    y: 2.0
+    yaw: 0.0
+  - id: "station_dropoff_B"
+    type: "dropoff"
+    x: 8.0
+    y: 5.5
+    yaw: 1.57

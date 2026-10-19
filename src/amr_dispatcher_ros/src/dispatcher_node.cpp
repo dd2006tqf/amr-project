@@ -1649,6 +1649,12 @@ void DispatcherNode::TrackingErrorCb(
   if (navigation_backend_ == "action") {
     return;
   }
+  // plan 模式下必须按周期喂活 progress：path_tracker_node 以 control_rate_hz
+  // 持续发布 /tracking/error，若仅 arrived=true 才刷新时间戳，长距离巡航
+  // (>10s) 会触发 DeadlockDetector 的 active_idle_threshold 误判并取消任务
+  if (!tracking_mission_id_.empty()) {
+    mission_last_progress_[tracking_mission_id_] = std::chrono::steady_clock::now();
+  }
   if (!msg->arrived || tracking_mission_id_.empty()) {
     return;
   }
