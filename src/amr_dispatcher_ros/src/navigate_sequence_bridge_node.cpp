@@ -4,6 +4,8 @@
 #include <chrono>
 #include <utility>
 
+#include "amr_dispatcher_ros/nav_pose_builder.hpp"
+
 using namespace std::chrono_literals;
 
 namespace amr_dispatcher_ros {
@@ -94,26 +96,10 @@ void NavigateSequenceBridgeNode::HandleAccepted(
   waiting_arrival_ = false;
   nav2_pending_ = false;
 
-  // 预计算航点位姿：frame_id=map，orientation 由相邻点 atan2 得 yaw（单点 yaw=0）
-  nav_poses_.clear();
-  const auto& wps = goal->waypoints;
-  const std::size_t n = wps.size();
-  nav_poses_.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    double yaw = 0.0;
-    if (n > 1) {
-      const geometry_msgs::msg::PoseStamped& a = (i + 1 < n) ? wps[i] : wps[i - 1];
-      const geometry_msgs::msg::PoseStamped& b = (i + 1 < n) ? wps[i + 1] : wps[i];
-      yaw = std::atan2(b.pose.position.y - a.pose.position.y,
-                       b.pose.position.x - a.pose.position.x);
-    }
-    geometry_msgs::msg::PoseStamped ps;
-    ps.header.frame_id = "map";
-    ps.pose = wps[i].pose;
-    ps.pose.orientation.z = std::sin(yaw / 2.0);
-    ps.pose.orientation.w = std::cos(yaw / 2.0);
-    nav_poses_.push_back(ps);
-  }
+  // 预计算航点位姿：单航点保留调用方原始四元数（站点朝向约束），
+  // 多航点才按相邻点 atan2 重写 orientation（B3 修复：单点 yaw 不再被覆盖为 0）
+  nav_poses_ = BuildNavPoses(goal->waypoints, "map");
+  const std::size_t n = nav_poses_.size();
 
   RCLCPP_INFO(get_logger(), "NavigateSequence goal accepted: %zu waypoint(s), loop=%d, backend=%s",
               n, loop_ ? 1 : 0, use_nav2_ ? "nav2" : "plan(fallback)");

@@ -40,7 +40,8 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_raw", 10);
   error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
       "/tracking/error", 10);
-  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat", 10);
+  // B1：心跳分源，只喂 path_tracker 自己的看门狗通道
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat/path_tracker", 10);
 
   const double rate_hz = get_parameter("control_rate_hz").as_double();
   timer_ = create_wall_timer(
@@ -78,6 +79,13 @@ void PathTrackerNode::OdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
 }
 
 void PathTrackerNode::ControlLoop() {
+  // B1：心跳必须无条件先发——idle 早退若挡在心跳前，安全门会误判本节点失联。
+  if (heartbeat_pub_) {
+    std_msgs::msg::Bool hb;
+    hb.data = true;
+    heartbeat_pub_->publish(hb);
+  }
+
   if (!has_odom_ || !has_path_ || waypoints_.empty()) {
     return;
   }
@@ -115,12 +123,6 @@ void PathTrackerNode::ControlLoop() {
 
   cmd_vel_pub_->publish(cmd);
   error_pub_->publish(err_msg);
-
-  if (heartbeat_pub_) {
-    std_msgs::msg::Bool hb;
-    hb.data = true;
-    heartbeat_pub_->publish(hb);
-  }
 
   if (err_msg.arrived) {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Goal reached, stopping robot");

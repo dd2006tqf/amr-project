@@ -83,13 +83,14 @@ docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
 # 启动（在仓库根目录执行）
 docker compose -f docker/docker-compose.server.yml up -d
 ```
-容器启动后会自动编译全部 4 个 ROS 2 子包（首跳约 4–5 分钟），然后执行 `full_system.launch.py`，拉起以下 7 个核心节点：
-1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检，并提供 `/dispatcher/execute_mission` Action 动作服务。
+容器启动后会自动编译全部 5 个 ROS 2 子包（首跳约 4–5 分钟），然后执行 `full_system.launch.py`，拉起以下 7 个核心节点：
+1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检，并提供 `/execute_mission` Action 动作服务。
 2. **`safety_gate_node`**：多源安全仲裁（急停、人工接管、碰撞杠、软看门狗超时），输出限速或停止指令。
 3. **`chassis_driver_node`**：驱动底盘硬件通信、丢包监控、多级自动降级、发布 `/odom` 与 TF。
 4. **`path_tracker_node`**：Pure Pursuit / Stanley 控制器，跟踪 `/plan` 路径并输出速度。
-5. **`rest_gateway`**：监听在 `8080` 端口的轻量 HTTP REST 提单网关与静态 Web 页面服务。
-6. **`dispatcher_visualizer_node`**：向 RViz2 发布 3D 拓扑路网、绿色占用锁与红色死锁报警 Marker。
+5. **`navigate_sequence_bridge_node`**：承接 `/navigate_sequence` action 的多航点桥——`use_nav2:=false` 时逐点发 `/plan` 复用 path_tracker 链，`use_nav2:=true` 时透传 Nav2 `navigate_to_pose`。
+6. **`rest_gateway`**：监听在 `8080` 端口的轻量 HTTP REST 提单网关与静态 Web 页面服务。
+7. **`dispatcher_visualizer_node`**：向 RViz2 发布 3D 拓扑路网、绿色占用锁与红色死锁报警 Marker。
 
 ---
 

@@ -2,6 +2,8 @@
 
 #include <chrono>
 
+#include "amr_dispatcher_ros/safety_publish_decision.hpp"
+
 using namespace std::chrono_literals;
 
 namespace amr_dispatcher_ros {
@@ -70,9 +72,17 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       "/safety/bumper", 10,
       std::bind(&SafetyGateNode::BumperCallback, this, std::placeholders::_1));
 
-  heartbeat_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/heartbeat", 10,
-      std::bind(&SafetyGateNode::WatchdogHeartbeatCallback, this, std::placeholders::_1));
+  // B1 心跳分源：每条心跳只 Feed 对应来源，一侧停止不会"替"另一侧续命。
+  heartbeat_chassis_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/safety/heartbeat/chassis_driver", 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        WatchdogHeartbeatCallback(msg, "chassis_driver");
+      });
+  heartbeat_path_tracker_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/safety/heartbeat/path_tracker", 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        WatchdogHeartbeatCallback(msg, "path_tracker");
+      });
 
   link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
       "/chassis/link_health", 10,
@@ -93,6 +103,11 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
 
   watchdog_timer_ = create_wall_timer(
       100ms, std::bind(&SafetyGateNode::WatchdogTick, this));
+
+  // B1 50Hz 周期发布兜底：estop/bumper/上游失联一律零速，
+  // 正常时重放最近一次门控裁决，保证 /cmd_vel_safe 有稳定数据流。
+  publish_timer_ = create_wall_timer(
+      20ms, std::bind(&SafetyGateNode::PeriodicPublishTick, this));
 
   RCLCPP_INFO(get_logger(), "SafetyGateNode initialized (max_vx=%.2f, max_wz=%.2f)",
               gate_cfg.max_linear_x_mps, gate_cfg.max_angular_z_radps);
@@ -124,10 +139,11 @@ void SafetyGateNode::BumperCallback(const std_msgs::msg::Bool::SharedPtr msg) {
   }
 }
 
-void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr /*msg*/) {
+void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr /*msg*/,
+                                               const std::string& source) {
+  // B1 分源喂狗：只 Feed 回调登记的来源，watched_nodes_ 里每个源独立计时。
   if (watchdog_) {
-    watchdog_->FeedHeartbeat("path_tracker");
-    watchdog_->FeedHeartbeat("chassis_driver");
+    watchdog_->FeedHeartbeat(source);
   }
 }
 
@@ -183,6 +199,10 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
 
   auto decision = gate_->Evaluate(cmd);
   last_decision_ = decision;
+  // B1：记录 raw 到达时刻与裁决结果，供 50Hz 周期兜底判定 stale / 重放。
+  last_raw_cmd_stamp_ = std::chrono::steady_clock::now();
+  has_raw_cmd_stamp_ = true;
+  has_decision_ = true;
 
   geometry_msgs::msg::Twist safe_cmd;
   safe_cmd.linear.x = decision.linear_x_mps;
@@ -191,6 +211,34 @@ void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   safe_cmd_vel_pub_->publish(safe_cmd);
 
   PublishSafetyState(decision);
+}
+
+void SafetyGateNode::PeriodicPublishTick() {
+  if (!safe_cmd_vel_pub_) return;
+
+  PeriodicPublishInput in;
+  in.estop_or_fault = estop_active_ || auto_fault_latched_;
+  in.bumper = bumper_active_;
+  in.decision_critical =
+      last_decision_.severity == amr_dispatcher_core::safety::SafetySeverity::kCritical;
+  in.has_decision = has_decision_;
+  in.has_last_raw_stamp = has_raw_cmd_stamp_;
+  in.last_raw_stamp = last_raw_cmd_stamp_;
+  in.now = std::chrono::steady_clock::now();
+  in.heartbeat_timeout =
+      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  in.last_linear_x_mps = last_decision_.linear_x_mps;
+  in.last_linear_y_mps = last_decision_.linear_y_mps;
+  in.last_angular_z_radps = last_decision_.angular_z_radps;
+
+  const auto out = ComputePeriodicPublish(in);
+  if (out.kind == PeriodicPublishKind::kSkip) return;
+
+  geometry_msgs::msg::Twist safe_cmd;
+  safe_cmd.linear.x = out.linear_x_mps;
+  safe_cmd.linear.y = out.linear_y_mps;
+  safe_cmd.angular.z = out.angular_z_radps;
+  safe_cmd_vel_pub_->publish(safe_cmd);
 }
 
 void SafetyGateNode::PublishIdleSafetyState() {

@@ -1,23 +1,17 @@
-chassis:
-  serial_device: "/dev/ttyUSB0"
-  serial_baud: 115200
-  udp_host: "192.168.1.10"
-  udp_port: 9000
-  protocol: "text"
-  odom_frame_id: "odom"
-  base_frame_id: "base_link"
-  publish_tf: true
-  poll_rate_hz: 50.0
-  health_rate_hz: 2.0
-
-degradation:
-  warmup_samples: 8
-  demote_loss_rate: 0.30
-  cooldown_seconds: 30
-
-recovery:
-  initial_backoff_ms: 200
-  max_backoff_ms: 10000
-  backoff_multiplier: 2.0
-  jitter_ratio: 0.2
-  max_attempts: 10
+# B7：按 ROS 参数文件规范组织——节点名顶层键 + ros__parameters，
+# 由 launch/full_system.launch.py 通过 ament_index_python 解析 share 路径注入；
+# serial_device/health_rate_hz 由 launch LaunchConfiguration 覆盖（保留命令行可调）。
+chassis_driver_node:
+  ros__parameters:
+    serial_device: "/dev/ttyUSB0"
+    serial_baud: 115200
+    udp_host: "192.168.1.10"
+    udp_port: 9000
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    publish_tf: true
+    poll_rate_hz: 50.0
+    # B1：健康/心跳上报 5Hz——500ms 心跳超时阈值下必须留足余量（2Hz 边界会误报失联）
+    health_rate_hz: 5.0
+    # B1：指令龄超时阈值；超时后 ReadPollLoop 每拍主动写零速帧兜底
+    cmd_stale_timeout_ms: 500

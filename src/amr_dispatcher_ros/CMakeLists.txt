@@ -172,6 +172,7 @@ ament_target_dependencies(lifecycle_coordinator_node
 add_library(amr_chassis_hardware_interface SHARED
   src/chassis_hardware_interface.cpp
 )
+
 target_include_directories(amr_chassis_hardware_interface PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -184,6 +185,39 @@ ament_target_dependencies(amr_chassis_hardware_interface
   amr_dispatcher_interfaces
 )
 pluginlib_export_plugin_description_file(hardware_interface chassis_hardware_interface.xml)
+
+# 单元测试：可抽离的纯逻辑（B1 周期发布判定 / B3 航点位姿 / B4 任务戳记）
+# 以 header-only 库 + gtest 单测落地，模式与 amr_dispatcher_core 的 BUILD_TESTING 分支一致。
+if(BUILD_TESTING)
+  find_package(GTest REQUIRED)
+  include(GoogleTest)
+  enable_testing()
+
+  add_library(amr_dispatcher_ros_helpers INTERFACE)
+  target_include_directories(amr_dispatcher_ros_helpers INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(amr_dispatcher_ros_helpers INTERFACE
+    geometry_msgs
+    amr_dispatcher_core
+  )
+
+  set(ROS_UNIT_TESTS
+    test_safety_publish_decision
+    test_nav_pose_builder
+    test_mission_identity
+  )
+  foreach(test_name IN LISTS ROS_UNIT_TESTS)
+    set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
+    if(EXISTS "${test_src}")
+      add_executable(${test_name} "${test_src}")
+      target_link_libraries(${test_name} PRIVATE
+        amr_dispatcher_ros_helpers GTest::gtest GTest::gtest_main)
+      gtest_discover_tests(${test_name})
+    endif()
+  endforeach()
+endif()
 
 # 安装
 install(TARGETS
@@ -210,6 +244,14 @@ install(DIRECTORY include/
 )
 
 install(FILES chassis_hardware_interface.xml
+  DESTINATION share/${PROJECT_NAME}
+)
+
+# B7：站点/节点参数文件与 launch 安装到 share，ros2 launch 用 get_package_share_directory 引用，
+# 避免依赖 colcon 工作区相对路径（修复 stations_file 在容器外运行时找不到的问题）。
+install(DIRECTORY
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../config
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../launch
   DESTINATION share/${PROJECT_NAME}
 )
 

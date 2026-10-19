@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,9 +27,14 @@ class SafetyGateNode : public rclcpp::Node {
   void RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void EstopCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void BumperCallback(const std_msgs::msg::Bool::SharedPtr msg);
-  void WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  // B1 心跳分源：source 与 watched_nodes_ 中登记的来源名一致（"chassis_driver" / "path_tracker"），
+  // 让 SafetyWatchdog 的 Inspect 能区分是谁在按时喂心跳。
+  void WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr msg,
+                                 const std::string& source);
 
   void WatchdogTick();
+  // B1 50Hz 周期发布：保证 /cmd_vel_safe 有持续数据流，estop/bumper/上游失联均零速兜底。
+  void PeriodicPublishTick();
   void PublishSafetyState(const amr_dispatcher_core::safety::CmdVelGateDecision& decision);
   void PublishIdleSafetyState();
 
@@ -37,7 +43,9 @@ class SafetyGateNode : public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr manual_takeover_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr bumper_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_sub_;
+  // B1 心跳分源订阅（不再共用单话题）：每条只 Feed 自己的源，避免一侧挂掉拉低另一侧。
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_chassis_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_path_tracker_sub_;
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_health_sub_;
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_state_sub_;
 
@@ -45,6 +53,8 @@ class SafetyGateNode : public rclcpp::Node {
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  // B1 50Hz 兜底发布定时器（独立于 100ms WatchdogTick）
+  rclcpp::TimerBase::SharedPtr publish_timer_;
 
   std::unique_ptr<amr_dispatcher_core::safety::CmdVelGate> gate_;
   std::unique_ptr<amr_dispatcher_core::safety::SafetyWatchdog> watchdog_;
@@ -61,6 +71,11 @@ class SafetyGateNode : public rclcpp::Node {
   std::vector<std::string> watched_nodes_;
   // 最近一次门控裁决结果，供空闲周期播报与就绪探针使用
   amr_dispatcher_core::safety::CmdVelGateDecision last_decision_{};
+  // 最近一次 /cmd_vel_raw（含手动接管转发的 teleop）接收时刻，B1 上游失联兜底判 stale 用
+  std::chrono::steady_clock::time_point last_raw_cmd_stamp_{};
+  bool has_raw_cmd_stamp_ = false;
+  // B1：是否已产生过至少一次门控裁决（周期发布重放 last_decision_ 的前置条件）
+  bool has_decision_ = false;
 };
 
 }  // namespace amr_dispatcher_ros

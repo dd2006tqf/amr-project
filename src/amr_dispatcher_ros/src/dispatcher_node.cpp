@@ -9,6 +9,7 @@
 
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
+#include "amr_dispatcher_ros/mission_identity.hpp"
 
 using namespace std::chrono_literals;
 
@@ -152,6 +153,72 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
     nav_client_ = rclcpp_action::create_client<NavigateSequence>(this, "/navigate_sequence");
   }
 
+  // B6：参数热重载——比较器与三个调度节奏参数允许运行时改写。
+  // 校验失败返回空 reason（rclcpp 按"拒绝"处理）；comparator 在此预校验，
+  // 未知值直接拒绝（避免 SetComparator 对未知名静默失败导致实际策略与参数漂移）。
+  param_callback_handle_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& p : params) {
+          const std::string& name = p.get_name();
+          if (name == "comparator") {
+            const std::string v = p.as_string();
+            auto comp = amr_dispatcher_core::dispatcher::CreateMissionComparator(v);
+            if (!comp) {
+              result.successful = false;
+              result.reason = "unknown comparator: " + v;
+              RCLCPP_WARN(get_logger(), "Parameter reload rejected: %s",
+                          result.reason.c_str());
+              continue;
+            }
+            if (queue_) {
+              queue_->SetComparator(std::move(comp));
+            }
+            RCLCPP_INFO(get_logger(), "Parameter reload: comparator -> %s", v.c_str());
+          } else if (name == "schedule_rate_hz") {
+            const double v = p.as_double();
+            if (v <= 0.0) {
+              result.successful = false;
+              result.reason = "schedule_rate_hz must be > 0";
+              continue;
+            }
+            if (schedule_timer_) {
+              schedule_timer_->reset();
+              schedule_timer_ = create_wall_timer(
+                  std::chrono::duration<double>(1.0 / v),
+                  std::bind(&DispatcherNode::ScheduleTick, this));
+            }
+            RCLCPP_INFO(get_logger(), "Parameter reload: schedule_rate_hz -> %.2f", v);
+          } else if (name == "deadlock_check_rate_hz") {
+            const double v = p.as_double();
+            if (v <= 0.0) {
+              result.successful = false;
+              result.reason = "deadlock_check_rate_hz must be > 0";
+              continue;
+            }
+            if (deadlock_timer_) {
+              deadlock_timer_->reset();
+              deadlock_timer_ = create_wall_timer(
+                  std::chrono::duration<double>(1.0 / v),
+                  std::bind(&DispatcherNode::DeadlockTick, this));
+            }
+            RCLCPP_INFO(get_logger(), "Parameter reload: deadlock_check_rate_hz -> %.2f", v);
+          } else if (name == "max_active_missions") {
+            const int64_t v = p.as_int();
+            if (v < 1) {
+              result.successful = false;
+              result.reason = "max_active_missions must be >= 1";
+              continue;
+            }
+            RCLCPP_INFO(get_logger(), "Parameter reload: max_active_missions -> %lld",
+                        static_cast<long long>(v));
+          }
+          // 其余已声明参数不回执：rclcpp 仍正常赋值，仅不产生日志噪声
+        }
+        return result;
+      });
+
   RCLCPP_INFO(get_logger(),
               "DispatcherNode configured (capacity=%zu, comparator=%s, navigation_backend=%s)",
               cap, comp_name.c_str(), navigation_backend_.c_str());
@@ -226,6 +293,36 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   reserve_facility_srv_.reset();
   snapshot_srv_.reset();
   validate_site_srv_.reset();
+  // B2：clean up 前先逐个收口在途 ExecuteMission goal——
+  // 不复位的 handle 在 server 销毁后会让 action 客户端永久悬挂；
+  // 同时释放 HandleGoal 阶段预占的 required_resources 锁。
+  // rclcpp_action 状态机约束：canceled() 仅 CANCELING、abort() 仅 EXECUTING，
+  // 其余状态（ACCEPTED 未执行）先 execute() 再 abort()，与 FinishExecuteGoal 同构。
+  for (auto& [mission_id, handle] : execute_goal_handles_) {
+    if (!handle) {
+      continue;
+    }
+    if (reservation_table_) {
+      reservation_table_->Release(mission_id);
+    }
+    auto result = std::make_shared<ExecuteMission::Result>();
+    result->success = false;
+    result->error_code = 1;
+    result->message = "dispatcher cleaning up";
+    try {
+      if (handle->is_canceling()) {
+        handle->canceled(result);
+      } else if (handle->is_executing()) {
+        handle->abort(result);
+      } else {
+        handle->execute();
+        handle->abort(result);
+      }
+    } catch (const std::exception& ex) {
+      RCLCPP_ERROR(get_logger(), "on_cleanup: finish goal %s failed: %s",
+                   mission_id.c_str(), ex.what());
+    }
+  }
   execute_action_server_.reset();
   nav_client_.reset();
   execute_goal_handles_.clear();
@@ -286,14 +383,20 @@ void DispatcherNode::SubmitOrderCb(
   const auto& route = *route_result.route;
 
   amr_dispatcher_core::dispatcher::Mission m;
-  m.id = req->mission_id.empty() ? ("m_" + std::to_string(next_sequence_)) : req->mission_id;
+  // B4：id/sequence 同源——自动 id 用戳记器保证 "m_<n>" 与 sequence=n 一致；
+  // 调用方显式给 id 时仍消费一次序列号，保持全局单调。
+  if (req->mission_id.empty()) {
+    StampMissionIdentity(m, next_sequence_);
+  } else {
+    m.id = req->mission_id;
+    m.sequence = next_sequence_++;
+  }
   m.order_id = req->order_id.empty() ? ("ord_" + m.id) : req->order_id;
   m.type = route.normalized_order_type.empty() ? "transport" : route.normalized_order_type;
   // 站点字段优先取请求显式值，路由器解析出的站点作兜底
   m.pickup_station = req->pickup_station.empty() ? route.pickup_station : req->pickup_station;
   m.dropoff_station = req->dropoff_station.empty() ? route.dropoff_station : req->dropoff_station;
   m.priority = req->priority;
-  m.sequence = next_sequence_++;
   m.deadline_unix_ms = req->deadline_unix_ms;
   m.expected_seconds = req->expected_seconds;
 
@@ -466,10 +569,9 @@ void DispatcherNode::EnqueueMissionCb(
     return;
   }
   amr_dispatcher_core::dispatcher::Mission m;
-  m.id = "m_" + std::to_string(next_sequence_++);
+  StampMissionIdentity(m, next_sequence_);  // B4：id/sequence 同源
   m.order_id = req->mission_file;
   m.priority = req->priority;
-  m.sequence = next_sequence_;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kPending;
   auto push_res = queue_->Push(m);
   resp->success = push_res.accepted;
@@ -559,10 +661,9 @@ void DispatcherNode::PreemptMissionCb(
     return;
   }
   amr_dispatcher_core::dispatcher::Mission m;
-  m.id = "preempt_" + std::to_string(next_sequence_++);
+  StampMissionIdentity(m, next_sequence_, "preempt_");  // B4：id/sequence 同源
   m.order_id = req->mission_file;
   m.priority = req->priority > 100 ? req->priority : 100;
-  m.sequence = next_sequence_;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kPending;
   auto push_res = queue_->Push(m);
   resp->success = push_res.accepted;
@@ -588,15 +689,62 @@ void DispatcherNode::ReprioritizeQueuedMissionCb(
 void DispatcherNode::EstimateMissionCostCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Request> req,
     std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Response> resp) {
-  resp->success = true;
-  resp->message = "Cost estimated";
+  // B5：真实现——mission_file 作为站点对编码（"from->to" 或 "from:to"），
+  // 用 StationCatalog 直线距离和喂 EstimateDistanceCost；电池参数无 srv 字段，
+  // 沿用核心测试约定（0.1 V/m，最低 21.0 V 与 charging workflow 阈值一致）。
   resp->mission_id = req->mission_file;
-  resp->waypoint_count = 2;
-  resp->distance_m = 10.0;
-  resp->eta_sec = req->nominal_speed_mps > 0.05 ? (10.0 / req->nominal_speed_mps) : 25.0;
-  resp->battery_drop_v = 0.3;
-  resp->projected_battery_voltage = req->battery_voltage - resp->battery_drop_v;
-  resp->battery_sufficient = resp->projected_battery_voltage >= 21.0;
+
+  const std::string& spec = req->mission_file;
+  std::string from;
+  std::string to;
+  const auto arrow = spec.find("->");
+  if (arrow != std::string::npos) {
+    from = spec.substr(0, arrow);
+    to = spec.substr(arrow + 2);
+  } else {
+    const auto colon = spec.find(':');
+    if (colon != std::string::npos) {
+      from = spec.substr(0, colon);
+      to = spec.substr(colon + 1);
+    }
+  }
+  if (from.empty() || to.empty()) {
+    resp->success = false;
+    resp->message = "mission_file must encode a station pair as 'from->to' or 'from:to', got: " + spec;
+    return;
+  }
+  if (!catalog_reloader_ || !catalog_reloader_->loaded()) {
+    resp->success = false;
+    resp->message = "station catalog not loaded";
+    return;
+  }
+  const auto& catalog = catalog_reloader_->catalog();
+  const auto* from_st = amr_dispatcher_core::catalog::FindStation(catalog, from);
+  const auto* to_st = amr_dispatcher_core::catalog::FindStation(catalog, to);
+  if (!from_st || !to_st) {
+    resp->success = false;
+    resp->message = "unknown station(s) in mission_file '" + spec + "'";
+    return;
+  }
+
+  const double distance_m =
+      std::hypot(to_st->x - from_st->x, to_st->y - from_st->y);
+  constexpr int kTwoStationWaypoints = 2;  // 取/送 2 站点 = 1 航段
+  constexpr double kBatteryDropPerMeter = 0.1;    // 单位里程压降（V/m）
+  constexpr double kMinimumBatteryVoltage = 21.0; // 与 charging workflow 阈值一致
+
+  const auto estimate = amr_dispatcher_core::workflow::EstimateDistanceCost(
+      distance_m, kTwoStationWaypoints, req->nominal_speed_mps, req->battery_voltage,
+      kBatteryDropPerMeter, kMinimumBatteryVoltage, "station_catalog_straight");
+
+  resp->success = true;
+  resp->message = "estimated via station catalog straight-line distance";
+  resp->waypoint_count = estimate.waypoint_count;
+  resp->distance_m = estimate.distance_m;
+  resp->eta_sec = estimate.eta_sec;
+  resp->battery_drop_v = estimate.battery_drop_v;
+  resp->projected_battery_voltage = estimate.projected_battery_voltage;
+  resp->battery_sufficient = estimate.battery_sufficient;
 }
 
 void DispatcherNode::BlockStationRouteCb(
@@ -649,13 +797,21 @@ void DispatcherNode::DetectTrafficDeadlockCb(
 void DispatcherNode::ListStationsCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> /*req*/,
     std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp) {
+  // B5：真实现——从 StationCatalogReloader 投影，目录未加载即报不可用
+  if (!catalog_reloader_ || !catalog_reloader_->loaded()) {
+    resp->success = false;
+    resp->message = "station catalog not loaded";
+    return;
+  }
+  const auto projection = amr_dispatcher_core::catalog::BuildStationListProjection(
+      catalog_reloader_->catalog());
   resp->success = true;
-  resp->message = "OK";
-  resp->station_ids = {"station_pickup_A", "station_pickup_B", "station_dropoff_1", "station_charge_1"};
-  resp->frame_ids = {"map", "map", "map", "map"};
-  resp->x = {1.0, 3.0, 8.0, 0.0};
-  resp->y = {2.0, 2.0, 5.0, 0.0};
-  resp->yaw = {0.0, 0.0, 1.57, 3.14};
+  resp->message = projection.message.empty() ? "OK" : projection.message;
+  resp->station_ids = projection.station_ids;
+  resp->frame_ids = projection.frame_ids;
+  resp->x = projection.x;
+  resp->y = projection.y;
+  resp->yaw = projection.yaw;
 }
 
 void DispatcherNode::ListTrafficReservationsCb(
@@ -693,28 +849,144 @@ void DispatcherNode::ReserveFacilityResourceCb(
 }
 
 void DispatcherNode::GetOperatorSnapshotCb(
-    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> /*req*/,
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> req,
     std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Response> resp) {
-  resp->success = true;
-  resp->message = "Snapshot captured";
-  resp->mission_state = "IDLE";
-  resp->queue_size = queue_ ? static_cast<int32_t>(queue_->size()) : 0;
-  std::lock_guard<std::mutex> lock(active_missions_mutex_);
-  resp->mission_active = !active_missions_.empty();
-  if (!active_missions_.empty()) {
-    resp->active_mission_id = active_missions_.begin()->first;
-    resp->mission_state = "ACTIVE";
+  // B5：真实现——BuildOperatorSnapshotProjection 字段全量投影。
+  // 无 fleet/facility/business 后端时对应字段传 nullptr 透传为空集合。
+  amr_dispatcher_core::workflow::OperatorSnapshotRequest snap_req;
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    snap_req.mission_active = !active_missions_.empty();
+    if (!active_missions_.empty()) {
+      snap_req.active_mission_id = active_missions_.begin()->first;
+      snap_req.mission_state = "ACTIVE";
+    } else {
+      snap_req.mission_state = "IDLE";
+    }
   }
+
+  if (queue_) {
+    for (const auto& m : queue_->Snapshot()) {
+      amr_dispatcher_core::workflow::QueuedMission qm;
+      qm.profile.mission_id = m.id;
+      qm.mission_file = m.order_id;
+      qm.priority = m.priority;
+      qm.sequence = m.sequence;
+      snap_req.mission_queue.push_back(qm);
+      // 队列按 order_id 记暂停：探测本任务所属订单是否被暂停
+      if (!m.order_id.empty() && queue_->IsOrderPaused(m.order_id)) {
+        snap_req.paused_workflow_order_ids.insert(m.order_id);
+      }
+    }
+    snap_req.paused = !snap_req.paused_workflow_order_ids.empty();
+  }
+
+  if (event_log_) {
+    const std::size_t limit = amr_dispatcher_core::dispatcher::MissionEventLog::NormalizeLimit(
+        req->event_limit, 10, 100);
+    for (const auto& evt : event_log_->Recent(limit)) {
+      amr_dispatcher_core::workflow::MissionEvent wfe;
+      wfe.stamp = evt.stamp;
+      wfe.mission_id = evt.mission_id;
+      wfe.state = evt.event;          // dispatcher 事件名 -> workflow 状态字段
+      wfe.previous_state = evt.previous_event;
+      wfe.message = evt.message;
+      wfe.recoverable = evt.recoverable;
+      snap_req.mission_events.push_back(wfe);
+    }
+  }
+  snap_req.event_limit = req->event_limit;
+
+  const auto proj = amr_dispatcher_core::workflow::BuildOperatorSnapshotProjection(snap_req);
+  resp->success = proj.success;
+  resp->message = proj.message;
+  resp->mission_state = proj.mission_state;
+  resp->previous_mission_state = proj.previous_mission_state;
+  resp->active_mission_id = proj.active_mission_id;
+  resp->mission_message = proj.mission_message;
+  resp->recoverable = proj.recoverable;
+  resp->mission_active = proj.mission_active;
+  resp->paused = proj.paused;
+  resp->queue_size = proj.queue_size;
+  resp->queued_mission_ids = proj.queued_mission_ids;
+  resp->queued_priorities = proj.queued_priorities;
+  resp->paused_workflow_order_ids = proj.paused_workflow_order_ids;
+  resp->fleet_robot_ids = proj.fleet_robot_ids;
+  resp->fleet_enabled = proj.fleet_enabled;
+  resp->fleet_states = proj.fleet_states;
+  resp->fleet_battery_voltage = proj.fleet_battery_voltage;
+  resp->fleet_current_station_ids = proj.fleet_current_station_ids;
+  resp->fleet_capabilities = proj.fleet_capabilities;
+  resp->remote_task_ids = proj.remote_task_ids;
+  resp->remote_task_robot_ids = proj.remote_task_robot_ids;
+  resp->remote_task_states = proj.remote_task_states;
+  resp->facility_resource_ids = proj.facility_resource_ids;
+  resp->facility_resource_types = proj.facility_resource_types;
+  resp->facility_station_ids = proj.facility_station_ids;
+  resp->facility_available = proj.facility_available;
+  resp->facility_status = proj.facility_status;
+  resp->business_types = proj.business_types;
+  resp->business_scenario_ids = proj.business_scenario_ids;
+  resp->business_workflow_ids = proj.business_workflow_ids;
+  resp->recent_event_stamp = proj.recent_event_stamp;
+  resp->recent_event_mission_ids = proj.recent_event_mission_ids;
+  resp->recent_event_states = proj.recent_event_states;
+  resp->recent_event_messages = proj.recent_event_messages;
 }
 
 void DispatcherNode::ValidateSiteConfigCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Request> req,
     std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Response> resp) {
-  resp->success = true;
+  // B5：真实现——真实尝试加载 stations_file；同时校验 dispatcher 最小参数集合。
+  // bundle_dir 指定 bundle 时优先用 <bundle_dir>/stations.yaml，否则回退节点参数路径。
   resp->version_id = req->version_id.empty() ? "v1.0.0" : req->version_id;
-  resp->checked_files.push_back("stations.yaml");
-  resp->checked_files.push_back("dispatcher.yaml");
-  resp->message = "Site configuration validation passed (topology & params consistent)";
+
+  std::string stations_path = get_parameter("stations_file").as_string();
+  if (!req->bundle_dir.empty()) {
+    stations_path = req->bundle_dir + "/stations.yaml";
+  }
+  resp->checked_files.push_back(stations_path);
+
+  const auto catalog_opt = amr_dispatcher_core::catalog::LoadStationCatalog(stations_path);
+  if (!catalog_opt) {
+    resp->success = false;
+    resp->errors.push_back("stations_file load failed: " + stations_path);
+    resp->message = "validation failed: " + stations_path + " not parseable";
+    return;
+  }
+  if (catalog_opt->stations.empty()) {
+    resp->success = false;
+    resp->errors.push_back("stations catalog empty: " + stations_path);
+    resp->message = "validation failed: no stations defined";
+    return;
+  }
+
+  // 最小参数集合校验：任一失败即整体失败
+  const int queue_capacity = get_parameter("queue_capacity").as_int();
+  if (queue_capacity <= 0) {
+    resp->errors.push_back("queue_capacity must be > 0, got " + std::to_string(queue_capacity));
+  }
+  const double sched_hz = get_parameter("schedule_rate_hz").as_double();
+  if (sched_hz <= 0.0) {
+    resp->errors.push_back("schedule_rate_hz must be > 0, got " + std::to_string(sched_hz));
+  }
+  const double deadlock_hz = get_parameter("deadlock_check_rate_hz").as_double();
+  if (deadlock_hz <= 0.0) {
+    resp->errors.push_back("deadlock_check_rate_hz must be > 0, got " + std::to_string(deadlock_hz));
+  }
+  const int max_active = get_parameter("max_active_missions").as_int();
+  if (max_active < 1) {
+    resp->errors.push_back("max_active_missions must be >= 1, got " + std::to_string(max_active));
+  }
+  const std::string comparator = get_parameter("comparator").as_string();
+  if (!amr_dispatcher_core::dispatcher::CreateMissionComparator(comparator)) {
+    resp->errors.push_back("unknown comparator: " + comparator);
+  }
+
+  resp->success = resp->errors.empty();
+  resp->message = resp->success
+                      ? "site configuration validation passed"
+                      : "validation failed: " + std::to_string(resp->errors.size()) + " error(s)";
 }
 
 rclcpp_action::GoalResponse DispatcherNode::HandleGoal(
@@ -1488,12 +1760,11 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
       const auto* dock_st = amr_dispatcher_core::catalog::FindStation(catalog, recovery_dock_station_);
       if (dock_st) {
         amr_dispatcher_core::dispatcher::Mission dock_m;
-        dock_m.id = "m_" + std::to_string(next_sequence_++);
+        StampMissionIdentity(dock_m, next_sequence_);  // B4：id/sequence 同源
         dock_m.order_id = "dock_" + mission_id;
         dock_m.type = "charge";
         dock_m.dropoff_station = recovery_dock_station_;
         dock_m.priority = mission_copy.priority;
-        dock_m.sequence = next_sequence_;
         auto push = queue_->Push(dock_m);
         if (push.accepted) {
           queue_start_requested_ = true;
@@ -1647,8 +1918,20 @@ void DispatcherNode::DeadlockTick() {
                     act.reason.c_str());
         ReArmQueueStartRequest();
       } else if (act.kind == amr_dispatcher_core::dispatcher::RecoveryAction::Kind::kRetry) {
-        mission_attempts_[act.mission_id]++;
-        mission_last_progress_[act.mission_id] = std::chrono::steady_clock::now();
+        // B8：写 map 前先确认任务仍在册（active 或排队中）——
+        // 死锁恢复决策基于快照延迟生成，目标可能已终态/被操作员移除，
+        // 盲区写 map 会把幽灵 mission_id 驻留在 attempts/last_progress 里。
+        const bool mission_known =
+            active_missions_.count(act.mission_id) > 0 ||
+            (queue_ && queue_->Contains(act.mission_id));
+        if (mission_known) {
+          mission_attempts_[act.mission_id]++;
+          mission_last_progress_[act.mission_id] = std::chrono::steady_clock::now();
+        } else {
+          RCLCPP_INFO(get_logger(),
+                      "Deadlock kRetry skipped for unknown mission %s (no longer active/queued)",
+                      act.mission_id.c_str());
+        }
       }
     }
   }

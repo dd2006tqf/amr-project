@@ -19,11 +19,15 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   declare_parameter("base_frame_id", "base_link");
   declare_parameter("publish_tf", true);
   declare_parameter("poll_rate_hz", 50.0);
-  declare_parameter("health_rate_hz", 2.0);
+  // B1：健康上报提速到 5Hz（心跳 500ms 超时下留足余量）
+  declare_parameter("health_rate_hz", 5.0);
+  declare_parameter("cmd_stale_timeout_ms", 500);
 
   odom_frame_id_ = get_parameter("odom_frame_id").as_string();
   base_frame_id_ = get_parameter("base_frame_id").as_string();
   publish_tf_ = get_parameter("publish_tf").as_bool();
+  cmd_stale_timeout_ =
+      std::chrono::milliseconds(get_parameter("cmd_stale_timeout_ms").as_int());
 
   // 配置 preferred list 后端
   amr_dispatcher_core::chassis::ChassisBackendConfig cfg;
@@ -44,7 +48,8 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("/odom", 20);
   health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
       "/chassis/link_health", 10);
-  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat", 10);
+  // B1：心跳分源，只喂 chassis_driver 自己的看门狗通道
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat/chassis_driver", 10);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   const double poll_hz = get_parameter("poll_rate_hz").as_double();
@@ -64,6 +69,9 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
 ChassisDriverNode::~ChassisDriverNode() = default;
 
 void ChassisDriverNode::CmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
+  // B1：先记接收时刻再判后端——指令龄反映的是上游是否还在发，与写入成功与否无关。
+  last_cmd_stamp_ = std::chrono::steady_clock::now();
+  has_cmd_stamp_ = true;
   if (!backend_ctrl_ || !backend_ctrl_->current() || !backend_ctrl_->current()->IsOpen()) {
     return;
   }
@@ -95,6 +103,27 @@ void ChassisDriverNode::ReadPollLoop() {
     }
     return;
   }
+
+  // B1 指令龄兜底：后端在线但上游超过 cmd_stale_timeout_ms 未再发指令，
+  // 主动写零帧，防止底盘沿用最后一次非零指令继续运动。
+  if (has_cmd_stamp_) {
+    const auto age = std::chrono::steady_clock::now() - last_cmd_stamp_;
+    if (age > cmd_stale_timeout_) {
+      amr_dispatcher_core::chassis::ChassisCommand zero_cmd;
+      std::string zero_err;
+      backend_ctrl_->current()->WriteCommand(zero_cmd, &zero_err);
+      if (!stale_zero_active_) {
+        stale_zero_active_ = true;
+        RCLCPP_WARN(get_logger(),
+                    "cmd_vel_safe stale for %lld ms, writing zero-frame fallback",
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(age).count()));
+      }
+    } else if (stale_zero_active_) {
+      stale_zero_active_ = false;  // 上游恢复，复位一次性告警
+    }
+  }
+
   std::string err;
   auto data = backend_ctrl_->current()->Read(&err);
   if (!data || data->empty()) {

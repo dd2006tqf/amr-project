@@ -1,14 +1,15 @@
-dispatcher:
-  queue_capacity: 128
-  comparator: "priority_fifo"      # priority_fifo / earliest_deadline / shortest_job / weighted_score
-  schedule_rate_hz: 10.0
-  deadlock_check_rate_hz: 1.0
-  max_active_missions: 4
-
-deadlock:
-  active_idle_threshold_seconds: 10
-  reservation_hold_threshold_seconds: 30
-
-recovery:
-  max_retries: 3
-  auto_cancel_on_exhausted: true
+# B7：按 ROS 参数文件规范组织——节点名顶层键 + ros__parameters，
+# 由 launch/full_system.launch.py 通过 ament_index_python 解析 share 路径注入；
+# launch 内联字典保留同样 key 的覆盖位（值仍与下发一致，保证行为不变）。
+dispatcher_node:
+  ros__parameters:
+    queue_capacity: 128
+    comparator: "priority_fifo"      # priority_fifo / earliest_deadline / shortest_job / weighted_score
+    schedule_rate_hz: 10.0
+    deadlock_check_rate_hz: 1.0
+    max_active_missions: 4
+    # stations_file 由 launch 用 share 绝对路径注入（修复 cwd 依赖），
+    # 此处不写默认值，避免节点声明时被相对路径覆盖。
+    recovery_dock_station: "station_charge_1"
+    navigation_backend: "plan"
+    path_step_size_m: 0.1

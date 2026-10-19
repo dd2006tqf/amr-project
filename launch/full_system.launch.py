@@ -22,12 +22,19 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'health_rate_hz',
-            default_value='2.0',
+            default_value='5.0',
             description='底盘链路健康/心跳发布频率。安全门的 heartbeat_timeout_ms '
-                        '默认 500ms，部署时应传入 ≥5.0 以避免"心跳间隔 == 超时阈值"'
-                        '导致的看门狗误触发。',
+                        '默认 500ms，5Hz 留足 2.5 倍心跳余量避免看门狗误触发（B1）。',
         ),
     ]
+
+    # B7：节点参数文件集中放 share/amr_dispatcher_ros/config/，launch 只负责注入；
+    # 字典条目叠在 yaml 之后，方便运行时按 LaunchConfiguration 覆盖。
+    ros_share = get_package_share_directory('amr_dispatcher_ros')
+    stations_file_share = os.path.join(ros_share, 'config', 'stations.yaml')
+    dispatcher_yaml = os.path.join(ros_share, 'config', 'dispatcher.yaml')
+    chassis_yaml = os.path.join(ros_share, 'config', 'chassis.yaml')
+    safety_yaml = os.path.join(ros_share, 'config', 'safety.yaml')
 
     dispatcher_node = LifecycleNode(
         package='amr_dispatcher_ros',
@@ -35,14 +42,11 @@ def generate_launch_description():
         name='dispatcher_node',
         namespace='',
         output='screen',
-        parameters=[{
-            'queue_capacity': 128,
-            'comparator': 'priority_fifo',
-            'schedule_rate_hz': 10.0,
-            'deadlock_check_rate_hz': 1.0,
-            'max_active_missions': 4,
-            'stations_file': 'config/stations.yaml',
-        }]
+        parameters=[
+            dispatcher_yaml,
+            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖
+            {'stations_file': stations_file_share},
+        ]
     )
 
     # 声明自动触发 configure 事件
@@ -74,13 +78,7 @@ def generate_launch_description():
         executable='safety_gate_node',
         name='safety_gate_node',
         output='screen',
-        parameters=[{
-            'max_linear_x_mps': 1.5,
-            'max_linear_y_mps': 1.0,
-            'max_angular_z_radps': 2.0,
-            'heartbeat_timeout_ms': 500,
-            'soft_timeout_ms': 2000,
-        }]
+        parameters=[safety_yaml]
     )
 
     chassis_driver_node = Node(
@@ -88,16 +86,15 @@ def generate_launch_description():
         executable='chassis_driver_node',
         name='chassis_driver_node',
         output='screen',
-        parameters=[{
-            'serial_device': serial_device,
-            'serial_baud': 115200,
-            'odom_frame_id': 'odom',
-            'base_frame_id': 'base_link',
-            'publish_tf': True,
-            'poll_rate_hz': 50.0,
-            # LaunchConfiguration 产出字符串，需显式声明为 double 以免参数类型不匹配
-            'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
-        }]
+        parameters=[
+            chassis_yaml,
+            {
+                # LaunchConfiguration 产出字符串，需显式声明为 double 以免参数类型不匹配；
+                # serial_device 同理保留 CLI 覆盖位。
+                'serial_device': serial_device,
+                'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
+            },
+        ]
     )
 
     path_tracker_node = Node(
@@ -110,6 +107,20 @@ def generate_launch_description():
             'lookahead_distance': 0.6,
             'target_speed': 0.5,
             'control_rate_hz': 20.0,
+        }]
+    )
+
+    # B3：navigate_sequence_bridge_node 入 full_system——/navigate_sequence action
+    # 由 bridge 提供，dispatcher 的 navigation_backend:=action 才能接通。
+    navigate_sequence_bridge_node = Node(
+        package='amr_dispatcher_ros',
+        executable='navigate_sequence_bridge_node',
+        name='navigate_sequence_bridge_node',
+        output='screen',
+        parameters=[{
+            'use_nav2': False,
+            'nav2_action_name': '/navigate_to_pose',
+            'plan_topic': '/plan',
         }]
     )
 
@@ -129,7 +140,8 @@ def generate_launch_description():
         parameters=[{
             'frame_id': 'map',
             'marker_topic': '/dispatcher/markers',
-            'stations_file': 'config/stations.yaml'
+            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7）
+            'stations_file': stations_file_share,
         }]
     )
 
@@ -151,6 +163,7 @@ def generate_launch_description():
         safety_gate_node,
         chassis_driver_node,
         path_tracker_node,
+        navigate_sequence_bridge_node,
         rest_gateway_node,
         dispatcher_visualizer_node,
         lifecycle_coordinator_node,

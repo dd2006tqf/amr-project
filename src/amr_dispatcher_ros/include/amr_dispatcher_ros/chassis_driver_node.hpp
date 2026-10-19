@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -40,6 +41,13 @@ class ChassisDriverNode : public rclcpp::Node {
   std::string odom_frame_id_ = "odom";
   std::string base_frame_id_ = "base_link";
   bool publish_tf_ = true;
+  // B1：最近一次收到 /cmd_vel_safe 的时刻，用于指令龄超时零速兜底
+  std::chrono::steady_clock::time_point last_cmd_stamp_{};
+  bool has_cmd_stamp_ = false;
+  // B1：指令龄超时阈值（毫秒），ReadPollLoop 超时后主动写零帧
+  std::chrono::milliseconds cmd_stale_timeout_{500};
+  // B1：本轮失联零速是否已告警/已写帧（恢复后重置，避免每次 poll 刷屏）
+  bool stale_zero_active_ = false;
 };
 
 }  // namespace amr_dispatcher_ros

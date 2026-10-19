@@ -21,7 +21,8 @@
 | `/cmd_vel_raw` | `geometry_msgs/msg/Twist` | 循迹控制器或遥控节点发出的原始期望速度 |
 | `/safety/estop` | `std_msgs/msg/Bool` | 紧急停止按钮状态输入（true 触发全停） |
 | `/safety/bumper` | `std_msgs/msg/Bool` | 碰撞保险杠接触信号输入（true 触发全停） |
-| `/safety/heartbeat` | `std_msgs/msg/Bool` | 外部节点或驱动的心跳保活信号 |
+| `/safety/heartbeat/chassis_driver` | `std_msgs/msg/Bool` | 底盘驱动心跳（chassis_driver 发布，safety_gate 分源订阅计时） |
+| `/safety/heartbeat/path_tracker` | `std_msgs/msg/Bool` | 循迹控制器心跳（path_tracker 发布，safety_gate 分源订阅计时） |
 | `/plan` | `nav_msgs/msg/Path` | 全局规划器发布的待跟踪路点序列 |
 
 ---
