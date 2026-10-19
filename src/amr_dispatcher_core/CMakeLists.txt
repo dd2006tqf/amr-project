@@ -40,6 +40,7 @@ add_library(${PROJECT_NAME}
   src/planning/map_geometry_utils.cpp
   src/planning/safety_space_filter.cpp
   src/planning/skeleton_extractor.cpp
+  src/planning/topology_graph_builder.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
   src/dispatcher/mission_comparator.cpp
@@ -130,6 +131,7 @@ if(BUILD_TESTING)
     test_map_geometry_utils
     test_safety_space_filter
     test_skeleton_extractor
+    test_topology_graph_builder
     test_mission_profile
     test_mission_profile_builders
     test_queued_mission
