@@ -21,6 +21,7 @@
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
 #include "amr_dispatcher_core/planning/path_planner_interface.hpp"
 #include "amr_dispatcher_core/planning/mock_linear_planner.hpp"
+#include "amr_dispatcher_core/planning/skeleton_planner.hpp"
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -179,6 +180,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void NavResultCb(const std::string& mission_id, const GoalHandleNavigate::WrappedResult& result);
 
   void ScheduleTick();
+  // 依 planner_type_ + 当前站点目录重建 planner_（on_configure 与参数热更共用）
+  void RebuildPlanner();
   void DeadlockTick();
   // 死锁快照组包（DeadlockTick 与 DetectTrafficDeadlockCb 共用，保证两处结论不分叉）：
   // 清点排队等待记录 + 活跃任务/进度 + 预约表 WFG 数据；不自带锁，调用方沿用各自约定
@@ -219,6 +222,13 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 任务执行闭环：站点目录（mtime 热重载） + 规划器 + 最新里程计位姿
   std::unique_ptr<amr_dispatcher_core::IPathPlanner> planner_;
   std::unique_ptr<amr_dispatcher_core::catalog::StationCatalogReloader> catalog_reloader_;
+  // 路径规划器类型（配置参数 planner_type：skeleton | mock）。
+  // skeleton -> SkeletonPlanner（混合图折线循迹），mock -> MockLinearPlanner（直线基线）。
+  std::string planner_type_{"skeleton"};
+  // 地图版本门禁：非空时要求 catalog.map_hash 与之相等，否则暂停出队派发
+  std::string expected_map_hash_;
+  // 版本门禁状态（每次 ScheduleTick 重算；false = 地图哈希不匹配，派发已暂停）
+  bool map_version_valid_{true};
   amr_dispatcher_core::path_tracking::Pose2D current_pose_{};
   bool has_odom_ = false;
   std::string tracking_mission_id_;  // 当前正在跟踪 /plan 的任务（单车一次一个）

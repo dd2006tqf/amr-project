@@ -26,7 +26,12 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("path_step_size_m", 0.1);
   declare_parameter("recovery_dock_station", "station_charge_1");
   declare_parameter("navigation_backend", "plan");
+  // 路径规划器类型（skeleton|mock）与地图版本门禁期望哈希（空 = 关闭门禁）
+  declare_parameter("planner_type", "skeleton");
+  declare_parameter("expected_map_hash", "");
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
+  planner_type_ = get_parameter("planner_type").as_string();
+  expected_map_hash_ = get_parameter("expected_map_hash").as_string();
 }
 
 DispatcherNode::~DispatcherNode() = default;
@@ -59,8 +64,9 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
                 "Failed to load stations file %s; planning disabled until hot reload succeeds",
                 stations_file.c_str());
   }
-  planner_ = std::make_unique<amr_dispatcher_core::MockLinearPlanner>(
-      get_parameter("path_step_size_m").as_double());
+  // 依 planner_type 选规划器：skeleton -> 混合图折线循迹，mock -> 直线基线。
+  // catalog_reloader_ 已就位（即使初始加载失败也持有空目录，热重载后由 reload_timer_ 同步）。
+  RebuildPlanner();
 
   state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::DispatcherState>(
       "/dispatcher/state", 10);
@@ -213,6 +219,24 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
             }
             RCLCPP_INFO(get_logger(), "Parameter reload: max_active_missions -> %lld",
                         static_cast<long long>(v));
+          } else if (name == "planner_type") {
+            const std::string v = p.as_string();
+            if (v != "mock" && v != "skeleton") {
+              result.successful = false;
+              result.reason = "planner_type must be 'mock' or 'skeleton': " + v;
+              RCLCPP_WARN(get_logger(), "Parameter reload rejected: %s",
+                          result.reason.c_str());
+              continue;
+            }
+            planner_type_ = v;
+            RebuildPlanner();  // 单线程 spin：回调期间无规划请求在途，可安全换实例
+            RCLCPP_INFO(get_logger(), "Parameter reload: planner_type -> %s", v.c_str());
+          } else if (name == "expected_map_hash") {
+            expected_map_hash_ = p.as_string();
+            RCLCPP_INFO(get_logger(),
+                        "Parameter reload: expected_map_hash -> %s",
+                        expected_map_hash_.empty() ? "<disabled>"
+                                                   : expected_map_hash_.c_str());
           }
           // 其余已声明参数不回执：rclcpp 仍正常赋值，仅不产生日志噪声
         }
@@ -249,6 +273,14 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
     if (catalog_reloader_->Tick()) {
       RCLCPP_INFO(get_logger(), "Station catalog hot-reloaded: %zu stations",
                   catalog_reloader_->catalog().stations.size());
+      // SkeletonPlanner 持有目录副本：热重载后必须同步，否则仍按旧折线规划
+      auto* skeleton_planner =
+          dynamic_cast<amr_dispatcher_core::planning::SkeletonPlanner*>(planner_.get());
+      if (skeleton_planner != nullptr) {
+        skeleton_planner->UpdateCatalog(catalog_reloader_->catalog());
+        RCLCPP_INFO(get_logger(), "SkeletonPlanner catalog synchronized (%zu stations)",
+                    catalog_reloader_->catalog().stations.size());
+      }
     } else if (!catalog_reloader_->last_error().empty()) {
       // 重载失败（YAML 解析或校验不过）：旧目录继续生效，节流告警提示修复文件
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
@@ -259,6 +291,27 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
 
   RCLCPP_INFO(get_logger(), "DispatcherNode activated");
   return CallbackReturn::SUCCESS;
+}
+
+void DispatcherNode::RebuildPlanner() {
+  const double step_size = get_parameter("path_step_size_m").as_double();
+  if (planner_type_ == "skeleton") {
+    planner_ = std::make_unique<amr_dispatcher_core::planning::SkeletonPlanner>(
+        catalog_reloader_ ? catalog_reloader_->catalog()
+                          : amr_dispatcher_core::catalog::StationCatalog{},
+        amr_dispatcher_core::planning::SkeletonPlanner::Config{step_size});
+    RCLCPP_INFO(get_logger(),
+                "Path planner: SkeletonPlanner (mixed-graph polyline, step %.2f m)",
+                step_size);
+    return;
+  }
+  if (planner_type_ != "mock") {
+    RCLCPP_WARN(get_logger(),
+                "Unknown planner_type '%s', falling back to MockLinearPlanner",
+                planner_type_.c_str());
+  }
+  planner_ = std::make_unique<amr_dispatcher_core::MockLinearPlanner>(step_size);
+  RCLCPP_INFO(get_logger(), "Path planner: MockLinearPlanner (step %.2f m)", step_size);
 }
 
 CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*state*/) {
@@ -1327,6 +1380,22 @@ void DispatcherNode::ScheduleTick() {
   // 单车执行模型：同时只有一条 /plan 在跟踪，其余任务保持 active 等待车辆空闲
   if (!tracking_mission_id_.empty()) {
     return;
+  }
+
+  // 地图版本门禁：配置了期望哈希且目录已加载、且目录哈希非空时，
+  // 哈希不一致即判定环境地图与部署目录不匹配——暂停出队派发。
+  // 直接 return（不消费 queue_start_requested_），哈希恢复一致后派发自动继续。
+  map_version_valid_ = true;
+  if (!expected_map_hash_.empty() && catalog_reloader_ != nullptr &&
+      catalog_reloader_->loaded()) {
+    const auto& catalog = catalog_reloader_->catalog();
+    if (!catalog.map_hash.empty() && catalog.map_hash != expected_map_hash_) {
+      map_version_valid_ = false;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                           "Map hash mismatch: expected %s got %s, dispatching paused",
+                           expected_map_hash_.c_str(), catalog.map_hash.c_str());
+      return;
+    }
   }
 
   // 行为树出队派发门控：runtime 树按"空闲 + 启动请求"给派发决策，
