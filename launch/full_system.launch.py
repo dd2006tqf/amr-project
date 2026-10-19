@@ -6,7 +6,7 @@ from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, EmitEvent
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.parameter_descriptions import ParameterValue
 import lifecycle_msgs.msg
 
@@ -18,6 +18,8 @@ def generate_launch_description():
     use_map_server = LaunchConfiguration('use_map_server')
     map_yaml = LaunchConfiguration('map_yaml')
     markers_file = LaunchConfiguration('markers_file')
+    # C1：站点目录路径可覆盖，默认值随 use_map_server 在静态/生成目录间切换
+    stations_file = LaunchConfiguration('stations_file')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -62,6 +64,24 @@ def generate_launch_description():
     # tmp+rename 原子写出后由 StationCatalogReloader 按 mtime 热重载）。
     generated_stations_share = os.path.join(ros_share, 'config', 'generated', 'stations.yaml')
 
+    # C1：stations_file 默认值随 use_map_server 切换——开启地图导入后，调度与
+    # 可视化必须监听 map_ingest 的生成目录，否则 StationCatalogReloader 一直
+    # 盯着旧的静态 config/stations.yaml，生成链路与调度链路脱节。
+    # 判定与 IfCondition 同款布尔词表，保证 use_map_server:=1/True 等写法一致。
+    stations_file_default = PythonExpression([
+        "'", generated_stations_share, "' if str('", use_map_server,
+        "').lower() in ('true', '1', 'yes', 'on') else '", stations_file_share, "'",
+    ])
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'stations_file',
+            default_value=stations_file_default,
+            description='站点目录 YAML 路径。默认 use_map_server:=true 时指向 '
+                        'config/generated/stations.yaml（map_ingest 生成物，闭环热重载），'
+                        '否则指向静态 config/stations.yaml；可显式覆盖。',
+        )
+    )
+
     dispatcher_node = LifecycleNode(
         package='amr_dispatcher_ros',
         executable='dispatcher_node',
@@ -70,8 +90,9 @@ def generate_launch_description():
         output='screen',
         parameters=[
             dispatcher_yaml,
-            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖
-            {'stations_file': stations_file_share},
+            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖；
+            # C1：默认随 use_map_server 指向 map_ingest 生成目录（见上方参数声明）。
+            {'stations_file': stations_file},
         ]
     )
 
@@ -166,8 +187,9 @@ def generate_launch_description():
         parameters=[{
             'frame_id': 'map',
             'marker_topic': '/dispatcher/markers',
-            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7）
-            'stations_file': stations_file_share,
+            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7），
+            # 且 C1 下默认随 use_map_server 指向生成目录。
+            'stations_file': stations_file,
         }]
     )
 

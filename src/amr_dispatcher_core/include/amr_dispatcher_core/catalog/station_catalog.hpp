@@ -78,12 +78,14 @@ StationListProjection BuildStationListProjection(const StationCatalog& catalog);
 StationRouteListProjection BuildStationRouteListProjection(const StationCatalog& catalog);
 
 // 站点目录热重载器：构造时加载初始目录，Tick 按文件 mtime 变化重载；
+// 构造时缺失的文件在后续 Tick 中晚出现也会补加载（覆盖 map_ingest 先启动
+// 于 dispatcher 之前写出 generated 目录的闭环场景）；
 // 新目录校验失败时保留旧目录（不清空），错误经 last_error 暴露。
 class StationCatalogReloader {
  public:
   explicit StationCatalogReloader(std::filesystem::path path);
 
-  // 驱动一次 mtime 检查；返回本次是否完成换新。
+  // 驱动一次 mtime 检查；返回本次是否完成换新（含晚出现文件的补加载）。
   bool Tick();
 
   const StationCatalog& catalog() const { return catalog_; }

@@ -105,6 +105,30 @@ TEST(StationCatalogReloaderTest, ReloadsOnMtimeChangeAndKeepsOldOnInvalid) {
   std::remove(p.c_str());
 }
 
+// C1 闭环：构造时文件缺失（dispatcher 先启动、map_ingest 尚未写出生成目录），
+// 文件晚出现后 Tick 必须补加载——HotReloadWatcher 对首次出现只记 mtime 基线
+// 不触发回调，靠 Reloader 在 !loaded_ 状态下的兜底 TryLoad 完成闭环。
+TEST(StationCatalogReloaderTest, LoadsCatalogWhenFileAppearsLate) {
+  const std::string p = std::tmpnam(nullptr);
+  std::remove(p.c_str());  // 确保路径不存在
+  amr_dispatcher_core::catalog::StationCatalogReloader reloader(p);
+  EXPECT_FALSE(reloader.loaded());
+  EXPECT_FALSE(reloader.Tick());  // 仍缺失，无换新
+
+  {
+    std::ofstream out(p);
+    out << kTwoStations;
+  }
+  EXPECT_TRUE(reloader.Tick());  // 晚出现 → 补加载成功并计一次换新
+  EXPECT_TRUE(reloader.loaded());
+  EXPECT_EQ(reloader.catalog().stations.size(), 2u);
+  EXPECT_TRUE(reloader.last_error().empty());
+
+  // 加载成功后回归正常 mtime 语义：内容未变不再触发换新
+  EXPECT_FALSE(reloader.Tick());
+  std::remove(p.c_str());
+}
+
 // ---- Task 1：road_nodes / polyline / version 混合图扩展 ----
 
 namespace amr_dispatcher_core::catalog {

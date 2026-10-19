@@ -21,6 +21,9 @@ namespace amr_dispatcher_ros {
 //   4. 结果成功时以 tmp+rename 原子写出 stations.yaml（调度侧
 //      StationCatalogReloader 按 mtime 热重载）；失败时保留旧文件。
 //   5. 发布 MarkerArray（transient_local）供 RViz 预览路网折线与站点。
+//   6. /map 为 transient_local 单发消息：回调缓存最新地图后，1Hz check_timer_
+//      基于缓存补跑——markers 晚于地图就绪、或成功后 markers 被编辑，
+//      都能自动（重）生成目录，而不依赖 /map 重发。
 class MapIngestNode : public rclcpp::Node {
  public:
   explicit MapIngestNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
@@ -28,11 +31,19 @@ class MapIngestNode : public rclcpp::Node {
  private:
   using OccupancyGrid = nav_msgs::msg::OccupancyGrid;
 
-  // /map 回调：转换 + 算法流水线 + 原子写文件 + Marker 发布。
+  // /map 回调：校验消息后缓存（连同内容 hash）并立即尝试处理。
   void MapCallback(const OccupancyGrid::SharedPtr msg);
 
+  // 1Hz 补跑定时器：基于缓存地图驱动 ProcessMap（详见类注释 6）。
+  void CheckTimerCallback();
+
+  // 完整导入流水线：锚点加载 -> 与 last_ingest_hash_ 去重 -> 算法流水线 ->
+  // 原子写出 -> Marker 发布。依赖 last_map_msg_ / last_map_hash_ 成员状态。
+  void ProcessMap();
+
   // 解析 markers_file 的 anchors 段（id/type/x/y/yaw）；未配置/不存在/为空时返回空。
-  std::vector<amr_dispatcher_core::planning::AnchorStation> LoadAnchors() const;
+  // 非 const：等待类日志需节流（check_timer_ 会高频重入）。
+  std::vector<amr_dispatcher_core::planning::AnchorStation> LoadAnchors();
 
   // 序列化目录为 Task 1 规定的 schema YAML 文本。
   static std::string SerializeCatalog(
@@ -65,8 +76,15 @@ class MapIngestNode : public rclcpp::Node {
   // 避免无谓触发调度侧 StationCatalogReloader 热重载。
   std::string last_ingest_hash_;
 
+  // I2：缓存的最新有效 /map 消息及其内容 hash（FNV-1a，含 origin 与栅格数据）。
+  // /map 只发一次，markers 晚就绪/后续编辑时 check_timer_ 用这两者补跑。
+  OccupancyGrid::SharedPtr last_map_msg_;
+  std::string last_map_hash_;
+
   rclcpp::Subscription<OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  // 1Hz 补跑定时器：/map 单发不重来，处理失败或 markers 后续变化时自动重试。
+  rclcpp::TimerBase::SharedPtr check_timer_;
 };
 
 }  // namespace amr_dispatcher_ros

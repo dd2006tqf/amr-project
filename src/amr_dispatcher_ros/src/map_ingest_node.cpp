@@ -1,5 +1,6 @@
 #include "amr_dispatcher_ros/map_ingest_node.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -36,9 +37,12 @@ using amr_dispatcher_core::planning::SafetyFilterConfig;
 using amr_dispatcher_core::planning::TopologyBuilderConfig;
 using amr_dispatcher_core::planning::WorldCoord;
 
-// FNV-1a 64 位内容哈希：同地图必同 hash、异地图（尺寸/分辨率/栅格数据任一
-// 变化）必异 hash，供调度侧版本门禁（expected_map_hash）比对。
-std::string ComputeMapHash(const MapGrid& grid) {
+// FNV-1a 64 位内容哈希：同地图必同 hash、异地图（尺寸/分辨率/origin/栅格数据
+// 任一变化）必异 hash，供调度侧版本门禁（expected_map_hash）比对与自身去重。
+// 直接对 OccupancyGrid 消息计算（I1）：origin（平移/旋转）必须参与——仅平移
+// 地图的尺寸与栅格 data 不变，漏掉 origin 会被去重误判为"同图"而跳过重导入；
+// 消息级计算也让 check_timer_ 补跑时无需为去重重建 MapGrid。
+std::string ComputeMapHash(const nav_msgs::msg::OccupancyGrid& msg) {
   uint64_t h = 14695981039346656037ULL;  // FNV-1a offset basis
   const auto mix = [&h](const void* bytes, std::size_t n) {
     const auto* p = static_cast<const uint8_t*>(bytes);
@@ -47,11 +51,21 @@ std::string ComputeMapHash(const MapGrid& grid) {
       h *= 1099511628211ULL;  // FNV prime
     }
   };
-  mix(&grid.width, sizeof(grid.width));
-  mix(&grid.height, sizeof(grid.height));
-  mix(&grid.resolution, sizeof(grid.resolution));
-  if (!grid.data.empty()) {
-    mix(grid.data.data(), grid.data.size());
+  const auto mix_double = [&mix](double v) {
+    uint64_t u = 0;
+    static_assert(sizeof(u) == sizeof(v), "double must be 64-bit");
+    std::memcpy(&u, &v, sizeof(v));
+    mix(&u, sizeof(u));
+  };
+  mix(&msg.info.width, sizeof(msg.info.width));
+  mix(&msg.info.height, sizeof(msg.info.height));
+  mix(&msg.info.resolution, sizeof(msg.info.resolution));
+  mix_double(msg.info.origin.position.x);
+  mix_double(msg.info.origin.position.y);
+  mix_double(amr_dispatcher_core::path_tracking::YawFromQuaternion(
+      msg.info.origin.orientation.z, msg.info.origin.orientation.w));
+  if (!msg.data.empty()) {
+    mix(msg.data.data(), msg.data.size());
   }
   std::ostringstream out;
   out << "fnv1a64_" << std::hex << std::setfill('0') << std::setw(16) << h;
@@ -159,6 +173,11 @@ MapIngestNode::MapIngestNode(const rclcpp::NodeOptions& options)
   marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
       marker_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).transient_local());
 
+  // I2：/map 是 latched 单发消息——首次回调若 markers 未就绪则本次作废，此后
+  // 由 1Hz 定时器基于缓存地图自动补跑（成功后 markers 被编辑同样经此再生成）。
+  check_timer_ = create_wall_timer(std::chrono::seconds(1),
+                                   std::bind(&MapIngestNode::CheckTimerCallback, this));
+
   RCLCPP_INFO(get_logger(),
               "MapIngestNode started: map_topic=%s markers_file='%s' output='%s' "
               "(robot_radius=%.2fm margin=%.2fm min_branch=%.2fm max_snap=%.2fm)",
@@ -166,22 +185,25 @@ MapIngestNode::MapIngestNode(const rclcpp::NodeOptions& options)
               robot_radius_m_, safety_margin_m_, min_branch_length_m_, max_snap_dist_m_);
 }
 
-std::vector<AnchorStation> MapIngestNode::LoadAnchors() const {
+std::vector<AnchorStation> MapIngestNode::LoadAnchors() {
   std::vector<AnchorStation> anchors;
   if (markers_file_.empty()) {
     return anchors;
   }
   std::error_code ec;
   if (!std::filesystem::exists(markers_file_, ec)) {
-    RCLCPP_WARN(get_logger(), "markers_file '%s' does not exist yet; waiting",
-                markers_file_.c_str());
+    // 节流：check_timer_ 会以 1Hz 重入本函数，避免等待窗口刷屏。
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                        "markers_file '%s' does not exist yet; waiting",
+                        markers_file_.c_str());
     return anchors;
   }
   try {
     const YAML::Node root = YAML::LoadFile(markers_file_);
     if (!root["anchors"] || !root["anchors"].IsSequence()) {
-      RCLCPP_WARN(get_logger(), "markers_file '%s' has no 'anchors' list; waiting",
-                  markers_file_.c_str());
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                          "markers_file '%s' has no 'anchors' list; waiting",
+                          markers_file_.c_str());
       return anchors;
     }
     for (const auto& node : root["anchors"]) {
@@ -192,15 +214,17 @@ std::vector<AnchorStation> MapIngestNode::LoadAnchors() const {
       anchor.y = node["y"].as<double>();
       anchor.yaw = node["yaw"].as<double>(0.0);
       if (anchor.id.empty()) {
-        RCLCPP_WARN(get_logger(), "markers_file '%s' contains an anchor with empty id; skipped",
-                    markers_file_.c_str());
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                            "markers_file '%s' contains an anchor with empty id; skipped",
+                            markers_file_.c_str());
         continue;
       }
       anchors.push_back(std::move(anchor));
     }
   } catch (const std::exception& e) {
-    RCLCPP_ERROR(get_logger(), "Failed to parse markers_file '%s': %s",
-                 markers_file_.c_str(), e.what());
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 10000,
+                         "Failed to parse markers_file '%s': %s",
+                         markers_file_.c_str(), e.what());
     anchors.clear();
   }
   return anchors;
@@ -313,35 +337,59 @@ void MapIngestNode::MapCallback(const OccupancyGrid::SharedPtr msg) {
     return;
   }
 
-  // ---- ① OccupancyGrid -> 核心库 MapGrid ----
-  MapGrid grid;
-  grid.width = msg->info.width;
-  grid.height = msg->info.height;
-  grid.resolution = msg->info.resolution;
-  grid.origin_x = msg->info.origin.position.x;
-  grid.origin_y = msg->info.origin.position.y;
-  grid.origin_yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
-      msg->info.origin.orientation.z, msg->info.origin.orientation.w);
-  grid.data.assign(msg->data.begin(), msg->data.end());
+  // I2：/map 单发（transient_local）不会重来——缓存消息与内容 hash（I1 含
+  // origin），本次立即处理；若 markers 未就绪，check_timer_ 之后基于缓存补跑。
+  last_map_msg_ = msg;
+  last_map_hash_ = ComputeMapHash(*msg);
+  ProcessMap();
+}
 
-  // ---- ② 加载站点锚点（markers.yaml anchors 段） ----
+void MapIngestNode::CheckTimerCallback() {
+  // 尚未收到 /map，或未配置 markers（anchors 唯一来源）时补跑无意义；
+  // 是否需要真正重跑统一交由 ProcessMap 内的 ingest_hash 去重裁决：
+  // 首次未成功（last_ingest_hash_ 为空）必然重试；成功后仅当 markers 被
+  // 编辑（锚点摘要变化）才会重新生成目录并触发调度侧热重载。
+  if (!last_map_msg_ || markers_file_.empty()) {
+    return;
+  }
+  ProcessMap();
+}
+
+void MapIngestNode::ProcessMap() {
+  if (!last_map_msg_ || last_map_hash_.empty()) {
+    return;
+  }
+  const OccupancyGrid& msg = *last_map_msg_;
+
+  // ---- ① 加载站点锚点（markers.yaml anchors 段） ----
   const std::vector<AnchorStation> anchors = LoadAnchors();
   if (anchors.empty()) {
-    RCLCPP_ERROR(get_logger(),
-                 "No station anchors available (markers_file: '%s'); waiting for a valid "
-                 "markers file before generating the catalog",
-                 markers_file_.c_str());
+    // 节流日志：check_timer_ 每秒重试，等待窗口内不刷屏。
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 10000,
+                         "No station anchors available (markers_file: '%s'); waiting for a "
+                         "valid markers file before generating the catalog",
+                         markers_file_.c_str());
     return;
   }
 
-  // 同图 + 同锚点重复消息：跳过重写，避免无谓触发调度侧热重载。
-  const std::string map_hash = ComputeMapHash(grid);
-  const std::string ingest_hash = map_hash + "#" + ComputeAnchorsDigest(anchors);
+  // 同图 + 同锚点重复触发：跳过重写，避免无谓触发调度侧热重载。
+  const std::string ingest_hash = last_map_hash_ + "#" + ComputeAnchorsDigest(anchors);
   if (ingest_hash == last_ingest_hash_) {
     RCLCPP_DEBUG(get_logger(), "Map and anchors unchanged (%s); skipping re-ingest",
-                 map_hash.c_str());
+                 last_map_hash_.c_str());
     return;
   }
+
+  // ---- ② OccupancyGrid -> 核心库 MapGrid ----
+  MapGrid grid;
+  grid.width = msg.info.width;
+  grid.height = msg.info.height;
+  grid.resolution = msg.info.resolution;
+  grid.origin_x = msg.info.origin.position.x;
+  grid.origin_y = msg.info.origin.position.y;
+  grid.origin_yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
+      msg.info.origin.orientation.z, msg.info.origin.orientation.w);
+  grid.data.assign(msg.data.begin(), msg.data.end());
 
   // ---- ③ 核心库算法流水线 ----
   SafetyFilterConfig safety_cfg;
@@ -354,7 +402,7 @@ void MapIngestNode::MapCallback(const OccupancyGrid::SharedPtr msg) {
 
   TopologyBuilderConfig builder_cfg;
   builder_cfg.max_snap_dist_m = max_snap_dist_m_;
-  builder_cfg.map_hash = map_hash;
+  builder_cfg.map_hash = last_map_hash_;
   builder_cfg.graph_version = "v1";
 
   const BinaryGrid safety_grid = amr_dispatcher_core::planning::FilterSafetySpace(grid, safety_cfg);
@@ -373,27 +421,31 @@ void MapIngestNode::MapCallback(const OccupancyGrid::SharedPtr msg) {
   const auto result = amr_dispatcher_core::planning::BuildTopologyCatalog(pruned, grid, anchors,
                                                                           builder_cfg);
   if (!result.success) {
-    RCLCPP_ERROR(get_logger(), "Map ingest failed: %s (keeping existing catalog)",
-                 result.error_message.c_str());
+    // 节流：失败由 check_timer_ 每秒重试（last_ingest_hash_ 仍为空），不刷屏。
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 10000,
+                         "Map ingest failed: %s (keeping existing catalog; will retry)",
+                         result.error_message.c_str());
     return;
   }
 
   // ---- ⑤ 原子写出 + RViz Marker ----
   if (!WriteCatalogAtomic(result.catalog)) {
-    RCLCPP_ERROR(get_logger(), "Failed to write catalog to '%s' (keeping existing catalog)",
-                 output_stations_file_.c_str());
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 10000,
+                         "Failed to write catalog to '%s' (keeping existing catalog; will retry)",
+                         output_stations_file_.c_str());
     return;
   }
   last_ingest_hash_ = ingest_hash;
-  if (!msg->header.frame_id.empty()) {
-    map_frame_id_ = msg->header.frame_id;
+  if (!msg.header.frame_id.empty()) {
+    map_frame_id_ = msg.header.frame_id;
   }
 
   RCLCPP_INFO(get_logger(),
               "Successfully ingested map and generated %s (%zu stations, %zu road nodes, "
               "%zu edges) [map_hash=%s]",
               output_stations_file_.c_str(), result.catalog.stations.size(),
-              result.catalog.road_nodes.size(), result.catalog.edges.size(), map_hash.c_str());
+              result.catalog.road_nodes.size(), result.catalog.edges.size(),
+              last_map_hash_.c_str());
 
   if (publish_markers_) {
     PublishTopologyMarkers(result.catalog);

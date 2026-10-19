@@ -689,6 +689,14 @@ bool StationCatalogReloader::Tick() {
   if (!watcher_.last_error().empty()) {
     last_error_ = watcher_.last_error();  // YAML 解析失败：回调未触发，旧目录保持
   }
+  if (!loaded_) {
+    // C1 闭环兜底：构造时文件缺失（use_map_server 场景下 dispatcher 先于
+    // map_ingest 启动）时，HotReloadWatcher 对"文件首次出现"只记 mtime 基线、
+    // 不触发重载回调——首次成功拍永远不会补加载。这里在未加载状态下重试
+    // 初始加载，保证晚生成的目录（map_ingest 写出的 generated/stations.yaml）
+    // 一旦出现即可被调度侧接管（成功即计一次换新，返回 true 驱动调用方同步）。
+    TryLoad(true);
+  }
   return reload_count_ > before;
 }
 
