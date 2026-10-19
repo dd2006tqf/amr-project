@@ -39,6 +39,7 @@ add_library(${PROJECT_NAME}
   src/path_tracking/stanley.cpp
   src/planning/map_geometry_utils.cpp
   src/planning/safety_space_filter.cpp
+  src/planning/skeleton_extractor.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
   src/dispatcher/mission_comparator.cpp
@@ -128,6 +129,7 @@ if(BUILD_TESTING)
     test_mock_linear_planner
     test_map_geometry_utils
     test_safety_space_filter
+    test_skeleton_extractor
     test_mission_profile
     test_mission_profile_builders
     test_queued_mission
