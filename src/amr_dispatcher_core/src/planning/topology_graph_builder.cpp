@@ -413,27 +413,45 @@ TopologyBuildResult BuildTopologyCatalog(
       };
       add_node(n_a);
       add_node(n_b);
-      // 在环上从 n_a 沿两个方向 BFS/追踪到 n_b。简化：直接追踪有序路径。
-      // 构造环像素的相邻列表，然后从 n_a 走两条方向到 n_b。
+      // 在环上从 n_a 沿两个方向追踪到 n_b。每个方向用“已访问集 + 方向延续”
+      // 选择下一像素：优先未访问像素并按来向方向余弦择优（复用 PickNextPixel），
+      // 避免旧实现按环上枚举顺序取“最后一个邻居”导致在拐角处来回震荡、
+      // 纯环（crossing 恒为 2）始终无法走到 n_b 的问题。
       auto trace_on_ring = [&](const Pixel& from, const Pixel& first,
                                const Pixel& target) {
         std::vector<Pixel> path{from, first};
+        std::unordered_set<Pixel, PixelHash> visited;
+        visited.insert(from);
+        visited.insert(first);
         Pixel prev = from;
         Pixel cur = first;
         const size_t limit = ring.size() + 8;
         while (!(cur == target) && path.size() <= limit) {
-          // 选非 prev 的环邻居
-          Pixel next{-1, -1};
-          int found = 0;
+          // 收集环内非 prev 邻居作为候选。
+          std::vector<Pixel> candidates;
           for (int i = 0; i < 8; ++i) {
             const Pixel nb{cur.col + kDCol[i], cur.row + kDRow[i]};
-            if (nb == prev) continue;
-            if (!skeleton.GetValue(nb.col, nb.row)) continue;
-            if (std::find(ring.begin(), ring.end(), nb) == ring.end()) continue;
-            next = nb;
-            ++found;
+            if (nb == prev) {
+              continue;
+            }
+            if (!skeleton.GetValue(nb.col, nb.row)) {
+              continue;
+            }
+            if (std::find(ring.begin(), ring.end(), nb) == ring.end()) {
+              continue;
+            }
+            candidates.push_back(nb);
           }
-          if (found == 0) break;
+          if (candidates.empty()) {
+            break;
+          }
+          // 未访问优先 + 方向延续（不折返），拐角处的对角“捷径”仅在同为
+          // 未访问时依方向余弦落败于正向像素。
+          const Pixel next = PickNextPixel(prev, cur, candidates, visited);
+          if (next.col == -1) {
+            break;
+          }
+          visited.insert(next);
           prev = cur;
           cur = next;
           path.push_back(cur);
@@ -463,26 +481,26 @@ TopologyBuildResult BuildTopologyCatalog(
     }
   }
 
-  // 边去重：(from_id, to_id, polyline_size) 三元组 + 检查双向重复。
+  // 边去重：同向边需折线逐点相等才算重复；反向边需折线反向逐点相等。
+  // 不能仅按 (from, to, polyline_size) 判重——纯环切出的两条半环边端点相同、
+  // 长度也可能相同，但折线不同，必须作为平行边同时保留。
   {
     std::vector<PixelEdge> unique_edges;
     for (const auto& e : pixel_edges) {
       bool dup = false;
       for (const auto& u : unique_edges) {
         if (e.from == u.from && e.to == u.to &&
-            e.polyline_px.size() == u.polyline_px.size()) {
+            e.polyline_px == u.polyline_px) {
           dup = true;
           break;
         }
-        // 反向同边（A->B 与 B->A 折线等长且首尾对应）
+        // 反向同边（A->B 与 B->A）：折线反向逐点相等才是同一条几何链。
         if (e.from == u.to && e.to == u.from &&
-            e.polyline_px.size() == u.polyline_px.size()) {
-          // 验证首像素匹配（同一条几何链）
-          if (e.polyline_px.front() == u.polyline_px.back() &&
-              e.polyline_px.back() == u.polyline_px.front()) {
-            dup = true;
-            break;
-          }
+            e.polyline_px.size() == u.polyline_px.size() &&
+            std::equal(e.polyline_px.begin(), e.polyline_px.end(),
+                       u.polyline_px.rbegin())) {
+          dup = true;
+          break;
         }
       }
       if (!dup) {
@@ -546,11 +564,26 @@ TopologyBuildResult BuildTopologyCatalog(
       result.error_message = oss.str();
       return result;
     }
+    // I2：检测与已放置站点重合的吸附点。若不检查，第二个重合锚点会把
+    // 第一个站点的边全部重定向到自身，导致第一个站点孤立、连通性校验
+    // 报 "disconnected" 且错误信息无法指向根因。这里给出明确诊断。
+    for (const auto& st_existing : catalog.stations) {
+      if (std::hypot(st_existing.x - best_proj.px,
+                     st_existing.y - best_proj.py) < 1e-6) {
+        std::ostringstream oss;
+        oss << "Station " << anchor.id << " coincides with station "
+            << st_existing.id << " at (" << best_proj.px << ", "
+            << best_proj.py << "); coincident anchors are not supported";
+        result.error_message = oss.str();
+        return result;
+      }
+    }
 
     // 将站点作为图节点（id = anchor.id，世界坐标采用投影点使节点落在
     // 骨架上——这样 SkeletonPlanner 沿折线循迹时能精确到站点）。
     catalog::Station st;
     st.id = anchor.id;
+    st.type = anchor.type;
     st.x = best_proj.px;
     st.y = best_proj.py;
     st.yaw = anchor.yaw;

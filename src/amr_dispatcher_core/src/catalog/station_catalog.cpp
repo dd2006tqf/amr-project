@@ -394,6 +394,11 @@ std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& pa
       }
       continue;
     }
+    if (auto value = ValueAfterColon(line, "type")) {
+      // 业务语义类型（pickup/dropoff/charge/normal 等），缺省 "normal"。
+      current_station.type = value->empty() ? "normal" : *value;
+      continue;
+    }
   }
   flush_station();
   flush_road_node();

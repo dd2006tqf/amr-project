@@ -16,6 +16,8 @@ struct Station {
   double x = 0.0;
   double y = 0.0;
   double yaw = 0.0;
+  // 业务语义类型（"pickup"/"dropoff"/"charge"/"normal" 等），透传自 AnchorStation。
+  std::string type = "normal";
 };
 
 // 骨架路网通行节点（路口/转折点）：与站点共用同一 id 空间，

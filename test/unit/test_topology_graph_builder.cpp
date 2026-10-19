@@ -147,6 +147,11 @@ TEST(TopologyGraphBuilderTest,
   // 充电桩应作为图节点。
   const int charge_idx = StationIndex(result.catalog, "charge_1");
   ASSERT_GE(charge_idx, 0) << "charge_1 必须存在于 stations 中";
+  // I1：站点类型从 AnchorStation 透传到 catalog::Station。
+  EXPECT_EQ(result.catalog.stations[charge_idx].type, "charge");
+  const int end_a_idx = StationIndex(result.catalog, "s_end_a");
+  ASSERT_GE(end_a_idx, 0);
+  EXPECT_EQ(result.catalog.stations[end_a_idx].type, "normal");
 
   // 原"水平长边"必须被 charge_1 拆分为两段——即不存在跨越整个水平臂的边。
   // 即 s_end_a 与拐角 road_node 之间不存在直接边（必须经过 charge_1）。
@@ -315,6 +320,162 @@ TEST(TopologyGraphBuilderTest, PolylineAccumulatedLength_NotStraightLine) {
   }
   EXPECT_TRUE(edge_with_accumulated)
       << "至少一条边的折线累加长度应大于端点直线距离";
+}
+
+// ---------------------------------------------------------------------------
+// 用例 6 (C1)：孤立闭环骨架（无特征点的纯环，crossing 恒为 2）
+//   障碍柱在自由空间中产生的 1px 环形骨架：7x7 栅格，环位于 col 2..4 /
+//   row 2..4（8 像素，中心 (3,3) 为空）。环上所有像素 crossing == 2，
+//   ExtractFeaturePixels 为空——必须由孤立闭环处理器切成两个 RoadNode
+//   与两条半环边；环上锚点吸附拆边后可寻路。
+// ---------------------------------------------------------------------------
+TEST(TopologyGraphBuilderTest, ClosedRingSkeleton_GeneratesTopologyAndRoutes) {
+  const MapGrid map_info = MakeMapInfo(7, 7, kResolution);
+  BinaryGrid skeleton = MakeSkeleton(7, 7);
+  // 空心方环：上/下横边 + 左/右竖边（中段一行）。
+  DrawHLine(skeleton, 2, 2, 4);
+  DrawHLine(skeleton, 4, 2, 4);
+  DrawVLine(skeleton, 2, 3, 3);
+  DrawVLine(skeleton, 4, 3, 3);
+
+  // 锚点放在环上边中段像素 (3,2) 的世界坐标：((3+0.5)*0.05, (2+0.5)*0.05)。
+  std::vector<AnchorStation> anchors;
+  anchors.push_back(MakeAnchor("ring_anchor", 0.175, 0.125, "pickup"));
+
+  TopologyBuilderConfig config;
+  config.max_snap_dist_m = 0.5;
+  config.map_hash = "ring_hash";
+  config.graph_version = "v1";
+
+  const TopologyBuildResult result =
+      BuildTopologyCatalog(skeleton, map_info, anchors, config);
+
+  ASSERT_TRUE(result.success) << result.error_message;
+  // 纯环应生成两个 RoadNode（切成两段半环）。
+  ASSERT_EQ(result.catalog.road_nodes.size(), 2u);
+  // 锚点吸附拆边：2 条原始半环边被拆为 3 条。
+  ASSERT_EQ(result.catalog.stations.size(), 1u);
+  EXPECT_EQ(result.catalog.stations[0].id, "ring_anchor");
+  EXPECT_EQ(result.catalog.stations[0].type, "pickup");
+  ASSERT_EQ(result.catalog.edges.size(), 3u);
+
+  // 每条边必须有 >=2 折线点且距离为正（半环几何有效）。
+  int edges_with_polyline = 0;
+  for (const auto& edge : result.catalog.edges) {
+    EXPECT_GE(edge.polyline.size(), 2u);
+    EXPECT_GT(edge.distance_m, 0.0);
+    if (edge.polyline.size() >= 2) {
+      ++edges_with_polyline;
+    }
+  }
+  EXPECT_EQ(edges_with_polyline, 3);
+
+  // 未被锚点打断的半环：两 RoadNode 间仍应直接可达。
+  const auto node_path = catalog::FindRoutePath(
+      result.catalog, result.catalog.road_nodes[0].id,
+      result.catalog.road_nodes[1].id);
+  ASSERT_TRUE(node_path.has_value()) << "两个环节点之间必须可达";
+
+  // 锚点可寻路（自环返回单元素路径），且到环节点可达。
+  const auto self_path =
+      catalog::FindRoutePath(result.catalog, "ring_anchor", "ring_anchor");
+  ASSERT_TRUE(self_path.has_value());
+  EXPECT_EQ(*self_path, (std::vector<std::string>{"ring_anchor"}));
+  const auto to_node = catalog::FindRoutePath(
+      result.catalog, "ring_anchor", result.catalog.road_nodes[0].id);
+  ASSERT_TRUE(to_node.has_value());
+  const auto dist =
+      catalog::EstimateRouteDistance(result.catalog, "ring_anchor",
+                                     result.catalog.road_nodes[1].id);
+  ASSERT_TRUE(dist.has_value());
+  EXPECT_GT(*dist, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// 用例 7 (I3)：单站点直线骨架
+//   一行骨架 + 1 个锚点：目录校验通过，FindRoutePath(id,id) 返回 [id]。
+// ---------------------------------------------------------------------------
+TEST(TopologyGraphBuilderTest, SingleAnchor_ValidCatalogAndSelfRoute) {
+  const MapGrid map_info = MakeMapInfo(20, 11, kResolution);
+  BinaryGrid skeleton = MakeSkeleton(20, 11);
+  DrawHLine(skeleton, 5, 0, 19);
+
+  std::vector<AnchorStation> anchors;
+  anchors.push_back(MakeAnchor("only_station", 0.5, 0.275, "charge"));
+
+  TopologyBuilderConfig config;
+  config.max_snap_dist_m = 2.0;
+  config.map_hash = "single";
+  config.graph_version = "v1";
+
+  const TopologyBuildResult result =
+      BuildTopologyCatalog(skeleton, map_info, anchors, config);
+
+  ASSERT_TRUE(result.success) << result.error_message;
+  ASSERT_EQ(result.catalog.stations.size(), 1u);
+  EXPECT_EQ(result.catalog.stations[0].type, "charge");
+
+  // 目录 schema 校验必须通过（success 已隐含，这里显式再验一次）。
+  std::string message;
+  EXPECT_TRUE(catalog::ValidateStationCatalog(result.catalog, &message))
+      << message;
+
+  // FindRoutePath(id,id) 返回单元素路径。
+  const auto path = catalog::FindRoutePath(result.catalog, "only_station",
+                                           "only_station");
+  ASSERT_TRUE(path.has_value());
+  EXPECT_EQ(*path, (std::vector<std::string>{"only_station"}));
+}
+
+// ---------------------------------------------------------------------------
+// 用例 8 (I3)：空骨架（无任何骨架像素）-> 构建失败并给出诊断。
+// ---------------------------------------------------------------------------
+TEST(TopologyGraphBuilderTest, EmptySkeleton_BuildFails) {
+  const MapGrid map_info = MakeMapInfo(10, 10, kResolution);
+  BinaryGrid skeleton = MakeSkeleton(10, 10);  // 全 0，无骨架像素
+
+  std::vector<AnchorStation> anchors;
+  anchors.push_back(MakeAnchor("s_a", 0.25, 0.25));
+
+  TopologyBuilderConfig config;
+  config.max_snap_dist_m = 2.0;
+  config.map_hash = "empty";
+  config.graph_version = "v1";
+
+  const TopologyBuildResult result =
+      BuildTopologyCatalog(skeleton, map_info, anchors, config);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.error_message.empty());
+}
+
+// ---------------------------------------------------------------------------
+// 用例 9 (I2)：两个锚点吸附到同一点 -> 明确诊断（coincides），而非
+//   拆边重定向吞掉第一个站点后以 "disconnected" 报错。
+// ---------------------------------------------------------------------------
+TEST(TopologyGraphBuilderTest, CoincidentAnchors_ReportClearDiagnostic) {
+  const MapGrid map_info = MakeMapInfo(20, 11, kResolution);
+  BinaryGrid skeleton = MakeSkeleton(20, 11);
+  DrawHLine(skeleton, 5, 0, 19);
+
+  // 两个锚点同位（同一投影点），第二个必然与第一个重合。
+  std::vector<AnchorStation> anchors;
+  anchors.push_back(MakeAnchor("s_first", 0.5, 0.275));
+  anchors.push_back(MakeAnchor("s_second", 0.5, 0.275));
+
+  TopologyBuilderConfig config;
+  config.max_snap_dist_m = 2.0;
+  config.map_hash = "dup";
+  config.graph_version = "v1";
+
+  const TopologyBuildResult result =
+      BuildTopologyCatalog(skeleton, map_info, anchors, config);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.error_message.find("coincides"), std::string::npos)
+      << "错误信息应包含 'coincides'，实际：" << result.error_message;
+  EXPECT_NE(result.error_message.find("s_second"), std::string::npos)
+      << "错误信息应指明冲突站点 id，实际：" << result.error_message;
 }
 
 }  // namespace

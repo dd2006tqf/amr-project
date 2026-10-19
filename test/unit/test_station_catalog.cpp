@@ -308,6 +308,24 @@ TEST(StationCatalogMixedGraphTest, LoadStationCatalog_RejectsIncompleteMapPolyli
   EXPECT_FALSE(catalog.has_value());
 }
 
+// I1：站点 type 字段解析（含缺省 normal）
+constexpr const char* kStationsWithType =
+    "stations:\n"
+    "  - id: s_pick\n    x: 1.0\n    y: 2.0\n    type: pickup\n"
+    "  - id: s_chg\n    x: 3.0\n    y: 4.0\n    type: charge\n"
+    "  - id: s_plain\n    x: 5.0\n    y: 6.0\n";
+
+TEST(StationCatalogMixedGraphTest, LoadStationCatalog_ParsesStationType) {
+  const auto path = WriteCatalogTemp(kStationsWithType);
+  const auto catalog = LoadStationCatalog(path);
+  std::remove(path.c_str());
+  ASSERT_TRUE(catalog.has_value());
+  ASSERT_EQ(catalog->stations.size(), 3u);
+  EXPECT_EQ(catalog->stations[0].type, "pickup");
+  EXPECT_EQ(catalog->stations[1].type, "charge");
+  EXPECT_EQ(catalog->stations[2].type, "normal");  // 缺省值
+}
+
 TEST(StationCatalogMixedGraphTest, FindRoutePath_SpansStationsAndRoadNodes) {
   StationCatalog catalog;
   catalog.stations.push_back(Station{"s1", "map", 0.0, 0.0, 0.0});
