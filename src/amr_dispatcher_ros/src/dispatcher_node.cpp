@@ -1382,18 +1382,19 @@ void DispatcherNode::ScheduleTick() {
     return;
   }
 
-  // 地图版本门禁：配置了期望哈希且目录已加载、且目录哈希非空时，
-  // 哈希不一致即判定环境地图与部署目录不匹配——暂停出队派发。
+  // 地图版本门禁：配置了期望哈希且目录已加载时，
+  // 若目录哈希缺失，或与期望哈希不一致，均判定为环境地图与部署目录不匹配——暂停出队派发。
   // 直接 return（不消费 queue_start_requested_），哈希恢复一致后派发自动继续。
   map_version_valid_ = true;
   if (!expected_map_hash_.empty() && catalog_reloader_ != nullptr &&
       catalog_reloader_->loaded()) {
     const auto& catalog = catalog_reloader_->catalog();
-    if (!catalog.map_hash.empty() && catalog.map_hash != expected_map_hash_) {
+    if (catalog.map_hash.empty() || catalog.map_hash != expected_map_hash_) {
       map_version_valid_ = false;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
-                           "Map hash mismatch: expected %s got %s, dispatching paused",
-                           expected_map_hash_.c_str(), catalog.map_hash.c_str());
+                           "Map hash mismatch: expected %s, got %s, dispatching paused",
+                           expected_map_hash_.c_str(),
+                           catalog.map_hash.empty() ? "<missing>" : catalog.map_hash.c_str());
       return;
     }
   }
