@@ -170,10 +170,10 @@ class MqttClientWrapper {
         }
       }
       connected_once_.store(true);
-      // 首连订阅刚完成，清掉连接回调在 CONNACK 窗口置的位，避免紧接着一次冗余补订阅；
-      // 此后任何(重)连接事件都会重新置位（窗口为循环结束到此行的纳秒级，丢失即由下
-      // 一次连接回调覆盖）
-      need_resubscribe_.store(false, std::memory_order_release);
+      // N1：此处故意不清 need_resubscribe_。若首连订阅循环期间发生断线重连（CONNACK#2
+      // 置位），清位会把这次重连的补订阅请求一并抹掉，导致 clean session 下某个 filter
+      // 永久缺失。代价仅是首连后第一个 5s 周期多做一次幂等补订阅（broker 侧同 filter
+      // 重复订阅为覆盖语义，无副作用）。
       return true;
     } catch (const std::exception& e) {
       if (error != nullptr) *error = e.what();
