@@ -25,6 +25,19 @@ find_package(amr_dispatcher_interfaces REQUIRED)
 find_package(amr_dispatcher_bt REQUIRED)
 # nav2_msgs 可选：镜像缺包时 QUIET 跳过，桥接节点 Nav2 分支条件编译，容器构建永不因 Nav2 挂掉
 find_package(nav2_msgs QUIET)
+# Eclipse Paho MQTT C++ 可选（Task 4 vda5050_gateway_node）：镜像缺包时跳过该目标编译，
+# full_system.launch.py 默认 use_vda5050=false 不引用该可执行文件，构建永不因缺 Paho 挂掉
+find_path(PAHO_MQTTPP_INCLUDE_DIR NAMES mqtt/async_client.h)
+find_library(PAHO_MQTTPP_LIBRARY NAMES paho-mqttpp3)
+# C 客户端优先异步变体：libpaho-mqttpp3 依赖 MQTTAsync_* 符号（Debian 上由
+# 3as/3a 提供；只链 3c 会报 MQTTAsync_isConnected 未定义）。
+find_library(PAHO_MQTT_LIBRARY NAMES paho-mqtt3as paho-mqtt3a paho-mqtt3cs paho-mqtt3c)
+if(PAHO_MQTTPP_INCLUDE_DIR AND PAHO_MQTTPP_LIBRARY)
+  set(AMR_HAVE_PAHO_MQTT TRUE)
+else()
+  set(AMR_HAVE_PAHO_MQTT FALSE)
+  message(WARNING "未找到 Eclipse Paho MQTT C++ (libpaho-mqttpp-dev)，跳过 vda5050_gateway_node 编译")
+endif()
 
 # 1. chassis_driver_node
 add_executable(chassis_driver_node
@@ -188,6 +201,32 @@ ament_target_dependencies(map_ingest_node
 # yaml-cpp：解析 markers_file 的 anchors 段（与 dispatcher_visualizer 同一链接方式）
 target_link_libraries(map_ingest_node yaml-cpp)
 
+# 8.1 vda5050_gateway_node（Task 4）：VDA 5050 <-> ROS 2 MQTT 薄壳网关。
+# MQTT 类型封装在 .cpp（pimpl），核心库 amr_dispatcher_core 保持零 MQTT 依赖（Spec §1 铁律）；
+# 仅在检测到 Paho 时编译（见文件头 AMR_HAVE_PAHO_MQTT 判定）
+if(AMR_HAVE_PAHO_MQTT)
+  add_executable(vda5050_gateway_node
+    src/vda5050_gateway_node.cpp
+  )
+  target_include_directories(vda5050_gateway_node PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(vda5050_gateway_node
+    rclcpp
+    std_msgs
+    geometry_msgs
+    amr_dispatcher_core
+  )
+  target_link_libraries(vda5050_gateway_node
+    ${PAHO_MQTTPP_LIBRARY}
+  )
+  if(PAHO_MQTT_LIBRARY)
+    # 显式链接 C 客户端，防止 C++ 封装静态链接场景缺符号
+    target_link_libraries(vda5050_gateway_node ${PAHO_MQTT_LIBRARY})
+  endif()
+endif()
+
 # 6. ros2_control hardware plugin
 add_library(amr_chassis_hardware_interface SHARED
   src/chassis_hardware_interface.cpp
@@ -253,6 +292,13 @@ install(TARGETS
   map_ingest_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
+# vda5050_gateway_node 仅在 Paho 可用时生成，条件安装
+if(TARGET vda5050_gateway_node)
+  install(TARGETS vda5050_gateway_node
+    DESTINATION lib/${PROJECT_NAME}
+  )
+endif()
 
 install(TARGETS
   amr_chassis_hardware_interface

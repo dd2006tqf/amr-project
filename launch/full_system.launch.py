@@ -20,6 +20,10 @@ def generate_launch_description():
     markers_file = LaunchConfiguration('markers_file')
     # C1：站点目录路径可覆盖，默认值随 use_map_server 在静态/生成目录间切换
     stations_file = LaunchConfiguration('stations_file')
+    # Task 4：VDA 5050 MQTT 网关（默认关闭，完全向后兼容）
+    use_vda5050 = LaunchConfiguration('use_vda5050')
+    mqtt_broker_host = LaunchConfiguration('mqtt_broker_host')
+    mqtt_port = LaunchConfiguration('mqtt_port')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -50,6 +54,23 @@ def generate_launch_description():
             default_value='',
             description='站点语义 anchors yaml（id/type/x/y/yaw 列表），供 map_ingest_node '
                         '吸附生成业务站点；为空时 map_ingest_node 等待有效文件。',
+        ),
+        DeclareLaunchArgument(
+            'use_vda5050',
+            default_value='false',
+            description='为 true 时拉起 vda5050_gateway_node（VDA 5050 <-> ROS 2 MQTT 网关，'
+                        '订阅 uagv/v2/+/+/{state,connection} 并发布 /fleet/* 话题）；'
+                        '默认 false 保持向后兼容。',
+        ),
+        DeclareLaunchArgument(
+            'mqtt_broker_host',
+            default_value='127.0.0.1',
+            description='VDA 5050 网关连接的 MQTT Broker 地址（容器部署可传 broker 容器名）。',
+        ),
+        DeclareLaunchArgument(
+            'mqtt_port',
+            default_value='1883',
+            description='VDA 5050 网关连接的 MQTT Broker 端口。',
         ),
     ]
 
@@ -262,6 +283,24 @@ def generate_launch_description():
         }],
     )
 
+    # ---- Task 4：VDA 5050 MQTT 网关（use_vda5050:=true 时启用，默认关闭） ----
+    # 薄壳网关：MQTT <-> ROS 2 话题转换；安全铁律——在线/离线只翻转
+    # /fleet/{vehicle_id}/online，绝不释放路权锁（锁保留归调度核心，Spec §3）。
+    vda5050_gateway_node = Node(
+        package='amr_dispatcher_ros',
+        executable='vda5050_gateway_node',
+        name='vda5050_gateway_node',
+        namespace='',
+        output='screen',
+        condition=IfCondition(use_vda5050),
+        parameters=[{
+            # 节点参数与启动门控同源，保证 use_vda5050:=true/false 语义一致
+            'use_vda5050': ParameterValue(use_vda5050, value_type=bool),
+            'mqtt_broker_host': mqtt_broker_host,
+            'mqtt_port': ParameterValue(mqtt_port, value_type=int),
+        }],
+    )
+
     return LaunchDescription(declared_arguments + [
         dispatcher_node,
         configure_event,
@@ -277,4 +316,5 @@ def generate_launch_description():
         map_server_configure_event,
         map_server_activate_event,
         map_ingest_node,
+        vda5050_gateway_node,
     ])

@@ -10,7 +10,9 @@
 #
 # 3. 只补装项目真正需要的依赖。全仓库 find_package 扫描 + 实测确认：
 #    base 镜像已含 15/17 项，仅 behaviortree_cpp 与 hardware_interface 缺失。
-#    清单保留全部项作为幂等兜底。
+#    清单保留全部项作为幂等兜底。Task 4 补 Eclipse Paho MQTT C/C++
+#    （vda5050_gateway_node 的 MQTT 客户端；CMake 检测不到时该目标自动跳过，
+#    但清单收录保证完整构建）。
 #
 #    注意：base 镜像的 apt 源本来就是明文 http
 #    (http://packages.ros.org + http://archive.ubuntu.com)，实测可达，
@@ -50,6 +52,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-jazzy-rosidl-default-runtime \
       libyaml-cpp-dev \
       libgtest-dev \
+      libpaho-mqtt-dev \
+      libpaho-mqttpp-dev \
       python3-colcon-common-extensions \
       build-essential \
  && rm -rf /var/lib/apt/lists/*
