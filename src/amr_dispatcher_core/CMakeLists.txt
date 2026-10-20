@@ -61,6 +61,7 @@ add_library(${PROJECT_NAME}
   src/fleet/fleet_runtime_state.cpp
   src/fleet/vehicle_adapter_interface.cpp
   src/fleet/vda5050_serializer.cpp
+  src/fleet/vda5050_order_builder.cpp
   src/facility/facility_catalog.cpp
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
@@ -165,6 +166,7 @@ if(BUILD_TESTING)
     test_fleet_runtime_state
     test_vehicle_adapter_interface
     test_vda5050_serializer
+    test_vda5050_order_builder
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
