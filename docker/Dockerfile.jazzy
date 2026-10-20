@@ -12,7 +12,9 @@
 #    base 镜像已含 15/17 项，仅 behaviortree_cpp 与 hardware_interface 缺失。
 #    清单保留全部项作为幂等兜底。Task 4 补 Eclipse Paho MQTT C/C++
 #    （vda5050_gateway_node 的 MQTT 客户端；CMake 检测不到时该目标自动跳过，
-#    但清单收录保证完整构建）。
+#    但清单收录保证完整构建）。Task 6 补 VDA 5050 验收链路依赖：
+#    python3-paho-mqtt（scripts/mock_vda5050_vehicle.py 虚拟小车）、
+#    mosquitto + mosquitto-clients（e2e 脚本起独立 broker 18884 与联调工具）。
 #
 #    注意：base 镜像的 apt 源本来就是明文 http
 #    (http://packages.ros.org + http://archive.ubuntu.com)，实测可达，
@@ -54,6 +56,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgtest-dev \
       libpaho-mqtt-dev \
       libpaho-mqttpp-dev \
+      python3-paho-mqtt \
+      mosquitto \
+      mosquitto-clients \
       python3-colcon-common-extensions \
       build-essential \
  && rm -rf /var/lib/apt/lists/*
