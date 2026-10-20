@@ -24,6 +24,11 @@ def generate_launch_description():
     use_vda5050 = LaunchConfiguration('use_vda5050')
     mqtt_broker_host = LaunchConfiguration('mqtt_broker_host')
     mqtt_port = LaunchConfiguration('mqtt_port')
+    # M5：网关身份与协议参数必须可从 launch 暴露——两实例同 serial 会撞 client_id
+    manufacturer = LaunchConfiguration('manufacturer')
+    serial_number = LaunchConfiguration('serial_number')
+    protocol_version = LaunchConfiguration('protocol_version')
+    heartbeat_ms = LaunchConfiguration('heartbeat_ms')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -71,6 +76,30 @@ def generate_launch_description():
             'mqtt_port',
             default_value='1883',
             description='VDA 5050 网关连接的 MQTT Broker 端口。',
+        ),
+        DeclareLaunchArgument(
+            'manufacturer',
+            default_value='RobotManufacturer',
+            description='VDA 5050 网关身份 manufacturer：决定 MQTT topic 前缀与入站'
+                        '消息厂商匹配；多网关同机部署时各实例必须不同（M5）。',
+        ),
+        DeclareLaunchArgument(
+            'serial_number',
+            default_value='default',
+            description='VDA 5050 网关 serialNumber：参与 client_id'
+                        '（amr_dispatcher_gateway_{serial}）与自身心跳过滤，'
+                        '两实例取值相同会互相顶掉 MQTT 连接（M5）。',
+        ),
+        DeclareLaunchArgument(
+            'protocol_version',
+            default_value='v2',
+            description='VDA 5050 协议版本：v2 -> uagv/v2 topic 前缀，'
+                        'v3 -> vda5050/v3 topic 前缀。',
+        ),
+        DeclareLaunchArgument(
+            'heartbeat_ms',
+            default_value='5000',
+            description='网关 connection 心跳（retained ONLINE）发布周期，毫秒。',
         ),
     ]
 
@@ -298,6 +327,11 @@ def generate_launch_description():
             'use_vda5050': ParameterValue(use_vda5050, value_type=bool),
             'mqtt_broker_host': mqtt_broker_host,
             'mqtt_port': ParameterValue(mqtt_port, value_type=int),
+            # M5：身份/协议参数透传（默认与节点内默认值一致，保持向后兼容）
+            'manufacturer': manufacturer,
+            'serial_number': serial_number,
+            'protocol_version': protocol_version,
+            'heartbeat_ms': ParameterValue(heartbeat_ms, value_type=int),
         }],
     )
 

@@ -26,17 +26,18 @@ find_package(amr_dispatcher_bt REQUIRED)
 # nav2_msgs 可选：镜像缺包时 QUIET 跳过，桥接节点 Nav2 分支条件编译，容器构建永不因 Nav2 挂掉
 find_package(nav2_msgs QUIET)
 # Eclipse Paho MQTT C++ 可选（Task 4 vda5050_gateway_node）：镜像缺包时跳过该目标编译，
-# full_system.launch.py 默认 use_vda5050=false 不引用该可执行文件，构建永不因缺 Paho 挂掉
+# full_system.launch.py 默认 use_vda5050=false 不引用该可执行文件，构建永不因缺 Paho 挂掉。
+# I1：C++ 头/库与 C 库三者齐备才启用——C 库是条件链接（pp3 依赖 MQTTAsync_* 符号，
+# 半装环境会编译通过再在链接期报 undefined reference）；NAMES 只列异步变体
+# （同步 3c/3cs 无 MQTTAsync_*，链上也无法满足 pp3 的依赖）。
 find_path(PAHO_MQTTPP_INCLUDE_DIR NAMES mqtt/async_client.h)
 find_library(PAHO_MQTTPP_LIBRARY NAMES paho-mqttpp3)
-# C 客户端优先异步变体：libpaho-mqttpp3 依赖 MQTTAsync_* 符号（Debian 上由
-# 3as/3a 提供；只链 3c 会报 MQTTAsync_isConnected 未定义）。
-find_library(PAHO_MQTT_LIBRARY NAMES paho-mqtt3as paho-mqtt3a paho-mqtt3cs paho-mqtt3c)
-if(PAHO_MQTTPP_INCLUDE_DIR AND PAHO_MQTTPP_LIBRARY)
+find_library(PAHO_MQTT_LIBRARY NAMES paho-mqtt3as paho-mqtt3a)
+if(PAHO_MQTTPP_INCLUDE_DIR AND PAHO_MQTTPP_LIBRARY AND PAHO_MQTT_LIBRARY)
   set(AMR_HAVE_PAHO_MQTT TRUE)
 else()
   set(AMR_HAVE_PAHO_MQTT FALSE)
-  message(WARNING "未找到 Eclipse Paho MQTT C++ (libpaho-mqttpp-dev)，跳过 vda5050_gateway_node 编译")
+  message(WARNING "未找到 Eclipse Paho MQTT C++ (libpaho-mqttpp-dev) 或异步 C 客户端库 (libpaho-mqtt-dev)，跳过 vda5050_gateway_node 编译")
 endif()
 
 # 1. chassis_driver_node
@@ -218,13 +219,12 @@ if(AMR_HAVE_PAHO_MQTT)
     geometry_msgs
     amr_dispatcher_core
   )
+  # 三元守卫已保证 C 异步库存在；显式链接 C 客户端，
+  # 防止 C++ 封装静态链接场景缺 MQTTAsync_* 符号
   target_link_libraries(vda5050_gateway_node
     ${PAHO_MQTTPP_LIBRARY}
+    ${PAHO_MQTT_LIBRARY}
   )
-  if(PAHO_MQTT_LIBRARY)
-    # 显式链接 C 客户端，防止 C++ 封装静态链接场景缺符号
-    target_link_libraries(vda5050_gateway_node ${PAHO_MQTT_LIBRARY})
-  endif()
 endif()
 
 # 6. ros2_control hardware plugin

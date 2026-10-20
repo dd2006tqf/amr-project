@@ -97,7 +97,10 @@ constexpr InstantActionAlias kInstantActionAliases[] = {
 // - handler_mutex_ 只在拷贝/清空 handler_ 的瞬间持有（微秒级）；
 // - client_ 只被执行器线程访问（Connect/Publish/Disconnect 均在执行器线程），无需加锁；
 // - Disconnect 先清空 handler（回调变 no-op），再用 in_flight 计数器 + 条件变量
-//   等待在途回调退出，最后销毁 client（防止析构期回调触碰已释放的节点成员）。
+//   等待在途回调退出，最后销毁 client（防止析构期回调触碰已释放的节点成员）；
+// - C1 重连补订阅：connected 回调跑在 Paho 回调线程，只做一次原子置位
+//   need_resubscribe_（绝不 subscribe/wait——那会与 SUBACK 处理互锁），
+//   补订阅由执行器线程的 5s 定时器经 ConsumeResubscribeRequest()+Resubscribe() 完成。
 // ============================================================
 class MqttClientWrapper {
  public:
@@ -109,10 +112,12 @@ class MqttClientWrapper {
   MqttClientWrapper(const MqttClientWrapper&) = delete;
   MqttClientWrapper& operator=(const MqttClientWrapper&) = delete;
 
-  /// 建立连接并订阅主题。成功后启用 automatic_reconnect 自动重连；
-  /// 失败返回 false 并销毁半成品客户端（由调用方定时重试重建）。
+  /// 建立连接并订阅主题（订阅过滤器按 (topic, qos) 成对传入，支持 per-topic QoS）。
+  /// 成功后启用 automatic_reconnect 自动重连；失败返回 false 并销毁半成品客户端
+  /// （由调用方定时重试重建）。clean_session=true，故每次(重)连接都必须补订阅——
+  /// 首连由本方法同步完成，后续重连由 connected 回调置位 + Resubscribe() 补齐。
   bool Connect(const std::string& broker_uri, const std::string& client_id,
-               const std::vector<std::string>& sub_filters, int sub_qos,
+               const std::vector<std::pair<std::string, int>>& sub_filters,
                const std::string& lwt_topic, const std::string& lwt_payload, int lwt_qos,
                MessageHandler handler, std::string* error) {
     {
@@ -122,6 +127,8 @@ class MqttClientWrapper {
     QuiesceCallbacks();  // 等待旧 client 的在途回调退出后再销毁
     DestroyClient();
     try {
+      sub_filters_ = sub_filters;  // 执行器线程独占；Resubscribe 在同线程读取
+      need_resubscribe_.store(false, std::memory_order_release);
       client_ = std::make_unique<mqtt::async_client>(broker_uri, client_id);
       client_->set_message_callback([this](mqtt::const_message_ptr msg) {
         in_flight_.fetch_add(1, std::memory_order_acq_rel);
@@ -138,6 +145,12 @@ class MqttClientWrapper {
           done_cv_.notify_all();
         }
       });
+      // C1：clean session 下 broker 不保留订阅，automatic_reconnect 重连成功后
+      // 订阅已丢失且无任何错误信号。connected 回调（含首连与每次重连）只置位标志，
+      // 补订阅由执行器线程完成——回调线程内对 SUBACK token wait() 会死锁。
+      client_->set_connected_handler([this](const std::string& /*cause*/) {
+        need_resubscribe_.store(true, std::memory_order_release);
+      });
       mqtt::connect_options_builder builder;
       builder.clean_session(true)
           .automatic_reconnect(std::chrono::seconds(1), std::chrono::seconds(60))
@@ -149,14 +162,18 @@ class MqttClientWrapper {
         DestroyClient();
         return false;
       }
-      for (const auto& filter : sub_filters) {
-        if (!client_->subscribe(filter, sub_qos)->wait_for(std::chrono::seconds(5))) {
+      for (const auto& [filter, qos] : sub_filters_) {
+        if (!client_->subscribe(filter, qos)->wait_for(std::chrono::seconds(5))) {
           if (error != nullptr) *error = "订阅超时: " + filter;
           DestroyClient();
           return false;
         }
       }
       connected_once_.store(true);
+      // 首连订阅刚完成，清掉连接回调在 CONNACK 窗口置的位，避免紧接着一次冗余补订阅；
+      // 此后任何(重)连接事件都会重新置位（窗口为循环结束到此行的纳秒级，丢失即由下
+      // 一次连接回调覆盖）
+      need_resubscribe_.store(false, std::memory_order_release);
       return true;
     } catch (const std::exception& e) {
       if (error != nullptr) *error = e.what();
@@ -165,10 +182,46 @@ class MqttClientWrapper {
     }
   }
 
+  /// 执行器线程：取走并清零「需要补订阅」请求（回调线程只置位，不做阻塞调用）。
+  bool ConsumeResubscribeRequest() {
+    return need_resubscribe_.exchange(false, std::memory_order_acq_rel);
+  }
+
+  /// 重连后补订阅（仅执行器线程调用）。失败自动重新置位标志，下个定时器周期重试。
+  bool Resubscribe(std::string* error) {
+    if (client_ == nullptr) {
+      need_resubscribe_.store(true, std::memory_order_release);
+      if (error != nullptr) *error = "MQTT 客户端未初始化";
+      return false;
+    }
+    if (!client_->is_connected()) {
+      // 尚未重连完成：保留请求，由下个周期重试（重连成功时 connected 回调也会置位）
+      need_resubscribe_.store(true, std::memory_order_release);
+      if (error != nullptr) *error = "MQTT 未连接";
+      return false;
+    }
+    try {
+      for (const auto& [filter, qos] : sub_filters_) {
+        if (!client_->subscribe(filter, qos)->wait_for(std::chrono::seconds(5))) {
+          need_resubscribe_.store(true, std::memory_order_release);
+          if (error != nullptr) *error = "补订阅超时: " + filter;
+          return false;
+        }
+      }
+      return true;
+    } catch (const std::exception& e) {
+      need_resubscribe_.store(true, std::memory_order_release);
+      if (error != nullptr) *error = e.what();
+      return false;
+    }
+  }
+
   /// 发布消息。未连接时快速失败（返回 false），绝不阻塞执行器线程。
   /// 仅允许在执行器线程调用（与 Connect/Disconnect 串行）。
+  /// wait > 0 时同步等待 broker 确认（QoS1 需要，供关机路径确保送达后才断连）。
   bool Publish(const std::string& topic, const std::string& payload, int qos, bool retained,
-               std::string* error) {
+               std::string* error,
+               std::chrono::milliseconds wait = std::chrono::milliseconds(0)) {
     if (client_ == nullptr) {
       if (error != nullptr) *error = "MQTT 客户端未初始化";
       return false;
@@ -178,7 +231,12 @@ class MqttClientWrapper {
       return false;
     }
     try {
-      client_->publish(mqtt::make_message(topic, payload.data(), payload.size(), qos, retained));
+      auto token = client_->publish(mqtt::make_message(topic, payload.data(), payload.size(), qos,
+                                                       retained));
+      if (wait.count() > 0 && !token->wait_for(wait)) {
+        if (error != nullptr) *error = "发布确认超时";
+        return false;
+      }
       return true;
     } catch (const std::exception& e) {
       if (error != nullptr) *error = e.what();
@@ -230,6 +288,11 @@ class MqttClientWrapper {
   std::condition_variable done_cv_;
 
   std::atomic<bool> connected_once_{false};
+
+  // C1 重连补订阅：订阅过滤器（执行器线程写/读，不跨线程）+ 重连事件标志
+  // （回调线程仅置位，执行器线程 consume，绝不共享其他状态）
+  std::vector<std::pair<std::string, int>> sub_filters_;
+  std::atomic<bool> need_resubscribe_{false};
 };
 
 // ============================================================
@@ -308,24 +371,57 @@ Vda5050GatewayNode::~Vda5050GatewayNode() {
   if (drain_timer_) drain_timer_->cancel();
   if (heartbeat_timer_) heartbeat_timer_->cancel();
   if (mqtt_retry_timer_) mqtt_retry_timer_->cancel();
-  // 优雅断连：正常关机不触发 LWT 遗嘱
-  if (mqtt_) mqtt_->Disconnect();
+  if (mqtt_) {
+    // M4：优雅关机不会触发 LWT，broker 上的 retained ONLINE 若不清理会一直
+    // 滞留（新起的调度侧会看到假在线）。先补发 retained CONNECTIONBROKEN
+    // （QoS1 并等待 broker 确认）再断连，保证离线状态在 broker 侧收敛。
+    // 发布失败（从未连上/已断线）静默忽略——没有可清理的 retained ONLINE。
+    std::string err;
+    mqtt_->Publish(MqttTopic(manufacturer_, serial_number_, "connection"),
+                   BuildGatewayConnectionJson("CONNECTIONBROKEN"), kQosConnection,
+                   true /*retained*/, &err, std::chrono::seconds(2));
+    // 优雅断连：正常关机不触发 LWT 遗嘱
+    mqtt_->Disconnect();
+  }
 }
 
 void Vda5050GatewayNode::TryConnectMqtt() {
-  if (!mqtt_ || mqtt_->HasConnectedOnce()) {
-    return;  // 首连成功后由 automatic_reconnect 接管，无需人工重试
+  if (!mqtt_) return;
+  if (mqtt_->HasConnectedOnce()) {
+    // C1：首连成功后连接由 automatic_reconnect 接管，本定时器只剩一件事——
+    // 重连补订阅。clean_session=true 下 broker 不保留订阅，且订阅丢失无任何
+    // 错误信号；连接回调线程只置标志（在回调里 wait() SUBACK 会与 Paho
+    // receiveThread 死锁），补订阅统一在执行器线程完成。
+    if (mqtt_->ConsumeResubscribeRequest()) {
+      std::string err;
+      if (mqtt_->Resubscribe(&err)) {
+        RCLCPP_INFO(get_logger(), "MQTT (重)连接后已补订阅 %s/+/+/{state,connection}",
+                    TopicBase().c_str());
+      } else if (err != "MQTT 未连接") {
+        // "MQTT 未连接"属正常窗口（断线中，重连回调会再次置位），不告警
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                             "重连后补订阅失败: %s（5s 后重试）", err.c_str());
+      }
+    }
+    return;
   }
   const std::string uri = "tcp://" + mqtt_broker_host_ + ":" + std::to_string(mqtt_port_);
   const std::string client_id = "amr_dispatcher_gateway_" + serial_number_;
-  const std::vector<std::string> filters = {TopicBase() + "/+/+/state",
-                                            TopicBase() + "/+/+/connection"};
+  // M3：按 topic 配对传 QoS（state 用 0 与发布侧对齐，connection 用 1 保证心跳到达）
+  const std::vector<std::pair<std::string, int>> filters = {
+      {TopicBase() + "/+/+/state", kQosState}, {TopicBase() + "/+/+/connection", kQosConnection}};
+  // M1（观察项）：LWT payload 冻结在连接时刻的 headerId/timestamp——MQTT 3.1.1
+  // 遗嘱在 broker 侧触发，网关无法在断线后更新它。对端若按 headerId 严格排序
+  // 需容忍回退；payload 的 connectionState/serialNumber 不受影响。
   const std::string lwt_topic = MqttTopic(manufacturer_, serial_number_, "connection");
   const std::string lwt_payload = BuildGatewayConnectionJson("CONNECTIONBROKEN");
 
   std::string err;
+  // M7（已知取舍）：首连同步 wait 最长阻塞执行器线程 10s——v1 可接受
+  // （仅启动期一次性成本，heartbeat/drain 在此期间暂停不影响安全）；
+  // 失败后由本定时器每 5s 重试，首连成功即交给 automatic_reconnect。
   const bool ok = mqtt_->Connect(
-      uri, client_id, filters, kQosConnection, lwt_topic, lwt_payload, kQosConnection,
+      uri, client_id, filters, lwt_topic, lwt_payload, kQosConnection,
       [this](const std::string& topic, const std::string& payload) {
         OnMqttMessage(topic, payload);
       },
@@ -368,8 +464,9 @@ void Vda5050GatewayNode::DrainInboundQueue() {
                            item.first.c_str());
       continue;
     }
-    // 网关自身 connection 心跳/LWT 不回环进 ROS 侧
-    if (parsed.vehicle_id == serial_number_) {
+    // M2：按 (manufacturer, serialNumber) 配对过滤网关自身心跳/LWT——只比 serial
+    // 会把同 serial 不同厂商的真车误杀，不比则其他网关的心跳会被当车辆上线
+    if (parsed.manufacturer == manufacturer_ && parsed.vehicle_id == serial_number_) {
       continue;
     }
     VehicleEndpoints& ep = EnsureVehicle(parsed.vehicle_id, parsed.manufacturer);
@@ -561,6 +658,9 @@ Vda5050GatewayNode::VehicleEndpoints& Vda5050GatewayNode::EnsureVehicle(
       RCLCPP_ERROR(get_logger(), "创建车辆 %s 的 ROS 端点失败: %s", vehicle_id.c_str(), e.what());
       ep = VehicleEndpoints{};  // 部分创建失败则整体放弃，避免半残端点
       ep.manufacturer = manufacturer;
+      // M6（观察项，v1 不修）：失败端点会被永久缓存（此后该车不再重试创建，
+      // 消息被无 pub 的空端点静默丢弃），需重启网关恢复。触发条件是 topic 名
+      // 非法/资源耗尽等，IsValidVehicleId 已前置拦掉最常见的一类。
     }
   }
   return vehicles_.emplace(vehicle_id, std::move(ep)).first->second;
