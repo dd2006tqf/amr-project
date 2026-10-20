@@ -1,11 +1,14 @@
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -16,6 +19,9 @@
 namespace amr_dispatcher_core::fleet {
 
 namespace {
+
+// 全局单调递增报文 headerId
+static std::atomic<uint64_t> g_header_id{1};
 
 // 获取当前 UTC 时间 ISO 8601 字符串，例如 2026-10-20T12:00:00.000Z
 std::string CurrentIsoTimestamp() {
@@ -111,7 +117,9 @@ struct JsonValue {
 
 class MiniJsonParser {
  public:
-  explicit MiniJsonParser(std::string_view text) : text_(text), pos_(0) {}
+  static constexpr size_t kMaxDepth = 64;
+
+  explicit MiniJsonParser(std::string_view text) : text_(text), pos_(0), depth_(0) {}
 
   std::optional<JsonValue> Parse() {
     SkipWhitespace();
@@ -166,6 +174,13 @@ class MiniJsonParser {
 
   std::optional<JsonValue> ParseObject() {
     if (Next() != '{') return std::nullopt;
+    if (depth_ >= kMaxDepth) return std::nullopt;
+    ++depth_;
+    struct ScopeExit {
+      size_t& d;
+      ~ScopeExit() { --d; }
+    } guard{depth_};
+
     JsonValue val;
     val.type = JsonType::Object;
     SkipWhitespace();
@@ -204,6 +219,13 @@ class MiniJsonParser {
 
   std::optional<JsonValue> ParseArray() {
     if (Next() != '[') return std::nullopt;
+    if (depth_ >= kMaxDepth) return std::nullopt;
+    ++depth_;
+    struct ScopeExit {
+      size_t& d;
+      ~ScopeExit() { --d; }
+    } guard{depth_};
+
     JsonValue val;
     val.type = JsonType::Array;
     SkipWhitespace();
@@ -342,20 +364,24 @@ class MiniJsonParser {
 
   std::string_view text_;
   size_t pos_;
+  size_t depth_;
 };
 
 }  // namespace
 
-std::string SerializeVda5050Order(const VehicleOrder& order, const std::string& version) {
+std::string SerializeVda5050Order(const VehicleOrder& order,
+                                  const std::string& version,
+                                  const std::string& manufacturer) {
   std::ostringstream ss;
   const std::string vda_version = (version == "v3") ? "3.0.0" : "2.0.0";
   const std::string timestamp = CurrentIsoTimestamp();
+  const uint64_t header_id = g_header_id.fetch_add(1, std::memory_order_relaxed);
 
   ss << "{";
-  ss << "\"headerId\":0,";
+  ss << "\"headerId\":" << header_id << ",";
   ss << "\"timestamp\":\"" << timestamp << "\",";
   ss << "\"version\":\"" << vda_version << "\",";
-  ss << "\"manufacturer\":\"RobotManufacturer\",";
+  ss << "\"manufacturer\":\"" << EscapeJsonString(manufacturer) << "\",";
   ss << "\"serialNumber\":\"" << EscapeJsonString(order.vehicle_id) << "\",";
   ss << "\"orderId\":\"" << EscapeJsonString(order.order_id) << "\",";
   ss << "\"orderUpdateId\":" << order.order_update_id << ",";
@@ -404,9 +430,16 @@ std::string SerializeVda5050Order(const VehicleOrder& order, const std::string& 
   for (size_t i = 0; i < order.edges.size(); ++i) {
     if (i > 0) ss << ",";
     const auto& edge = order.edges[i];
+    uint32_t edge_seq = static_cast<uint32_t>(i * 2 + 2);
+    for (const auto& node : order.nodes) {
+      if (node.node_id == edge.start_node_id) {
+        edge_seq = node.sequence_id + 1;
+        break;
+      }
+    }
     ss << "{";
     ss << "\"edgeId\":\"" << EscapeJsonString(edge.edge_id) << "\",";
-    ss << "\"sequenceId\":" << (i * 2 + 2) << ",";  // edge sequence id
+    ss << "\"sequenceId\":" << edge_seq << ",";  // edge sequence id
     ss << "\"startNodeId\":\"" << EscapeJsonString(edge.start_node_id) << "\",";
     ss << "\"endNodeId\":\"" << EscapeJsonString(edge.end_node_id) << "\",";
     ss << "\"released\":" << (edge.released ? "true" : "false") << ",";
@@ -458,16 +491,18 @@ std::string SerializeVda5050Order(const VehicleOrder& order, const std::string& 
 
 std::string SerializeVda5050InstantActions(const std::string& vehicle_id,
                                           const std::vector<VehicleAction>& actions,
-                                          const std::string& version) {
+                                          const std::string& version,
+                                          const std::string& manufacturer) {
   std::ostringstream ss;
   const std::string vda_version = (version == "v3") ? "3.0.0" : "2.0.0";
   const std::string timestamp = CurrentIsoTimestamp();
+  const uint64_t header_id = g_header_id.fetch_add(1, std::memory_order_relaxed);
 
   ss << "{";
-  ss << "\"headerId\":0,";
+  ss << "\"headerId\":" << header_id << ",";
   ss << "\"timestamp\":\"" << timestamp << "\",";
   ss << "\"version\":\"" << vda_version << "\",";
-  ss << "\"manufacturer\":\"RobotManufacturer\",";
+  ss << "\"manufacturer\":\"" << EscapeJsonString(manufacturer) << "\",";
   ss << "\"serialNumber\":\"" << EscapeJsonString(vehicle_id) << "\",";
   ss << "\"actions\":[";
   for (size_t i = 0; i < actions.size(); ++i) {
@@ -543,7 +578,10 @@ std::optional<VehicleStateReport> DeserializeVda5050State(const std::string& jso
   // lastNodeSequenceId
   const auto* last_seq_val = root->Find("lastNodeSequenceId");
   if (last_seq_val && last_seq_val->IsNumber()) {
-    report.last_node_sequence_id = static_cast<uint32_t>(last_seq_val->num_val);
+    if (last_seq_val->num_val >= 0.0 &&
+        last_seq_val->num_val <= static_cast<double>(UINT32_MAX)) {
+      report.last_node_sequence_id = static_cast<uint32_t>(last_seq_val->num_val);
+    }
   }
 
   // batteryState

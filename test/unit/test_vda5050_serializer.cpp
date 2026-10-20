@@ -60,11 +60,12 @@ fleet::VehicleOrder MakeTestOrder() {
 
 TEST(Vda5050SerializerTest, SerializeOrder_V2_ContainsRequiredFields) {
   const auto order = MakeTestOrder();
-  const std::string json = fleet::SerializeVda5050Order(order, "v2");
+  const std::string json = fleet::SerializeVda5050Order(order, "v2", "CustomVendor");
 
   EXPECT_NE(json.find("\"orderId\":\"order_test_001\""), std::string::npos);
   EXPECT_NE(json.find("\"orderUpdateId\":1"), std::string::npos);
   EXPECT_NE(json.find("\"serialNumber\":\"robot_01\""), std::string::npos);
+  EXPECT_NE(json.find("\"manufacturer\":\"CustomVendor\""), std::string::npos);
   EXPECT_NE(json.find("\"version\":\"2.0.0\""), std::string::npos);
   EXPECT_NE(json.find("\"nodes\":["), std::string::npos);
   EXPECT_NE(json.find("\"nodeId\":\"node_1\""), std::string::npos);
@@ -78,6 +79,8 @@ TEST(Vda5050SerializerTest, SerializeOrder_V2_ContainsRequiredFields) {
   EXPECT_NE(json.find("\"mapId\":\"map\""), std::string::npos);
   EXPECT_NE(json.find("\"edges\":["), std::string::npos);
   EXPECT_NE(json.find("\"edgeId\":\"edge_1_2\""), std::string::npos);
+  // startNodeId is node_1 with sequenceId 1, so edge sequenceId should be 2
+  EXPECT_NE(json.find("\"sequenceId\":2"), std::string::npos);
   EXPECT_NE(json.find("\"startNodeId\":\"node_1\""), std::string::npos);
   EXPECT_NE(json.find("\"endNodeId\":\"node_2\""), std::string::npos);
   EXPECT_NE(json.find("\"maxSpeed\":1.2"), std::string::npos);
@@ -85,6 +88,48 @@ TEST(Vda5050SerializerTest, SerializeOrder_V2_ContainsRequiredFields) {
   EXPECT_NE(json.find("\"controlPoints\":["), std::string::npos);
   EXPECT_NE(json.find("\"actionType\":\"lift\""), std::string::npos);
   EXPECT_NE(json.find("\"actionId\":\"act_lift_1\""), std::string::npos);
+}
+
+TEST(Vda5050SerializerTest, HeaderId_MonotonicallyIncreases) {
+  const auto order = MakeTestOrder();
+  const std::string json1 = fleet::SerializeVda5050Order(order);
+  const std::string json2 = fleet::SerializeVda5050Order(order);
+  const std::string json3 = fleet::SerializeVda5050InstantActions("robot_01", {});
+
+  auto extract_header_id = [](const std::string& str) -> int64_t {
+    auto pos = str.find("\"headerId\":");
+    if (pos == std::string::npos) return -1;
+    pos += 11;
+    auto end_pos = str.find(',', pos);
+    return std::stoll(str.substr(pos, end_pos - pos));
+  };
+
+  int64_t h1 = extract_header_id(json1);
+  int64_t h2 = extract_header_id(json2);
+  int64_t h3 = extract_header_id(json3);
+
+  EXPECT_GT(h1, 0);
+  EXPECT_EQ(h2, h1 + 1);
+  EXPECT_EQ(h3, h2 + 1);
+}
+
+TEST(Vda5050SerializerTest, DeserializeState_DeeplyNestedJson_GracefullyFailsWithoutOverflow) {
+  // Construct a deeply nested hostile JSON (e.g. 1000 '{' brackets)
+  std::string nested;
+  for (int i = 0; i < 1000; ++i) {
+    nested += "{\"nested\":";
+  }
+  nested += "1";
+  for (int i = 0; i < 1000; ++i) {
+    nested += "}";
+  }
+
+  // Must not crash or stack-overflow, return nullopt safely
+  const auto res = fleet::DeserializeVda5050State(nested);
+  EXPECT_FALSE(res.has_value());
+
+  const auto conn_res = fleet::DeserializeVda5050Connection(nested);
+  EXPECT_FALSE(conn_res.has_value());
 }
 
 TEST(Vda5050SerializerTest, SerializeOrder_V3_SetsVersion3) {
