@@ -22,9 +22,13 @@
   - 自动提取带真实 `polyline` 几何折线的路网，站点正交投影拆边接入拓扑
   - `SkeletonPlanner` 真实折线 0.1m 等距插值规划器，彻底解决走廊拐弯直线穿墙隐患
   - 全路线原子排他锁与 `map_hash` 强一致性版本门禁
-- [ ] **VDA 5050 协议原生对接**：
+- [x] **VDA 5050 协议原生对接 (Complete)**：
   - 支持 VDA 5050 v2.0+ 标准 JSON MQTT 订单与状态报文
   - 将 VDA 5050 `order` 映射为 `MissionQueue` 中的任务节点与时空轨迹
+  - dispatcher_node 直发 `/fleet/{vid}/send_order`（orderId=mission_id），
+    gateway 网关双向桥接 MQTT；Task 5 逐段路权动态释放 (Spec 5.3) +
+    断链锁保留与调度挂起守卫 (Spec 5.2)；
+    端到端验收 `./scripts/check_vda5050_e2e.sh`（7 阶段全 PASS）
 - [ ] **分布式时空窗交通协调 (Spatio-Temporal Reservation)**：
   - 从当前的静态资源原子锁升级为带时区的时间窗口预约（Time-expanded Reservation Graph）
   - 允许多机器人在不冲突的时间段共享同一交叉路口或通道

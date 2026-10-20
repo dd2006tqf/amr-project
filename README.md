@@ -46,6 +46,11 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **RViz2 3D Semantic Markers**: real-time visualization of topological routes, dynamic green reservation locks, and red cylindrical deadlock beacon alerts with 1.2s auto-aging.
    - **ROS 2 Action (`ExecuteMission.action`)**: asynchronous long-duration mission streaming and client cancellation/preemption.
 
+9. **VDA 5050 Native Fleet Adapter (MQTT)**:
+   - **`vda5050_gateway_node`**: bidirectional bridge between ROS 2 topics and standard VDA 5050 v2 JSON over MQTT (`uagv/v2/{manufacturer}/{serialNumber}/{order|instantActions|state|connection}`), with QoS1 heartbeats and LWT `CONNECTIONBROKEN` detection.
+   - **Direct order dispatch**: dispatcher publishes serialized VDA 5050 orders (`orderId = mission_id`, full polyline trajectory control points) to `/fleet/{vid}/send_order`; vehicle identity is validated against every state report.
+   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (7 stages, incl. kill -9 chaos drill).
+
 ---
 
 ## 🗺️ Custom Map Ingestion & Topology Engine
@@ -146,13 +151,24 @@ Executes all 6 stages in one go, recording every stage honestly into `test_repor
 ```
 Automated end-to-end integration test verifying `nav2_map_server` -> `map_ingest_node` (skeletonization, pruning, polyline extraction) -> `dispatcher_node` (atomic route locks, SkeletonPlanner execution along L-shaped corridor) -> Goal reached without cutting wall corners.
 
-### 3. Launch Physical Serial Device Simulator
+### 3. Run VDA 5050 Fleet Adapter E2E Verification
+```bash
+./scripts/check_vda5050_e2e.sh
+```
+Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet adapter — spins up an isolated stack (mosquitto :18884, dispatcher, `vda5050_gateway_node`, REST gateway, MQTT packet capturer, virtual AMR) on `ROS_DOMAIN_ID=77`, then asserts across 7 stages:
+- Stage 0: `scripts/mock_vda5050_vehicle.py --self-test` (T1-T7 virtual-vehicle contract tests: order parsing, polyline stepping, released=false braking, state-file resume).
+- Stage 4: full closed loop for mission `e2e_m1` — wire-contract validation (orderUpdateId, monotonic sequenceId, >=2 control points), physical trajectory continuity along the polyline, Spec 5.3 trailing unlock, mission completion with zero residual locks.
+- Stage 5: protocol-level `released=false` halt at an unreleased edge boundary, then resume after an order update carrying `released=true`.
+- Stage 6: disconnect guard chaos drill — `kill -9` the vehicle, LWT `CONNECTIONBROKEN`, locks retained (never released while offline), dispatch suspended, state persisted across restart, automatic re-verification, mission resumption, and queued mission auto-dispatch wakeup.
+On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
+
+### 4. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 4. Open Web Operator Console
+### 5. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/
