@@ -205,6 +205,11 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 每 tick 的链路守卫巡检：离线 -> 挂起新派发（返回 true 表示阻塞）；
   // 在线但 state 陈旧 -> 软看门狗告警（不阻塞、不释放）
   bool EnforceVda5050LinkGuard();
+  // Task 6（Task 5 评审 I2）：派发时把存档行驶路径 + 本单名下持锁 构建成
+  // VDA 5050 订单，经 /fleet/{vid}/send_order 交给网关下发 MQTT order 话题。
+  // 车辆绑定 = vda5050_vehicle_ids_ 上 round-robin（保序向量，不依赖
+  // unordered_map 遍历序）；orderId = mission_id，orderUpdateId 按车递增。
+  void PublishVda5050Order(const std::string& mission_id);
   void CompleteMission(const std::string& mission_id, const std::string& reason);
   void FailMission(const std::string& mission_id, const std::string& reason);
 
@@ -293,6 +298,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unordered_map<std::string, std::vector<std::string>> mission_route_paths_;
   // state 陈旧阈值（秒）：在线但超时未上报 -> 软看门狗告警（不释放、不阻塞）
   double vda5050_state_stale_sec_{5.0};
+
+  // ---- Task 6：VDA 5050 订单发布端（补 Task 5 评审 I2 的发布链路缺口）----
+  // 保序受管车辆清单（SetupVda5050Links 与 vda5050_links_ 同步填充；
+  // round-robin 绑定需要确定性顺序，unordered_map 遍历序不可依赖）
+  std::vector<std::string> vda5050_vehicle_ids_;
+  // vehicle_id -> send_order 发布端（on_configure 按清单一次建齐，on_activate 激活；
+  // 网关侧订阅是懒建的，ROS 2 发布端不依赖对端存在）
+  std::unordered_map<std::string, rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr>
+      vda5050_order_pubs_;
+  // vehicle_id -> 下一单 order_update_id（同车每派一次递增，VDA 5050 更新语义）
+  std::unordered_map<std::string, std::uint32_t> vda5050_next_order_update_id_;
+  // round-robin 游标（按车推进；键缺失时回绕到 0）
+  std::size_t vda5050_rr_cursor_ = 0;
 
   // 12 Core Services SharedPtrs
   rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;

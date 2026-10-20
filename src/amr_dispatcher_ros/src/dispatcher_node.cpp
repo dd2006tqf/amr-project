@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
+#include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
@@ -263,6 +264,9 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
   event_pub_->on_activate();
   plan_pub_->on_activate();
   topology_pub_->on_activate();
+  for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
+    pub->on_activate();  // Task 6：send_order 发布端随节点激活（未激活则 publish 为空操作）
+  }
 
   const double sched_hz = get_parameter("schedule_rate_hz").as_double();
   schedule_timer_ = create_wall_timer(
@@ -332,6 +336,9 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   event_pub_->on_deactivate();
   plan_pub_->on_deactivate();
   topology_pub_->on_deactivate();
+  for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
+    pub->on_deactivate();
+  }
   RCLCPP_INFO(get_logger(), "DispatcherNode deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -398,6 +405,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   event_pub_.reset();
   plan_pub_.reset();
   topology_pub_.reset();
+  vda5050_order_pubs_.clear();   // Task 6：随生命周期收口，重 configure 时重建
+  vda5050_vehicle_ids_.clear();
   last_deadlock_findings_.clear();
   tracking_error_sub_.reset();
   odom_sub_.reset();
@@ -1554,6 +1563,11 @@ void DispatcherNode::ScheduleTick() {
     }
   }
 
+  // Task 6（Task 5 评审 I2）：受管 VDA 5050 车辆的订单发布——存档路径 + 本单持锁
+  // 构建 VehicleOrder 并经 /fleet/{vid}/send_order 下发（网关转 MQTT order 话题）。
+  // 失败不判负任务：plan/action 执行链照旧，订单缺口仅告警（发布端尽力而为）。
+  PublishVda5050Order(m.id);
+
   // 生成并发布路径：path_tracker 订阅 /plan 后开始输出 /cmd_vel_raw
   amr_dispatcher_core::Pose2D start;
   if (from_st) {
@@ -2102,7 +2116,14 @@ void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
         [this, vehicle_id](const std_msgs::msg::Bool::SharedPtr msg) {
           Vda5050OnlineCb(vehicle_id, msg);
         });
+    // Task 6：订单发布端按清单一次建齐（on_activate 激活）。网关的
+    // send_order 订阅虽是发现车辆后懒建，ROS 2 发布端无需对端先存在；
+    // QoS(10) reliable 与网关订阅侧 create_subscription(..., 10, ...) 对齐。
+    vda5050_order_pubs_[vehicle_id] =
+        create_publisher<std_msgs::msg::String>("/fleet/" + vehicle_id + "/send_order", 10);
+    vda5050_next_order_update_id_[vehicle_id] = 0;
   }
+  vda5050_vehicle_ids_ = vehicle_ids;  // 保序清单：round-robin 绑定与遍历用
   std::string joined;
   for (const auto& id : vehicle_ids) {
     if (!joined.empty()) joined += ", ";
@@ -2112,6 +2133,70 @@ void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
               "Task 5: subscribed /fleet/{%s}/{state,online} for dynamic unlock "
               "(stale threshold %.1fs)",
               joined.c_str(), vda5050_state_stale_sec_);
+}
+
+void DispatcherNode::PublishVda5050Order(const std::string& mission_id) {
+  if (vda5050_vehicle_ids_.empty()) {
+    return;  // 未配置受管 VDA 5050 车辆：无订单发布（现网行为不变）
+  }
+  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+    RCLCPP_WARN(get_logger(),
+                "Mission %s: station catalog not loaded, VDA 5050 order NOT published",
+                mission_id.c_str());
+    return;
+  }
+  const auto path_it = mission_route_paths_.find(mission_id);
+  if (path_it == mission_route_paths_.end() || path_it->second.empty()) {
+    RCLCPP_WARN(get_logger(),
+                "Mission %s: no archived travel path, VDA 5050 order NOT published",
+                mission_id.c_str());
+    return;
+  }
+  if (!reservation_table_) {
+    return;
+  }
+  // 本单名下实际持有的锁（builder 契约：严禁传全局快照——否则他人锁会被
+  // 误判为已放行，向小车下发未获路权的 released=true 边，违反 Spec §5.1）
+  std::unordered_set<std::string> held_locks;
+  for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
+    if (owner == mission_id) {
+      held_locks.insert(resource_id);
+    }
+  }
+  // 车辆绑定：保序清单上的 round-robin（简单策略，可换 first-free 而不影响契约；
+  // 单车配置下结果恒定）。游标先取后进，跨单轮转。
+  const std::size_t idx = vda5050_rr_cursor_ % vda5050_vehicle_ids_.size();
+  vda5050_rr_cursor_ = (vda5050_rr_cursor_ + 1) % vda5050_vehicle_ids_.size();
+  const std::string vehicle_id = vda5050_vehicle_ids_[idx];
+  const std::uint32_t update_id = vda5050_next_order_update_id_[vehicle_id]++;
+  const auto& catalog = catalog_reloader_->catalog();
+
+  const auto order = amr_dispatcher_core::fleet::BuildVda5050OrderFromPath(
+      vehicle_id, mission_id, update_id, path_it->second, catalog, held_locks);
+  if (!order.has_value()) {
+    RCLCPP_WARN(get_logger(),
+                "Mission %s -> vehicle %s: BuildVda5050OrderFromPath failed "
+                "(path %zu node(s)), VDA 5050 order NOT published",
+                mission_id.c_str(), vehicle_id.c_str(), path_it->second.size());
+    return;
+  }
+  const auto pub_it = vda5050_order_pubs_.find(vehicle_id);
+  if (pub_it == vda5050_order_pubs_.end() || !pub_it->second ||
+      !pub_it->second->is_activated()) {
+    RCLCPP_WARN(get_logger(),
+                "Mission %s -> vehicle %s: send_order publisher missing/inactive, "
+                "VDA 5050 order NOT published",
+                mission_id.c_str(), vehicle_id.c_str());
+    return;
+  }
+  std_msgs::msg::String out;
+  out.data = amr_dispatcher_core::fleet::SerializeVda5050Order(*order);
+  pub_it->second->publish(out);
+  RCLCPP_INFO(get_logger(),
+              "VDA 5050 order published: mission %s -> /fleet/%s/send_order "
+              "(orderId=%s, orderUpdateId=%u, %zu nodes, %zu edges, %zu bytes)",
+              mission_id.c_str(), vehicle_id.c_str(), order->order_id.c_str(),
+              update_id, order->nodes.size(), order->edges.size(), out.data.size());
 }
 
 void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
