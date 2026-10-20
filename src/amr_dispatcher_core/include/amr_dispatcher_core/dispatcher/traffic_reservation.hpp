@@ -53,6 +53,13 @@ class ResourceTable {
   // 释放某任务持有的全部资源（含时空预约），返回是否实际删除。
   ReleaseResult Release(const std::string& mission_id);
 
+  // 逐段动态解锁：仅释放 owner == mission_id 且列于 resource_ids 的锁。
+  // 他人锁（含 traffic_block）、未持有/已释放的 id 一律跳过（对未持有 id 是安全 no-op）。
+  // 返回实际删除的 resource_id 列表（保序、与入参一致），供幂等重算与日志取证。
+  // 注意：只处理静态锁；时空预约不在逐段释放语义内（Release(mission) 才全清）。
+  std::vector<std::string> ReleaseResources(
+      const std::string& mission_id, const std::vector<std::string>& resource_ids);
+
   // 人工封路：owner = "traffic_block:<reason>"，对任务预留不可见覆盖。
   bool Block(const std::string& resource_id, const std::string& reason, std::string* message);
   bool Unblock(const std::string& resource_id, std::string* message);

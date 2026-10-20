@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
+#include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
+#include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
 #include "amr_dispatcher_ros/mission_identity.hpp"
 
@@ -29,6 +31,10 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   // 路径规划器类型（skeleton|mock）与地图版本门禁期望哈希（空 = 关闭门禁）
   declare_parameter("planner_type", "skeleton");
   declare_parameter("expected_map_hash", "");
+  // Task 5：受管 VDA 5050 小车清单（逗号分隔 vehicle_id；空 = 关闭逐段解锁/断链守卫）
+  // 与 state 陈旧告警阈值（秒，在线但超时未上报 -> 仅告警不释放）
+  declare_parameter("vda5050_vehicles", "");
+  declare_parameter("vda5050_state_stale_sec", 5.0);
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -83,6 +89,9 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
       "/tracking/error", 10,
       std::bind(&DispatcherNode::TrackingErrorCb, this, std::placeholders::_1));
+
+  // Task 5：VDA 5050 状态/链路接入（逐段解锁 + 断链守卫），按参数建订阅
+  SetupVda5050Links(get_parameter("vda5050_vehicles").as_string());
 
   submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
       "/dispatcher/submit_order",
@@ -1225,6 +1234,7 @@ void DispatcherNode::ForgetMissionDispatchState(const std::string& mission_id) {
   mission_reserved_at_.erase(mission_id);
   pending_wait_.erase(mission_id);
   mission_dispatch_start_.erase(mission_id);
+  mission_route_paths_.erase(mission_id);  // Task 5：行驶路径存档随终态遗忘
 }
 
 void DispatcherNode::ProcessActionCancels() {
@@ -1369,6 +1379,14 @@ void DispatcherNode::NavResultCb(const std::string& mission_id,
 void DispatcherNode::ScheduleTick() {
   // 已受理的 ExecuteMission action 取消需在提前返回之前处理（10Hz 延迟 ≤100ms）
   ProcessActionCancels();
+
+  // Task 5 Rule 2（Spec §5.2）：每 tick 先巡检受管小车链路。
+  // 离线 -> 挂起新派发（不消费 queue_start_requested_，恢复后自动继续）、
+  // 锁一律保留；在线但 state 陈旧 -> 仅软看门狗告警。受管清单为空时零开销跳过。
+  if (EnforceVda5050LinkGuard()) {
+    return;
+  }
+
   if (!queue_ || queue_->empty()) {
     return;
   }
@@ -1520,6 +1538,21 @@ void DispatcherNode::ScheduleTick() {
 
   active_missions_[m.id] = m;
   mission_last_progress_[m.id] = std::chrono::steady_clock::now();
+
+  // Task 5：存档本单行驶路径（travel order），供小车 state 逐段解锁回推身后锁。
+  // Peek 阶段的 PlanMissionRouteLocks 只产出锁列表（BuildLockIds 顺序非行驶序），
+  // 行驶序须在此按同一目录快照经 FindRoutePath 重算存档；无路径则该单不参与动态解锁。
+  if (catalog_loaded && !m.pickup_station.empty()) {
+    const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
+        catalog_reloader_->catalog(), m.pickup_station, m.dropoff_station);
+    if (route_path.has_value()) {
+      mission_route_paths_[m.id] = *route_path;
+    } else {
+      RCLCPP_WARN(get_logger(),
+                  "Mission %s: no topology path archived; dynamic unlock disabled for this mission",
+                  m.id.c_str());
+    }
+  }
 
   // 生成并发布路径：path_tracker 订阅 /plan 后开始输出 /cmd_vel_raw
   amr_dispatcher_core::Pose2D start;
@@ -2023,6 +2056,216 @@ void DispatcherNode::ReArmQueueStartRequest() {
           /*queue_running=*/true,
           /*mission_queue_empty=*/queue_ == nullptr || queue_->empty()});
   queue_start_requested_ = decision.queue_start_requested;
+}
+
+// ---- Task 5：VDA 5050 逐段解锁与断链守卫（Spec §5.2/§5.3）----
+
+void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
+  vda5050_state_stale_sec_ = get_parameter("vda5050_state_stale_sec").as_double();
+  // 订阅策略：ROS 2 无通配订阅，网关按 MQTT 发现的小车懒建 /fleet/{vid}/* 话题。
+  // 采用参数显式清单（逗号分隔 id）——确定性、参数为空时零行为变化，
+  // 且订阅先于网关懒建话题也能收到后续消息（ROS 2 订阅者不依赖话题已存在）。
+  std::vector<std::string> vehicle_ids;
+  std::size_t start = 0;
+  while (start <= vehicles_param.size()) {
+    const auto end = vehicles_param.find(',', start);
+    std::string token = vehicles_param.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    const auto first = token.find_first_not_of(" \t");
+    const auto last = token.find_last_not_of(" \t");
+    if (first != std::string::npos) {
+      token = token.substr(first, last - first + 1);
+      if (std::find(vehicle_ids.begin(), vehicle_ids.end(), token) == vehicle_ids.end()) {
+        vehicle_ids.push_back(token);
+      }
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  if (vehicle_ids.empty()) {
+    return;  // 未配置受管小车：逐段解锁/断链守卫整体关闭（现网行为不变）
+  }
+  for (const auto& vehicle_id : vehicle_ids) {
+    auto& link = vda5050_links_[vehicle_id];
+    link.state_sub = create_subscription<std_msgs::msg::String>(
+        "/fleet/" + vehicle_id + "/state", rclcpp::QoS(10),
+        [this, vehicle_id](const std_msgs::msg::String::SharedPtr msg) {
+          Vda5050StateCb(vehicle_id, msg);
+        });
+    // 与网关 online 发布端 QoS 对齐（KeepLast(1) + transient_local），
+    // 保证 late-join 的调度端也能收到最近一次链路状态
+    link.online_sub = create_subscription<std_msgs::msg::Bool>(
+        "/fleet/" + vehicle_id + "/online",
+        rclcpp::QoS(rclcpp::KeepLast(1)).transient_local(),
+        [this, vehicle_id](const std_msgs::msg::Bool::SharedPtr msg) {
+          Vda5050OnlineCb(vehicle_id, msg);
+        });
+  }
+  std::string joined;
+  for (const auto& id : vehicle_ids) {
+    if (!joined.empty()) joined += ", ";
+    joined += id;
+  }
+  RCLCPP_INFO(get_logger(),
+              "Task 5: subscribed /fleet/{%s}/{state,online} for dynamic unlock "
+              "(stale threshold %.1fs)",
+              joined.c_str(), vda5050_state_stale_sec_);
+}
+
+void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
+                                    const std_msgs::msg::String::SharedPtr msg) {
+  const auto report = amr_dispatcher_core::fleet::DeserializeVda5050State(msg->data);
+  if (!report.has_value()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Malformed VDA 5050 state JSON from vehicle %s: %.128s",
+                         vehicle_id.c_str(), msg->data.c_str());
+    return;
+  }
+  auto link_it = vda5050_links_.find(vehicle_id);
+  if (link_it != vda5050_links_.end()) {
+    link_it->second.seen_state = true;
+    link_it->second.last_state_time = std::chrono::steady_clock::now();
+    if (!link_it->second.online) {
+      // 断链恢复：网关收到 state 会同步 online=true，本地视图跟随。
+      // 锁的解除不自动发生——Spec §5.2 要求重连后核对坐标，
+      // 由下方 Rule 1 的 lastNodeId 与订单一致性校验自然接管（不一致则全保留）。
+      link_it->second.online = true;
+      RCLCPP_INFO(get_logger(),
+                  "VDA 5050 vehicle %s reported state after offline: locks retained until "
+                  "lastNodeId is re-verified against the dispatched order (Spec 5.2)",
+                  vehicle_id.c_str());
+    }
+  }
+  if (report->order_id.empty() || !reservation_table_) {
+    return;
+  }
+  // 订单 -> 在途任务：网关订单 order_id = mission_id（BuildVda5050OrderFromPath），
+  // 兼容按 Mission.order_id 业务号匹配
+  auto mission_it = active_missions_.find(report->order_id);
+  if (mission_it == active_missions_.end()) {
+    for (auto it = active_missions_.begin(); it != active_missions_.end(); ++it) {
+      if (it->second.order_id == report->order_id) {
+        mission_it = it;
+        break;
+      }
+    }
+  }
+  if (mission_it == active_missions_.end()) {
+    return;  // 非本调度器在途任务的 state（重复/迟到/他人单）：幂等忽略，不碰锁
+  }
+  const auto path_it = mission_route_paths_.find(mission_it->first);
+  if (path_it == mission_route_paths_.end() || path_it->second.empty()) {
+    return;  // 该单无行驶路径存档（无 pickup 等）：不参与动态解锁
+  }
+  // Rule 1（Spec §5.3）：按确认位置回推身后锁，仅释放本任务持有且已整段越过的部分
+  std::unordered_map<std::string, std::string> held_locks;
+  for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
+    held_locks[resource_id] = owner;
+  }
+  const auto decision = amr_dispatcher_core::workflow::PlanTrailingUnlock(
+      path_it->second, report->last_node_id, report->last_node_sequence_id,
+      mission_it->first, held_locks);
+  if (!decision.confirmed) {
+    RCLCPP_WARN(get_logger(), "Dynamic unlock skipped (vehicle %s, order %s): %s",
+                vehicle_id.c_str(), report->order_id.c_str(), decision.message.c_str());
+    return;
+  }
+  if (decision.lock_ids_to_release.empty()) {
+    return;  // 幂等：无新增可释放（已释放/足迹/前方锁）
+  }
+  const auto released = reservation_table_->ReleaseResources(mission_it->first,
+                                                             decision.lock_ids_to_release);
+  if (released.empty()) {
+    return;
+  }
+  std::string joined;
+  for (const auto& lock_id : released) {
+    if (!joined.empty()) joined += ",";
+    joined += lock_id;
+  }
+  RCLCPP_INFO(get_logger(),
+              "Dynamic unlock (Spec 5.3): vehicle %s at %s -> mission %s released %zu lock(s): %s",
+              vehicle_id.c_str(), report->last_node_id.c_str(), mission_it->first.c_str(),
+              released.size(), joined.c_str());
+  if (event_log_) {
+    amr_dispatcher_core::dispatcher::MissionEvent evt;
+    evt.stamp = "now";
+    evt.mission_id = mission_it->first;
+    evt.event = "dynamic_unlock";
+    evt.message = "vehicle " + vehicle_id + " at " + report->last_node_id + " released " + joined;
+    event_log_->Append(evt);
+  }
+  ReArmQueueStartRequest();  // 唤醒排队等待这批锁的后车重试派发
+}
+
+void DispatcherNode::Vda5050OnlineCb(const std::string& vehicle_id,
+                                     const std_msgs::msg::Bool::SharedPtr msg) {
+  auto it = vda5050_links_.find(vehicle_id);
+  if (it == vda5050_links_.end()) {
+    return;
+  }
+  if (it->second.online == msg->data) {
+    return;  // 状态未变（transient_local 重放/重复报文）：不重复告警
+  }
+  it->second.online = msg->data;
+  if (!msg->data) {
+    // Rule 2（Spec §5.2 断链锁定保护）：仅标记离线 + 软看门狗告警，绝不释放任何锁。
+    // 锁保留直至该车重连后 state 重核对坐标，或操作员人工强制解除。
+    const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
+        /*vehicle_online=*/false, /*state_stale=*/false);
+    RCLCPP_WARN(get_logger(), "VDA 5050 vehicle %s link broken: %s", vehicle_id.c_str(),
+                guard.message.c_str());
+    if (event_log_) {
+      amr_dispatcher_core::dispatcher::MissionEvent evt;
+      evt.stamp = "now";
+      evt.mission_id = "-";  // 无任务级事件：链路级看门狗告警
+      evt.event = "vehicle_offline";
+      evt.message = "vehicle " + vehicle_id + ": retaining all route locks pending "
+                    "reconnection and position re-verification (Spec 5.2)";
+      event_log_->Append(evt);
+    }
+  } else {
+    RCLCPP_INFO(get_logger(),
+                "VDA 5050 vehicle %s back online: locks retained until state re-confirms "
+                "lastNodeId against the order (Spec 5.2 position re-verification)",
+                vehicle_id.c_str());
+  }
+}
+
+bool DispatcherNode::EnforceVda5050LinkGuard() {
+  if (vda5050_links_.empty()) {
+    return false;  // 未配置受管小车：关闭状态，零开销
+  }
+  bool blocked = false;
+  const auto now = std::chrono::steady_clock::now();
+  for (const auto& [vehicle_id, link] : vda5050_links_) {
+    if (!link.online) {
+      const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
+          /*vehicle_online=*/false, /*state_stale=*/false);
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Dispatch suspended: %s (vehicle %s). On recovery the vehicle's "
+                           "position is re-verified via state before any lock is released.",
+                           guard.message.c_str(), vehicle_id.c_str());
+      blocked = true;  // 任一受管小车离线即挂起新派发（单车 /plan 执行模型）
+      continue;
+    }
+    if (link.seen_state) {
+      const double age_sec =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - link.last_state_time)
+              .count() /
+          1000.0;
+      if (age_sec > vda5050_state_stale_sec_) {
+        // 在线但 state 陈旧：仅告警——陈旧不是释放依据，也不阻塞派发（Spec §5.3）
+        const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
+            /*vehicle_online=*/true, /*state_stale=*/true);
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000, "VDA 5050 vehicle %s: %s",
+                             vehicle_id.c_str(), guard.message.c_str());
+      }
+    }
+  }
+  return blocked;
 }
 
 void DispatcherNode::PublishState() {

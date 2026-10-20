@@ -26,6 +26,8 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include "amr_dispatcher_interfaces/action/execute_mission.hpp"
 #include "amr_dispatcher_interfaces/action/navigate_sequence.hpp"
@@ -191,6 +193,18 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ReArmQueueStartRequest();
   void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
   void OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg);
+
+  // Task 5：VDA 5050 状态/链路接入（Spec §5.2 断链守卫 + §5.3 逐段解锁）
+  // 按参数 vda5050_vehicles（逗号分隔车辆 id 列表，空 = 关闭）为每台受管小车
+  // 建立 /fleet/{vid}/state 与 /fleet/{vid}/online 订阅（on_configure 时一次建齐）。
+  void SetupVda5050Links(const std::string& vehicles_param);
+  void Vda5050StateCb(const std::string& vehicle_id,
+                      const std_msgs::msg::String::SharedPtr msg);
+  void Vda5050OnlineCb(const std::string& vehicle_id,
+                       const std_msgs::msg::Bool::SharedPtr msg);
+  // 每 tick 的链路守卫巡检：离线 -> 挂起新派发（返回 true 表示阻塞）；
+  // 在线但 state 陈旧 -> 软看门狗告警（不阻塞、不释放）
+  bool EnforceVda5050LinkGuard();
   void CompleteMission(const std::string& mission_id, const std::string& reason);
   void FailMission(const std::string& mission_id, const std::string& reason);
 
@@ -262,6 +276,23 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // mission_id -> 路由锁预留成功时刻（喂 DeadlockSnapshot.reservation_acquired_at，
   // 长持锁启发式取证；仅任务派发预留记账，人工 ReserveResourceCb 不记，避免误报）
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> mission_reserved_at_;
+
+  // ---- Task 5：逐段路权动态释放与断链安全守卫（Spec §5.2/§5.3）----
+  // 单台受管 VDA 5050 小车的链路态（单线程 spin，无并发；M7 约束适用）
+  struct Vda5050Link {
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr state_sub;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr online_sub;
+    bool online = true;  // 乐观初值：online=false 到达前不阻塞派发（与网关 transient_local 重放收敛）
+    bool seen_state = false;
+    std::chrono::steady_clock::time_point last_state_time{};  // state 陈旧检测
+  };
+  // vehicle_id -> 链路态（key 即 vda5050_vehicles 解析后的 id，保序去重）
+  std::unordered_map<std::string, Vda5050Link> vda5050_links_;
+  // mission_id -> 派发时刻的行驶路径（travel order；Peek 阶段只留锁列表，路径在此存档，
+  // 供 state 回推身后锁；终态经 ForgetMissionDispatchState 遗忘）
+  std::unordered_map<std::string, std::vector<std::string>> mission_route_paths_;
+  // state 陈旧阈值（秒）：在线但超时未上报 -> 软看门狗告警（不释放、不阻塞）
+  double vda5050_state_stale_sec_{5.0};
 
   // 12 Core Services SharedPtrs
   rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;

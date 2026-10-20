@@ -192,6 +192,24 @@ ResourceTable::ReleaseResult ResourceTable::Release(const std::string& mission_i
   return result;
 }
 
+std::vector<std::string> ResourceTable::ReleaseResources(
+    const std::string& mission_id, const std::vector<std::string>& resource_ids) {
+  std::vector<std::string> released;
+  if (mission_id.empty()) {
+    return released;  // 空 owner 不允许释放任何东西
+  }
+  for (const auto& resource_id : resource_ids) {
+    const auto existing = locks_.find(resource_id);
+    // 非本任务持有的 id（他人锁/traffic_block/未持有）一律跳过：所有权安全 + 幂等
+    if (existing == locks_.end() || existing->second != mission_id) {
+      continue;
+    }
+    locks_.erase(existing);
+    released.push_back(resource_id);
+  }
+  return released;
+}
+
 bool ResourceTable::Block(const std::string& resource_id, const std::string& reason,
                           std::string* message) {
   const std::string owner = std::string(kBlockPrefix) + reason;

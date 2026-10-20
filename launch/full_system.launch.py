@@ -68,6 +68,13 @@ def generate_launch_description():
                         '默认 false 保持向后兼容。',
         ),
         DeclareLaunchArgument(
+            'vda5050_vehicles',
+            default_value='',
+            description='受管 VDA 5050 小车清单（逗号分隔 vehicle_id，如 agv_001,agv_002）。'
+                        'dispatcher_node 据此订阅 /fleet/{vid}/{state,online}，'
+                        '启用 Task 5 逐段路权动态释放与断链锁保留守卫；空 = 关闭（现网行为）。',
+        ),
+        DeclareLaunchArgument(
             'mqtt_broker_host',
             default_value='127.0.0.1',
             description='VDA 5050 网关连接的 MQTT Broker 地址（容器部署可传 broker 容器名）。',
@@ -143,6 +150,8 @@ def generate_launch_description():
             # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖；
             # C1：默认随 use_map_server 指向 map_ingest 生成目录（见上方参数声明）。
             {'stations_file': stations_file},
+            # Task 5：受管小车清单透传（空 = 逐段解锁/断链守卫关闭）
+            {'vda5050_vehicles': ParameterValue(vda5050_vehicles, value_type=str)},
         ]
     )
 
