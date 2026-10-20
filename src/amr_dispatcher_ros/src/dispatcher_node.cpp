@@ -2222,14 +2222,19 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
     link_it->second.seen_state = true;
     link_it->second.last_state_time = std::chrono::steady_clock::now();
     if (!link_it->second.online) {
-      // 断链恢复：网关收到 state 会同步 online=true，本地视图跟随。
-      // 锁的解除不自动发生——Spec §5.2 要求重连后核对坐标，
-      // 由下方 Rule 1 的 lastNodeId 与订单一致性校验自然接管（不一致则全保留）。
-      link_it->second.online = true;
-      RCLCPP_INFO(get_logger(),
-                  "VDA 5050 vehicle %s reported state after offline: locks retained until "
-                  "lastNodeId is re-verified against the dispatched order (Spec 5.2)",
-                  vehicle_id.c_str());
+      // 离线期间收到 state 绝不可回置 online=true：DDS 跨话题乱序可能把断链前
+      // 的最后一帧 state 排在 online=false 之后送达，若据此回置，链路会"永久
+      // 在线"并绕过 Spec §5.2 的调度挂起（e2e Stage 6.4 曾复现）。
+      // 链路存活的唯一权威判据是网关在 MQTT 有序流中确认断链之后、收到重连
+      // 后的新 state 或 connection=ONLINE 时重发的 online=true（网关侧见
+      // vda5050_gateway_node HandleState/HandleConnection）。此处仅告警：
+      // 锁保留、调度挂起状态均不改变；锁的解除仍由下方 Rule 1 的 lastNodeId
+      // 与订单一致性校验接管（不一致则全保留，Spec §5.2 位置重核对）。
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "VDA 5050 vehicle %s: state received while offline (locks "
+                           "retained, dispatch suspended) — awaiting gateway online=true "
+                           "re-publication after reconnect (Spec 5.2)",
+                           vehicle_id.c_str());
     }
   }
   if (report->order_id.empty() || !reservation_table_) {
