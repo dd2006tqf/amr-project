@@ -59,6 +59,7 @@ add_library(${PROJECT_NAME}
   src/catalog/zone_catalog.cpp
   src/fleet/fleet_catalog.cpp
   src/fleet/fleet_runtime_state.cpp
+  src/fleet/vehicle_adapter_interface.cpp
   src/facility/facility_catalog.cpp
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
@@ -161,6 +162,7 @@ if(BUILD_TESTING)
     test_zone_catalog
     test_fleet_catalog
     test_fleet_runtime_state
+    test_vehicle_adapter_interface
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
