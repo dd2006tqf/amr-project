@@ -203,6 +203,24 @@ TEST(Vda5050OrderBuilderTest, MissingCatalogEdge_FallsBackToStraightLine) {
   EXPECT_TRUE(order->edges[0].released);
 }
 
+TEST(Vda5050OrderBuilderTest, SinglePointPolyline_TreatedAsMissing_FallsBackToStraightLine) {
+  auto catalog = MakeCatalog();
+  // 单点折线不构成合法轨迹段：应视同缺失，走两端节点直线插值兜底
+  catalog.edges[0].polyline = {{0.0, 0.0}};
+  const std::vector<std::string> path = {"station_A", "rn_1"};
+  const auto reserved = LocksFor(path);
+
+  auto order = fleet::BuildVda5050OrderFromPath(
+      "amr_01", "mission_48", 0, path, catalog, reserved);
+
+  ASSERT_TRUE(order.has_value());
+  ASSERT_EQ(order->edges.size(), 1U);
+  ASSERT_EQ(order->edges[0].polyline.size(), 2U);
+  EXPECT_DOUBLE_EQ(order->edges[0].polyline[0].x, 0.0);
+  EXPECT_DOUBLE_EQ(order->edges[0].polyline[1].x, 10.0);
+  EXPECT_DOUBLE_EQ(order->edges[0].polyline[1].y, 0.0);
+}
+
 TEST(Vda5050OrderBuilderTest, CustomConfig_OverridesDefaultMaxSpeed) {
   const auto catalog = MakeCatalog();
   const auto path = MakePath();

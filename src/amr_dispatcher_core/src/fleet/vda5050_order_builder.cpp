@@ -180,7 +180,9 @@ std::optional<VehicleOrder> BuildVda5050OrderFromPath(
       bool traversed_backward = false;
       const auto* catalog_edge =
           FindCatalogEdge(catalog, edge.start_node_id, edge.end_node_id, &traversed_backward);
-      if (catalog_edge != nullptr && !catalog_edge->polyline.empty()) {
+      // 折线必须至少 2 个点才构成合法轨迹段；单点折线视同缺失，走直线兜底，
+      // 避免向小车下发只有一个控制点的无效 VDA 5050 轨迹。
+      if (catalog_edge != nullptr && catalog_edge->polyline.size() >= 2) {
         auto points = catalog_edge->polyline;
         if (traversed_backward) {
           std::reverse(points.begin(), points.end());  // 反向行驶：折线按行驶方向反转

@@ -26,7 +26,9 @@ struct Vda5050OrderBuilderConfig {
 //   - order_update_id: 订单更新版本号
 //   - path_node_ids: Dijkstra 产出的节点 ID 序列（例如 ["station_A", "rn_1", "station_B"]）
 //   - catalog: 当前生效的路网拓扑目录（stations + road_nodes + 带 polyline 的 edges）
-//   - reserved_locks: 当前由 ResourceTable 成功上锁的资源集合（RouteNodeId / RouteEdgeId）
+//   - reserved_locks: 本单在 ResourceTable 中实际持有的资源集合（RouteNodeId / RouteEdgeId）。
+//     注意：调用方必须只传入「当前 mission 名下」已 Reserve 成功的锁，严禁传入全局锁表快照——
+//     否则其他车辆的锁会被误判为本单已放行，向小车下发未获路权的 released=true 边（违反 Spec §5.1）。
 //   - terminal_actions: 挂载在终点站点的动作（取货/卸货/充电等）
 //   - config: 默认速度与地图 ID 配置
 //
