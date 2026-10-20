@@ -345,6 +345,59 @@
         </div>
       </section>
 
+      <!-- 自定义地图热上传与交互式标注 -->
+      <section class="span-12">
+        <h2>
+          <span>🗺️ 自定义地图可视化热标注与一键导入 (Custom Map Hot-Ingest)</span>
+          <span class="badge" style="background:#e0f2fe;color:#0369a1;">Zero-CLI 交互</span>
+        </h2>
+        <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;">
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">1. 选择地图文件 (PGM / PNG / JPG)</label>
+              <input type="file" id="mapFileInput" accept=".pgm,.png,.jpg,.jpeg" style="margin-top:4px;width:100%;font-size:12px;">
+            </div>
+            <div style="display:flex;gap:8px;">
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">分辨率 (m/px)</span>
+                <input id="mapResInput" type="number" step="0.01" value="0.05" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">原点 X (m)</span>
+                <input id="mapOriginXInput" type="number" step="0.1" value="0.0" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">原点 Y (m)</span>
+                <input id="mapOriginYInput" type="number" step="0.1" value="0.0" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">2. 鼠标点击右侧地图标注站点</label>
+              <div style="display:flex;gap:6px;margin-top:4px;">
+                <select id="stationTypeSelect" style="flex:1;padding:6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                  <option value="pickup">🟢 取货站 (pickup)</option>
+                  <option value="dropoff">🟠 卸货站 (dropoff)</option>
+                  <option value="charge">🟡 充电桩 (charge)</option>
+                  <option value="normal">🔵 普通站点 (normal)</option>
+                </select>
+                <button id="clearAnchorsBtn" class="secondary" style="padding:4px 8px;font-size:12px;">清空</button>
+              </div>
+            </div>
+            <div>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">已标注站点 (<span id="anchorCount">0</span>):</span>
+              <div id="anchorList" style="max-height:120px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;background:#fafbfc;"></div>
+            </div>
+            <button id="uploadMapBtn" style="margin-top:6px;padding:10px;background:var(--accent-2);color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;">
+              🚀 一键生成路网并热重载
+            </button>
+          </div>
+          <div style="background:#1e293b;border-radius:6px;overflow:hidden;position:relative;display:flex;align-items:center;justify-content:center;min-height:300px;">
+            <canvas id="mapCanvas" style="max-width:100%;max-height:420px;cursor:crosshair;"></canvas>
+            <div id="canvasOverlayText" style="position:absolute;color:#94a3b8;font-size:13px;pointer-events:none;">请选择地图文件预览</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 原始快照 JSON -->
       <section class="span-12">
         <h2>
@@ -512,6 +565,276 @@
     }, 1000);
 
     fetchSnapshot();
+
+    // ==========================================
+    // 自定义地图可视化与热交互标注逻辑
+    // ==========================================
+    const mapFileInput = document.getElementById('mapFileInput');
+    const mapCanvas = document.getElementById('mapCanvas');
+    const canvasOverlayText = document.getElementById('canvasOverlayText');
+    const stationTypeSelect = document.getElementById('stationTypeSelect');
+    const anchorListEl = document.getElementById('anchorList');
+    const anchorCountEl = document.getElementById('anchorCount');
+    const clearAnchorsBtn = document.getElementById('clearAnchorsBtn');
+    const uploadMapBtn = document.getElementById('uploadMapBtn');
+
+    let currentMapImage = null;
+    let mapWidth = 0, mapHeight = 0;
+    let gridData = [];
+    let anchors = [];
+
+    // 文件读取与 Canvas 渲染
+    mapFileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      const isPgm = file.name.toLowerCase().endsWith('.pgm');
+
+      if (isPgm) {
+        reader.readAsArrayBuffer(file);
+        reader.onload = () => {
+          parseAndRenderPgm(new Uint8Array(reader.result));
+        };
+      } else {
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            renderImageToCanvas(img);
+          };
+          img.src = reader.result;
+        };
+      }
+    });
+
+    function parseAndRenderPgm(bytes) {
+      // 解析 P5 二进制 PGM
+      let offset = 0;
+      function readToken() {
+        while (offset < bytes.length && (bytes[offset] === 32 || bytes[offset] === 10 || bytes[offset] === 13 || bytes[offset] === 9)) offset++;
+        if (offset >= bytes.length) return "";
+        if (bytes[offset] === 35) { // comment #
+          while (offset < bytes.length && bytes[offset] !== 10 && bytes[offset] !== 13) offset++;
+          return readToken();
+        }
+        let start = offset;
+        while (offset < bytes.length && bytes[offset] !== 32 && bytes[offset] !== 10 && bytes[offset] !== 13 && bytes[offset] !== 9) offset++;
+        return String.fromCharCode.apply(null, bytes.subarray(start, offset));
+      }
+
+      const magic = readToken();
+      if (magic !== 'P5') {
+        alert("目前仅支持二进制 PGM (P5) 格式！");
+        return;
+      }
+      mapWidth = parseInt(readToken());
+      mapHeight = parseInt(readToken());
+      const maxVal = parseInt(readToken());
+      offset++; // skip trailing newline
+
+      mapCanvas.width = mapWidth;
+      mapCanvas.height = mapHeight;
+      const ctx = mapCanvas.getContext('2d');
+      const imgData = ctx.createImageData(mapWidth, mapHeight);
+      gridData = new Array(mapWidth * mapHeight);
+
+      // PGM 坐标系：左上为 (0,0)，ROS 栅格通常以左下为 (0,0)
+      for (let r = 0; r < mapHeight; r++) {
+        for (let c = 0; c < mapWidth; c++) {
+          const val = bytes[offset + r * mapWidth + c];
+          const pxIdx = (r * mapWidth + c) * 4;
+          imgData.data[pxIdx] = val;
+          imgData.data[pxIdx + 1] = val;
+          imgData.data[pxIdx + 2] = val;
+          imgData.data[pxIdx + 3] = 255;
+
+          // 转换为 ROS 栅格占用概率 (-1, 0, 100)
+          // ROS 占据栅格行号从下到上：ros_row = (mapHeight - 1 - r)
+          const rosRow = mapHeight - 1 - r;
+          const rosIdx = rosRow * mapWidth + c;
+          if (val === 254 || val > 240) gridData[rosIdx] = 0; // free
+          else if (val === 0 || val < 50) gridData[rosIdx] = 100; // occupied
+          else gridData[rosIdx] = -1; // unknown
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+      currentMapImage = imgData;
+      canvasOverlayText.style.display = 'none';
+      redrawCanvas();
+    }
+
+    function renderImageToCanvas(img) {
+      mapWidth = img.width;
+      mapHeight = img.height;
+      mapCanvas.width = mapWidth;
+      mapCanvas.height = mapHeight;
+      const ctx = mapCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+      currentMapImage = imgData;
+      gridData = new Array(mapWidth * mapHeight);
+
+      for (let r = 0; r < mapHeight; r++) {
+        for (let c = 0; c < mapWidth; c++) {
+          const pxIdx = (r * mapWidth + c) * 4;
+          const gray = (imgData.data[pxIdx] + imgData.data[pxIdx+1] + imgData.data[pxIdx+2]) / 3;
+          const rosRow = mapHeight - 1 - r;
+          const rosIdx = rosRow * mapWidth + c;
+          if (gray > 200) gridData[rosIdx] = 0;
+          else if (gray < 80) gridData[rosIdx] = 100;
+          else gridData[rosIdx] = -1;
+        }
+      }
+      canvasOverlayText.style.display = 'none';
+      redrawCanvas();
+    }
+
+    // 鼠标点击标注站点
+    mapCanvas.addEventListener('click', (e) => {
+      if (!currentMapImage) return;
+      const rect = mapCanvas.getBoundingClientRect();
+      const scaleX = mapCanvas.width / rect.width;
+      const scaleY = mapCanvas.height / rect.height;
+
+      const clickCol = Math.round((e.clientX - rect.left) * scaleX);
+      const clickRow = Math.round((e.clientY - rect.top) * scaleY);
+
+      // 计算对应的米制坐标：ROS 行号为 mapHeight - 1 - clickRow
+      const res = parseFloat(document.getElementById('mapResInput').value) || 0.05;
+      const ox = parseFloat(document.getElementById('mapOriginXInput').value) || 0.0;
+      const oy = parseFloat(document.getElementById('mapOriginYInput').value) || 0.0;
+
+      const rosRow = mapHeight - 1 - clickRow;
+      const worldX = parseFloat((ox + (clickCol + 0.5) * res).toFixed(3));
+      const worldY = parseFloat((oy + (rosRow + 0.5) * res).toFixed(3));
+
+      const type = stationTypeSelect.value;
+      const autoId = `station_${type}_${anchors.length + 1}`;
+
+      anchors.push({
+        id: autoId,
+        type: type,
+        x: worldX,
+        y: worldY,
+        yaw: 0.0,
+        pixelCol: clickCol,
+        pixelRow: clickRow
+      });
+
+      renderAnchorList();
+      redrawCanvas();
+    });
+
+    clearAnchorsBtn.addEventListener('click', () => {
+      anchors = [];
+      renderAnchorList();
+      redrawCanvas();
+    });
+
+    function renderAnchorList() {
+      anchorCountEl.textContent = anchors.length;
+      anchorListEl.innerHTML = anchors.map((a, i) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-bottom:1px solid #edf2f7;">
+          <span><b>${a.id}</b> (${a.type}) [${a.x}, ${a.y}]</span>
+          <span style="color:var(--danger);cursor:pointer;font-weight:bold;" onclick="deleteAnchor(${i})">×</span>
+        </div>
+      `).join('') || '<div style="color:#94a3b8;padding:6px;">暂无标注，请点击右侧地图添加</div>';
+    }
+
+    window.deleteAnchor = function(idx) {
+      anchors.splice(idx, 1);
+      renderAnchorList();
+      redrawCanvas();
+    };
+
+    function redrawCanvas() {
+      if (!currentMapImage) return;
+      const ctx = mapCanvas.getContext('2d');
+      ctx.putImageData(currentMapImage, 0, 0);
+
+      // 绘制所有站点
+      anchors.forEach((a) => {
+        ctx.beginPath();
+        ctx.arc(a.pixelCol, a.pixelRow, 7, 0, Math.PI * 2);
+        if (a.type === 'pickup') ctx.fillStyle = '#22c55e';
+        else if (a.type === 'dropoff') ctx.fillStyle = '#f97316';
+        else if (a.type === 'charge') ctx.fillStyle = '#eab308';
+        else ctx.fillStyle = '#3b82f6';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3;
+        ctx.strokeText(a.id, a.pixelCol + 9, a.pixelRow + 4);
+        ctx.fillText(a.id, a.pixelCol + 9, a.pixelRow + 4);
+      });
+    }
+
+    // 一键上传并热更新
+    uploadMapBtn.addEventListener('click', async () => {
+      if (!currentMapImage || gridData.length === 0) {
+        alert("请先选择或拖拽地图文件！");
+        return;
+      }
+      if (anchors.length === 0) {
+        alert("请在地图上至少点击标注一个站点！");
+        return;
+      }
+
+      const res = parseFloat(document.getElementById('mapResInput').value) || 0.05;
+      const ox = parseFloat(document.getElementById('mapOriginXInput').value) || 0.0;
+      const oy = parseFloat(document.getElementById('mapOriginYInput').value) || 0.0;
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+
+      const payload = {
+        width: mapWidth,
+        height: mapHeight,
+        resolution: res,
+        origin_x: ox,
+        origin_y: oy,
+        grid_data: gridData,
+        anchors: anchors.map(a => ({
+          id: a.id,
+          type: a.type,
+          x: a.x,
+          y: a.y,
+          yaw: a.yaw
+        }))
+      };
+
+      try {
+        setStatus("🚀 正在生成骨架路网并原子重载调度拓扑...", true);
+        uploadMapBtn.disabled = true;
+        uploadMapBtn.textContent = "⏳ 正在提取拓扑...";
+
+        const resp = await fetch(`${baseUrl}/api/v1/map/upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await resp.json();
+
+        if (resp.ok && result.status === 'ok') {
+          setStatus(`🎉 地图路网热重载成功! 生成 ${result.stations_count} 站点, ${result.road_nodes_count} 通行路口, ${result.edges_count} 拓扑边`, true);
+          alert(`✅ 地图拓扑生成成功并生效！\n站点: ${result.stations_count} 个\n通行路口: ${result.road_nodes_count} 个\n拓扑折线边: ${result.edges_count} 条\n版本Hash: ${result.map_hash}`);
+          fetchSnapshot();
+        } else {
+          setStatus(`❌ 地图导入失败: ${result.message || result.error}`, false);
+          alert(`❌ 地图导入失败: ${result.message || result.error}`);
+        }
+      } catch (err) {
+        setStatus(`网络错误: ${err.message}`, false);
+        alert(`请求失败: ${err.message}`);
+      } finally {
+        uploadMapBtn.disabled = false;
+        uploadMapBtn.textContent = "🚀 一键生成路网并热重载";
+      }
+    });
   </script>
 </body>
 </html>

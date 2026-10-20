@@ -16,15 +16,18 @@
 - [x] 交互式 CLI 诊断客户端与 RESTful HTTP 提单网关（带幂等性校验）
 
 ## Phase 2: 工业级与高可靠增强 (Industrial Reliability - 2026 Q4)
+- [x] **全局地图拓扑规划器整合 (Complete)**：
+  - 支持官方 ROS 2 `nav2_map_server` 格式地图包 (yaml/pgm) 导入与解析
+  - 纯 C++ 核心安全空间圆形核腐蚀、未知区封锁、Zhang-Suen 细化骨架提取与受保护毛刺剪枝
+  - 自动提取带真实 `polyline` 几何折线的路网，站点正交投影拆边接入拓扑
+  - `SkeletonPlanner` 真实折线 0.1m 等距插值规划器，彻底解决走廊拐弯直线穿墙隐患
+  - 全路线原子排他锁与 `map_hash` 强一致性版本门禁
 - [ ] **VDA 5050 协议原生对接**：
   - 支持 VDA 5050 v2.0+ 标准 JSON MQTT 订单与状态报文
   - 将 VDA 5050 `order` 映射为 `MissionQueue` 中的任务节点与时空轨迹
 - [ ] **分布式时空窗交通协调 (Spatio-Temporal Reservation)**：
   - 从当前的静态资源原子锁升级为带时区的时间窗口预约（Time-expanded Reservation Graph）
   - 允许多机器人在不冲突的时间段共享同一交叉路口或通道
-- [ ] **全局地图拓扑规划器整合**：
-  - 将 `station_catalog` 的 Dijkstra / A* 最短拓扑路径搜索封装为轻量独立模块
-  - 路径生成器与 `PathTrackerNode` 形成闭环航线重规划
 
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
 - [ ] **分布式对等协商 (Peer-to-Peer Conflict Resolution)**：

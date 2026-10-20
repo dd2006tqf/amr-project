@@ -11,8 +11,8 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **500/500 unit and integration tests passing in ~5 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow).
-   - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) pre-configured with baseline mock implementations for zero-friction algorithm injection.
+   - **566/566 unit and integration tests passing in ~3 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
+   - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
    - Standalone orchestration layer built with **BehaviorTree.CPP v4** without polluting the zero-ROS core.
@@ -45,6 +45,48 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Single-file zero-dependency Web Console (`tools/operator_console.html`)**: browser dashboard for live metrics, task dispatch, strategy switching, and emergency stop.
    - **RViz2 3D Semantic Markers**: real-time visualization of topological routes, dynamic green reservation locks, and red cylindrical deadlock beacon alerts with 1.2s auto-aging.
    - **ROS 2 Action (`ExecuteMission.action`)**: asynchronous long-duration mission streaming and client cancellation/preemption.
+
+---
+
+## 🗺️ Custom Map Ingestion & Topology Engine
+
+The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav2_map_server` standard yaml/pgm) and automatically converting free space into executable dispatch topologies:
+
+1. **Map Package Layout**:
+   ```text
+   custom_warehouse/
+   ├── map.yaml         # Official Nav2 map configuration
+   ├── map.pgm          # P5 binary occupancy grid (254=free, 0=wall, 205/-1=unknown)
+   └── markers.yaml     # Semantic business stations (anchors)
+   ```
+2. **Markers Configuration (`markers.yaml`)**:
+   ```yaml
+   anchors:
+     - id: "station_pickup_A"
+       type: "pickup"
+       x: 1.5
+       y: 2.0
+       yaw: 0.0
+     - id: "station_dropoff_B"
+       type: "dropoff"
+       x: 8.0
+       y: 5.5
+       yaw: 1.57
+   ```
+3. **Launch with Custom Map Ingestion**:
+   ```bash
+   ros2 launch amr_dispatcher_ros full_system.launch.py \
+     use_map_server:=true \
+     map_yaml:=/path/to/custom_warehouse/map.yaml \
+     markers_file:=/path/to/custom_warehouse/markers.yaml
+   ```
+4. **Automated Zero-ROS Processing Pipeline**:
+   - **Safety Inflation & Unknown Handling**: Erodes free space using circular kernel ($R = R_{\text{robot}} + R_{\text{margin}}$); strictly treats unknown cells (`-1`) as impassable obstacles.
+   - **Zhang-Suen Thinning**: Extracts a 1-pixel-wide corridor skeleton.
+   - **Protected Pruning**: Removes dead-end whiskers shorter than `min_branch_length_m` (default 0.5m) while strictly exempting branches hosting target stations.
+   - **Orthogonal Edge Splitting**: Snaps stations to the nearest skeleton edge, dynamically splitting the edge into sub-edges with preserved `polyline` geometry.
+   - **Atomic Hot-Reload & Dispatch Execution**: Emits `config/generated/stations.yaml` via atomic `tmp+rename`, watches `map_hash` for version-gating, and executes dense 0.1m equal-arc-length trajectory tracking via `SkeletonPlanner` without cutting corner walls.
+   - **3D RViz Topology**: Publishes white road-node spheres, type-colored station cylinders, and cyan polyline edge strips on `/dispatcher/topology_markers`.
 
 ---
 
@@ -91,20 +133,26 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 ./scripts/check_all.sh
 ```
 Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
-- [Step 1] Build pure C++ core and run 500 GTest unit & integration tests via ctest (~5s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
+- [Step 1] Build pure C++ core and run 566 GTest unit & integration tests via ctest (~3s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
 - [Step 5] Software watchdog 200ms timeout shutdown drill.
 - [Step 6] Hardware loss rate failover drill.
 
-### 2. Launch Physical Serial Device Simulator
+### 2. Run Map Ingestion & Topology Dispatch E2E Verification
+```bash
+./scripts/check_map_ingest_e2e.sh
+```
+Automated end-to-end integration test verifying `nav2_map_server` -> `map_ingest_node` (skeletonization, pruning, polyline extraction) -> `dispatcher_node` (atomic route locks, SkeletonPlanner execution along L-shaped corridor) -> Goal reached without cutting wall corners.
+
+### 3. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 3. Open Web Operator Console
+### 4. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/

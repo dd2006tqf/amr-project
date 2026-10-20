@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -18,6 +19,11 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <std_msgs/msg/bool.hpp>
 
+#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+#include "amr_dispatcher_core/planning/map_geometry_utils.hpp"
+#include "amr_dispatcher_core/planning/safety_space_filter.hpp"
+#include "amr_dispatcher_core/planning/skeleton_extractor.hpp"
+#include "amr_dispatcher_core/planning/topology_graph_builder.hpp"
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
 #include "amr_dispatcher_interfaces/msg/dispatcher_state.hpp"
 #include "amr_dispatcher_interfaces/msg/mission_event.hpp"
@@ -260,6 +266,192 @@ class RestGatewayNode : public rclcpp::Node {
       estop_msg.data = true;
       estop_pub_->publish(estop_msg);
       response_body = "{\"status\":\"ok\",\"estop_engaged\":true}";
+    } else if (method == "POST" && path == "/api/v1/map/upload") {
+      // 一键热上传与地图骨架拓扑生成
+      size_t body_start = request.find("\r\n\r\n");
+      std::string body = (body_start != std::string::npos) ? request.substr(body_start + 4) : "";
+
+      try {
+        // 解析简单 JSON：width, height, resolution, origin_x, origin_y, pgm_base64 / grid, anchors
+        int width = 0, height = 0;
+        double res = 0.05, origin_x = 0.0, origin_y = 0.0;
+
+        auto get_int = [&body](const std::string& key, int def) -> int {
+          auto pos = body.find("\"" + key + "\"");
+          if (pos == std::string::npos) return def;
+          pos = body.find(':', pos);
+          if (pos == std::string::npos) return def;
+          return std::stoi(body.substr(pos + 1));
+        };
+        auto get_double = [&body](const std::string& key, double def) -> double {
+          auto pos = body.find("\"" + key + "\"");
+          if (pos == std::string::npos) return def;
+          pos = body.find(':', pos);
+          if (pos == std::string::npos) return def;
+          return std::stod(body.substr(pos + 1));
+        };
+
+        width = get_int("width", 0);
+        height = get_int("height", 0);
+        res = get_double("resolution", 0.05);
+        origin_x = get_double("origin_x", 0.0);
+        origin_y = get_double("origin_y", 0.0);
+
+        if (width <= 0 || height <= 0) {
+          status_code = "400 Bad Request";
+          response_body = "{\"error\":\"invalid_dimensions\"}";
+        } else {
+          amr_dispatcher_core::planning::MapGrid grid;
+          grid.width = static_cast<uint32_t>(width);
+          grid.height = static_cast<uint32_t>(height);
+          grid.resolution = res;
+          grid.origin_x = origin_x;
+          grid.origin_y = origin_y;
+          grid.origin_yaw = 0.0;
+          grid.data.assign(width * height, 0); // 默认为空闲通行区
+
+          // 提取 grid_data 数组 (如 [0, 100, -1, ...])
+          auto grid_pos = body.find("\"grid_data\"");
+          if (grid_pos != std::string::npos) {
+            auto arr_start = body.find('[', grid_pos);
+            auto arr_end = body.find(']', arr_start);
+            if (arr_start != std::string::npos && arr_end != std::string::npos) {
+              std::string arr_str = body.substr(arr_start + 1, arr_end - arr_start - 1);
+              std::stringstream ss(arr_str);
+              std::string item;
+              size_t idx = 0;
+              while (std::getline(ss, item, ',') && idx < grid.data.size()) {
+                try {
+                  grid.data[idx++] = static_cast<int8_t>(std::stoi(item));
+                } catch (...) {}
+              }
+            }
+          }
+
+          // 提取 anchors: [{"id":"A","type":"pickup","x":1.0,"y":2.0}, ...]
+          std::vector<amr_dispatcher_core::planning::AnchorStation> anchors;
+          auto anchors_pos = body.find("\"anchors\"");
+          if (anchors_pos != std::string::npos) {
+            auto arr_start = body.find('[', anchors_pos);
+            auto arr_end = body.find(']', arr_start);
+            if (arr_start != std::string::npos && arr_end != std::string::npos) {
+              std::string arr_str = body.substr(arr_start + 1, arr_end - arr_start - 1);
+              size_t obj_start = 0;
+              while ((obj_start = arr_str.find('{', obj_start)) != std::string::npos) {
+                size_t obj_end = arr_str.find('}', obj_start);
+                if (obj_end == std::string::npos) break;
+                std::string obj_str = arr_str.substr(obj_start, obj_end - obj_start + 1);
+
+                auto extract_str = [&obj_str](const std::string& k) -> std::string {
+                  auto p = obj_str.find("\"" + k + "\"");
+                  if (p == std::string::npos) return "";
+                  p = obj_str.find(':', p);
+                  if (p == std::string::npos) return "";
+                  auto q1 = obj_str.find('\"', p);
+                  if (q1 == std::string::npos) return "";
+                  auto q2 = obj_str.find('\"', q1 + 1);
+                  if (q2 == std::string::npos) return "";
+                  return obj_str.substr(q1 + 1, q2 - q1 - 1);
+                };
+                auto extract_num = [&obj_str](const std::string& k) -> double {
+                  auto p = obj_str.find("\"" + k + "\"");
+                  if (p == std::string::npos) return 0.0;
+                  p = obj_str.find(':', p);
+                  if (p == std::string::npos) return 0.0;
+                  return std::stod(obj_str.substr(p + 1));
+                };
+
+                amr_dispatcher_core::planning::AnchorStation a;
+                a.id = extract_str("id");
+                a.type = extract_str("type");
+                if (a.type.empty()) a.type = "normal";
+                a.x = extract_num("x");
+                a.y = extract_num("y");
+                a.yaw = extract_num("yaw");
+                if (!a.id.empty()) {
+                  anchors.push_back(a);
+                }
+                obj_start = obj_end + 1;
+              }
+            }
+          }
+
+          // 核心库自动化流水线：腐蚀 -> 细化 -> 剪枝 -> 拓扑构建
+          amr_dispatcher_core::planning::SafetyFilterConfig sf_cfg;
+          sf_cfg.robot_radius_m = 0.25;
+          sf_cfg.safety_margin_m = 0.05;
+          auto safe_grid = amr_dispatcher_core::planning::FilterSafetySpace(grid, sf_cfg);
+          auto skel = amr_dispatcher_core::planning::ZhangSuenThinning(safe_grid);
+
+          std::vector<amr_dispatcher_core::planning::PixelCoord> protected_points;
+          for (const auto& a : anchors) {
+            amr_dispatcher_core::planning::WorldCoord w{a.x, a.y};
+            protected_points.push_back(amr_dispatcher_core::planning::WorldToPixel(w, grid));
+          }
+          amr_dispatcher_core::planning::PruneConfig pr_cfg;
+          pr_cfg.min_branch_length_m = 0.5;
+          pr_cfg.resolution = res;
+          auto pruned = amr_dispatcher_core::planning::PruneSkeletonProtected(skel, protected_points, pr_cfg);
+
+          amr_dispatcher_core::planning::TopologyBuilderConfig tb_cfg;
+          tb_cfg.max_snap_dist_m = 3.0;
+          tb_cfg.map_hash = "web_upload_" + std::to_string(width) + "x" + std::to_string(height);
+          tb_cfg.graph_version = "v1_web";
+          auto build_res = amr_dispatcher_core::planning::BuildTopologyCatalog(pruned, grid, anchors, tb_cfg);
+
+          if (!build_res.success) {
+            status_code = "422 Unprocessable Entity";
+            response_body = "{\"status\":\"error\",\"message\":\"" + build_res.error_message + "\"}";
+          } else {
+            // 写入 config/generated/stations.yaml (tmp + rename 原子替换)
+            std::filesystem::path final_path("config/generated/stations.yaml");
+            std::filesystem::create_directories(final_path.parent_path());
+            std::filesystem::path tmp_path("config/generated/stations.yaml.tmp");
+
+            std::ofstream out(tmp_path);
+            out << "version:\n";
+            out << "  map_hash: \"" << build_res.catalog.map_hash << "\"\n";
+            out << "  graph_version: \"" << build_res.catalog.graph_version << "\"\n";
+            out << "stations:\n";
+            for (const auto& s : build_res.catalog.stations) {
+              out << "  - id: \"" << s.id << "\"\n";
+              out << "    x: " << s.x << "\n";
+              out << "    y: " << s.y << "\n";
+              out << "    yaw: " << s.yaw << "\n";
+              out << "    type: \"" << s.type << "\"\n";
+            }
+            out << "road_nodes:\n";
+            for (const auto& rn : build_res.catalog.road_nodes) {
+              out << "  - id: \"" << rn.id << "\"\n";
+              out << "    x: " << rn.x << "\n";
+              out << "    y: " << rn.y << "\n";
+              out << "    yaw: " << rn.yaw << "\n";
+            }
+            out << "edges:\n";
+            for (const auto& e : build_res.catalog.edges) {
+              out << "  - from: \"" << e.from << "\"\n";
+              out << "    to: \"" << e.to << "\"\n";
+              out << "    distance_m: " << e.distance_m << "\n";
+              out << "    bidirectional: " << (e.bidirectional ? "true" : "false") << "\n";
+              out << "    enabled: true\n";
+              out << "    polyline:\n";
+              for (const auto& pt : e.polyline) {
+                out << "      - [" << pt.first << ", " << pt.second << "]\n";
+              }
+            }
+            out.close();
+            std::filesystem::rename(tmp_path, final_path);
+
+            response_body = "{\"status\":\"ok\",\"stations_count\":" + std::to_string(build_res.catalog.stations.size()) +
+                            ",\"road_nodes_count\":" + std::to_string(build_res.catalog.road_nodes.size()) +
+                            ",\"edges_count\":" + std::to_string(build_res.catalog.edges.size()) +
+                            ",\"map_hash\":\"" + build_res.catalog.map_hash + "\"}";
+          }
+        }
+      } catch (const std::exception& e) {
+        status_code = "500 Internal Server Error";
+        response_body = "{\"error\":\"" + std::string(e.what()) + "\"}";
+      }
     } else {
       status_code = "404 Not Found";
       response_body = "{\"error\":\"not_found\"}";
