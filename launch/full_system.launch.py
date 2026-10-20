@@ -29,6 +29,8 @@ def generate_launch_description():
     serial_number = LaunchConfiguration('serial_number')
     protocol_version = LaunchConfiguration('protocol_version')
     heartbeat_ms = LaunchConfiguration('heartbeat_ms')
+    # Task 5：受管 VDA 5050 车辆列表（逗号分隔，默认空 = 功能关闭）
+    vda5050_vehicles = LaunchConfiguration('vda5050_vehicles')
 
     declared_arguments = [
         DeclareLaunchArgument(

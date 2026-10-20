@@ -2123,6 +2123,15 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
                          vehicle_id.c_str(), msg->data.c_str());
     return;
   }
+  // M1：状态报文必须与订阅话题的车辆身份一致，防止车 B 冒用车 A 的 orderId
+  // 驱动任务 A 的解锁流程。
+  if (report->vehicle_id != vehicle_id) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "VDA 5050 state identity mismatch: topic vehicle %s but "
+                         "serialNumber %s — dropped",
+                         vehicle_id.c_str(), report->vehicle_id.c_str());
+    return;
+  }
   auto link_it = vda5050_links_.find(vehicle_id);
   if (link_it != vda5050_links_.end()) {
     link_it->second.seen_state = true;
