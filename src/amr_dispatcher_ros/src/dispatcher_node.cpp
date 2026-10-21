@@ -3244,6 +3244,9 @@ void DispatcherNode::PublishState() {
   if (!state_pub_ || !state_pub_->is_activated()) {
     return;
   }
+  // 选车输入的动态部分（位置/电量/忙碌）在发布前刷新一次，
+  // 保证 Web 控制台看到的车辆状态与调度器当下的判断一致。
+  RefreshVehicleStates();
 
   amr_dispatcher_interfaces::msg::DispatcherState msg;
   msg.header.stamp = now();
@@ -3283,6 +3286,30 @@ void DispatcherNode::PublishState() {
                                    link_now - link.last_state_time)
                                    .count()
                              : -1;
+    msg.vehicle_links.push_back(vlink);
+  }
+
+  // local_sim 受管车（评审 P0.4：结构化消息覆盖全部受管车，不只 VDA 5050 车）
+  for (const auto& vehicle_id : vehicle_ids_) {
+    const auto state_it = vehicle_states_.find(vehicle_id);
+    if (state_it == vehicle_states_.end()) {
+      continue;
+    }
+    const auto& state = state_it->second;
+    amr_dispatcher_interfaces::msg::VehicleLinkState vlink;
+    vlink.vehicle_id = vehicle_id;
+    vlink.backend = amr_dispatcher_core::fleet::VehicleBackendLabel(state.backend);
+    vlink.online = state.online;
+    vlink.busy = IsVehicleBusy(vehicle_id);
+    vlink.quarantined = state.quarantined;
+    vlink.position_valid = state.position_valid;
+    vlink.current_station_id = state.current_station_id;
+    vlink.battery_percent = state.battery_percent;
+    vlink.state_age_ms =
+        state.state_time == std::chrono::steady_clock::time_point{}
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(link_now - state.state_time)
+                  .count();
     msg.vehicle_links.push_back(vlink);
   }
 

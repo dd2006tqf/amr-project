@@ -306,6 +306,8 @@ class RestGatewayNode : public rclcpp::Node {
         std::string to = GetQueryParam(query, "to");
         int prio = std::stoi(GetQueryParam(query, "prio", "5"));
         std::string ikey = GetQueryParam(query, "idempotency_key");
+        // 显式指定承接车辆（空 = 由选车策略决定）
+        std::string vehicle = GetQueryParam(query, "vehicle");
 
         if (!ikey.empty() && seen_idempotency_keys_.find(ikey) != seen_idempotency_keys_.end()) {
           response_body = "{\"status\":\"ignored\",\"reason\":\"idempotent_duplicate\"}";
@@ -316,6 +318,7 @@ class RestGatewayNode : public rclcpp::Node {
           req->pickup_station = from;
           req->dropoff_station = to;
           req->priority = prio;
+          req->assigned_vehicle_id = vehicle;
 
           if (submit_cli_->wait_for_service(1s)) {
             auto fut = submit_cli_->async_send_request(req);
