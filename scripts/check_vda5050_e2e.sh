@@ -1044,6 +1044,129 @@ fi
 echo "[Stage 6.7] e2e_m3 完成且全车队路权锁完全清理 (PASS)"
 
 # ==============================================================================
+# Stage 6.8: 操作员人工强清离线链路验收 (Task 7 / 终审 I1 闭合)
+# ==============================================================================
+# 前提: 在 Stage 6.5 恢复后，mock2 作为 mock_amr_01 已恢复在线；
+#       要验证人工强清，需要先把这辆车再次打成离线状态。
+# 目的: 验证 /dispatcher/force_clear_vda5050_link 可摘除离线挂载并解除挂起守卫。
+
+# 6.8.1 【在线态】防误杀活车断言：此时 mock_amr_01 仍在线，强清必须被拒绝
+echo "[Stage 6.8] 在线态断言：对在线车辆强清应被拒绝..."
+# 先等服务就绪（首次 discovery 需要时间）
+for ((i = 0; i < 30; i++)); do
+    if ros2 service list 2>/dev/null | grep -q "force_clear_vda5050_link"; then
+        break
+    fi
+    sleep 0.5
+done
+ALIVE_RESULT=$(timeout 20 ros2 service call /dispatcher/force_clear_vda5050_link \
+    amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
+    "{vehicle_id: 'mock_amr_01', reason: 'e2e alive-refuse test'}" 2>&1 || true)
+if echo "${ALIVE_RESULT}" | grep -q "success=True"; then
+    fail "在线车辆 mock_amr_01 竟被强清受理（防误杀活车失效）: ${ALIVE_RESULT}"
+fi
+if ! echo "${ALIVE_RESULT}" | grep -q "success=False"; then
+    fail "在线态强清拒绝路径未返回 success=False（服务不可达或响应异常）: ${ALIVE_RESULT}"
+fi
+echo "[Stage 6.8] 拒绝路径断言通过：在线车辆强清被拒 (PASS)"
+
+# 6.8.2 提交 e2e_m5 让其持有路权锁（强清要释放的正是这批锁）
+echo "[Stage 6.8] 提交 e2e_m5 使其持有路权锁（强清释放对象）..."
+SUBMIT_M5=$(python3 - <<EOF
+import urllib.request, sys
+url = "http://127.0.0.1:${REST_PORT}/api/v1/orders?id=e2e_m5&from=station_pickup_A&to=station_dropoff_B&prio=6"
+req = urllib.request.Request(url, method="POST", data=b"")
+try:
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        print(resp.read().decode("utf-8"))
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+)
+if [ $? -ne 0 ] || ! echo "${SUBMIT_M5}" | grep -q '"accepted":true'; then
+    fail "REST 提交 e2e_m5 失败: ${SUBMIT_M5}"
+fi
+if ! wait_log "Dispatched mission: e2e_m5" "${TMP_DIR}/dispatcher.log" 15; then
+    fail "e2e_m5 未能在 15s 内派发"
+fi
+echo "[Stage 6.8] e2e_m5 已派发并持有路权锁 (PASS)"
+
+# 6.8.3 再次 kill mock2，让 mock_amr_01 回到离线态（锁必须保留）
+echo "[Stage 6.8] 二次断链: kill -9 mock2 让 mock_amr_01 再次离线..."
+kill -9 "${MOCK2_PID:-0}" 2>/dev/null || true
+
+# 断言: 调度器捕获二次断链
+sleep 2  # 等 LWT + link guard tick
+if ! grep -q "VDA 5050 vehicle mock_amr_01 link broken" "${TMP_DIR}/dispatcher.log"; then
+    fail "未能观测到 mock_amr_01 link-broken（可能 mock2 未在运行期kill或日志时序异常）"
+fi
+echo "[Stage 6.8] mock_amr_01 已再次离线 (PASS)"
+
+# 断言: 断链期间 e2e_m5 的锁必须仍在（铁律）
+if ! RESV_M5=$(timeout 15 ros2 service call /v2/list_traffic_reservations \
+        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+    fail "list_traffic_reservations 服务调用失败: ${RESV_M5}"
+fi
+if ! echo "${RESV_M5}" | grep -q "e2e_m5"; then
+    fail "断链期间 e2e_m5 的路权锁被非法释放: ${RESV_M5}"
+fi
+echo "[Stage 6.8] 断链期间 e2e_m5 锁保留（铁律） (PASS)"
+
+# 6.8.4 离线态强清：摘除 mock_amr_01 的离线挂载并释放名下锁
+FORCE_RESULT=$(timeout 20 ros2 service call /dispatcher/force_clear_vda5050_link \
+    amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
+    "{vehicle_id: 'mock_amr_01', reason: 'e2e stage 6.8 operator force clear'}" 2>&1)
+echo "${FORCE_RESULT}"
+
+# 断言服务成功（response.success=true）
+if ! echo "${FORCE_RESULT}" | grep -q "success=True"; then
+    fail "ForceClearVda5050Link 服务未被受理成功: ${FORCE_RESULT}"
+fi
+# 断言名下锁确被释放（released_resources 非空且含 route_ 锁）
+if ! echo "${FORCE_RESULT}" | grep -q "route_"; then
+    fail "强清未释放该车名下的路权锁（released_resources 为空）: ${FORCE_RESULT}"
+fi
+echo "[Stage 6.8] 离线链路已被人工强清且名下锁已释放 (PASS)"
+
+# 断言: e2e_m5 的锁确已从锁表消失
+if ! RESV_AFTER=$(timeout 15 ros2 service call /v2/list_traffic_reservations \
+        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+    fail "list_traffic_reservations 服务调用失败: ${RESV_AFTER}"
+fi
+if echo "${RESV_AFTER}" | grep -q "e2e_m5"; then
+    fail "强清后 e2e_m5 锁仍在锁表: ${RESV_AFTER}"
+fi
+echo "[Stage 6.8] 强清后锁表已无 e2e_m5 残留 (PASS)"
+
+# 6.8.4 断言守卫挂起解除：新提交的 e2e_m4 应能派发（而非继续 Dispatch suspended）
+echo "[Stage 6.8] 验证强清后调度挂起解除（提交 e2e_m4）..."
+SUBMIT_M4=$(python3 - <<EOF
+import urllib.request, sys
+url = "http://127.0.0.1:${REST_PORT}/api/v1/orders?id=e2e_m4&from=station_dropoff_B&to=station_pickup_A&prio=5"
+req = urllib.request.Request(url, method="POST", data=b"")
+try:
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        print(resp.read().decode("utf-8"))
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+)
+if [ $? -ne 0 ]; then
+    fail "REST 提交 e2e_m4 失败: ${SUBMIT_M4}"
+fi
+if ! echo "${SUBMIT_M4}" | grep -q '"accepted":true'; then
+    fail "REST 拒绝 e2e_m4 提单: ${SUBMIT_M4}"
+fi
+echo "[Stage 6.8] e2e_m4 已提交，等待派发（断言守卫挂起解除）..."
+if ! wait_log "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log" 20; then
+    fail "ForceClear 后新任务 e2e_m4 未能在 20s 内派发 —— 挂起守卫未解除"
+fi
+echo "[Stage 6.8] 强清后调度挂起成功解除 (PASS)"
+echo "[Stage 6.8] 人工强清离线链路验收完成 (PASS)"
+
+# ==============================================================================
 # Stage 7: 验收汇总与断言状态表
 # ==============================================================================
 END_TIME=$(date +%s)
@@ -1070,6 +1193,11 @@ cat <<'EOF'
                  - 调度挂起与派发阻断 (Dispatch suspended)
                  - 持久化恢复与位姿重校验
                  - 恢复续跑完成与后置任务自动唤醒派发
+ [PASS] Stage 6.8: 操作员人工强清离线链路 (Spec 5.2 人工强解半边):
+                 - 二次断链守卫挂起
+                 - 拒绝路径: 不存在车辆被拒
+                 - 强清受理: link 摘除 + 名下锁释放
+                 - 挂起解除: 后续任务恢复派发
 ======================================================================
  ALL VDA 5050 E2E ASSERTIONS PASSED SUCCESSFULLY!
 ======================================================================

@@ -28,7 +28,9 @@
   - dispatcher_node 直发 `/fleet/{vid}/send_order`（orderId=mission_id），
     gateway 网关双向桥接 MQTT；Task 5 逐段路权动态释放 (Spec 5.3) +
     断链锁保留与调度挂起守卫 (Spec 5.2)；
-    端到端验收 `./scripts/check_vda5050_e2e.sh`（7 阶段全 PASS）
+    操作员强清 `/dispatcher/force_clear_vda5050_link` 闭合 Spec 5.2 人工强解半边
+    （摘链 + 释锁 + 收口在途任务 + 解除挂起；在线车拒绝误杀）；
+    端到端验收 `./scripts/check_vda5050_e2e.sh`（8 阶段全 PASS）
 - [ ] **分布式时空窗交通协调 (Spatio-Temporal Reservation)**：
   - 从当前的静态资源原子锁升级为带时区的时间窗口预约（Time-expanded Reservation Graph）
   - 允许多机器人在不冲突的时间段共享同一交叉路口或通道

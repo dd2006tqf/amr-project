@@ -306,6 +306,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // mission_id -> 派发时刻的行驶路径（travel order；Peek 阶段只留锁列表，路径在此存档，
   // 供 state 回推身后锁；终态经 ForgetMissionDispatchState 遗忘）
   std::unordered_map<std::string, std::vector<std::string>> mission_route_paths_;
+  // mission_id -> 承接该单的受管车辆（PublishVda5050Order 下发时登记）。
+  // 人工强清离线链路时按此反查"该车名下"的 mission —— 不能靠"路径存档存在"推断，
+  // 那会把其他车辆的 mission 锁一并误判为该车名下（多车场景误释放）。
+  std::unordered_map<std::string, std::string> vda5050_mission_vehicle_;
   // state 陈旧阈值（秒）：在线但超时未上报 -> 软看门狗告警（不释放、不阻塞）
   double vda5050_state_stale_sec_{5.0};
 
