@@ -2153,6 +2153,9 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id) {
     return;
   }
   if (!reservation_table_) {
+    RCLCPP_WARN(get_logger(),
+                "Mission %s: reservation table unavailable, VDA 5050 order NOT published",
+                mission_id.c_str());
     return;
   }
   // 本单名下实际持有的锁（builder 契约：严禁传全局快照——否则他人锁会被

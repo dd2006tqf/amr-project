@@ -701,7 +701,10 @@ if ! wait_log "Mission completed: e2e_m1 \(arrived at goal\)" "${TMP_DIR}/dispat
 fi
 
 # 校验 e2e_m1 占用的所有锁已被完全清理
-RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>/dev/null || echo "")
+# 终审加固：服务调用本身必须成功，空响应绝不能被当作"无残留锁"的假阳性证据
+if ! RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+    fail "list_traffic_reservations 服务调用失败，拒绝将空响应当作无残留锁: ${RESERVATIONS}"
+fi
 if echo "${RESERVATIONS}" | grep -q "e2e_m1"; then
     fail "任务 e2e_m1 完成后仍有残留锁: ${RESERVATIONS}"
 fi
@@ -1031,7 +1034,10 @@ if ! wait_log "Mission completed: e2e_m3 \(arrived at goal\)" "${TMP_DIR}/dispat
 fi
 
 # 最终路权锁全清断言
-FINAL_RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>/dev/null || echo "")
+# 终审加固：同 Stage 4.6，服务失败必须 fail 而非静默视为干净
+if ! FINAL_RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+    fail "list_traffic_reservations 服务调用失败，拒绝将空响应当作无残留锁: ${FINAL_RESERVATIONS}"
+fi
 if echo "${FINAL_RESERVATIONS}" | grep -qE "e2e_m1|e2e_m2|e2e_m3|route_"; then
     fail "所有任务完成后仍有残留路权锁: ${FINAL_RESERVATIONS}"
 fi
