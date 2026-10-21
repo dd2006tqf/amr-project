@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -38,6 +39,7 @@
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
+#include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/pause_mission.hpp"
 #include "amr_dispatcher_interfaces/srv/release_resource.hpp"
 #include "amr_dispatcher_interfaces/srv/reserve_resource.hpp"
@@ -117,6 +119,11 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ForceClearVda5050LinkCb(
       const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
       std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp);
+  // Task 7（评审 P0.5）：解除隔离，使车辆重新参与自动分配。
+  // 准入：须已隔离 + 在线 + 操作员声明已核实车辆物理位置。
+  void RestoreVda5050LinkCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Response> resp);
 
   // 12 Core Services
   void EnqueueMissionCb(
@@ -269,6 +276,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
       force_clear_vda5050_link_srv_;
+  rclcpp::Service<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr
+      restore_vda5050_link_srv_;
   // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
   rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
   // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）
@@ -304,6 +313,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   };
   // vehicle_id -> 链路态（key 即 vda5050_vehicles 解析后的 id，保序去重）
   std::unordered_map<std::string, Vda5050Link> vda5050_links_;
+  // vehicle_id -> 隔离态集合（人工强清后置入；恢复时移除）。
+  // 隔离车仍可见/可审计，但不参与自动分配（选车时视为不合格）。
+  std::unordered_set<std::string> vda5050_quarantined_;
   // mission_id -> 派发时刻的行驶路径（travel order；Peek 阶段只留锁列表，路径在此存档，
   // 供 state 回推身后锁；终态经 ForgetMissionDispatchState 遗忘）
   std::unordered_map<std::string, std::vector<std::string>> mission_route_paths_;

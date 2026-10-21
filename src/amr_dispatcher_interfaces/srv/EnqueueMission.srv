@@ -1,6 +1,7 @@
 string mission_file
 int32 priority
 bool start_if_idle
+string assigned_vehicle_id      # 显式指定承接车辆 id（空 = 由选车策略决定）；末尾追加，旧客户端不受影响
 ---
 bool success
 string message

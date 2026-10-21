@@ -117,6 +117,11 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
           "/dispatcher/force_clear_vda5050_link",
           std::bind(&DispatcherNode::ForceClearVda5050LinkCb, this,
                     std::placeholders::_1, std::placeholders::_2));
+  restore_vda5050_link_srv_ =
+      create_service<amr_dispatcher_interfaces::srv::RestoreVda5050Link>(
+          "/dispatcher/restore_vda5050_link",
+          std::bind(&DispatcherNode::RestoreVda5050LinkCb, this,
+                    std::placeholders::_1, std::placeholders::_2));
 
   // 12 Core Services Registration
   enqueue_srv_ = create_service<amr_dispatcher_interfaces::srv::EnqueueMission>(
@@ -355,6 +360,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   resume_srv_.reset();
   reserve_srv_.reset();
   release_srv_.reset();
+  force_clear_vda5050_link_srv_.reset();
+  restore_vda5050_link_srv_.reset();
   enqueue_srv_.reset();
   cancel_queued_srv_.reset();
   preempt_srv_.reset();
@@ -415,6 +422,7 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   vda5050_links_.clear();        // 终审 M4：与 SetupVda5050Links 开头清旧对齐，防残留链
   vda5050_next_order_update_id_.clear();
   vda5050_mission_vehicle_.clear();  // Task 7：mission->车辆绑定随生命周期收口
+  vda5050_quarantined_.clear();      // Task 7：隔离态随生命周期收口
   last_deadlock_findings_.clear();
   tracking_error_sub_.reset();
   odom_sub_.reset();
@@ -478,6 +486,8 @@ void DispatcherNode::SubmitOrderCb(
   m.priority = req->priority;
   m.deadline_unix_ms = req->deadline_unix_ms;
   m.expected_seconds = req->expected_seconds;
+  // 显式指定承接车辆（空 = 由选车策略决定，见 core/fleet/vehicle_assignment.hpp）
+  m.assigned_vehicle_id = req->assigned_vehicle_id;
 
   auto res = queue_->Push(m);
   resp->accepted = res.accepted;
@@ -646,10 +656,15 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   // 锁归属必须经 mission->vehicle 绑定反查（严禁用"路径存档存在"之类的间接证据推断）。
   amr_dispatcher_core::fleet::ForceClearLinkRequest decision_req;
   decision_req.vehicle_id = req->vehicle_id;
+  decision_req.confirm_vehicle_id = req->confirm_vehicle_id;
+  decision_req.operator_id = req->operator_id;
+  decision_req.reason = req->reason;
   decision_req.vehicle_in_managed_list =
       vda5050_links_.find(req->vehicle_id) != vda5050_links_.end();
   const auto link_it = vda5050_links_.find(req->vehicle_id);
   decision_req.vehicle_online = (link_it != vda5050_links_.end()) && link_it->second.online;
+  decision_req.vehicle_quarantined =
+      vda5050_quarantined_.find(req->vehicle_id) != vda5050_quarantined_.end();
   decision_req.mission_vehicle_bindings = vda5050_mission_vehicle_;
   if (reservation_table_) {
     for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
@@ -717,27 +732,24 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   }
   ReArmQueueStartRequest();  // 队列后续任务需重新武装启动请求
 
-  // ---- 3) 解除挂载 ----
-  if (link_it != vda5050_links_.end()) {
-    vda5050_links_.erase(link_it);
-  }
-  const auto id_it = std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(),
-                               req->vehicle_id);
-  if (id_it != vda5050_vehicle_ids_.end()) {
-    vda5050_vehicle_ids_.erase(id_it);
-  }
-  vda5050_order_pubs_.erase(req->vehicle_id);
-  vda5050_next_order_update_id_.erase(req->vehicle_id);
+  // ---- 3) 车辆转入隔离态（**不摘除**受管清单）----
+  // 评审 P0.5：通信失联不等于可以释放路权。强清后车辆仍然可见、可审计，
+  // 但不再参与自动分配（选车时 quarantined -> 不合格），需显式恢复。
+  vda5050_quarantined_.insert(req->vehicle_id);
+  resp->quarantined = true;
 
   // ---- 4) 审计与响应 ----
   resp->success = true;
   resp->message = "Force-cleared offline link for " + req->vehicle_id + ", released " +
-                  std::to_string(released.size()) + " resource(s)" +
-                  (req->reason.empty() ? "" : " | reason: " + req->reason);
+                  std::to_string(released.size()) + " resource(s) | reason: " + req->reason +
+                  " | operator: " + req->operator_id +
+                  " | vehicle QUARANTINED (not auto-assignable until restored; physical "
+                  "position NOT machine-verified — operator bears that risk)";
   RCLCPP_WARN(get_logger(),
-              "VDA 5050 link %s FORCE-CLEARED by operator (reason=\"%s\", released %zu "
-              "resource(s) [%s])",
-              req->vehicle_id.c_str(), req->reason.c_str(), released.size(),
+              "VDA 5050 link %s FORCE-CLEARED by operator %s (reason=\"%s\", released %zu "
+              "resource(s) [%s]) -> vehicle QUARANTINED; physical position NOT verified",
+              req->vehicle_id.c_str(), req->operator_id.c_str(), req->reason.c_str(),
+              released.size(),
               [&released]() {
                 std::string joined;
                 for (std::size_t i = 0; i < released.size(); ++i) {
@@ -747,6 +759,42 @@ void DispatcherNode::ForceClearVda5050LinkCb(
                 return joined;
               }()
                   .c_str());
+}
+
+void DispatcherNode::RestoreVda5050LinkCb(
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request> req,
+    std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Response> resp) {
+  // 评审 P0.5：恢复 = 解除隔离，使车辆重新参与自动分配。
+  // 准入校验下沉核心（PlanRestoreLink）：须已隔离 + 在线 + 操作员已核实位置。
+  amr_dispatcher_core::fleet::RestoreLinkRequest decision_req;
+  decision_req.vehicle_id = req->vehicle_id;
+  decision_req.confirm_vehicle_id = req->confirm_vehicle_id;
+  decision_req.operator_id = req->operator_id;
+  decision_req.reason = req->reason;
+  decision_req.vehicle_in_managed_list =
+      vda5050_links_.find(req->vehicle_id) != vda5050_links_.end();
+  decision_req.vehicle_quarantined =
+      vda5050_quarantined_.find(req->vehicle_id) != vda5050_quarantined_.end();
+  const auto link_it = vda5050_links_.find(req->vehicle_id);
+  decision_req.vehicle_online = (link_it != vda5050_links_.end()) && link_it->second.online;
+  decision_req.position_verified = req->position_verified;
+
+  const auto decision = amr_dispatcher_core::fleet::PlanRestoreLink(decision_req);
+  if (!decision.allowed) {
+    resp->success = false;
+    resp->message = decision.reject_reason;
+    return;
+  }
+  vda5050_quarantined_.erase(req->vehicle_id);
+  resp->success = true;
+  resp->message = "Restored vehicle " + req->vehicle_id + " to dispatch pool | reason: " +
+                  req->reason + " | operator: " + req->operator_id;
+  RCLCPP_WARN(get_logger(),
+              "VDA 5050 link %s RESTORED by operator %s (reason=\"%s\", position_verified=%d) "
+              "-> vehicle re-enters automatic assignment",
+              req->vehicle_id.c_str(), req->operator_id.c_str(), req->reason.c_str(),
+              req->position_verified ? 1 : 0);
+  ReArmQueueStartRequest();  // 池中多了一台车 -> 唤醒排队任务重试
 }
 
 void DispatcherNode::EnqueueMissionCb(
@@ -763,6 +811,8 @@ void DispatcherNode::EnqueueMissionCb(
   m.order_id = req->mission_file;
   m.priority = req->priority;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kPending;
+  // 显式指定承接车辆（空 = 由选车策略决定）
+  m.assigned_vehicle_id = req->assigned_vehicle_id;
   auto push_res = queue_->Push(m);
   resp->success = push_res.accepted;
   resp->message = push_res.accepted ? "Mission enqueued: " + m.id : push_res.message;
@@ -2203,6 +2253,7 @@ void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
   vda5050_order_pubs_.clear();
   vda5050_next_order_update_id_.clear();
   vda5050_mission_vehicle_.clear();
+  vda5050_quarantined_.clear();
 
   vda5050_state_stale_sec_ = get_parameter("vda5050_state_stale_sec").as_double();
   // 订阅策略：ROS 2 无通配订阅，网关按 MQTT 发现的小车懒建 /fleet/{vid}/* 话题。
