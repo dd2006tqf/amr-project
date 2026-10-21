@@ -94,6 +94,11 @@ class ResourceTable {
   // 时空预约表当前有效条目总数（过期回收的可观测指标）
   std::size_t TimeSpaceReservationCount() const;
 
+  // 某任务当前持有的**时空预约**资源 id 列表（按资源 id 排序）。
+  // 与 Snapshot()（静态锁）互补：time_space 模式下"本单获准通行哪些资源"
+  // 要从时空预约表读，不能从静态锁表读。
+  std::vector<std::string> TimeSpaceResourcesOf(const std::string& mission_id) const;
+
   std::vector<std::pair<std::string, std::string>> Snapshot() const;  // 已排序
 
   // 资源命名规则。

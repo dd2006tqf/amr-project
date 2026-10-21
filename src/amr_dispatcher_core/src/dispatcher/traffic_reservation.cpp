@@ -224,6 +224,21 @@ bool ResourceTable::ReserveTimeSpaceBatch(
   return true;
 }
 
+std::vector<std::string> ResourceTable::TimeSpaceResourcesOf(
+    const std::string& mission_id) const {
+  std::vector<std::string> resources;
+  for (const auto& [resource_id, list] : time_space_reservations_) {
+    for (const auto& reservation : list) {
+      if (reservation.mission_id == mission_id) {
+        resources.push_back(resource_id);
+        break;
+      }
+    }
+  }
+  std::sort(resources.begin(), resources.end());
+  return resources;
+}
+
 std::vector<std::string> ResourceTable::ReleaseTimeSpaceResources(
     const std::string& mission_id, const std::vector<std::string>& resource_ids) {
   std::vector<std::string> released;

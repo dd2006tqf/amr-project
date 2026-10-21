@@ -2987,11 +2987,17 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id,
   }
   // 本单名下实际持有的锁（builder 契约：严禁传全局快照——否则他人锁会被
   // 误判为已放行，向小车下发未获路权的 released=true 边，违反 Spec §5.1）
+  // time_space 模式下本单持有的是**时空预约**（不是静态排他锁），
+  // 必须从时空预约表读，否则整单资源都会被判为"未获路权" -> released=false
+  // -> 小车在起点原地制动（observed: mock 车收到 released=[False] 的订单后不动）。
   std::unordered_set<std::string> held_locks;
   for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
     if (owner == mission_id) {
       held_locks.insert(resource_id);
     }
+  }
+  for (const auto& resource_id : reservation_table_->TimeSpaceResourcesOf(mission_id)) {
+    held_locks.insert(resource_id);
   }
   // 车辆绑定：优先用选车决策给出的承接车辆（A6）；为空时回落到保序清单上的
   // round-robin（单车配置下结果恒定，与改动前一致）。
