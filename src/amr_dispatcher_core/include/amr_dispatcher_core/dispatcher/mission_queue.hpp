@@ -49,6 +49,15 @@ class MissionQueue {
   PopResult PopNext();
   const Mission* Peek() const;
 
+  // 按出队顺序导出前 N 个**未暂停**的排队任务（head-of-line 规避用）。
+  // 队首任务可能因"暂无合格车辆"而暂时派不出去，此时必须能继续看后面的任务，
+  // 否则一个不可派的队首会把整条队列堵死。
+  std::vector<Mission> PeekN(std::size_t max_count) const;
+
+  // 按 mission_id 精确出队（配合 PeekN：跳过不可派的队首，直接出后续可派任务）。
+  // 找不到或该单处于暂停状态时返回失败，不改变队列内容。
+  PopResult PopById(const std::string& mission_id);
+
   // 返回 true 表示命中并删除；同时清理该订单的暂停标记。
   bool Cancel(const std::string& mission_id);
 

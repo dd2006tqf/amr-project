@@ -95,6 +95,46 @@ const Mission* MissionQueue::Peek() const {
   return it == items_.end() ? nullptr : &*it;
 }
 
+std::vector<Mission> MissionQueue::PeekN(const std::size_t max_count) const {
+  Sort();
+  std::vector<Mission> result;
+  if (max_count == 0) {
+    return result;
+  }
+  for (const auto& item : items_) {
+    if (IsOrderPaused(item.order_id)) {
+      continue;  // 暂停订单不参与出队
+    }
+    result.push_back(item);
+    if (result.size() >= max_count) {
+      break;
+    }
+  }
+  return result;
+}
+
+MissionQueue::PopResult MissionQueue::PopById(const std::string& mission_id) {
+  PopResult result;
+  Sort();
+  const auto it = std::find_if(items_.begin(), items_.end(),
+                               [&mission_id](const Mission& m) { return m.id == mission_id; });
+  if (it == items_.end()) {
+    result.message = "mission not found: " + mission_id;
+    return result;
+  }
+  if (IsOrderPaused(it->order_id)) {
+    result.all_paused = true;
+    result.message = "order is paused: " + it->order_id;
+    return result;
+  }
+  result.mission = *it;
+  result.mission->state = MissionState::kActive;
+  result.success = true;
+  result.message = "dispatched " + it->id;
+  items_.erase(it);
+  return result;
+}
+
 bool MissionQueue::Cancel(const std::string& mission_id) {
   const auto it = std::find_if(items_.begin(), items_.end(),
                                [&mission_id](const Mission& m) { return m.id == mission_id; });

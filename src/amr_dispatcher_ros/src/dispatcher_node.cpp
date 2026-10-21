@@ -39,6 +39,13 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("vda5050_state_stale_sec", 5.0);
   // P0.6 / A4：本调度器管理的 local_sim 车辆清单（逗号分隔 vehicle_id；空 = 单车兼容模式）
   declare_parameter("vehicle_ids", "");
+  // P0.6 / A6：车辆目录（静态）+ 选车参数
+  declare_parameter("fleet_catalog_file", "");
+  declare_parameter("required_capability", "transport");
+  declare_parameter("min_battery_percent", 0.0);
+  declare_parameter("vehicle_state_max_age_ms", 5000);
+  // A6：选车扫描深度（队首阻塞规避）——一次 tick 最多考察前 N 个排队任务
+  declare_parameter("assignment_scan_depth", 8);
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -99,6 +106,12 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 
   // P0.6 / A4：per-vehicle 计划发布端与位姿/到达订阅（空清单 = 单车兼容，零行为变化）
   SetupVehicleTopics(get_parameter("vehicle_ids").as_string());
+
+  // P0.6 / A6：选车上下文（静态目录 + 参数）
+  required_capability_ = get_parameter("required_capability").as_string();
+  min_battery_percent_ = get_parameter("min_battery_percent").as_double();
+  vehicle_state_max_age_ms_ = get_parameter("vehicle_state_max_age_ms").as_int();
+  LoadFleetCatalog();
 
   submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
       "/dispatcher/submit_order",
@@ -453,8 +466,10 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   catalog_reloader_.reset();
   reload_timer_.reset();
   queue_start_requested_ = false;
-  tracking_mission_id_.clear();
-  tracking_vehicle_id_.clear();
+  vehicle_current_mission_.clear();
+  mission_tracking_vehicle_.clear();
+  vehicle_states_.clear();
+  auto_assignment_paused_ = false;
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
 }
@@ -563,9 +578,9 @@ void DispatcherNode::CancelOrderCb(
         if (reservation_table_) {
           reservation_table_->Release(req->mission_id);
         }
-        if (tracking_mission_id_ == req->mission_id) {
-          tracking_mission_id_.clear();
-          PublishStopPathForTrackedVehicle();
+        if (IsMissionTracked(req->mission_id)) {
+          ReleaseTrackingSlot(req->mission_id);
+          PublishStopPathForMission(req->mission_id);
         }
         active_missions_.erase(it);
         // helper：终结 ExecuteMission goal（未受理 action cancel → 降级 abort(3)）
@@ -713,9 +728,9 @@ void DispatcherNode::ForceClearVda5050LinkCb(
                 "VDA 5050 force-clear: aborting in-flight mission %s bound to dead vehicle %s",
                 mission_id.c_str(), req->vehicle_id.c_str());
     // 单车执行槽位释放 + 停车（否则槽位残留，后续任务永远无法派发）
-    if (tracking_mission_id_ == mission_id) {
-      tracking_mission_id_.clear();
-      PublishStopPathForTrackedVehicle();
+    if (IsMissionTracked(mission_id)) {
+      ReleaseTrackingSlot(mission_id);
+      PublishStopPathForMission(mission_id);
     }
     {
       std::lock_guard<std::mutex> lock(active_missions_mutex_);
@@ -831,7 +846,7 @@ void DispatcherNode::EnqueueMissionCb(
     // 启动决策走 queued_mission_start 行为树（start_if_idle 且当前空闲才立即启动）
     amr_dispatcher_bt::QueuedMissionStartBehaviorTreeInput start_input;
     start_input.request.start_if_idle = req->start_if_idle;
-    start_input.request.mission_active = !tracking_mission_id_.empty();
+    start_input.request.mission_active = !HasFreeVehicleSlot();
     const auto start_bt = amr_dispatcher_bt::TickQueuedMissionStartBehaviorTree(start_input);
     if (start_bt.success && start_bt.decision.request_queue_start) {
       queue_start_requested_ = true;
@@ -882,9 +897,9 @@ void DispatcherNode::CancelQueuedMissionCb(
         reservation_table_->Release(req->mission_id);
       }
       // 若被取消的是正在跟踪 /plan 的任务，发空路径停车
-      if (tracking_mission_id_ == req->mission_id) {
-        tracking_mission_id_.clear();
-        PublishStopPathForTrackedVehicle();
+      if (IsMissionTracked(req->mission_id)) {
+        ReleaseTrackingSlot(req->mission_id);
+        PublishStopPathForMission(req->mission_id);
       }
       // 活动任务取消同样收口 action goal 与在途导航 goal（cancel_active 路径，审查 I5）
       CleanupMissionCancel(req->mission_id, "mission canceled by operator");
@@ -1446,9 +1461,9 @@ void DispatcherNode::ProcessActionCancels() {
         if (reservation_table_) {
           reservation_table_->Release(id);
         }
-        if (tracking_mission_id_ == id) {
-          tracking_mission_id_.clear();
-          PublishStopPathForTrackedVehicle();
+        if (IsMissionTracked(id)) {
+          ReleaseTrackingSlot(id);
+          PublishStopPathForMission(id);
         }
         active_missions_.erase(it);
         canceled = true;
@@ -1573,8 +1588,9 @@ void DispatcherNode::ScheduleTick() {
     return;
   }
 
-  // 单车执行模型：同时只有一条 /plan 在跟踪，其余任务保持 active 等待车辆空闲
-  if (!tracking_mission_id_.empty()) {
+  // 执行模型：每台受管车同时只跑一条 /plan（多车则可并发多条）。
+  // 无可用执行槽位 -> 本 tick 不派发（任务留队，等某台车完成或状态变化后重试）。
+  if (!HasFreeVehicleSlot()) {
     return;
   }
 
@@ -1598,7 +1614,7 @@ void DispatcherNode::ScheduleTick() {
   // 行为树出队派发门控：runtime 树按"空闲 + 启动请求"给派发决策，
   // 未请求启动时即使队列有任务也不出队（启动请求由提单/入队/结果链武装）。
   amr_dispatcher_bt::MissionRuntimeBehaviorTreeInput runtime_input;
-  runtime_input.tick.mission_active = !tracking_mission_id_.empty();
+  runtime_input.tick.mission_active = !HasFreeVehicleSlot();
   runtime_input.tick.queue_start_requested = queue_start_requested_;
   const auto runtime_result = amr_dispatcher_bt::TickMissionRuntimeBehaviorTree(runtime_input);
   if (!runtime_result.success || !runtime_result.decision.start_queued_mission) {
@@ -1606,59 +1622,135 @@ void DispatcherNode::ScheduleTick() {
   }
   queue_start_requested_ = false;  // 启动请求被本次派发消费
 
-  // Peek→Reserve→Pop（节点单线程，Peek 与 Pop 之间无竞态）：
-  // 先为队首任务规划路由锁并预留，成功才出队继续派发；失败则任务留在队列、
-  // 发 reservation_denied 事件、重新武装启动请求后本 tick 返回——既不丢任务也不违反封路。
-  const auto* peeked = queue_->Peek();
-  if (!peeked) {
+  // ---- A6 选车（PeekN 扫描 + 三态处理 + 队首阻塞规避）----
+  // 队首任务可能因"暂无合格车辆"而不可派；此时**不能**让整条队列堵死：
+  // 扫描前 N 个排队任务，挑第一个能选到车且能预留锁的。
+  const int64_t scan_depth_param =
+      std::max<int64_t>(1, get_parameter("assignment_scan_depth").as_int());
+  const std::size_t scan_depth = static_cast<std::size_t>(scan_depth_param);
+  const auto candidates = queue_->PeekN(scan_depth);
+  if (candidates.empty()) {
     return;  // 队列任务全部暂停：与 PopNext 失败等价，本 tick 结束
   }
-  const std::string candidate_id = peeked->id;
-  const std::string candidate_order_id = peeked->order_id;
-  std::vector<std::string> route_locks;
-  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
-    route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
-        catalog_reloader_->catalog(), peeked->pickup_station, peeked->dropoff_station);
-  }
-  if (!route_locks.empty() && reservation_table_) {
-    auto reserve = reservation_table_->Reserve(candidate_id, route_locks);
-    if (!reserve.success) {
-      pending_wait_[candidate_id] = route_locks;  // WFG：该任务在等这批锁
-      RCLCPP_WARN(get_logger(), "Reservation denied for queued mission %s: %s",
-                  candidate_id.c_str(), reserve.message.c_str());
-      if (event_pub_ && event_pub_->is_activated()) {
-        amr_dispatcher_interfaces::msg::MissionEvent msg;
-        msg.stamp = now();
-        msg.mission_id = candidate_id;
-        msg.order_id = candidate_order_id;
-        msg.event = "reservation_denied";
-        msg.from_state = "PENDING";
-        msg.to_state = "PENDING";  // 任务留在队列，状态不变
-        msg.reason = reserve.message;
-        event_pub_->publish(msg);
-      }
-      if (event_log_) {
-        amr_dispatcher_core::dispatcher::MissionEvent evt;
-        evt.stamp = "now";
-        evt.mission_id = candidate_id;
-        evt.event = "reservation_denied";
-        evt.message = reserve.message;
-        event_log_->Append(evt);
-      }
-      ReArmQueueStartRequest();  // 队列非空 -> 稍后锁释放时重试派发
-      return;
-    }
-    mission_reserved_at_[candidate_id] = std::chrono::steady_clock::now();
-  }
-  pending_wait_.erase(candidate_id);  // 预留通过（或本轮无锁），历史等待记录作废
 
-  auto pop = queue_->PopNext();
+  struct Candidate {
+    amr_dispatcher_core::dispatcher::Mission mission;
+    std::string vehicle_id;
+    std::vector<std::string> route_locks;
+  };
+  std::vector<Candidate> ready;         // 选到车 + 预留成功的候选（按队列顺序）
+  bool saw_deferred = false;
+  bool saw_indeterminate = false;
+  std::string deferred_reason;
+  std::string indeterminate_reason;
+
+  for (const auto& candidate_mission : candidates) {
+    // 1) 选车（三态）
+    const auto decision = SelectVehicleForMission(candidate_mission);
+    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kDeferred) {
+      saw_deferred = true;
+      deferred_reason = decision.reject_reason;
+      continue;  // 留队等待，下个 tick 重试
+    }
+    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kIndeterminate) {
+      saw_indeterminate = true;
+      indeterminate_reason = decision.reject_reason;
+      continue;  // 状态不确定：暂停自动分配
+    }
+    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kRejected) {
+      // 永久不满足 -> 该单判负（不静默改派）
+      RCLCPP_WARN(get_logger(), "Queued mission %s rejected by vehicle selection: %s",
+                  candidate_mission.id.c_str(), decision.reject_reason.c_str());
+      if (queue_->Cancel(candidate_mission.id)) {
+        RejectedQueuedMission(candidate_mission, decision.reject_reason);
+      }
+      continue;
+    }
+    // 2) 预留路由锁（Peek→Reserve→Pop 原子链：预留成功才出队）
+    std::vector<std::string> route_locks;
+    if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
+      route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
+          catalog_reloader_->catalog(), candidate_mission.pickup_station,
+          candidate_mission.dropoff_station);
+    }
+    if (!route_locks.empty() && reservation_table_) {
+      auto reserve = reservation_table_->Reserve(candidate_mission.id, route_locks);
+      if (!reserve.success) {
+        // 锁被占 -> 该单等锁（留队）；**不占用启动请求**，等锁释放时重试。
+        pending_wait_[candidate_mission.id] = route_locks;
+        RCLCPP_WARN(get_logger(), "Reservation denied for queued mission %s: %s",
+                    candidate_mission.id.c_str(), reserve.message.c_str());
+        if (event_pub_ && event_pub_->is_activated()) {
+          amr_dispatcher_interfaces::msg::MissionEvent msg;
+          msg.stamp = now();
+          msg.mission_id = candidate_mission.id;
+          msg.order_id = candidate_mission.order_id;
+          msg.event = "reservation_denied";
+          msg.from_state = "PENDING";
+          msg.to_state = "PENDING";  // 任务留在队列，状态不变
+          msg.reason = reserve.message;
+          event_pub_->publish(msg);
+        }
+        if (event_log_) {
+          amr_dispatcher_core::dispatcher::MissionEvent evt;
+          evt.stamp = "now";
+          evt.mission_id = candidate_mission.id;
+          evt.event = "reservation_denied";
+          evt.message = reserve.message;
+          event_log_->Append(evt);
+        }
+        continue;  // 换下一个候选（队首阻塞规避）
+      }
+      mission_reserved_at_[candidate_mission.id] = std::chrono::steady_clock::now();
+    }
+    pending_wait_.erase(candidate_mission.id);
+    Candidate ready_candidate;
+    ready_candidate.mission = candidate_mission;
+    ready_candidate.vehicle_id = decision.vehicle_id;
+    ready_candidate.route_locks = std::move(route_locks);
+    ready.push_back(std::move(ready_candidate));
+    break;  // 本 tick 只派一个（保持"一次一个"的节奏与可观测性）
+  }
+
+  if (ready.empty()) {
+    if (saw_indeterminate) {
+      // 状态不确定 -> 暂停自动分配（不消费启动请求，等状态恢复自动继续）
+      auto_assignment_paused_ = true;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Auto vehicle assignment paused: %s", indeterminate_reason.c_str());
+      ReArmQueueStartRequest();
+    } else if (saw_deferred) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Vehicle assignment deferred, mission stays queued: %s",
+                           deferred_reason.c_str());
+      ReArmQueueStartRequest();  // 留队等待，下个 tick 重试
+    }
+    return;
+  }
+  auto_assignment_paused_ = false;
+
+  const std::string candidate_id = ready.front().mission.id;
+  const std::string candidate_order_id = ready.front().mission.order_id;
+  std::vector<std::string> route_locks = std::move(ready.front().route_locks);
+  const std::string dispatch_vehicle_id = ready.front().vehicle_id;
+  // 执行后端（评审 P0.1）：VDA 5050 车自带控制器，不走本地 /plan 运动链。
+  const bool is_vda5050_dispatch =
+      std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(),
+                dispatch_vehicle_id) != vda5050_vehicle_ids_.end();
+
+  auto pop = queue_->PopById(candidate_id);
   if (!pop.success || !pop.mission) {
+    // 出队失败（任务已被取消/暂停）：释放刚预留的锁，保持原子性
+    if (reservation_table_) {
+      reservation_table_->Release(candidate_id);
+    }
+    ReArmQueueStartRequest();
     return;
   }
 
   amr_dispatcher_core::dispatcher::Mission m = *pop.mission;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kActive;
+  m.assigned_vehicle_id = dispatch_vehicle_id;  // 落定承接车辆（审计用）
 
   // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负
   const amr_dispatcher_core::catalog::Station* from_st = nullptr;
@@ -1735,7 +1827,8 @@ void DispatcherNode::ScheduleTick() {
   // Task 6（Task 5 评审 I2）：受管 VDA 5050 车辆的订单发布——存档路径 + 本单持锁
   // 构建 VehicleOrder 并经 /fleet/{vid}/send_order 下发（网关转 MQTT order 话题）。
   // 失败不判负任务：plan/action 执行链照旧，订单缺口仅告警（发布端尽力而为）。
-  PublishVda5050Order(m.id);
+  // 承接车辆由选车决策给出（A6），不再用 round-robin 盲选。
+  PublishVda5050Order(m.id, dispatch_vehicle_id);
 
   // 生成并发布路径：path_tracker 订阅 /plan 后开始输出 /cmd_vel_raw
   amr_dispatcher_core::Pose2D start;
@@ -1747,7 +1840,6 @@ void DispatcherNode::ScheduleTick() {
   const amr_dispatcher_core::Pose2D goal{to_st->x, to_st->y, to_st->yaw};
 
   const auto waypoints = planner_ ? planner_->Plan(start, goal) : std::vector<amr_dispatcher_core::Pose2D>{};
-  const std::string dispatch_vehicle_id = ResolveDispatchVehicleId(m);
   const auto plan_pub = PlanPublisherForVehicle(dispatch_vehicle_id);
   if (waypoints.empty() || !plan_pub || !plan_pub->is_activated()) {
     FailMission(m.id, "planner returned empty path");
@@ -1797,7 +1889,7 @@ void DispatcherNode::ScheduleTick() {
     };
     // 先占住单车执行槽位再发 goal，避免 goal 响应回调前的派发空窗
     pending_nav_mission_id_ = m.id;
-    tracking_mission_id_ = m.id;
+    AssignTrackingSlot(m.id, dispatch_vehicle_id);
     nav_client_->async_send_goal(nav_goal, opts);
 
     RCLCPP_INFO(get_logger(),
@@ -1833,8 +1925,11 @@ void DispatcherNode::ScheduleTick() {
     path_msg.poses.push_back(ps);
   }
   PublishPlanForVehicle(dispatch_vehicle_id, path_msg);
-  tracking_mission_id_ = m.id;
-  tracking_vehicle_id_ = dispatch_vehicle_id;
+  // 执行后端分离（评审 P0.1）：VDA 5050 车自带控制器，不占用本地 /plan 执行槽位，
+  // 其"执行中"由订单状态判定（lastNodeId 推进），完成判定见 Vda5050StateCb。
+  if (!is_vda5050_dispatch) {
+    AssignTrackingSlot(m.id, dispatch_vehicle_id);
+  }
   RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints)",
               m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority,
               m.pickup_station.c_str(), m.dropoff_station.c_str(), waypoints.size());
@@ -1871,24 +1966,29 @@ void DispatcherNode::TrackingErrorCb(
   // plan 模式下必须按周期喂活 progress：path_tracker_node 以 control_rate_hz
   // 持续发布 /tracking/error，若仅 arrived=true 才刷新时间戳，长距离巡航
   // (>10s) 会触发 DeadlockDetector 的 active_idle_threshold 误判并取消任务
-  if (!tracking_mission_id_.empty()) {
-    mission_last_progress_[tracking_mission_id_] = std::chrono::steady_clock::now();
+  // legacy 全局 /tracking/error：只服务"没有车辆归属"的任务（单车兼容路径）。
+  // 多车模式下每台车的 arrived 走 TrackingErrorCbForVehicle。
+  const auto legacy_it = vehicle_current_mission_.find("");
+  if (legacy_it != vehicle_current_mission_.end()) {
+    mission_last_progress_[legacy_it->second] = std::chrono::steady_clock::now();
   }
-  if (!msg->arrived || tracking_mission_id_.empty()) {
+  if (!msg->arrived || legacy_it == vehicle_current_mission_.end()) {
     return;
   }
-  const std::string finished_id = tracking_mission_id_;
-  tracking_mission_id_.clear();
+  const std::string finished_id = legacy_it->second;
+  ReleaseTrackingSlot(finished_id);
   mission_last_progress_[finished_id] = std::chrono::steady_clock::now();
   CompleteMission(finished_id, "arrived at goal");
 }
 
-void DispatcherNode::CompleteMission(const std::string& mission_id, const std::string& reason) {
+void DispatcherNode::CompleteMission(std::string mission_id_in, const std::string& reason) {
+  // 按值接收 mission_id：调用方可能传入 active_missions_ 里的键引用
+  // （如 Vda5050StateCb 的 mission_it->first），而本函数会 erase 该条目——
+  // 引用会随即悬空（e2e 曾复现段错误）。
+  const std::string mission_id = mission_id_in;
   // 单车执行槽位兜底释放：plan 模式由 TrackingErrorCb 先清（幂等）、
   // action 模式由 NavResultCb 收口——此处不清则槽位残留，后续任务永远无法派发（审查 C1）
-  if (tracking_mission_id_ == mission_id) {
-    tracking_mission_id_.clear();
-  }
+  ReleaseTrackingSlot(mission_id);
   std::string order_id;
   {
     std::lock_guard<std::mutex> lock(active_missions_mutex_);
@@ -1954,7 +2054,9 @@ void DispatcherNode::CompleteMission(const std::string& mission_id, const std::s
   ReArmQueueStartRequest();  // 队列非空时重新武装 runtime 树的启动请求
 }
 
-void DispatcherNode::FailMission(const std::string& mission_id, const std::string& reason) {
+void DispatcherNode::FailMission(std::string mission_id_in, const std::string& reason) {
+  // 同 CompleteMission：按值接收，避免调用方传入的 map 键引用在 erase 后悬空
+  const std::string mission_id = mission_id_in;
   std::string order_id;
   amr_dispatcher_core::dispatcher::Mission mission_copy;
   {
@@ -1991,10 +2093,10 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
       reservation_table_->Release(mission_id);
     }
   }
-  if (tracking_mission_id_ == mission_id) {
-    tracking_mission_id_.clear();
+  if (IsMissionTracked(mission_id)) {
     // 发布空路径让 path_tracker 停下
-    PublishStopPathForTrackedVehicle();
+    PublishStopPathForMission(mission_id);
+    ReleaseTrackingSlot(mission_id);
   }
   RCLCPP_WARN(get_logger(), "Mission failed: %s (%s)", mission_id.c_str(), reason.c_str());
   if (event_pub_ && event_pub_->is_activated()) {
@@ -2181,10 +2283,10 @@ void DispatcherNode::DeadlockTick() {
         mission_dispatch_time_.erase(act.mission_id);  // plan 模式无 handle 时的派发时刻遗忘
         ForgetMissionDispatchState(act.mission_id);    // 路由锁记账/等待记录/派发起点遗忘
         // 死锁恢复取消到正在跟踪 /plan 的任务时，必须释放跟踪槽位并停车，
-        // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
-        if (tracking_mission_id_ == act.mission_id) {
-          tracking_mission_id_.clear();
-          PublishStopPathForTrackedVehicle();
+        // 否则执行槽位悬挂导致后续任务永远无法下发。
+        if (IsMissionTracked(act.mission_id)) {
+          ReleaseTrackingSlot(act.mission_id);
+          PublishStopPathForMission(act.mission_id);
         }
         if (event_pub_ && event_pub_->is_activated()) {
           amr_dispatcher_interfaces::msg::MissionEvent msg;
@@ -2315,40 +2417,293 @@ void DispatcherNode::OdomCbForVehicle(const std::string& vehicle_id,
 void DispatcherNode::TrackingErrorCbForVehicle(
     const std::string& vehicle_id, const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
   // A5 收口点：把 arrived 信号路由到"该车正在执行的任务"并完成它。
-  // A4 阶段仅记录事件，避免在多车槽位拆分落地前产生错误的完成语义。
+  // 进度心跳（arrived=false）同样要喂：否则长距离巡航会被死锁检测判为 idle 取消。
+  const auto it = vehicle_current_mission_.find(vehicle_id);
+  if (it == vehicle_current_mission_.end()) {
+    return;  // 该车当前没有在途任务：幂等忽略（重复 arrived / 迟到的信号）
+  }
+  const std::string mission_id = it->second;
+  mission_last_progress_[mission_id] = std::chrono::steady_clock::now();
   if (!msg->arrived) {
     return;
   }
-  RCLCPP_INFO(get_logger(),
-              "P0.6: vehicle %s reported arrived (mission completion routing is Task A5)",
-              vehicle_id.c_str());
+  ReleaseTrackingSlot(mission_id);
+  mission_last_progress_[mission_id] = std::chrono::steady_clock::now();
+  RCLCPP_INFO(get_logger(), "P0.6: vehicle %s arrived -> completing mission %s",
+              vehicle_id.c_str(), mission_id.c_str());
+  CompleteMission(mission_id, "arrived at goal");
 }
 
 std::string DispatcherNode::ResolveDispatchVehicleId(
     const amr_dispatcher_core::dispatcher::Mission& mission) {
-  // A4 阶段只认"任务显式指定且在本调度器清单内"的车辆；
-  // 自动选车属 A5/A6（core/fleet/vehicle_assignment.hpp）。
-  if (mission.assigned_vehicle_id.empty()) {
-    return "";
+  // A6：显式指定优先（必须在受管清单内），否则由选车策略决定。
+  // 返回空串 = 未选到车（调度侧已据三态结果处理留队/暂停/拒绝）。
+  const auto decision = SelectVehicleForMission(mission);
+  switch (decision.outcome) {
+    case amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned:
+      return decision.vehicle_id;
+    case amr_dispatcher_core::fleet::AssignmentOutcome::kDeferred:
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Mission %s: vehicle assignment deferred (%s)",
+                           mission.id.c_str(), decision.reject_reason.c_str());
+      return "";
+    case amr_dispatcher_core::fleet::AssignmentOutcome::kIndeterminate:
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Mission %s: vehicle state indeterminate (%s) — auto assignment paused",
+                           mission.id.c_str(), decision.reject_reason.c_str());
+      return "";
+    case amr_dispatcher_core::fleet::AssignmentOutcome::kRejected:
+      RCLCPP_WARN(get_logger(), "Mission %s: vehicle assignment rejected: %s",
+                  mission.id.c_str(), decision.reject_reason.c_str());
+      return "";
   }
-  for (const auto& id : vehicle_ids_) {
-    if (id == mission.assigned_vehicle_id) {
-      return id;
-    }
-  }
-  RCLCPP_WARN(get_logger(),
-              "Mission %s requests vehicle '%s' which is not in vehicle_ids — falling back "
-              "to the legacy single-vehicle plan channel",
-              mission.id.c_str(), mission.assigned_vehicle_id.c_str());
   return "";
 }
 
-void DispatcherNode::PublishStopPathForTrackedVehicle() {
+// ---- P0.6 / A6：车辆目录 + 选车上下文 ----
+
+void DispatcherNode::RejectedQueuedMission(
+    const amr_dispatcher_core::dispatcher::Mission& mission, const std::string& reason) {
+  // 选车永久拒绝：任务判负（不进 active_missions_，走不到 Complete/Fail 的终态清理）
+  RCLCPP_WARN(get_logger(), "Queued mission %s rejected: %s", mission.id.c_str(), reason.c_str());
+  if (reservation_table_) {
+    reservation_table_->Release(mission.id);
+  }
+  ForgetMissionDispatchState(mission.id);
+  FinishExecuteGoal(mission.id, ExecuteFinish::kAbort,
+                    "vehicle selection rejected: " + reason, 1);
+  if (event_pub_ && event_pub_->is_activated()) {
+    amr_dispatcher_interfaces::msg::MissionEvent msg;
+    msg.stamp = now();
+    msg.mission_id = mission.id;
+    msg.order_id = mission.order_id;
+    msg.event = "failed";
+    msg.from_state = "PENDING";
+    msg.to_state = "FAILED";
+    msg.reason = "vehicle selection rejected: " + reason;
+    event_pub_->publish(msg);
+  }
+  if (event_log_) {
+    amr_dispatcher_core::dispatcher::MissionEvent evt;
+    evt.stamp = "now";
+    evt.mission_id = mission.id;
+    evt.event = "failed";
+    evt.message = "vehicle selection rejected: " + reason;
+    event_log_->Append(evt);
+  }
+  ReArmQueueStartRequest();  // 该单丢弃后，队列中其余任务仍需能被派发
+}
+
+
+void DispatcherNode::LoadFleetCatalog() {
+  const std::string fleet_file = get_parameter("fleet_catalog_file").as_string();
+  if (fleet_file.empty()) {
+    // 无目录：受管车 = vehicle_ids（local_sim）+ vda5050_vehicles（外部车），
+    // 静态字段取默认值（enabled=true、能力不限）。
+    vehicle_states_.clear();
+    for (const auto& vehicle_id : vehicle_ids_) {
+      amr_dispatcher_core::fleet::VehicleRuntimeState state;
+      state.vehicle_id = vehicle_id;
+      state.backend = amr_dispatcher_core::fleet::VehicleExecutionBackend::kLocalSim;
+      state.enabled = true;
+      state.online = true;
+      state.busy = false;
+      state.battery_percent = 100.0;
+      state.position_valid = false;
+      vehicle_states_[vehicle_id] = state;
+    }
+    for (const auto& vehicle_id : vda5050_vehicle_ids_) {
+      amr_dispatcher_core::fleet::VehicleRuntimeState state;
+      state.vehicle_id = vehicle_id;
+      state.backend = amr_dispatcher_core::fleet::VehicleExecutionBackend::kVda5050;
+      state.enabled = true;
+      state.online = true;
+      state.busy = false;
+      state.battery_percent = 100.0;
+      state.position_valid = false;
+      vehicle_states_[vehicle_id] = state;
+    }
+    return;
+  }
+  const auto catalog = amr_dispatcher_core::fleet::LoadFleetCatalog(fleet_file);
+  if (!catalog.has_value()) {
+    RCLCPP_ERROR(get_logger(),
+                 "Failed to load fleet catalog %s — vehicle selection falls back to the "
+                 "managed vehicle lists with default static fields",
+                 fleet_file.c_str());
+    return;
+  }
+  for (const auto& robot : catalog->robots) {
+    amr_dispatcher_core::fleet::VehicleRuntimeState state;
+    state.vehicle_id = robot.id;
+    amr_dispatcher_core::fleet::VehicleExecutionBackend backend =
+        amr_dispatcher_core::fleet::VehicleExecutionBackend::kLocalSim;
+    amr_dispatcher_core::fleet::ParseVehicleBackend(robot.backend, &backend);
+    state.backend = backend;
+    state.enabled = robot.enabled;
+    state.capabilities = robot.capabilities;
+    state.online = true;
+    state.busy = false;
+    state.battery_percent = 100.0;
+    state.position_valid = false;
+    state.current_station_id = robot.current_station_id;
+    vehicle_states_[robot.id] = state;
+  }
+  RCLCPP_INFO(get_logger(), "Loaded %zu vehicle(s) from fleet catalog %s",
+              vehicle_states_.size(), fleet_file.c_str());
+}
+
+void DispatcherNode::RefreshVehicleStates() {
+  // local_sim 车的位置来源：/odom/{vid}
+  for (auto& [vehicle_id, state] : vehicle_states_) {
+    if (state.backend != amr_dispatcher_core::fleet::VehicleExecutionBackend::kLocalSim) {
+      continue;
+    }
+    const auto pose_it = vehicle_poses_.find(vehicle_id);
+    if (pose_it == vehicle_poses_.end() || !pose_it->second.has_odom) {
+      state.position_valid = false;
+      continue;
+    }
+    state.position_x = pose_it->second.pose.x;
+    state.position_y = pose_it->second.pose.y;
+    state.position_valid = true;
+    state.state_time = std::chrono::steady_clock::now();
+    state.busy = IsVehicleBusy(vehicle_id);
+  }
+  // VDA 5050 车的位置/电量来源：/fleet/{vid}/state
+  for (const auto& vehicle_id : vda5050_vehicle_ids_) {
+    auto it = vehicle_states_.find(vehicle_id);
+    if (it == vehicle_states_.end()) {
+      continue;
+    }
+    auto& state = it->second;
+    const auto link_it = vda5050_links_.find(vehicle_id);
+    if (link_it == vda5050_links_.end()) {
+      continue;
+    }
+    state.online = link_it->second.online;
+    state.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    state.busy = !vda5050_mission_vehicle_.empty() &&
+                 std::any_of(vda5050_mission_vehicle_.begin(), vda5050_mission_vehicle_.end(),
+                             [&](const auto& entry) { return entry.second == vehicle_id; });
+    if (link_it->second.seen_state) {
+      state.state_time = link_it->second.last_state_time;
+      state.position_valid = link_it->second.position_valid;
+      state.position_x = link_it->second.position_x;
+      state.position_y = link_it->second.position_y;
+      state.battery_percent = link_it->second.battery_percent;
+    }
+  }
+}
+
+amr_dispatcher_core::fleet::VehicleAssignmentRequest DispatcherNode::BuildAssignmentRequest(
+    const amr_dispatcher_core::dispatcher::Mission& mission) {
+  amr_dispatcher_core::fleet::VehicleAssignmentRequest request;
+  request.requested_vehicle_id = mission.assigned_vehicle_id;
+  request.pickup_station_id = mission.pickup_station;
+  request.dropoff_station_id = mission.dropoff_station;
+  request.required_capability = required_capability_;
+  request.min_battery_percent = min_battery_percent_;
+  request.state_max_age_ms = vehicle_state_max_age_ms_;
+  RefreshVehicleStates();
+  // 保序：vehicle_states_ 是 unordered_map，遍历序不稳定 -> 先按 id 排序，
+  // 保证同分时裁决顺序确定（核心按输入顺序 tiebreak）。
+  std::vector<std::string> ordered_ids;
+  ordered_ids.reserve(vehicle_states_.size());
+  for (const auto& [id, _] : vehicle_states_) {
+    ordered_ids.push_back(id);
+  }
+  std::sort(ordered_ids.begin(), ordered_ids.end());
+  for (const auto& id : ordered_ids) {
+    request.vehicles.push_back(vehicle_states_.at(id));
+  }
+  // 到取货点的路网成本（评审问题 3：路网路径成本，非欧氏距离）
+  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() && !mission.pickup_station.empty()) {
+    const auto& catalog = catalog_reloader_->catalog();
+    for (const auto& id : ordered_ids) {
+      const auto& state = vehicle_states_.at(id);
+      const auto cost = amr_dispatcher_core::fleet::EstimateVehicleApproachCost(
+          catalog, state.position_x, state.position_y, state.current_station_id,
+          mission.pickup_station);
+      if (cost.has_value()) {
+        request.distance_to_pickup_m[id] = *cost;
+      }
+    }
+  }
+  return request;
+}
+
+amr_dispatcher_core::fleet::VehicleAssignmentDecision DispatcherNode::SelectVehicleForMission(
+    const amr_dispatcher_core::dispatcher::Mission& mission) {
+  const auto request = BuildAssignmentRequest(mission);
+  return amr_dispatcher_core::fleet::PlanVehicleAssignment(request);
+}
+
+// ---- P0.6 / A5：per-vehicle 执行槽位 ----
+// 槽位键 = 车辆 id；legacy 模式（无受管车清单）用空串作唯一槽位，
+// 语义与改动前的单个 tracking_mission_id_ 逐字等价。
+bool DispatcherNode::AssignTrackingSlot(const std::string& mission_id,
+                                        const std::string& vehicle_id) {
+  // 同一台车已有在途任务 -> 不抢占（多车并发下必须一台车一条路径）
+  const auto busy_it = vehicle_current_mission_.find(vehicle_id);
+  if (busy_it != vehicle_current_mission_.end() && busy_it->second != mission_id) {
+    RCLCPP_WARN(get_logger(),
+                "Tracking slot for vehicle '%s' is busy (mission %s); mission %s not dispatched",
+                vehicle_id.c_str(), busy_it->second.c_str(), mission_id.c_str());
+    return false;
+  }
+  vehicle_current_mission_[vehicle_id] = mission_id;
+  mission_tracking_vehicle_[mission_id] = vehicle_id;
+  return true;
+}
+
+std::string DispatcherNode::ReleaseTrackingSlot(const std::string& mission_id) {
+  const auto it = mission_tracking_vehicle_.find(mission_id);
+  if (it == mission_tracking_vehicle_.end()) {
+    return "";
+  }
+  const std::string vehicle_id = it->second;
+  mission_tracking_vehicle_.erase(it);
+  const auto cur_it = vehicle_current_mission_.find(vehicle_id);
+  if (cur_it != vehicle_current_mission_.end() && cur_it->second == mission_id) {
+    vehicle_current_mission_.erase(cur_it);
+  }
+  return vehicle_id;
+}
+
+bool DispatcherNode::IsMissionTracked(const std::string& mission_id) const {
+  return mission_tracking_vehicle_.find(mission_id) != mission_tracking_vehicle_.end();
+}
+
+bool DispatcherNode::IsVehicleBusy(const std::string& vehicle_id) const {
+  return vehicle_current_mission_.find(vehicle_id) != vehicle_current_mission_.end();
+}
+
+bool DispatcherNode::HasAnyManagedVehicle() const {
+  // 是否有受管车清单（local_sim 或 vda5050）。空 = legacy 单车模式。
+  return !vehicle_ids_.empty() || !vda5050_vehicle_ids_.empty();
+}
+
+bool DispatcherNode::HasFreeVehicleSlot() const {
+  // 无受管车清单 -> legacy 单槽位（空串键）语义
+  if (vehicle_ids_.empty()) {
+    return vehicle_current_mission_.find("") == vehicle_current_mission_.end();
+  }
+  for (const auto& vehicle_id : vehicle_ids_) {
+    if (!IsVehicleBusy(vehicle_id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void DispatcherNode::PublishStopPathForMission(const std::string& mission_id) {
+  const auto it = mission_tracking_vehicle_.find(mission_id);
+  const std::string vehicle_id = (it == mission_tracking_vehicle_.end()) ? std::string() : it->second;
   nav_msgs::msg::Path empty;
   empty.header.stamp = now();
   empty.header.frame_id = "map";
-  PublishPlanForVehicle(tracking_vehicle_id_, empty);
-  tracking_vehicle_id_.clear();
+  PublishPlanForVehicle(vehicle_id, empty);
 }
 
 void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
@@ -2422,7 +2777,8 @@ void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
               joined.c_str(), vda5050_state_stale_sec_);
 }
 
-void DispatcherNode::PublishVda5050Order(const std::string& mission_id) {
+void DispatcherNode::PublishVda5050Order(const std::string& mission_id,
+                                        const std::string& assigned_vehicle_id) {
   if (vda5050_vehicle_ids_.empty()) {
     return;  // 未配置受管 VDA 5050 车辆：无订单发布（现网行为不变）
   }
@@ -2453,11 +2809,16 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id) {
       held_locks.insert(resource_id);
     }
   }
-  // 车辆绑定：保序清单上的 round-robin（简单策略，可换 first-free 而不影响契约；
-  // 单车配置下结果恒定）。游标先取后进，跨单轮转。
-  const std::size_t idx = vda5050_rr_cursor_ % vda5050_vehicle_ids_.size();
-  vda5050_rr_cursor_ = (vda5050_rr_cursor_ + 1) % vda5050_vehicle_ids_.size();
-  const std::string vehicle_id = vda5050_vehicle_ids_[idx];
+  // 车辆绑定：优先用选车决策给出的承接车辆（A6）；为空时回落到保序清单上的
+  // round-robin（单车配置下结果恒定，与改动前一致）。
+  std::string vehicle_id = assigned_vehicle_id;
+  if (vehicle_id.empty() ||
+      std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(), vehicle_id) ==
+          vda5050_vehicle_ids_.end()) {
+    const std::size_t idx = vda5050_rr_cursor_ % vda5050_vehicle_ids_.size();
+    vda5050_rr_cursor_ = (vda5050_rr_cursor_ + 1) % vda5050_vehicle_ids_.size();
+    vehicle_id = vda5050_vehicle_ids_[idx];
+  }
   const std::uint32_t update_id = vda5050_next_order_update_id_[vehicle_id]++;
   const auto& catalog = catalog_reloader_->catalog();
 
@@ -2513,6 +2874,11 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
   if (link_it != vda5050_links_.end()) {
     link_it->second.seen_state = true;
     link_it->second.last_state_time = std::chrono::steady_clock::now();
+    // 选车输入：最近一帧的定位与电量（位置不可用 -> 该车不合格）
+    link_it->second.position_valid = report->agv_position_initialized;
+    link_it->second.position_x = report->x;
+    link_it->second.position_y = report->y;
+    link_it->second.battery_percent = report->battery_percent;
     if (!link_it->second.online) {
       // 离线期间收到 state 绝不可回置 online=true：DDS 跨话题乱序可能把断链前
       // 的最后一帧 state 排在 online=false 之后送达，若据此回置，链路会"永久
@@ -2529,8 +2895,8 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
                            vehicle_id.c_str());
     }
   }
-  if (report->order_id.empty() || !reservation_table_) {
-    return;
+  if (report->order_id.empty()) {
+    return;  // 无在途订单的 state（心跳/空订单）：不参与任务闭环
   }
   // 订单 -> 在途任务：网关订单 order_id = mission_id（BuildVda5050OrderFromPath），
   // 兼容按 Mission.order_id 业务号匹配
@@ -2546,9 +2912,15 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
   if (mission_it == active_missions_.end()) {
     return;  // 非本调度器在途任务的 state（重复/迟到/他人单）：幂等忽略，不碰锁
   }
+  // 进度心跳：state 到达即刷新（VDA 5050 车不走 /tracking/error，
+  // 若不喂 progress，长距离巡航会被死锁检测判为 idle 并取消任务）。
+  mission_last_progress_[mission_it->first] = std::chrono::steady_clock::now();
   const auto path_it = mission_route_paths_.find(mission_it->first);
   if (path_it == mission_route_paths_.end() || path_it->second.empty()) {
     return;  // 该单无行驶路径存档（无 pickup 等）：不参与动态解锁
+  }
+  if (!reservation_table_) {
+    return;  // 预约表不可用：不解锁、不判完成
   }
   // Rule 1（Spec §5.3）：按确认位置回推身后锁，仅释放本任务持有且已整段越过的部分
   std::unordered_map<std::string, std::string> held_locks;
@@ -2563,32 +2935,48 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
                 vehicle_id.c_str(), report->order_id.c_str(), decision.message.c_str());
     return;
   }
-  if (decision.lock_ids_to_release.empty()) {
-    return;  // 幂等：无新增可释放（已释放/足迹/前方锁）
+  if (!decision.lock_ids_to_release.empty()) {
+    const auto released = reservation_table_->ReleaseResources(mission_it->first,
+                                                               decision.lock_ids_to_release);
+    if (!released.empty()) {
+      std::string joined;
+      for (const auto& lock_id : released) {
+        if (!joined.empty()) joined += ",";
+        joined += lock_id;
+      }
+      RCLCPP_INFO(get_logger(),
+                  "Dynamic unlock (Spec 5.3): vehicle %s at %s -> mission %s released %zu lock(s): %s",
+                  vehicle_id.c_str(), report->last_node_id.c_str(), mission_it->first.c_str(),
+                  released.size(), joined.c_str());
+      if (event_log_) {
+        amr_dispatcher_core::dispatcher::MissionEvent evt;
+        evt.stamp = "now";
+        evt.mission_id = mission_it->first;
+        evt.event = "dynamic_unlock";
+        evt.message = "vehicle " + vehicle_id + " at " + report->last_node_id + " released " + joined;
+        event_log_->Append(evt);
+      }
+      ReArmQueueStartRequest();  // 唤醒排队等待这批锁的后车重试派发
+    }
   }
-  const auto released = reservation_table_->ReleaseResources(mission_it->first,
-                                                             decision.lock_ids_to_release);
-  if (released.empty()) {
-    return;
+
+  // ---- VDA 5050 完成判定（评审 P0.1）----
+  // 外部标准协议车自带控制器，**没有** /plan 也没有 /tracking/error：
+  // "任务完成" = state 报文的 lastNodeId 推进到订单终点。
+  // 若仍用 /tracking/error 的 arrived 判完成，多车场景会张冠李戴。
+  // 判定放在逐段解锁**之后**：到达终点的那一帧同时要释放身后的锁（Spec §5.3）。
+  if (report->last_node_id != path_it->second.back()) {
+    return;  // 未到终点：继续在途
   }
-  std::string joined;
-  for (const auto& lock_id : released) {
-    if (!joined.empty()) joined += ",";
-    joined += lock_id;
+  const auto bind_it = vda5050_mission_vehicle_.find(mission_it->first);
+  if (bind_it != vda5050_mission_vehicle_.end() && bind_it->second != vehicle_id) {
+    return;  // 该单绑定的是别的车：不误判完成
   }
   RCLCPP_INFO(get_logger(),
-              "Dynamic unlock (Spec 5.3): vehicle %s at %s -> mission %s released %zu lock(s): %s",
-              vehicle_id.c_str(), report->last_node_id.c_str(), mission_it->first.c_str(),
-              released.size(), joined.c_str());
-  if (event_log_) {
-    amr_dispatcher_core::dispatcher::MissionEvent evt;
-    evt.stamp = "now";
-    evt.mission_id = mission_it->first;
-    evt.event = "dynamic_unlock";
-    evt.message = "vehicle " + vehicle_id + " at " + report->last_node_id + " released " + joined;
-    event_log_->Append(evt);
-  }
-  ReArmQueueStartRequest();  // 唤醒排队等待这批锁的后车重试派发
+              "VDA 5050 vehicle %s reached final node %s -> completing mission %s",
+              vehicle_id.c_str(), report->last_node_id.c_str(), mission_it->first.c_str());
+  // 原因串保持 "arrived at goal" —— 完成日志是既有可观测契约（e2e 断言依赖）。
+  CompleteMission(mission_it->first, "arrived at goal");
 }
 
 void DispatcherNode::Vda5050OnlineCb(const std::string& vehicle_id,

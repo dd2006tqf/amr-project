@@ -93,17 +93,11 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
     }
     const auto& vehicle = *it;
     decision.blocking_vehicle_id = vehicle.vehicle_id;
+    // 永久不满足（不会自行恢复，需人或运维改配置）-> 拒绝
     if (!vehicle.enabled) {
       decision.outcome = AssignmentOutcome::kRejected;
       decision.strategy = "rejected";
       decision.reject_reason = "vehicle '" + vehicle.vehicle_id + "' is disabled";
-      return decision;
-    }
-    if (vehicle.quarantined) {
-      decision.outcome = AssignmentOutcome::kRejected;
-      decision.strategy = "rejected";
-      decision.reject_reason = "vehicle '" + vehicle.vehicle_id +
-                              "' is quarantined — restore it before assigning tasks";
       return decision;
     }
     if (!VehicleHasCapability(vehicle, capability)) {
@@ -119,9 +113,17 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
       decision.reject_reason = "vehicle '" + vehicle.vehicle_id + "' battery below threshold";
       return decision;
     }
+    // 暂时不可用（会自行恢复）-> 留队等待，不判负
+    if (vehicle.quarantined) {
+      decision.outcome = AssignmentOutcome::kDeferred;
+      decision.strategy = "deferred";
+      decision.reject_reason = "vehicle '" + vehicle.vehicle_id +
+                              "' is quarantined — restore it before assigning tasks";
+      return decision;
+    }
     if (!vehicle.online) {
-      decision.outcome = AssignmentOutcome::kRejected;
-      decision.strategy = "rejected";
+      decision.outcome = AssignmentOutcome::kDeferred;
+      decision.strategy = "deferred";
       decision.reject_reason = "vehicle '" + vehicle.vehicle_id + "' is offline";
       return decision;
     }
@@ -144,6 +146,8 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
   bool saw_never_seen = false;   // 从未收到状态的车
   bool saw_stale = false;        // 状态超龄的车
   bool saw_busy = false;
+  bool saw_offline = false;      // 链路离线（暂时）
+  bool saw_quarantined = false;  // 隔离态（暂时，待人工恢复）
   bool saw_no_position = false;
   bool saw_capable = false;
   std::vector<std::string> blockers;
@@ -158,10 +162,12 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
       continue;
     }
     if (vehicle.quarantined) {
+      saw_quarantined = true;
       blockers.push_back(vehicle.vehicle_id + ":quarantined");
       continue;
     }
     if (!vehicle.online) {
+      saw_offline = true;
       blockers.push_back(vehicle.vehicle_id + ":offline");
       continue;
     }
@@ -204,6 +210,16 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
       decision.outcome = AssignmentOutcome::kDeferred;
       decision.strategy = "deferred";
       decision.reject_reason = "all eligible vehicles are busy";
+    } else if (saw_offline) {
+      // 全部车离线 -> 暂时不可用：任务留队等待链路恢复（不是永久失败）
+      decision.outcome = AssignmentOutcome::kDeferred;
+      decision.strategy = "deferred";
+      decision.reject_reason = "all eligible vehicles are offline";
+    } else if (saw_quarantined) {
+      // 全部车被隔离 -> 暂时不可用：等操作员恢复
+      decision.outcome = AssignmentOutcome::kDeferred;
+      decision.strategy = "deferred";
+      decision.reject_reason = "all eligible vehicles are quarantined";
     } else if (saw_stale) {
       decision.outcome = AssignmentOutcome::kDeferred;
       decision.strategy = "deferred";

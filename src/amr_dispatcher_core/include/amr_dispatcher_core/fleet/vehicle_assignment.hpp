@@ -54,6 +54,10 @@ struct VehicleRuntimeState {
   bool busy = false;    // 已被在途任务占用
   double battery_percent = 100.0;
   bool position_valid = false;  // 位置是否可信（来自新鲜定位状态）
+  // 车辆当前位置（map 坐标，米）。current_station_id 为空（车不在已知站点上）
+  // 时，用它 + 站点目录算"最近站点 -> 取货点"的路网成本。
+  double position_x = 0.0;
+  double position_y = 0.0;
   std::string current_station_id;
   std::chrono::steady_clock::time_point state_time{};  // 状态采集时刻（新鲜度判定）
   bool quarantined = false;  // 隔离态（人工强清后）——不合格但可恢复
@@ -111,9 +115,9 @@ bool VehicleStateIsFresh(const VehicleRuntimeState& vehicle, int64_t state_max_a
 //   1. `vehicles` 为空 -> kRejected("no managed vehicles configured")。
 //   2. **显式指定**：
 //      - 该车不在清单 -> kRejected（不静默改派）
-//      - 该车 disabled / quarantined / 缺能力 / 电量不足 -> kRejected（点名不豁免硬约束）
-//      - 该车 offline -> kRejected
-//      - 该车 busy -> **kDeferred**（车忙是暂时的，任务留队等它空闲）
+//      - 该车 disabled / 缺能力 / 电量不足 -> kRejected（点名不豁免硬约束）
+//      - 该车 offline / busy / quarantined -> **kDeferred**（这些都是**暂时**状态：
+//        任务留队等它恢复，而不是判负——"暂时不可用"与"永久不满足"必须分开）
 //      - 否则 -> kAssigned, strategy="explicit"
 //        （显式指定豁免位置有效性与状态新鲜度：人工知道车在哪）
 //   3. **自动选车**：逐车评估，硬约束全部满足才合格：
@@ -125,6 +129,13 @@ bool VehicleStateIsFresh(const VehicleRuntimeState& vehicle, int64_t state_max_a
 //      - 全部车都忙 -> kDeferred（任务留队）
 //      - 有合格车但距离都不可算 -> kRejected（宁可不动也不盲派）
 //      - 否则按路径成本升序取最近 -> kAssigned, strategy="nearest"
+//
+// **暂时 vs 永久的分类判据**（评审"失败 vs 排队矛盾"的落点）：
+//   暂时（kDeferred，任务留队等待）：offline / busy / quarantined / 状态陈旧 /
+//     位置未就绪 —— 这些都会随时间自行恢复。
+//   永久（kRejected，任务判负）：车不在清单 / disabled / 缺能力 / 电量低于阈值 ——
+//     这些不会自行恢复，需要人或运维改配置。
+//   不确定（kIndeterminate，暂停自动分配）：从未收到状态报文。
 VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& request);
 
 }  // namespace amr_dispatcher_core::fleet

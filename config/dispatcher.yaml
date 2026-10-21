@@ -13,3 +13,11 @@ dispatcher_node:
     recovery_dock_station: "station_charge_1"
     navigation_backend: "plan"
     path_step_size_m: 0.1
+    # P0.6 / A6：多车选车参数
+    # fleet_catalog_file: 车辆静态目录（空 = 用 vehicle_ids / vda5050_vehicles 清单 + 默认静态字段）
+    fleet_catalog_file: ""
+    required_capability: "transport"
+    min_battery_percent: 0.0
+    vehicle_state_max_age_ms: 5000
+    # 队首阻塞规避：一次 tick 最多考察前 N 个排队任务
+    assignment_scan_depth: 8

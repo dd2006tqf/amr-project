@@ -77,13 +77,15 @@ TEST(VehicleAssignmentTest, ExplicitVehicle_Unknown_IsRejected_NotReassigned) {
   EXPECT_TRUE(d.vehicle_id.empty());
 }
 
-TEST(VehicleAssignmentTest, ExplicitVehicle_Offline_IsRejected) {
+TEST(VehicleAssignmentTest, ExplicitVehicle_Offline_IsDeferred_NotRejected) {
+  // 离线是**暂时**状态（会自行恢复）：任务留队等待，而不是判负
   auto v = Fresh("v1");
   v.online = false;
   auto req = MakeRequest({v});
   req.requested_vehicle_id = "v1";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+  EXPECT_EQ(d.strategy, "deferred");
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_Disabled_IsRejected) {
@@ -95,13 +97,14 @@ TEST(VehicleAssignmentTest, ExplicitVehicle_Disabled_IsRejected) {
   EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
 }
 
-TEST(VehicleAssignmentTest, ExplicitVehicle_Quarantined_IsRejected) {
+TEST(VehicleAssignmentTest, ExplicitVehicle_Quarantined_IsDeferred_NotRejected) {
+  // 隔离态待人工恢复：任务留队等待，不判负
   auto v = Fresh("v1");
   v.quarantined = true;
   auto req = MakeRequest({v});
   req.requested_vehicle_id = "v1";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_MissingCapability_IsRejected) {
@@ -267,6 +270,35 @@ TEST(VehicleAssignmentTest, AutoSelect_NoEligible_RejectedWithReason) {
 TEST(VehicleAssignmentTest, EmptyVehicleList_Rejected) {
   auto req = MakeRequest({});
   const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_AllOffline_IsDeferred_NotRejected) {
+  auto v = Fresh("v1");
+  v.online = false;
+  auto req = MakeRequest({v});
+  req.distance_to_pickup_m = {{"v1", 1.0}};
+  const auto d = fleet::PlanVehicleAssignment(req);
+  // 全部车离线 -> 暂时不可用：留队等链路恢复
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_AllQuarantined_IsDeferred) {
+  auto v = Fresh("v1");
+  v.quarantined = true;
+  auto req = MakeRequest({v});
+  req.distance_to_pickup_m = {{"v1", 1.0}};
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_DisabledOnly_IsRejected_Permanent) {
+  auto v = Fresh("v1");
+  v.enabled = false;
+  auto req = MakeRequest({v});
+  req.distance_to_pickup_m = {{"v1", 1.0}};
+  const auto d = fleet::PlanVehicleAssignment(req);
+  // 禁用是永久状态（需运维改配置）-> 拒绝
   EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
 }
 

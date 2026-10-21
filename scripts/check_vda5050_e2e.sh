@@ -1157,8 +1157,9 @@ if echo "${RESV_AFTER}" | grep -q "e2e_m5"; then
 fi
 echo "[Stage 6.8] 强清后锁表已无 e2e_m5 残留 (PASS)"
 
-# 6.8.4 断言守卫挂起解除：新提交的 e2e_m4 应能派发（而非继续 Dispatch suspended）
-echo "[Stage 6.8] 验证强清后调度挂起解除（提交 e2e_m4）..."
+# 6.8.4 隔离语义：新任务【不得】派给被隔离的车辆（任务留队，不判负）
+# 评审 P0.5：强清改隔离而非摘车——车辆仍在受管清单，但不再参与自动分配。
+echo "[Stage 6.8] 隔离语义验证：新任务不得派给被隔离车辆（提交 e2e_m4）..."
 SUBMIT_M4=$(python3 - <<EOF
 import urllib.request, sys
 url = "http://127.0.0.1:${REST_PORT}/api/v1/orders?id=e2e_m4&from=station_dropoff_B&to=station_pickup_A&prio=5"
@@ -1177,11 +1178,14 @@ fi
 if ! echo "${SUBMIT_M4}" | grep -q '"accepted":true'; then
     fail "REST 拒绝 e2e_m4 提单: ${SUBMIT_M4}"
 fi
-echo "[Stage 6.8] e2e_m4 已提交，等待派发（断言守卫挂起解除）..."
-if ! wait_log "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log" 20; then
-    fail "ForceClear 后新任务 e2e_m4 未能在 20s 内派发 —— 挂起守卫未解除"
+sleep 6.0
+if grep -q "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log"; then
+    fail "被隔离车辆仍被派发新任务 e2e_m4 —— 隔离语义失效"
 fi
-echo "[Stage 6.8] 强清后调度挂起成功解除 (PASS)"
+if ! grep -q "all eligible vehicles are quarantined" "${TMP_DIR}/dispatcher.log"; then
+    fail "未观测到隔离导致的选车暂缓日志（任务应留队等待恢复）"
+fi
+echo "[Stage 6.8] 隔离车辆未被派发新任务、任务留队 (PASS)"
 
 # 6.8.5 恢复流程：操作员确认车辆位置已核实后方可解除隔离
 # 前提：恢复要求车辆【在线】（离线车连状态都报不上，回池只会再次触发挂起），
@@ -1220,6 +1224,13 @@ if ! echo "${RESTORE_RESULT}" | grep -q "success=True"; then
     fail "RestoreVda5050Link 未被受理成功: ${RESTORE_RESULT}"
 fi
 echo "[Stage 6.8] 隔离态恢复成功 (PASS)"
+
+# 恢复后车辆重新参与分配：留队的 e2e_m4 应当被派发
+echo "[Stage 6.8] 验证恢复后 e2e_m4 被派发..."
+if ! wait_log "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log" 25; then
+    fail "恢复隔离后留队任务 e2e_m4 未能在 25s 内派发 —— 车辆未重新参与分配"
+fi
+echo "[Stage 6.8] 恢复后车辆重新参与分配，e2e_m4 已派发 (PASS)"
 echo "[Stage 6.8] 人工强清离线链路验收完成 (PASS)"
 
 # ==============================================================================
