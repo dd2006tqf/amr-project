@@ -78,6 +78,7 @@ add_library(${PROJECT_NAME}
   src/workflow/mission_event_log.cpp
   src/workflow/traffic_planning.cpp
   src/workflow/dynamic_unlocking.cpp
+  src/workflow/time_space_planning.cpp
   src/workflow/workflow_control.cpp
   src/workflow/mission_estimator.cpp
   src/workflow/mission_preflight.cpp
@@ -153,6 +154,7 @@ if(BUILD_TESTING)
     test_workflow_mission_event_log
     test_traffic_planning
     test_dynamic_unlocking
+    test_time_space_planning
     test_workflow_control
     test_station_transport_workflow
     test_station_sequence_workflow
