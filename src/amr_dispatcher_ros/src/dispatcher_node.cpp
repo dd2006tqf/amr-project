@@ -641,58 +641,45 @@ void DispatcherNode::ReleaseResourceCb(
 void DispatcherNode::ForceClearVda5050LinkCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
     std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp) {
-  // Task 7（终审 I1 闭合）：仅受理"受管清单内且当前离线"的车辆——在线车辆
-  // 强清会误杀活车；锁保留/释放决定只在断链语义下才有安全依据。
+  // Task 7（终审 I1 闭合）：核心纯函数决策（fleet::PlanForceClearLink）+ 本地落地执行。
+  // 决策规则集中在核心（零 ROS 依赖，可单测）：仅受理"受管清单内且当前离线"的车辆；
+  // 锁归属必须经 mission->vehicle 绑定反查（严禁用"路径存档存在"之类的间接证据推断）。
+  amr_dispatcher_core::fleet::ForceClearLinkRequest decision_req;
+  decision_req.vehicle_id = req->vehicle_id;
+  decision_req.vehicle_in_managed_list =
+      vda5050_links_.find(req->vehicle_id) != vda5050_links_.end();
   const auto link_it = vda5050_links_.find(req->vehicle_id);
-  if (link_it == vda5050_links_.end()) {
-    resp->success = false;
-    resp->message = "Vehicle " + req->vehicle_id + " not in managed list";
-    return;
-  }
-  if (link_it->second.online) {
-    resp->success = false;
-    resp->message =
-        "Vehicle " + req->vehicle_id + " is ONLINE — refusing to force-clear a live link";
-    return;
-  }
-
-  // ---- 1) 锁归属反推：锁 owner 是 mission_id；mission -> 车辆经下发登记反查 ----
-  // 依据 vda5050_mission_vehicle_（PublishVda5050Order 下发时登记的 mission->vehicle 绑定）。
-  // 绝不用"路径存档存在"推断归属——那会把其他车辆的 mission 锁误判为该车名下。
-  std::unordered_map<std::string, std::vector<std::string>> mission_owned_ids;
+  decision_req.vehicle_online = (link_it != vda5050_links_.end()) && link_it->second.online;
+  decision_req.mission_vehicle_bindings = vda5050_mission_vehicle_;
   if (reservation_table_) {
     for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
-      const auto bind_it = vda5050_mission_vehicle_.find(owner);
-      if (bind_it == vda5050_mission_vehicle_.end() || bind_it->second != req->vehicle_id) {
-        continue;  // 非该车承接的 mission（含 traffic_block 等）-> 保守跳过
-      }
-      mission_owned_ids[owner].push_back(resource_id);
+      decision_req.held_locks[resource_id] = owner;
     }
   }
+  const auto decision = amr_dispatcher_core::fleet::PlanForceClearLink(decision_req);
+  if (!decision.allowed) {
+    resp->success = false;
+    resp->message = decision.reject_reason;
+    return;
+  }
 
-  // ---- 2) 释放该车名下锁（先于任务收口，保证 released_resources 可取证）----
+  // ---- 1) 释放该车名下锁（先于任务收口，保证 released_resources 可取证）----
   std::vector<std::string> released;
   if (reservation_table_) {
-    for (const auto& [mission_id, ids] : mission_owned_ids) {
+    for (const auto& [mission_id, ids] : decision.locks_by_mission) {
       const auto freed = reservation_table_->ReleaseResources(mission_id, ids);
       released.insert(released.end(), freed.begin(), freed.end());
     }
   }
   resp->released_resources.assign(released.begin(), released.end());
 
-  // ---- 3) 收口该车承接的在途任务 ----
+  // ---- 2) 收口该车承接的在途任务 ----
   // 车辆已死，其承接的 mission 永远不会到达/完成，会一直占着 active_missions_ 与
   // 单车执行槽位，后续任务永远排不上（挂起守卫解除也派不出去）。
   // 人工强清 = 操作员宣告该任务作废：**全量释放 + 不重试 + 不回坞**，让队列立刻前进。
   // 不能走 FailMission：其恢复行为树可能判定 retry/dock（把死车任务重新入队），
   // 且资源释放取决于 BT 决策（可能保留锁），与"人工强解"语义相悖。
-  std::vector<std::string> bound_missions;
-  for (const auto& [mission_id, vehicle] : vda5050_mission_vehicle_) {
-    if (vehicle == req->vehicle_id) {
-      bound_missions.push_back(mission_id);
-    }
-  }
-  for (const auto& mission_id : bound_missions) {
+  for (const auto& mission_id : decision.missions_to_abort) {
     RCLCPP_WARN(get_logger(),
                 "VDA 5050 force-clear: aborting in-flight mission %s bound to dead vehicle %s",
                 mission_id.c_str(), req->vehicle_id.c_str());
@@ -730,8 +717,10 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   }
   ReArmQueueStartRequest();  // 队列后续任务需重新武装启动请求
 
-  // ---- 4) 解除挂载 ----
-  vda5050_links_.erase(link_it);
+  // ---- 3) 解除挂载 ----
+  if (link_it != vda5050_links_.end()) {
+    vda5050_links_.erase(link_it);
+  }
   const auto id_it = std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(),
                                req->vehicle_id);
   if (id_it != vda5050_vehicle_ids_.end()) {
