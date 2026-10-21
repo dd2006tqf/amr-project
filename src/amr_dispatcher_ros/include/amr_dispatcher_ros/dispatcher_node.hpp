@@ -211,6 +211,28 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
   void OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg);
 
+  // ---- P0.6 / A4：per-vehicle 话题与 TF 隔离（多车并发基础）----
+  // vehicle_ids 参数（逗号分隔）列出本调度器管理的 local_sim 车辆；
+  // 为每台车建立 /plan/{vid} 发布端、/odom/{vid} 与 /tracking/error/{vid} 订阅。
+  // 兼容性红线：vehicle_ids 为空（默认）时，plan_pub_ 与全局订阅行为逐字不变。
+  void SetupVehicleTopics(const std::string& vehicles_param);
+  // 按车辆 id 取计划发布端：非空且已建 -> /plan/{vid} 的发布端；否则回落到 legacy /plan。
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr PlanPublisherForVehicle(
+      const std::string& vehicle_id);
+  // 发布计划到指定车辆：vehicle_id 非空且有专属发布端 -> /plan/{vid}；否则 -> legacy /plan。
+  void PublishPlanForVehicle(const std::string& vehicle_id, const nav_msgs::msg::Path& path);
+  // per-vehicle 里程计：只更新 vehicle_poses_，不动 legacy 的 current_pose_/has_odom_。
+  void OdomCbForVehicle(const std::string& vehicle_id, const nav_msgs::msg::Odometry::SharedPtr msg);
+  // per-vehicle 跟踪误差回调（A5 收口点）：当前仅记录 arrived 事件。
+  void TrackingErrorCbForVehicle(const std::string& vehicle_id,
+                                 const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+  // 派发目标车辆解析：**只认任务显式指定的 assigned_vehicle_id**（A4 不做自动选车，
+  // 选车属 A5/A6）；未显式指定或该车不在 vehicle_ids_ 清单内 -> 空串 -> 走 legacy /plan。
+  std::string ResolveDispatchVehicleId(const amr_dispatcher_core::dispatcher::Mission& mission);
+  // 向"当前正在跟踪 /plan 的那台车"补发空路径停车，并清空其车辆归属。
+  // legacy 模式下 tracking_vehicle_id_ 为空 -> 回落 plan_pub_，与改动前逐字等价。
+  void PublishStopPathForTrackedVehicle();
+
   // Task 5：VDA 5050 状态/链路接入（Spec §5.2 断链守卫 + §5.3 逐段解锁）
   // 按参数 vda5050_vehicles（逗号分隔车辆 id 列表，空 = 关闭）为每台受管小车
   // 建立 /fleet/{vid}/state 与 /fleet/{vid}/online 订阅（on_configure 时一次建齐）。
@@ -361,6 +383,30 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  // vehicle_ids 清单（保序去重，来自参数 vehicle_ids；空 = 单车兼容模式）。
+  std::vector<std::string> vehicle_ids_;
+  // vehicle_id -> /plan/{vid} 发布端（on_configure 建，on_activate 激活，on_cleanup 释放）
+  std::unordered_map<std::string, rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr>
+      vehicle_plan_pubs_;
+  // vehicle_id -> /odom/{vid} 订阅
+  std::unordered_map<std::string, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr>
+      vehicle_odom_subs_;
+  // vehicle_id -> /tracking/error/{vid} 订阅
+  std::unordered_map<std::string, rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr>
+      vehicle_tracking_error_subs_;
+  // vehicle_id -> 最新里程计位姿（Pose2D + has_odom 标志）。
+  // 与 legacy 的 current_pose_/has_odom_ 并存：全局 /odom 仍只喂 legacy 字段。
+  struct VehiclePose {
+    amr_dispatcher_core::path_tracking::Pose2D pose{};
+    bool has_odom = false;
+  };
+  std::unordered_map<std::string, VehiclePose> vehicle_poses_;
+  // 当前正在跟踪 /plan 的任务所对应的车辆 id（空 = 走 legacy /plan）。
+  // A5 将把单个 tracking_mission_id_ 拆成 mission_id->vehicle_id 映射，
+  // 本字段届时被 vehicle_current_mission_ 取代。
+  std::string tracking_vehicle_id_;
 
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;

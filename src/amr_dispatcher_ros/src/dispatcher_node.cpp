@@ -13,6 +13,7 @@
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
 #include "amr_dispatcher_ros/mission_identity.hpp"
+#include "amr_dispatcher_ros/vehicle_topic_names.hpp"
 
 using namespace std::chrono_literals;
 
@@ -36,6 +37,8 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   // 与 state 陈旧告警阈值（秒，在线但超时未上报 -> 仅告警不释放）
   declare_parameter("vda5050_vehicles", "");
   declare_parameter("vda5050_state_stale_sec", 5.0);
+  // P0.6 / A4：本调度器管理的 local_sim 车辆清单（逗号分隔 vehicle_id；空 = 单车兼容模式）
+  declare_parameter("vehicle_ids", "");
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -93,6 +96,9 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 
   // Task 5：VDA 5050 状态/链路接入（逐段解锁 + 断链守卫），按参数建订阅
   SetupVda5050Links(get_parameter("vda5050_vehicles").as_string());
+
+  // P0.6 / A4：per-vehicle 计划发布端与位姿/到达订阅（空清单 = 单车兼容，零行为变化）
+  SetupVehicleTopics(get_parameter("vehicle_ids").as_string());
 
   submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
       "/dispatcher/submit_order",
@@ -277,6 +283,9 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
   for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
     pub->on_activate();  // Task 6：send_order 发布端随节点激活（未激活则 publish 为空操作）
   }
+  for (auto& [vehicle_id, pub] : vehicle_plan_pubs_) {
+    pub->on_activate();  // P0.6：per-vehicle 计划发布端随节点激活
+  }
 
   const double sched_hz = get_parameter("schedule_rate_hz").as_double();
   schedule_timer_ = create_wall_timer(
@@ -347,6 +356,9 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   plan_pub_->on_deactivate();
   topology_pub_->on_deactivate();
   for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
+    pub->on_deactivate();
+  }
+  for (auto& [vehicle_id, pub] : vehicle_plan_pubs_) {
     pub->on_deactivate();
   }
   RCLCPP_INFO(get_logger(), "DispatcherNode deactivated");
@@ -423,6 +435,12 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   vda5050_next_order_update_id_.clear();
   vda5050_mission_vehicle_.clear();  // Task 7：mission->车辆绑定随生命周期收口
   vda5050_quarantined_.clear();      // Task 7：隔离态随生命周期收口
+  // P0.6：per-vehicle 资源随生命周期收口，重 configure 时重建
+  vehicle_plan_pubs_.clear();
+  vehicle_odom_subs_.clear();
+  vehicle_tracking_error_subs_.clear();
+  vehicle_poses_.clear();
+  vehicle_ids_.clear();
   last_deadlock_findings_.clear();
   tracking_error_sub_.reset();
   odom_sub_.reset();
@@ -436,6 +454,7 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   reload_timer_.reset();
   queue_start_requested_ = false;
   tracking_mission_id_.clear();
+  tracking_vehicle_id_.clear();
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
 }
@@ -546,12 +565,7 @@ void DispatcherNode::CancelOrderCb(
         }
         if (tracking_mission_id_ == req->mission_id) {
           tracking_mission_id_.clear();
-          if (plan_pub_ && plan_pub_->is_activated()) {
-            nav_msgs::msg::Path empty;
-            empty.header.stamp = now();
-            empty.header.frame_id = "map";
-            plan_pub_->publish(empty);
-          }
+          PublishStopPathForTrackedVehicle();
         }
         active_missions_.erase(it);
         // helper：终结 ExecuteMission goal（未受理 action cancel → 降级 abort(3)）
@@ -701,12 +715,7 @@ void DispatcherNode::ForceClearVda5050LinkCb(
     // 单车执行槽位释放 + 停车（否则槽位残留，后续任务永远无法派发）
     if (tracking_mission_id_ == mission_id) {
       tracking_mission_id_.clear();
-      if (plan_pub_ && plan_pub_->is_activated()) {
-        nav_msgs::msg::Path empty;
-        empty.header.stamp = now();
-        empty.header.frame_id = "map";
-        plan_pub_->publish(empty);
-      }
+      PublishStopPathForTrackedVehicle();
     }
     {
       std::lock_guard<std::mutex> lock(active_missions_mutex_);
@@ -875,12 +884,7 @@ void DispatcherNode::CancelQueuedMissionCb(
       // 若被取消的是正在跟踪 /plan 的任务，发空路径停车
       if (tracking_mission_id_ == req->mission_id) {
         tracking_mission_id_.clear();
-        if (plan_pub_ && plan_pub_->is_activated()) {
-          nav_msgs::msg::Path empty;
-          empty.header.stamp = now();
-          empty.header.frame_id = "map";
-          plan_pub_->publish(empty);
-        }
+        PublishStopPathForTrackedVehicle();
       }
       // 活动任务取消同样收口 action goal 与在途导航 goal（cancel_active 路径，审查 I5）
       CleanupMissionCancel(req->mission_id, "mission canceled by operator");
@@ -1444,12 +1448,7 @@ void DispatcherNode::ProcessActionCancels() {
         }
         if (tracking_mission_id_ == id) {
           tracking_mission_id_.clear();
-          if (plan_pub_ && plan_pub_->is_activated()) {
-            nav_msgs::msg::Path empty;
-            empty.header.stamp = now();
-            empty.header.frame_id = "map";
-            plan_pub_->publish(empty);
-          }
+          PublishStopPathForTrackedVehicle();
         }
         active_missions_.erase(it);
         canceled = true;
@@ -1748,7 +1747,9 @@ void DispatcherNode::ScheduleTick() {
   const amr_dispatcher_core::Pose2D goal{to_st->x, to_st->y, to_st->yaw};
 
   const auto waypoints = planner_ ? planner_->Plan(start, goal) : std::vector<amr_dispatcher_core::Pose2D>{};
-  if (waypoints.empty() || !plan_pub_ || !plan_pub_->is_activated()) {
+  const std::string dispatch_vehicle_id = ResolveDispatchVehicleId(m);
+  const auto plan_pub = PlanPublisherForVehicle(dispatch_vehicle_id);
+  if (waypoints.empty() || !plan_pub || !plan_pub->is_activated()) {
     FailMission(m.id, "planner returned empty path");
     return;
   }
@@ -1831,9 +1832,9 @@ void DispatcherNode::ScheduleTick() {
     ps.pose.orientation.w = std::cos(wp.theta / 2.0);
     path_msg.poses.push_back(ps);
   }
-  plan_pub_->publish(path_msg);
+  PublishPlanForVehicle(dispatch_vehicle_id, path_msg);
   tracking_mission_id_ = m.id;
-
+  tracking_vehicle_id_ = dispatch_vehicle_id;
   RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints)",
               m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority,
               m.pickup_station.c_str(), m.dropoff_station.c_str(), waypoints.size());
@@ -1993,12 +1994,7 @@ void DispatcherNode::FailMission(const std::string& mission_id, const std::strin
   if (tracking_mission_id_ == mission_id) {
     tracking_mission_id_.clear();
     // 发布空路径让 path_tracker 停下
-    if (plan_pub_ && plan_pub_->is_activated()) {
-      nav_msgs::msg::Path empty;
-      empty.header.stamp = now();
-      empty.header.frame_id = "map";
-      plan_pub_->publish(empty);
-    }
+    PublishStopPathForTrackedVehicle();
   }
   RCLCPP_WARN(get_logger(), "Mission failed: %s (%s)", mission_id.c_str(), reason.c_str());
   if (event_pub_ && event_pub_->is_activated()) {
@@ -2188,12 +2184,7 @@ void DispatcherNode::DeadlockTick() {
         // 否则 tracking_mission_id_ 悬挂导致后续任务永远无法下发。
         if (tracking_mission_id_ == act.mission_id) {
           tracking_mission_id_.clear();
-          if (plan_pub_ && plan_pub_->is_activated()) {
-            nav_msgs::msg::Path empty;
-            empty.header.stamp = now();
-            empty.header.frame_id = "map";
-            plan_pub_->publish(empty);
-          }
+          PublishStopPathForTrackedVehicle();
         }
         if (event_pub_ && event_pub_->is_activated()) {
           amr_dispatcher_interfaces::msg::MissionEvent msg;
@@ -2243,6 +2234,122 @@ void DispatcherNode::ReArmQueueStartRequest() {
 }
 
 // ---- Task 5：VDA 5050 逐段解锁与断链守卫（Spec §5.2/§5.3）----
+
+// ---- P0.6 / A4：per-vehicle 话题与 TF 隔离 ----
+
+void DispatcherNode::SetupVehicleTopics(const std::string& vehicles_param) {
+  vehicle_ids_.clear();
+  vehicle_plan_pubs_.clear();
+  vehicle_odom_subs_.clear();
+  vehicle_tracking_error_subs_.clear();
+  vehicle_poses_.clear();
+
+  for (const auto& vehicle_id : SplitVehicleIds(vehicles_param)) {
+    if (!IsValidVehicleId(vehicle_id)) {
+      RCLCPP_WARN(get_logger(),
+                  "P0.6: invalid vehicle id '%s' (must match [A-Za-z_][A-Za-z0-9_]*) — skipped",
+                  vehicle_id.c_str());
+      continue;
+    }
+    vehicle_ids_.push_back(vehicle_id);
+    // /plan/{vid} 发布端：每车一份，避免多车互相覆盖路径。
+    vehicle_plan_pubs_[vehicle_id] =
+        create_publisher<nav_msgs::msg::Path>(ResolveVehicleTopic("", "/plan", vehicle_id), 1);
+    // /odom/{vid} 订阅：只更新 vehicle_poses_，不动 legacy 的 current_pose_/has_odom_。
+    vehicle_odom_subs_[vehicle_id] = create_subscription<nav_msgs::msg::Odometry>(
+        ResolveVehicleTopic("", "/odom", vehicle_id), 10,
+        [this, vehicle_id](const nav_msgs::msg::Odometry::SharedPtr msg) {
+          OdomCbForVehicle(vehicle_id, msg);
+        });
+    // /tracking/error/{vid} 订阅：到达信号按车隔离（A5 收口点）。
+    vehicle_tracking_error_subs_[vehicle_id] =
+        create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+            ResolveVehicleTopic("", "/tracking/error", vehicle_id), 10,
+            [this, vehicle_id](const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+              TrackingErrorCbForVehicle(vehicle_id, msg);
+            });
+  }
+  if (vehicle_ids_.empty()) {
+    return;  // 单车兼容模式：零行为变化
+  }
+  std::string joined;
+  for (const auto& id : vehicle_ids_) {
+    if (!joined.empty()) joined += ", ";
+    joined += id;
+  }
+  RCLCPP_INFO(get_logger(),
+              "P0.6: per-vehicle topics enabled for {%s} (/plan/{vid}, /odom/{vid}, "
+              "/tracking/error/{vid})",
+              joined.c_str());
+}
+
+rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr
+DispatcherNode::PlanPublisherForVehicle(const std::string& vehicle_id) {
+  if (!vehicle_id.empty()) {
+    const auto it = vehicle_plan_pubs_.find(vehicle_id);
+    if (it != vehicle_plan_pubs_.end() && it->second) {
+      return it->second;
+    }
+  }
+  return plan_pub_;  // legacy /plan（单车兼容红线）
+}
+
+void DispatcherNode::PublishPlanForVehicle(const std::string& vehicle_id,
+                                           const nav_msgs::msg::Path& path) {
+  const auto pub = PlanPublisherForVehicle(vehicle_id);
+  if (pub && pub->is_activated()) {
+    pub->publish(path);
+  }
+}
+
+void DispatcherNode::OdomCbForVehicle(const std::string& vehicle_id,
+                                      const nav_msgs::msg::Odometry::SharedPtr msg) {
+  auto& slot = vehicle_poses_[vehicle_id];
+  slot.pose.x = msg->pose.pose.position.x;
+  slot.pose.y = msg->pose.pose.position.y;
+  slot.pose.yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
+      msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+  slot.has_odom = true;
+}
+
+void DispatcherNode::TrackingErrorCbForVehicle(
+    const std::string& vehicle_id, const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+  // A5 收口点：把 arrived 信号路由到"该车正在执行的任务"并完成它。
+  // A4 阶段仅记录事件，避免在多车槽位拆分落地前产生错误的完成语义。
+  if (!msg->arrived) {
+    return;
+  }
+  RCLCPP_INFO(get_logger(),
+              "P0.6: vehicle %s reported arrived (mission completion routing is Task A5)",
+              vehicle_id.c_str());
+}
+
+std::string DispatcherNode::ResolveDispatchVehicleId(
+    const amr_dispatcher_core::dispatcher::Mission& mission) {
+  // A4 阶段只认"任务显式指定且在本调度器清单内"的车辆；
+  // 自动选车属 A5/A6（core/fleet/vehicle_assignment.hpp）。
+  if (mission.assigned_vehicle_id.empty()) {
+    return "";
+  }
+  for (const auto& id : vehicle_ids_) {
+    if (id == mission.assigned_vehicle_id) {
+      return id;
+    }
+  }
+  RCLCPP_WARN(get_logger(),
+              "Mission %s requests vehicle '%s' which is not in vehicle_ids — falling back "
+              "to the legacy single-vehicle plan channel",
+              mission.id.c_str(), mission.assigned_vehicle_id.c_str());
+  return "";
+}
+
+void DispatcherNode::PublishStopPathForTrackedVehicle() {
+  nav_msgs::msg::Path empty;
+  empty.header.stamp = now();
+  empty.header.frame_id = "map";
+  PublishPlanForVehicle(tracking_vehicle_id_, empty);
+  tracking_vehicle_id_.clear();
+}
 
 void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
   // 终审 M4：reconfigure 必须先无条件清旧链路态——否则空化 vda5050_vehicle_ids

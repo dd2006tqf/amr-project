@@ -570,21 +570,31 @@ echo "[Stage 4.2] 调度器完成派发并输出 send_order (PASS)"
 # 4.3 MQTT Wire 格式合法性断言 (python 解析 mqtt_raw.jsonl)
 echo "[Stage 4.3] 断言 VDA 5050 Wire 订单协议合法性..."
 python3 - <<EOF
-import json, sys
+import json, sys, time
 
+# 轮询等待：dispatcher 打日志 -> 网关 ROS 订阅 -> MQTT 发布 -> broker -> 抓包器
+# 是四段异步链路，读一次文件会随机漏掉尚未落盘的报文（历史 flaky 点）。
+deadline = time.time() + 15.0
 orders = []
-with open("${TMP_DIR}/mqtt_raw.jsonl", "r", encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line: continue
-        rec = json.loads(line)
-        if rec["topic"] == "uagv/v2/RobotManufacturer/mock_amr_01/order":
-            try:
-                orders.append(json.loads(rec["payload"]))
-            except Exception:
-                pass
+target_orders = []
+while time.time() < deadline:
+    orders = []
+    target_orders = []
+    with open("${TMP_DIR}/mqtt_raw.jsonl", "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            rec = json.loads(line)
+            if rec["topic"] == "uagv/v2/RobotManufacturer/mock_amr_01/order":
+                try:
+                    orders.append(json.loads(rec["payload"]))
+                except Exception:
+                    pass
+    target_orders = [o for o in orders if o.get("orderId") == "e2e_m1"]
+    if target_orders:
+        break
+    time.sleep(0.2)
 
-target_orders = [o for o in orders if o.get("orderId") == "e2e_m1"]
 assert len(target_orders) >= 1, f"未在 MQTT 捕获到 orderId=e2e_m1 的报文 (捕获到 {len(orders)} 个订单)"
 o = target_orders[0]
 
@@ -667,7 +677,9 @@ last_p = trajectory[-1]
 # 起终点坐标断言 (station_pickup_A: 1.625, 2.025; station_dropoff_B: 8.025, 5.5)
 d_start = math.hypot(first_p[0] - 1.625, first_p[1] - 2.025)
 d_end = math.hypot(last_p[0] - 8.025, last_p[1] - 5.5)
-assert d_start < 0.3, f"初始位姿偏离 station_pickup_A: {first_p}, dist={d_start}"
+# state 上报频率 2Hz，小车 1m/s -> 首个采样点最多已前进 0.5m；
+# 阈值取 0.6m 才能稳定反映"从 A 点出发"（原 0.3m 是历史 flaky 点）。
+assert d_start < 0.6, f"初始位姿偏离 station_pickup_A: {first_p}, dist={d_start}"
 assert d_end < 0.5, f"终点位姿偏离 station_dropoff_B: {last_p}, dist={d_end}"
 
 # 单步连续性校验 (相邻点距离不超过 1.2m, 排除瞬移跳跃)
@@ -1061,7 +1073,7 @@ for ((i = 0; i < 30; i++)); do
 done
 ALIVE_RESULT=$(timeout 20 ros2 service call /dispatcher/force_clear_vda5050_link \
     amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
-    "{vehicle_id: 'mock_amr_01', reason: 'e2e alive-refuse test'}" 2>&1 || true)
+    "{vehicle_id: 'mock_amr_01', confirm_vehicle_id: 'mock_amr_01', operator_id: 'e2e_operator', reason: 'e2e alive-refuse test'}" 2>&1 || true)
 if echo "${ALIVE_RESULT}" | grep -q "success=True"; then
     fail "在线车辆 mock_amr_01 竟被强清受理（防误杀活车失效）: ${ALIVE_RESULT}"
 fi
@@ -1116,7 +1128,7 @@ echo "[Stage 6.8] 断链期间 e2e_m5 锁保留（铁律） (PASS)"
 # 6.8.4 离线态强清：摘除 mock_amr_01 的离线挂载并释放名下锁
 FORCE_RESULT=$(timeout 20 ros2 service call /dispatcher/force_clear_vda5050_link \
     amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
-    "{vehicle_id: 'mock_amr_01', reason: 'e2e stage 6.8 operator force clear'}" 2>&1)
+    "{vehicle_id: 'mock_amr_01', confirm_vehicle_id: 'mock_amr_01', operator_id: 'e2e_operator', reason: 'e2e stage 6.8 operator force clear'}" 2>&1)
 echo "${FORCE_RESULT}"
 
 # 断言服务成功（response.success=true）
@@ -1128,6 +1140,12 @@ if ! echo "${FORCE_RESULT}" | grep -q "route_"; then
     fail "强清未释放该车名下的路权锁（released_resources 为空）: ${FORCE_RESULT}"
 fi
 echo "[Stage 6.8] 离线链路已被人工强清且名下锁已释放 (PASS)"
+
+# 断言: 强清后车辆进入【隔离态】(quarantined)——不摘车，只是不再参与分配
+if ! echo "${FORCE_RESULT}" | grep -q "quarantined=True"; then
+    fail "强清后车辆未进入隔离态 (quarantined=False): ${FORCE_RESULT}"
+fi
+echo "[Stage 6.8] 强清后车辆进入隔离态 (PASS)"
 
 # 断言: e2e_m5 的锁确已从锁表消失
 if ! RESV_AFTER=$(timeout 15 ros2 service call /v2/list_traffic_reservations \
@@ -1164,6 +1182,44 @@ if ! wait_log "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log" 20; then
     fail "ForceClear 后新任务 e2e_m4 未能在 20s 内派发 —— 挂起守卫未解除"
 fi
 echo "[Stage 6.8] 强清后调度挂起成功解除 (PASS)"
+
+# 6.8.5 恢复流程：操作员确认车辆位置已核实后方可解除隔离
+# 前提：恢复要求车辆【在线】（离线车连状态都报不上，回池只会再次触发挂起），
+#       故先拉起 mock3 让 mock_amr_01 重新上线，再执行恢复。
+echo "[Stage 6.8] 恢复流程：拉起 mock3 使 mock_amr_01 重新上线..."
+MOCK3_PID=$(run_bg "${TMP_DIR}/mock3.log" python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" \
+    --host 127.0.0.1 \
+    --port "${MQTT_PORT}" \
+    --manufacturer RobotManufacturer \
+    --serial mock_amr_01 \
+    --speed 1.0 \
+    --state-file "${MOCK_STATE_FILE}")
+echo "[Stage 6.8] mock3 已拉起 (PID: ${MOCK3_PID})"
+# 注意：Stage 6.5 已经出现过一次 "back online"，wait_log 会命中历史行——
+# 这里必须等【出现次数增加】，否则会误判为已上线。
+BACKONLINE_BEFORE=$(grep -c "VDA 5050 vehicle mock_amr_01 back online" "${TMP_DIR}/dispatcher.log" || true)
+BACKONLINE_OK=0
+for ((i = 0; i < 250; i++)); do
+    BACKONLINE_NOW=$(grep -c "VDA 5050 vehicle mock_amr_01 back online" "${TMP_DIR}/dispatcher.log" || true)
+    if [ "${BACKONLINE_NOW}" -gt "${BACKONLINE_BEFORE}" ]; then
+        BACKONLINE_OK=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "${BACKONLINE_OK}" -ne 1 ]; then
+    fail "调度器未能在 25s 内感知 mock_amr_01 重新上线（恢复前置条件不满足）"
+fi
+echo "[Stage 6.8] mock_amr_01 已重新上线 (PASS)"
+
+RESTORE_RESULT=$(timeout 20 ros2 service call /dispatcher/restore_vda5050_link \
+    amr_dispatcher_interfaces/srv/RestoreVda5050Link \
+    "{vehicle_id: 'mock_amr_01', confirm_vehicle_id: 'mock_amr_01', operator_id: 'e2e_operator', reason: 'e2e stage 6.8 restore', position_verified: true}" 2>&1)
+echo "${RESTORE_RESULT}"
+if ! echo "${RESTORE_RESULT}" | grep -q "success=True"; then
+    fail "RestoreVda5050Link 未被受理成功: ${RESTORE_RESULT}"
+fi
+echo "[Stage 6.8] 隔离态恢复成功 (PASS)"
 echo "[Stage 6.8] 人工强清离线链路验收完成 (PASS)"
 
 # ==============================================================================

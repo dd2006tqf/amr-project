@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
+#include "amr_dispatcher_ros/vehicle_topic_names.hpp"
 
 using namespace std::chrono_literals;
 
@@ -16,6 +17,15 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   declare_parameter("target_speed", 0.5);
   declare_parameter("stanley_k", 0.5);
   declare_parameter("control_rate_hz", 20.0);
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  // vehicle_id 空 = 单车兼容模式（话题名逐字不变）；非空 = 按 {vid} 派生。
+  declare_parameter("vehicle_id", "");
+  // 显式覆盖优先于派生；为空则按 vehicle_id 派生或回落到 legacy 全局名。
+  declare_parameter("plan_topic", "");
+  declare_parameter("odom_topic", "");
+  declare_parameter("cmd_vel_topic", "");
+  declare_parameter("tracking_error_topic", "");
+  declare_parameter("heartbeat_topic", "");
 
   controller_type_ = get_parameter("controller_type").as_string();
 
@@ -29,19 +39,37 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   st_cfg.target_speed = get_parameter("target_speed").as_double();
   stanley_controller_ = std::make_unique<amr_dispatcher_core::path_tracking::StanleyController>(st_cfg);
 
+  // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
+  vehicle_id_ = get_parameter("vehicle_id").as_string();
+  if (!vehicle_id_.empty() && !IsValidVehicleId(vehicle_id_)) {
+    RCLCPP_ERROR(get_logger(),
+                 "Invalid vehicle_id '%s' (must match [A-Za-z_][A-Za-z0-9_]*); "
+                 "falling back to legacy global topics",
+                 vehicle_id_.c_str());
+    vehicle_id_.clear();
+  }
+  plan_topic_ = ResolveVehicleTopic(get_parameter("plan_topic").as_string(), "/plan", vehicle_id_);
+  odom_topic_ = ResolveVehicleTopic(get_parameter("odom_topic").as_string(), "/odom", vehicle_id_);
+  cmd_vel_topic_ =
+      ResolveVehicleTopic(get_parameter("cmd_vel_topic").as_string(), "/cmd_vel_raw", vehicle_id_);
+  tracking_error_topic_ = ResolveVehicleTopic(get_parameter("tracking_error_topic").as_string(),
+                                             "/tracking/error", vehicle_id_);
+  heartbeat_topic_ = ResolveVehicleTopic(get_parameter("heartbeat_topic").as_string(),
+                                         "/safety/heartbeat/path_tracker", vehicle_id_);
+
   path_sub_ = create_subscription<nav_msgs::msg::Path>(
-      "/plan", 1,
+      plan_topic_, 1,
       std::bind(&PathTrackerNode::PathCallback, this, std::placeholders::_1));
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-      "/odom", 10,
+      odom_topic_, 10,
       std::bind(&PathTrackerNode::OdomCallback, this, std::placeholders::_1));
 
-  cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_raw", 10);
+  cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
   error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
-      "/tracking/error", 10);
+      tracking_error_topic_, 10);
   // B1：心跳分源，只喂 path_tracker 自己的看门狗通道
-  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat/path_tracker", 10);
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
 
   const double rate_hz = get_parameter("control_rate_hz").as_double();
   timer_ = create_wall_timer(
@@ -49,6 +77,13 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
       std::bind(&PathTrackerNode::ControlLoop, this));
 
   RCLCPP_INFO(get_logger(), "PathTrackerNode initialized with controller: %s", controller_type_.c_str());
+  // P0.6：打印最终话题名——多车现场核对接线的唯一依据（每个 vehicle 一组）。
+  RCLCPP_INFO(get_logger(),
+              "PathTrackerNode topics (vehicle_id=%s): plan=%s odom=%s cmd_vel_raw=%s "
+              "tracking_error=%s heartbeat=%s",
+              vehicle_id_.empty() ? "<legacy>" : vehicle_id_.c_str(), plan_topic_.c_str(),
+              odom_topic_.c_str(), cmd_vel_topic_.c_str(), tracking_error_topic_.c_str(),
+              heartbeat_topic_.c_str());
 }
 
 PathTrackerNode::~PathTrackerNode() = default;

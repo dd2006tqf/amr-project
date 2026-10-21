@@ -4,6 +4,8 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 
+#include "amr_dispatcher_ros/vehicle_topic_names.hpp"
+
 using namespace std::chrono_literals;
 
 namespace amr_dispatcher_ros {
@@ -22,12 +24,61 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   // B1：健康上报提速到 5Hz（心跳 500ms 超时下留足余量）
   declare_parameter("health_rate_hz", 5.0);
   declare_parameter("cmd_stale_timeout_ms", 500);
+  // ---- P0.6 / A4：per-vehicle 话题与 TF 隔离 ----
+  declare_parameter("vehicle_id", "");
+  declare_parameter("cmd_vel_topic", "");
+  declare_parameter("odom_topic", "");
+  declare_parameter("link_health_topic", "");
+  declare_parameter("heartbeat_topic", "");
+  // TF frame 前缀（显式覆盖用）。默认空 -> 由 vehicle_id 派生（{vid}/odom）。
+  declare_parameter("odom_frame_prefix", "");
+  declare_parameter("base_frame_prefix", "");
 
   odom_frame_id_ = get_parameter("odom_frame_id").as_string();
   base_frame_id_ = get_parameter("base_frame_id").as_string();
   publish_tf_ = get_parameter("publish_tf").as_bool();
   cmd_stale_timeout_ =
       std::chrono::milliseconds(get_parameter("cmd_stale_timeout_ms").as_int());
+
+  // ---- P0.6 / A4：解析 vehicle_id 与最终话题名 ----
+  vehicle_id_ = get_parameter("vehicle_id").as_string();
+  if (!vehicle_id_.empty() && !IsValidVehicleId(vehicle_id_)) {
+    RCLCPP_ERROR(get_logger(),
+                 "Invalid vehicle_id '%s' (must match [A-Za-z_][A-Za-z0-9_]*); "
+                 "falling back to legacy global topics",
+                 vehicle_id_.c_str());
+    vehicle_id_.clear();
+  }
+  cmd_vel_topic_ =
+      ResolveVehicleTopic(get_parameter("cmd_vel_topic").as_string(), "/cmd_vel_safe", vehicle_id_);
+  odom_topic_ = ResolveVehicleTopic(get_parameter("odom_topic").as_string(), "/odom", vehicle_id_);
+  link_health_topic_ = ResolveVehicleTopic(get_parameter("link_health_topic").as_string(),
+                                           "/chassis/link_health", vehicle_id_);
+  heartbeat_topic_ = ResolveVehicleTopic(get_parameter("heartbeat_topic").as_string(),
+                                         "/safety/heartbeat/chassis_driver", vehicle_id_);
+
+  // ---- P0.6 / A4：TF frame 唯一性（硬约束）----
+  // 两台车发布同一个 odom frame 是 TF 硬错误（tree 冲突）。规则（自上而下）：
+  //   1) odom_frame_id / base_frame_id 被显式改成非默认值 -> 直接采用（用户负责唯一性）；
+  //   2) 否则 odom_frame_prefix / base_frame_prefix 非空 -> {prefix}/odom、{prefix}/base_link；
+  //   3) 否则 vehicle_id 非空 -> {vid}/odom、{vid}/base_link；
+  //   4) 否则 -> 沿用默认 "odom" / "base_link"（单车兼容，frame 名逐字不变）。
+  const std::string odom_frame_prefix = get_parameter("odom_frame_prefix").as_string();
+  const std::string base_frame_prefix = get_parameter("base_frame_prefix").as_string();
+  if (odom_frame_id_ == "odom") {
+    if (!odom_frame_prefix.empty()) {
+      odom_frame_id_ = odom_frame_prefix + "/odom";
+    } else if (!vehicle_id_.empty()) {
+      odom_frame_id_ = vehicle_id_ + "/odom";
+    }
+  }
+  if (base_frame_id_ == "base_link") {
+    if (!base_frame_prefix.empty()) {
+      base_frame_id_ = base_frame_prefix + "/base_link";
+    } else if (!vehicle_id_.empty()) {
+      base_frame_id_ = vehicle_id_ + "/base_link";
+    }
+  }
 
   // 配置 preferred list 后端
   amr_dispatcher_core::chassis::ChassisBackendConfig cfg;
@@ -42,14 +93,14 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
 
   // 通信端点
   cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      "/cmd_vel_safe", 10,
+      cmd_vel_topic_, 10,
       std::bind(&ChassisDriverNode::CmdVelCallback, this, std::placeholders::_1));
 
-  odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("/odom", 20);
+  odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(odom_topic_, 20);
   health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-      "/chassis/link_health", 10);
+      link_health_topic_, 10);
   // B1：心跳分源，只喂 chassis_driver 自己的看门狗通道
-  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/heartbeat/chassis_driver", 10);
+  heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   const double poll_hz = get_parameter("poll_rate_hz").as_double();
@@ -64,6 +115,13 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
 
   RCLCPP_INFO(get_logger(), "ChassisDriverNode initialized with backend: %s",
               backend_ctrl_->current() ? backend_ctrl_->current()->Name().c_str() : "none");
+  // P0.6：打印最终话题名与 TF frame——多车现场核对接线的唯一依据。
+  RCLCPP_INFO(get_logger(),
+              "ChassisDriverNode topics (vehicle_id=%s): cmd_vel_safe=%s odom=%s "
+              "link_health=%s heartbeat=%s | TF frames: odom=%s base=%s",
+              vehicle_id_.empty() ? "<legacy>" : vehicle_id_.c_str(), cmd_vel_topic_.c_str(),
+              odom_topic_.c_str(), link_health_topic_.c_str(), heartbeat_topic_.c_str(),
+              odom_frame_id_.c_str(), base_frame_id_.c_str());
 }
 
 ChassisDriverNode::~ChassisDriverNode() = default;

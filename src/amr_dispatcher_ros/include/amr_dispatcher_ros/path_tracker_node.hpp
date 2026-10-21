@@ -44,6 +44,17 @@ class PathTrackerNode : public rclcpp::Node {
   double current_linear_speed_ = 0.0;
   bool has_odom_ = false;
   bool has_path_ = false;
+
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  // vehicle_id 为空（默认）= 单车兼容模式，话题名逐字沿用改动前的全局名。
+  // 非空时按 vehicle_topic_names.hpp 的规则派生 /plan/{vid} 等话题。
+  std::string vehicle_id_;
+  // 已解析后的最终话题名（启动期一次性定稿并打印，便于现场核对接线）
+  std::string plan_topic_{"/plan"};
+  std::string odom_topic_{"/odom"};
+  std::string cmd_vel_topic_{"/cmd_vel_raw"};
+  std::string tracking_error_topic_{"/tracking/error"};
+  std::string heartbeat_topic_{"/safety/heartbeat/path_tracker"};
 };
 
 }  // namespace amr_dispatcher_ros
