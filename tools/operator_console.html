@@ -345,6 +345,29 @@
         </div>
       </section>
 
+      <!-- 受管车辆面板与人工强清/恢复 -->
+      <section class="span-12">
+        <h2>
+          <span>🤖 受管车辆与人工强清 (Managed Vehicles &amp; Force-Clear)</span>
+          <span class="badge" style="background:#fef3c7;color:#92400e;">危险操作 · 需审计</span>
+        </h2>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div id="vehicleLinksTable" class="muted" style="font-size:13px;">正在加载受管车辆状态...</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input id="forceClearVehicleId" placeholder="车辆 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <input id="forceClearOperator" placeholder="操作员 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <input id="forceClearReason" placeholder="原因（必填，如：车辆物理故障下线）" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <button id="forceClearBtn" class="danger" style="border:none;padding:8px 14px;border-radius:6px;cursor:pointer;">强制清除链路</button>
+            <button id="restoreLinkBtn" class="secondary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">恢复车辆</button>
+          </div>
+          <div class="muted" style="font-size:12px;">
+            强制清除会把车辆转入<b>隔离态</b>（不再参与自动派发），释放其名下路权锁并作废在途任务；
+            <b>通信失联不等于车辆已停止</b>——物理位置未核实，释放锁的安全责任由操作员承担。
+            恢复需车辆在线且操作员已核实其物理位置。
+          </div>
+        </div>
+      </section>
+
       <!-- 自定义地图热上传与交互式标注 -->
       <section class="span-12">
         <h2>
@@ -520,6 +543,123 @@
       }
     });
 
+    async function fetchVehicleLinks() {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const pane = document.getElementById('vehicleLinksTable');
+      try {
+        const res = await fetch(`${baseUrl}/api/v1/vehicle_links`);
+        if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+        const data = await res.json();
+        const links = data.vehicle_links || [];
+        if (!links.length) {
+          pane.textContent = '未配置受管车辆（vda5050_vehicles 为空）';
+          return;
+        }
+        const rows = links.map(v => {
+          const badges = [];
+          badges.push(v.online ? '<span class="pill green">在线</span>' : '<span class="pill red">离线</span>');
+          if (v.quarantined) badges.push('<span class="pill red">隔离</span>');
+          if (v.busy) badges.push('<span class="pill blue">忙</span>');
+          if (!v.position_valid) badges.push('<span class="pill blue">位置未知</span>');
+          const age = v.state_age_ms >= 0 ? `${Math.round(v.state_age_ms / 1000)}s` : '无状态';
+          return `<tr><td>${v.vehicle_id}</td><td>${v.backend}</td><td>${badges.join(' ')}</td>` +
+                 `<td>${v.current_station_id || '-'}</td><td>${Math.round(v.battery_percent)}%</td>` +
+                 `<td>${age}</td></tr>`;
+        }).join('');
+        pane.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">` +
+          `<tr><th style="text-align:left;">车辆</th><th style="text-align:left;">后端</th>` +
+          `<th style="text-align:left;">状态</th><th style="text-align:left;">位置</th>` +
+          `<th style="text-align:left;">电量</th><th style="text-align:left;">状态时延</th></tr>` +
+          rows + `</table>`;
+      } catch (err) {
+        pane.textContent = `加载受管车辆失败: ${err.message}`;
+      }
+    }
+
+    // 强制清除（危险操作）：二次确认 + 必填审计字段
+    document.getElementById('forceClearBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const vehicleId = document.getElementById('forceClearVehicleId').value.trim();
+      const operatorId = document.getElementById('forceClearOperator').value.trim();
+      const reason = document.getElementById('forceClearReason').value.trim();
+      if (!vehicleId || !operatorId || !reason) {
+        setStatus('强制清除需要填写车辆 id、操作员 id 与原因', false);
+        return;
+      }
+      const confirmed = window.confirm(
+        `确认对车辆 ${vehicleId} 执行强制清除？\n\n` +
+        `• 车辆将进入隔离态（不再参与自动派发）\n` +
+        `• 其名下路权锁将被释放，在途任务将被作废\n` +
+        `• 通信失联不代表车辆已停止：物理位置未核实，安全责任由你承担\n\n` +
+        `操作员: ${operatorId}\n原因: ${reason}`);
+      if (!confirmed) return;
+      try {
+        setStatus(`正在强制清除 ${vehicleId} 的链路...`);
+        const res = await fetch(`${baseUrl}/api/v1/force_clear_link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vehicle_id: vehicleId,
+            confirm_vehicle_id: vehicleId,
+            operator_id: operatorId,
+            reason: reason
+          })
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          const released = (result.released_resources || []).join(', ') || '无';
+          setStatus(`✅ ${vehicleId} 已转入隔离态，释放资源: ${released}`, true);
+          alert(`强制清除完成：\n${result.message}\n\n释放资源: ${released}`);
+        } else {
+          setStatus(`强制清除被拒绝: ${result.message || JSON.stringify(result)}`, false);
+          alert(`强制清除被拒绝：\n${result.message || JSON.stringify(result)}`);
+        }
+        fetchVehicleLinks();
+      } catch (err) {
+        setStatus(`强制清除请求错误: ${err.message}`, false);
+      }
+    });
+
+    // 恢复车辆（解除隔离）
+    document.getElementById('restoreLinkBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const vehicleId = document.getElementById('forceClearVehicleId').value.trim();
+      const operatorId = document.getElementById('forceClearOperator').value.trim();
+      const reason = document.getElementById('forceClearReason').value.trim();
+      if (!vehicleId || !operatorId || !reason) {
+        setStatus('恢复需要填写车辆 id、操作员 id 与原因', false);
+        return;
+      }
+      const confirmed = window.confirm(
+        `确认恢复车辆 ${vehicleId} 进入调度池？\n\n` +
+        `请确认你已核实该车的物理位置与通道占用情况。`);
+      if (!confirmed) return;
+      try {
+        setStatus(`正在恢复 ${vehicleId}...`);
+        const res = await fetch(`${baseUrl}/api/v1/restore_link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vehicle_id: vehicleId,
+            confirm_vehicle_id: vehicleId,
+            operator_id: operatorId,
+            reason: reason,
+            position_verified: true
+          })
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          setStatus(`✅ ${vehicleId} 已恢复，重新参与自动调度`, true);
+        } else {
+          setStatus(`恢复被拒绝: ${result.message || JSON.stringify(result)}`, false);
+          alert(`恢复被拒绝：\n${result.message || JSON.stringify(result)}`);
+        }
+        fetchVehicleLinks();
+      } catch (err) {
+        setStatus(`恢复请求错误: ${err.message}`, false);
+      }
+    });
+
     // 复制与粘贴当前快照 JSON
     document.getElementById('copyJsonBtn').addEventListener('click', async () => {
       try {
@@ -557,14 +697,19 @@
     });
 
     // 轮询
-    document.getElementById('refreshBtn').addEventListener('click', fetchSnapshot);
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      fetchSnapshot();
+      fetchVehicleLinks();
+    });
     setInterval(() => {
       if (document.getElementById('autoPoll').checked) {
         fetchSnapshot();
+        fetchVehicleLinks();
       }
     }, 1000);
 
     fetchSnapshot();
+    fetchVehicleLinks();
 
     // ==========================================
     // 自定义地图可视化与热交互标注逻辑
