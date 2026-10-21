@@ -1,18 +1,19 @@
-// A1：选车策略纯函数 PlanVehicleAssignment 的单测。
+// 选车策略纯函数 PlanVehicleAssignment 的单测（v2 修订语义）。
 //
-// 覆盖点（规则顺序固定）：
-//   1. 显式指定车辆 -> 命中则 assigned/strategy="explicit"；否则拒绝（不静默改派）
-//   2. 未指定 -> 过滤 online && !busy && enabled && 能力匹配 && 电量达标
-//   3. 候选按到 pickup 的距离升序取最近；同距按输入序；无距离信息排在有距离之后；
-//      全部无距离 -> 首个可用（strategy="first_available"）
-//   4. 无候选 -> 带原因的拒绝
-//   5. 空车辆表 -> 拒绝
-//   6. 空 capabilities 视为"无能力限制"（单车最小配置仍可选中）
+// 覆盖点：
+//   1. 显式指定：命中即 assigned/strategy="explicit"；不满足硬约束 -> rejected；
+//      车忙 -> deferred（留队等待，不判负）
+//   2. 自动选车硬约束：online ∧ enabled ∧ !busy ∧ !quarantined ∧ 能力 ∧ 电量
+//      ∧ 位置有效 ∧ 状态新鲜
+//   3. 三态结果：deferred（车忙）/ indeterminate（从未收到状态）/ rejected（永久不满足）
+//   4. 距离不可算 -> 不盲派（rejected），不再退化到清单首台
+//   5. 空 capabilities 视为"无能力限制"
 
 #include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -20,8 +21,9 @@ namespace fleet = amr_dispatcher_core::fleet;
 
 namespace {
 
-fleet::VehicleRuntimeState MakeVehicle(const std::string& id,
-                                        std::vector<std::string> capabilities = {"transport"}) {
+// 新鲜状态时刻（当前时刻）
+fleet::VehicleRuntimeState Fresh(const std::string& id,
+                                 std::vector<std::string> capabilities = {"transport"}) {
   fleet::VehicleRuntimeState v;
   v.vehicle_id = id;
   v.online = true;
@@ -29,6 +31,17 @@ fleet::VehicleRuntimeState MakeVehicle(const std::string& id,
   v.enabled = true;
   v.battery_percent = 100.0;
   v.capabilities = std::move(capabilities);
+  v.position_valid = true;
+  v.current_station_id = "S0";
+  v.state_time = std::chrono::steady_clock::now();
+  return v;
+}
+
+// 从未收到过状态的车
+fleet::VehicleRuntimeState NeverSeen(const std::string& id) {
+  fleet::VehicleRuntimeState v = Fresh(id);
+  v.state_time = fleet::VehicleRuntimeState{}.state_time;  // 默认构造值
+  v.position_valid = false;
   return v;
 }
 
@@ -39,219 +52,248 @@ fleet::VehicleAssignmentRequest MakeRequest(std::vector<fleet::VehicleRuntimeSta
   req.dropoff_station_id = "B";
   req.required_capability = "transport";
   req.min_battery_percent = 0.0;
+  req.state_max_age_ms = 5000;
   return req;
 }
 
 }  // namespace
 
-// ---- 规则 1：显式指定 ----
+// ---- 显式指定 ----
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_Valid_Assigns) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2")});
-  req.requested_vehicle_id = "v2";
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
+  req.requested_vehicle_id = "v1";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v2");
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
+  EXPECT_EQ(d.vehicle_id, "v1");
   EXPECT_EQ(d.strategy, "explicit");
-  EXPECT_TRUE(d.reject_reason.empty());
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_Unknown_IsRejected_NotReassigned) {
-  auto req = MakeRequest({MakeVehicle("v1")});
+  auto req = MakeRequest({Fresh("v1")});
   req.requested_vehicle_id = "ghost";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
   EXPECT_TRUE(d.vehicle_id.empty());
-  EXPECT_EQ(d.strategy, "rejected");
-  EXPECT_NE(d.reject_reason.find("ghost"), std::string::npos);
-  // 关键：显式指定失败时不得静默改派给清单内的车
-  EXPECT_EQ(d.reject_reason.find("v1"), std::string::npos);
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_Offline_IsRejected) {
-  auto v = MakeVehicle("v1");
+  auto v = Fresh("v1");
   v.online = false;
   auto req = MakeRequest({v});
   req.requested_vehicle_id = "v1";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_EQ(d.strategy, "rejected");
-  EXPECT_NE(d.reject_reason.find("offline"), std::string::npos);
-}
-
-TEST(VehicleAssignmentTest, ExplicitVehicle_Busy_IsRejected) {
-  auto v = MakeVehicle("v1");
-  v.busy = true;
-  auto req = MakeRequest({v});
-  req.requested_vehicle_id = "v1";
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_NE(d.reject_reason.find("busy"), std::string::npos);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_Disabled_IsRejected) {
-  auto v = MakeVehicle("v1");
+  auto v = Fresh("v1");
   v.enabled = false;
   auto req = MakeRequest({v});
   req.requested_vehicle_id = "v1";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_NE(d.reject_reason.find("disabled"), std::string::npos);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+}
+
+TEST(VehicleAssignmentTest, ExplicitVehicle_Quarantined_IsRejected) {
+  auto v = Fresh("v1");
+  v.quarantined = true;
+  auto req = MakeRequest({v});
+  req.requested_vehicle_id = "v1";
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_MissingCapability_IsRejected) {
-  auto req = MakeRequest({MakeVehicle("v1", {"charging"})});
+  auto req = MakeRequest({Fresh("v1", {"charging"})});
   req.requested_vehicle_id = "v1";
-  req.required_capability = "transport";
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_NE(d.reject_reason.find("transport"), std::string::npos);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+}
+
+TEST(VehicleAssignmentTest, ExplicitVehicle_BelowBatteryThreshold_IsRejected) {
+  auto v = Fresh("v1");
+  v.battery_percent = 5.0;
+  auto req = MakeRequest({v});
+  req.requested_vehicle_id = "v1";
+  req.min_battery_percent = 20.0;
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+}
+
+TEST(VehicleAssignmentTest, ExplicitVehicle_Busy_IsDeferred_NotRejected) {
+  auto v = Fresh("v1");
+  v.busy = true;
+  auto req = MakeRequest({v});
+  req.requested_vehicle_id = "v1";
+  const auto d = fleet::PlanVehicleAssignment(req);
+  // 车忙是暂时状态：任务应留队等待，而不是被判负
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+  EXPECT_EQ(d.strategy, "deferred");
+  EXPECT_EQ(d.blocking_vehicle_id, "v1");
+}
+
+TEST(VehicleAssignmentTest, ExplicitVehicle_IgnoresPositionValidity) {
+  // 人工点名：知道车在哪，位置未上报不构成拒绝理由
+  auto v = Fresh("v1");
+  v.position_valid = false;
+  auto req = MakeRequest({v});
+  req.requested_vehicle_id = "v1";
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
 }
 
 TEST(VehicleAssignmentTest, ExplicitVehicle_WinsOverNearerAutoCandidate) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2")});
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
   req.requested_vehicle_id = "v2";
-  req.distance_to_pickup_m = {{"v1", 1.0}, {"v2", 100.0}};
+  req.distance_to_pickup_m = {{"v1", 1.0}, {"v2", 99.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
   EXPECT_EQ(d.vehicle_id, "v2");
   EXPECT_EQ(d.strategy, "explicit");
 }
 
-// ---- 规则 2/3：自动选车 ----
+// ---- 自动选车 ----
 
 TEST(VehicleAssignmentTest, AutoSelect_NearestWins) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2"), MakeVehicle("v3")});
-  req.distance_to_pickup_m = {{"v1", 30.0}, {"v2", 5.0}, {"v3", 12.0}};
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
+  req.distance_to_pickup_m = {{"v1", 10.0}, {"v2", 2.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
   EXPECT_EQ(d.vehicle_id, "v2");
   EXPECT_EQ(d.strategy, "nearest");
 }
 
 TEST(VehicleAssignmentTest, AutoSelect_TieBreaksByInputOrder) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2")});
-  req.distance_to_pickup_m = {{"v1", 7.0}, {"v2", 7.0}};
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
+  req.distance_to_pickup_m = {{"v1", 5.0}, {"v2", 5.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
   EXPECT_EQ(d.vehicle_id, "v1");
-  EXPECT_EQ(d.strategy, "nearest");
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_NoDistanceForAnyCandidate_IsRejected_NotBlindDispatch) {
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
+  const auto d = fleet::PlanVehicleAssignment(req);
+  // 距离全部不可算 -> 不盲派（不派给可能到不了取货点的车）
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+  EXPECT_TRUE(d.vehicle_id.empty());
 }
 
 TEST(VehicleAssignmentTest, AutoSelect_CandidateWithoutDistanceRanksAfterThoseWithDistance) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2")});
-  req.distance_to_pickup_m = {{"v2", 99.0}};
+  auto req = MakeRequest({Fresh("v1"), Fresh("v2")});
+  req.distance_to_pickup_m = {{"v2", 7.0}};  // v1 无距离
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
   EXPECT_EQ(d.vehicle_id, "v2");
-  EXPECT_EQ(d.strategy, "nearest");
 }
 
-TEST(VehicleAssignmentTest, AutoSelect_NoDistanceInfoAnywhere_FirstEligibleInInputOrder) {
-  auto req = MakeRequest({MakeVehicle("v1"), MakeVehicle("v2")});
+TEST(VehicleAssignmentTest, AutoSelect_AllBusy_IsDeferred) {
+  auto v1 = Fresh("v1");
+  v1.busy = true;
+  auto v2 = Fresh("v2");
+  v2.busy = true;
+  auto req = MakeRequest({v1, v2});
+  req.distance_to_pickup_m = {{"v1", 1.0}, {"v2", 2.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v1");
-  EXPECT_EQ(d.strategy, "first_available");
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_NeverSeenState_IsIndeterminate) {
+  auto req = MakeRequest({NeverSeen("v1")});
+  const auto d = fleet::PlanVehicleAssignment(req);
+  // 从未收到状态 -> 状态不确定：暂停自动分配，等状态恢复
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kIndeterminate);
+  EXPECT_EQ(d.strategy, "indeterminate");
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_StaleState_IsDeferred) {
+  auto v = Fresh("v1");
+  v.state_time = std::chrono::steady_clock::now() - std::chrono::seconds(30);
+  auto req = MakeRequest({v});
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_InvalidPosition_IsDeferred) {
+  auto v = Fresh("v1");
+  v.position_valid = false;
+  auto req = MakeRequest({v});
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kDeferred);
+}
+
+TEST(VehicleAssignmentTest, AutoSelect_OfflineAndDisabledAndQuarantinedExcluded) {
+  auto off = Fresh("v_off");
+  off.online = false;
+  auto dis = Fresh("v_dis");
+  dis.enabled = false;
+  auto qua = Fresh("v_qua");
+  qua.quarantined = true;
+  auto req = MakeRequest({off, dis, qua, Fresh("v_ok")});
+  req.distance_to_pickup_m = {{"v_off", 0.1}, {"v_dis", 0.2}, {"v_qua", 0.3}, {"v_ok", 9.0}};
+  const auto d = fleet::PlanVehicleAssignment(req);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
+  EXPECT_EQ(d.vehicle_id, "v_ok");
 }
 
 TEST(VehicleAssignmentTest, AutoSelect_CapabilityFilterExcludes) {
-  auto req = MakeRequest({MakeVehicle("v1", {"charging"}), MakeVehicle("v2", {"transport"})});
+  auto req = MakeRequest({Fresh("v1", {"charging"}), Fresh("v2", {"transport"})});
+  req.distance_to_pickup_m = {{"v1", 0.1}, {"v2", 9.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
   EXPECT_EQ(d.vehicle_id, "v2");
 }
 
 TEST(VehicleAssignmentTest, AutoSelect_BatteryThresholdExcludes) {
-  auto low = MakeVehicle("v1");
-  low.battery_percent = 10.0;
-  auto ok = MakeVehicle("v2");
-  ok.battery_percent = 60.0;
-  auto req = MakeRequest({low, ok});
-  req.min_battery_percent = 50.0;
+  auto low = Fresh("v_low");
+  low.battery_percent = 5.0;
+  auto req = MakeRequest({low, Fresh("v_ok")});
+  req.min_battery_percent = 20.0;
+  req.distance_to_pickup_m = {{"v_low", 0.1}, {"v_ok", 9.0}};
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v2");
-}
-
-TEST(VehicleAssignmentTest, AutoSelect_BusyVehicleExcluded) {
-  auto busy = MakeVehicle("v1");
-  busy.busy = true;
-  auto req = MakeRequest({busy, MakeVehicle("v2")});
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v2");
-}
-
-TEST(VehicleAssignmentTest, AutoSelect_OfflineAndDisabledExcluded) {
-  auto off = MakeVehicle("v1");
-  off.online = false;
-  auto dis = MakeVehicle("v2");
-  dis.enabled = false;
-  auto req = MakeRequest({off, dis, MakeVehicle("v3")});
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v3");
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kAssigned);
+  EXPECT_EQ(d.vehicle_id, "v_ok");
 }
 
 TEST(VehicleAssignmentTest, AutoSelect_NoEligible_RejectedWithReason) {
-  auto off = MakeVehicle("v1");
-  off.online = false;
-  auto req = MakeRequest({off});
+  auto v = Fresh("v1", {"charging"});
+  auto req = MakeRequest({v});
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_EQ(d.strategy, "rejected");
-  EXPECT_FALSE(d.reject_reason.empty());
-  EXPECT_NE(d.reject_reason.find("transport"), std::string::npos);
-}
-
-TEST(VehicleAssignmentTest, AutoSelect_AllBusy_RejectedWithBusyReason) {
-  auto a = MakeVehicle("v1");
-  a.busy = true;
-  auto b = MakeVehicle("v2");
-  b.busy = true;
-  auto req = MakeRequest({a, b});
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_NE(d.reject_reason.find("busy"), std::string::npos);
-}
-
-TEST(VehicleAssignmentTest, AutoSelect_AllLowBattery_RejectedWithBatteryReason) {
-  auto a = MakeVehicle("v1");
-  a.battery_percent = 5.0;
-  auto req = MakeRequest({a});
-  req.min_battery_percent = 30.0;
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_NE(d.reject_reason.find("battery"), std::string::npos);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
+  EXPECT_NE(d.reject_reason.find("capability"), std::string::npos);
 }
 
 TEST(VehicleAssignmentTest, EmptyVehicleList_Rejected) {
   auto req = MakeRequest({});
   const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_FALSE(d.assigned);
-  EXPECT_EQ(d.strategy, "rejected");
-  EXPECT_NE(d.reject_reason.find("no managed vehicles"), std::string::npos);
+  EXPECT_EQ(d.outcome, fleet::AssignmentOutcome::kRejected);
 }
 
-// ---- 能力判定辅助函数 ----
+// ---- 能力与新鲜度辅助 ----
 
 TEST(VehicleAssignmentTest, VehicleHasCapability_EmptyListMeansNoRestriction) {
-  auto v = MakeVehicle("v1", {});
+  auto v = Fresh("v1", {});
   EXPECT_TRUE(fleet::VehicleHasCapability(v, "transport"));
-  EXPECT_TRUE(fleet::VehicleHasCapability(v, "charging"));
 }
 
 TEST(VehicleAssignmentTest, VehicleHasCapability_NonEmptyListMustContain) {
-  auto v = MakeVehicle("v1", {"transport", "charging"});
-  EXPECT_TRUE(fleet::VehicleHasCapability(v, "transport"));
+  auto v = Fresh("v1", {"charging"});
+  EXPECT_FALSE(fleet::VehicleHasCapability(v, "transport"));
   EXPECT_TRUE(fleet::VehicleHasCapability(v, "charging"));
-  EXPECT_FALSE(fleet::VehicleHasCapability(v, "warehouse"));
 }
 
-TEST(VehicleAssignmentTest, AutoSelect_EmptyCapabilitiesVehicleStillEligible) {
-  auto req = MakeRequest({MakeVehicle("v1", {}), MakeVehicle("v2", {"charging"})});
-  const auto d = fleet::PlanVehicleAssignment(req);
-  EXPECT_TRUE(d.assigned);
-  EXPECT_EQ(d.vehicle_id, "v1");
+TEST(VehicleAssignmentTest, VehicleStateIsFresh_NeverSeenIsNotFresh) {
+  auto v = NeverSeen("v1");
+  EXPECT_FALSE(fleet::VehicleStateIsFresh(v, 5000));
+  auto f = Fresh("v2");
+  EXPECT_TRUE(fleet::VehicleStateIsFresh(f, 5000));
+}
+
+TEST(VehicleAssignmentTest, BackendLabelRoundTrip) {
+  fleet::VehicleExecutionBackend backend = fleet::VehicleExecutionBackend::kLocalSim;
+  EXPECT_TRUE(fleet::ParseVehicleBackend("vda5050", &backend));
+  EXPECT_EQ(backend, fleet::VehicleExecutionBackend::kVda5050);
+  EXPECT_STREQ(fleet::VehicleBackendLabel(backend), "vda5050");
+  EXPECT_FALSE(fleet::ParseVehicleBackend("weird", &backend));
 }
