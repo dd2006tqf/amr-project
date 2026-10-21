@@ -1996,10 +1996,12 @@ void DispatcherNode::ScheduleTick() {
     ps.pose.orientation.w = std::cos(wp.theta / 2.0);
     path_msg.poses.push_back(ps);
   }
-  PublishPlanForVehicle(dispatch_vehicle_id, path_msg);
-  // 执行后端分离（评审 P0.1）：VDA 5050 车自带控制器，不占用本地 /plan 执行槽位，
-  // 其"执行中"由订单状态判定（lastNodeId 推进），完成判定见 Vda5050StateCb。
+  // 执行后端分离（评审 P0.1）：VDA 5050 车自带控制器，**不发本地 /plan**
+  //（否则外部车会同时收到一条"本地折线"与一条 MQTT order，两套运动源互相打架），
+  // 也不占用本地 /plan 执行槽位；其"执行中"由订单状态判定（lastNodeId 推进），
+  // 完成判定见 Vda5050StateCb。
   if (!is_vda5050_dispatch) {
+    PublishPlanForVehicle(dispatch_vehicle_id, path_msg);
     AssignTrackingSlot(m.id, dispatch_vehicle_id);
   }
   RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints)",
