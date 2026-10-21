@@ -116,6 +116,19 @@ TimeSpacePlan PlanTimeSpaceReservation(const TimeSpaceCandidate& candidate,
 void CommitTimeSpaceOccupancy(TimeSpaceOccupancy* occupancy, const std::string& mission_id,
                                const ResourceTimeWindowSet& windows);
 
+// 逐资源释放某任务的占用区间（车辆**确认驶离**该资源后调用）。
+//   * 只释放该任务在该资源上的区间（owner 校验），他人区间不动；
+//   * 该资源上该任务没有区间 -> 幂等 no-op（返回 false 但不改表）。
+// 评审 B.2 的关键：**窗口到期 ≠ 资源已释放**——到期只意味着"计划上应该走了"，
+// 物理释放必须由确认驶离驱动，否则后车会在前车还在时进入。
+bool ReleaseTimeSpaceResources(TimeSpaceOccupancy* occupancy, const std::string& mission_id,
+                               const std::vector<std::string>& resource_ids,
+                               std::vector<std::string>* released_resource_ids);
+
+// 某任务在某资源上是否仍持有占用区间。
+bool HoldsTimeSpaceResource(const TimeSpaceOccupancy& occupancy, const std::string& mission_id,
+                             const std::string& resource_id);
+
 // 车辆执行滞后时延长其占用窗口（评审 B.2：窗口到期不能单独作为释放依据）。
 // 延长失败（与后车窗口冲突）时返回 false，由调度层让后车等待。
 bool ExtendTimeSpaceOccupancy(TimeSpaceOccupancy* occupancy, const std::string& mission_id,

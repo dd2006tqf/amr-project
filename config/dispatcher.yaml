@@ -21,3 +21,11 @@ dispatcher_node:
     vehicle_state_max_age_ms: 5000
     # 队首阻塞规避：一次 tick 最多考察前 N 个排队任务
     assignment_scan_depth: 8
+    # B3：交通协调模式 static（静态排他锁）/ time_space（时空窗预约，多车错峰并行）
+    traffic_mode: "static"
+    # 时空窗运动时序参数（把几何长度换算成时间占用区间）
+    time_space_cruise_speed_mps: 1.0
+    time_space_accel_overhead_sec: 1.0
+    time_space_turn_overhead_sec: 0.5
+    time_space_safety_margin_m: 0.2
+    time_space_min_headway_sec: 2.0

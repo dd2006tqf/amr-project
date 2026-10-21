@@ -46,6 +46,14 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("vehicle_state_max_age_ms", 5000);
   // A6：选车扫描深度（队首阻塞规避）——一次 tick 最多考察前 N 个排队任务
   declare_parameter("assignment_scan_depth", 8);
+  // B3：交通协调模式——static（静态排他锁，现网行为）| time_space（时空窗预约）
+  declare_parameter("traffic_mode", "static");
+  // 时空窗运动参数
+  declare_parameter("time_space_cruise_speed_mps", 1.0);
+  declare_parameter("time_space_accel_overhead_sec", 1.0);
+  declare_parameter("time_space_turn_overhead_sec", 0.5);
+  declare_parameter("time_space_safety_margin_m", 0.2);
+  declare_parameter("time_space_min_headway_sec", 2.0);
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -106,6 +114,24 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 
   // P0.6 / A4：per-vehicle 计划发布端与位姿/到达订阅（空清单 = 单车兼容，零行为变化）
   SetupVehicleTopics(get_parameter("vehicle_ids").as_string());
+
+  // B3：交通协调模式（static = 现网行为；time_space = 时空窗预约）
+  traffic_mode_ = get_parameter("traffic_mode").as_string();
+  if (traffic_mode_ != "static" && traffic_mode_ != "time_space") {
+    RCLCPP_ERROR(get_logger(),
+                 "Invalid traffic_mode '%s' — falling back to 'static' (unknown mode is not "
+                 "guessed)",
+                 traffic_mode_.c_str());
+    traffic_mode_ = "static";
+  }
+  time_space_timing_.cruise_speed_mps = get_parameter("time_space_cruise_speed_mps").as_double();
+  time_space_timing_.accel_overhead_sec =
+      get_parameter("time_space_accel_overhead_sec").as_double();
+  time_space_timing_.turn_overhead_sec =
+      get_parameter("time_space_turn_overhead_sec").as_double();
+  time_space_timing_.safety_margin_m = get_parameter("time_space_safety_margin_m").as_double();
+  time_space_timing_.min_headway_sec = get_parameter("time_space_min_headway_sec").as_double();
+  RCLCPP_INFO(get_logger(), "Traffic coordination mode: %s", traffic_mode_.c_str());
 
   // P0.6 / A6：选车上下文（静态目录 + 参数）
   required_capability_ = get_parameter("required_capability").as_string();
@@ -470,6 +496,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   mission_tracking_vehicle_.clear();
   vehicle_states_.clear();
   auto_assignment_paused_ = false;
+  time_space_occupancy_ = amr_dispatcher_core::workflow::TimeSpaceOccupancy{};
+  time_space_windows_.clear();
   active_missions_.clear();
   return CallbackReturn::SUCCESS;
 }
@@ -1425,6 +1453,23 @@ void DispatcherNode::CleanupMissionCancel(const std::string& mission_id,
   ForgetMissionDispatchState(mission_id);
 }
 
+void DispatcherNode::ReleaseAllTimeSpaceForMission(const std::string& mission_id) {
+  if (!UseTimeSpaceMode()) {
+    return;
+  }
+  const auto it = time_space_windows_.find(mission_id);
+  if (it == time_space_windows_.end()) {
+    return;
+  }
+  std::vector<std::string> resource_ids;
+  resource_ids.reserve(it->second.size());
+  for (const auto& window : it->second) {
+    resource_ids.push_back(window.resource_id);
+  }
+  ReleaseTimeSpaceForResources(mission_id, resource_ids);
+  time_space_windows_.erase(it);
+}
+
 void DispatcherNode::ForgetMissionDispatchState(const std::string& mission_id) {
   // 路由锁预留记账、排队等待记录与派发起点同步遗忘：
   // 幂等，供 Complete/Fail/取消/死锁取消/预占判负等终态路径共用
@@ -1433,6 +1478,8 @@ void DispatcherNode::ForgetMissionDispatchState(const std::string& mission_id) {
   mission_dispatch_start_.erase(mission_id);
   mission_route_paths_.erase(mission_id);  // Task 5：行驶路径存档随终态遗忘
   vda5050_mission_vehicle_.erase(mission_id);  // Task 7：mission->车辆绑定随终态遗忘
+  // B3：时空窗占用随终态全清（任务结束 = 不再占用任何资源）
+  ReleaseAllTimeSpaceForMission(mission_id);
 }
 
 void DispatcherNode::ProcessActionCancels() {
@@ -1667,13 +1714,38 @@ void DispatcherNode::ScheduleTick() {
       continue;
     }
     // 2) 预留路由锁（Peek→Reserve→Pop 原子链：预留成功才出队）
+    //    time_space 模式：预约**带时间窗**的路权（多车可错峰并行），
+    //    整条路径全有或全无；static 模式：静态排他锁（现网行为）。
     std::vector<std::string> route_locks;
     if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
       route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
           catalog_reloader_->catalog(), candidate_mission.pickup_station,
           candidate_mission.dropoff_station);
     }
-    if (!route_locks.empty() && reservation_table_) {
+    if (UseTimeSpaceMode()) {
+      // 时空窗模式：不占静态排他锁，改为预约时间窗。
+      std::vector<std::string> path_node_ids;
+      if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() &&
+          !candidate_mission.pickup_station.empty()) {
+        const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
+            catalog_reloader_->catalog(), candidate_mission.pickup_station,
+            candidate_mission.dropoff_station);
+        if (route_path.has_value()) {
+          path_node_ids = *route_path;
+        }
+      }
+      std::string ts_message;
+      if (!ReserveTimeSpaceForMission(candidate_mission.id, path_node_ids, &ts_message)) {
+        RCLCPP_WARN(get_logger(),
+                    "Time-space reservation denied for queued mission %s: %s",
+                    candidate_mission.id.c_str(), ts_message.c_str());
+        pending_wait_[candidate_mission.id] = route_locks;
+        continue;  // 留队等待（换下一个候选）
+      }
+      // 时空模式下不占静态排他锁：route_locks 仅作记账用途
+      route_locks.clear();
+    }
+    if (!UseTimeSpaceMode() && !route_locks.empty() && reservation_table_) {
       auto reserve = reservation_table_->Reserve(candidate_mission.id, route_locks);
       if (!reserve.success) {
         // 锁被占 -> 该单等锁（留队）；**不占用启动请求**，等锁释放时重试。
@@ -2460,6 +2532,116 @@ std::string DispatcherNode::ResolveDispatchVehicleId(
   return "";
 }
 
+// ---- B3：时空窗交通协调 ----
+
+bool DispatcherNode::ReserveTimeSpaceForMission(
+    const std::string& mission_id, const std::vector<std::string>& path_node_ids,
+    std::string* message) {
+  if (!UseTimeSpaceMode()) {
+    if (message != nullptr) *message = "traffic_mode is not time_space";
+    return false;
+  }
+  if (path_node_ids.size() < 2) {
+    if (message != nullptr) *message = "path needs at least 2 nodes";
+    return false;
+  }
+  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+    if (message != nullptr) *message = "station catalog not loaded";
+    return false;
+  }
+  const auto& catalog = catalog_reloader_->catalog();
+
+  // 逐段长度（米）：取目录里该段边的 distance_m
+  std::vector<double> segment_lengths;
+  segment_lengths.reserve(path_node_ids.size() - 1);
+  for (std::size_t i = 0; i + 1 < path_node_ids.size(); ++i) {
+    double length = 0.0;
+    bool found = false;
+    for (const auto& edge : catalog.edges) {
+      const bool forward = edge.from == path_node_ids[i] && edge.to == path_node_ids[i + 1];
+      const bool reverse = edge.bidirectional && edge.to == path_node_ids[i] &&
+                           edge.from == path_node_ids[i + 1];
+      if (edge.enabled && (forward || reverse)) {
+        length = edge.distance_m;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // 目录里没有该段的几何长度 -> 无法换算时间窗（不猜）
+      if (message != nullptr) {
+        *message = "no segment length for " + path_node_ids[i] + " -> " + path_node_ids[i + 1];
+      }
+      return false;
+    }
+    segment_lengths.push_back(length);
+  }
+
+  amr_dispatcher_core::workflow::TimeSpaceCandidate candidate;
+  candidate.mission_id = mission_id;
+  candidate.path_node_ids = path_node_ids;
+  candidate.segment_lengths_m = segment_lengths;
+  candidate.earliest_start = std::chrono::steady_clock::now();
+  candidate.edge_id_builder = [](const std::string& from, const std::string& to) {
+    return amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(from, to);
+  };
+  candidate.node_id_builder = [](const std::string& node) {
+    return amr_dispatcher_core::dispatcher::ResourceTable::RouteNodeId(node);
+  };
+
+  // 规划（逐资源窗口 + 冲突后移）
+  const auto plan = amr_dispatcher_core::workflow::PlanTimeSpaceReservation(
+      candidate, time_space_occupancy_, time_space_timing_);
+  if (!plan.feasible) {
+    if (message != nullptr) *message = plan.reject_reason;
+    return false;
+  }
+
+  // 全有或全无提交：整条路径的所有资源一次性落表；失败则整体回滚。
+  std::vector<std::pair<std::string, amr_dispatcher_core::dispatcher::TimeInterval>> intervals;
+  intervals.reserve(plan.windows.size());
+  for (const auto& window : plan.windows) {
+    intervals.emplace_back(window.resource_id,
+                           amr_dispatcher_core::dispatcher::TimeInterval{window.enter, window.exit});
+  }
+  std::string reserve_message;
+  if (!reservation_table_ ||
+      !reservation_table_->ReserveTimeSpaceBatch(mission_id, intervals, &reserve_message)) {
+    if (message != nullptr) {
+      *message = reservation_table_ ? reserve_message : "reservation table unavailable";
+    }
+    return false;
+  }
+  amr_dispatcher_core::workflow::CommitTimeSpaceOccupancy(&time_space_occupancy_, mission_id,
+                                                         plan.windows);
+  time_space_windows_[mission_id] = plan.windows;
+  RCLCPP_INFO(get_logger(),
+              "Time-space reservation committed for mission %s: %zu resource window(s), "
+              "total delay %.2fs",
+              mission_id.c_str(), plan.windows.size(), plan.total_delay_sec);
+  if (message != nullptr) *message = reserve_message;
+  return true;
+}
+
+void DispatcherNode::ReleaseTimeSpaceForResources(
+    const std::string& mission_id, const std::vector<std::string>& resource_ids) {
+  if (!UseTimeSpaceMode() || resource_ids.empty()) {
+    return;
+  }
+  // 1) 释放预约表里的时空区间（owner 校验）
+  if (reservation_table_) {
+    reservation_table_->ReleaseTimeSpaceResources(mission_id, resource_ids);
+  }
+  // 2) 释放核心占用表里的窗口
+  std::vector<std::string> released;
+  amr_dispatcher_core::workflow::ReleaseTimeSpaceResources(&time_space_occupancy_, mission_id,
+                                                           resource_ids, &released);
+  if (!released.empty()) {
+    RCLCPP_INFO(get_logger(), "Time-space windows released for mission %s: %zu resource(s)",
+                mission_id.c_str(), released.size());
+  }
+}
+
 // ---- P0.6 / A6：车辆目录 + 选车上下文 ----
 
 void DispatcherNode::RejectedQueuedMission(
@@ -2948,6 +3130,11 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
                   "Dynamic unlock (Spec 5.3): vehicle %s at %s -> mission %s released %zu lock(s): %s",
                   vehicle_id.c_str(), report->last_node_id.c_str(), mission_it->first.c_str(),
                   released.size(), joined.c_str());
+      // B2：窗口到期 != 资源已释放——车辆**确认驶离**该资源后才释放其时间窗，
+      // 否则后车会在前车还在时进入。
+      if (UseTimeSpaceMode()) {
+        ReleaseTimeSpaceForResources(mission_it->first, released);
+      }
       if (event_log_) {
         amr_dispatcher_core::dispatcher::MissionEvent evt;
         evt.stamp = "now";

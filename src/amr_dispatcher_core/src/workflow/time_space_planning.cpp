@@ -201,6 +201,52 @@ void CommitTimeSpaceOccupancy(TimeSpaceOccupancy* occupancy, const std::string& 
   }
 }
 
+bool ReleaseTimeSpaceResources(TimeSpaceOccupancy* occupancy, const std::string& mission_id,
+                               const std::vector<std::string>& resource_ids,
+                               std::vector<std::string>* released_resource_ids) {
+  if (occupancy == nullptr) {
+    return false;
+  }
+  bool any = false;
+  for (const auto& resource_id : resource_ids) {
+    const auto it = occupancy->by_resource.find(resource_id);
+    if (it == occupancy->by_resource.end()) {
+      continue;
+    }
+    auto& entries = it->second;
+    const std::size_t before = entries.size();
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                  [&mission_id](const TimeSpaceOccupancy::Entry& e) {
+                                    return e.mission_id == mission_id;
+                                  }),
+                  entries.end());
+    if (entries.size() != before) {
+      any = true;
+      if (released_resource_ids != nullptr) {
+        released_resource_ids->push_back(resource_id);
+      }
+    }
+    if (entries.empty()) {
+      occupancy->by_resource.erase(it);
+    }
+  }
+  return any;
+}
+
+bool HoldsTimeSpaceResource(const TimeSpaceOccupancy& occupancy, const std::string& mission_id,
+                             const std::string& resource_id) {
+  const auto it = occupancy.by_resource.find(resource_id);
+  if (it == occupancy.by_resource.end()) {
+    return false;
+  }
+  for (const auto& entry : it->second) {
+    if (entry.mission_id == mission_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ExtendTimeSpaceOccupancy(TimeSpaceOccupancy* occupancy, const std::string& mission_id,
                                const Clock::time_point& new_exit, std::string* message) {
   if (occupancy == nullptr) {

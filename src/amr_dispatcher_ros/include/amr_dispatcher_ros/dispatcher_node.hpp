@@ -21,6 +21,7 @@
 #include "amr_dispatcher_core/fleet/force_clear_link.hpp"
 #include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
 #include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
+#include "amr_dispatcher_core/workflow/time_space_planning.hpp"
 #include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
 #include "amr_dispatcher_core/planning/path_planner_interface.hpp"
@@ -232,6 +233,28 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 向"执行该任务的那台车"补发空路径停车。
   // legacy 模式（vehicle_id 为空）-> 回落 plan_pub_，与改动前逐字等价。
   void PublishStopPathForMission(const std::string& mission_id);
+
+  // ---- B3：时空窗交通协调 ----
+  // 交通协调模式：static（静态排他锁，现网默认）| time_space（时空窗预约）
+  std::string traffic_mode_{"static"};
+  // 运动时序参数（把几何长度换算成时间占用区间）
+  amr_dispatcher_core::workflow::MotionTimingConfig time_space_timing_{};
+  // 时空窗占用表（仅 time_space 模式使用）：resource_id -> 区间列表
+  amr_dispatcher_core::workflow::TimeSpaceOccupancy time_space_occupancy_;
+  // mission_id -> 该单已预约的时间窗（延期/释放时用）
+  std::unordered_map<std::string, amr_dispatcher_core::workflow::ResourceTimeWindowSet>
+      time_space_windows_;
+  // 是否启用时空窗模式
+  bool UseTimeSpaceMode() const { return traffic_mode_ == "time_space"; }
+  // 为一单规划并【整条路径原子提交】时空窗预约；失败则整体回滚。
+  bool ReserveTimeSpaceForMission(const std::string& mission_id,
+                                  const std::vector<std::string>& path_node_ids,
+                                  std::string* message);
+  // 车辆确认驶离某资源后释放其时间窗（窗口到期 != 资源已释放）。
+  void ReleaseTimeSpaceForResources(const std::string& mission_id,
+                                    const std::vector<std::string>& resource_ids);
+  // 任务终态时全清其时空窗占用。
+  void ReleaseAllTimeSpaceForMission(const std::string& mission_id);
 
   // ---- P0.6 / A6：受管车目录 + 选车上下文 ----
   // 车辆静态配置（fleet.yaml）+ 动态状态（里程计 / VDA 5050 state）合成的运行时视图。

@@ -55,6 +55,44 @@ bool HasResource(const wf::ResourceTimeWindowSet& windows, const std::string& id
 
 }  // namespace
 
+// ---- 逐资源释放（评审 B.2：窗口到期 != 资源已释放）----
+
+TEST(TimeSpacePlanningTest, ReleaseTimeSpaceResources_ReleasesOnlyOwnEntries) {
+  auto c = MakeCandidate("m1");
+  const auto plan = wf::PlanTimeSpaceReservation(c, wf::TimeSpaceOccupancy{}, MakeConfig());
+  ASSERT_TRUE(plan.feasible);
+  wf::TimeSpaceOccupancy occupancy;
+  wf::CommitTimeSpaceOccupancy(&occupancy, "m1", plan.windows);
+  wf::CommitTimeSpaceOccupancy(&occupancy, "m2", plan.windows);
+
+  std::vector<std::string> released;
+  EXPECT_TRUE(wf::ReleaseTimeSpaceResources(&occupancy, "m1", {"route_node:B"}, &released));
+  ASSERT_EQ(released.size(), 1u);
+  EXPECT_EQ(released[0], "route_node:B");
+  // m1 不再持有该资源，m2 仍持有
+  EXPECT_FALSE(wf::HoldsTimeSpaceResource(occupancy, "m1", "route_node:B"));
+  EXPECT_TRUE(wf::HoldsTimeSpaceResource(occupancy, "m2", "route_node:B"));
+}
+
+TEST(TimeSpacePlanningTest, ReleaseTimeSpaceResources_UnknownResource_IsIdempotentNoOp) {
+  auto c = MakeCandidate("m1");
+  const auto plan = wf::PlanTimeSpaceReservation(c, wf::TimeSpaceOccupancy{}, MakeConfig());
+  ASSERT_TRUE(plan.feasible);
+  wf::TimeSpaceOccupancy occupancy;
+  wf::CommitTimeSpaceOccupancy(&occupancy, "m1", plan.windows);
+
+  std::vector<std::string> released;
+  EXPECT_FALSE(wf::ReleaseTimeSpaceResources(&occupancy, "m1", {"route_node:ZZZ"}, &released));
+  EXPECT_TRUE(released.empty());
+  // 原有占用不受影响
+  EXPECT_TRUE(wf::HoldsTimeSpaceResource(occupancy, "m1", "route_node:B"));
+}
+
+TEST(TimeSpacePlanningTest, ReleaseTimeSpaceResources_NullOccupancy_IsSafe) {
+  std::vector<std::string> released;
+  EXPECT_FALSE(wf::ReleaseTimeSpaceResources(nullptr, "m1", {"route_node:B"}, &released));
+}
+
 TEST(TimeSpacePlanningTest, PathWithOneNode_IsRejected) {
   auto c = MakeCandidate("m1");
   c.path_node_ids = {"A"};

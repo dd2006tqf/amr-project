@@ -161,6 +161,132 @@ bool ResourceTable::ReserveTimeSpace(
   return true;
 }
 
+bool ResourceTable::ReserveTimeSpaceBatch(
+    const std::string& mission_id,
+    const std::vector<std::pair<std::string, TimeInterval>>& resource_intervals,
+    std::string* message) {
+  // 全有或全无：先整体校验（区间合法 + 无静态排他锁 + 无时空冲突），
+  // 全部通过后再一次性落表——中途失败不留半套预约。
+  std::vector<std::pair<std::string, TimeInterval>> pending;
+  pending.reserve(resource_intervals.size());
+  for (const auto& [resource_id, interval] : resource_intervals) {
+    if (interval.start >= interval.end) {
+      if (message) *message = "invalid time interval on " + resource_id + ": start >= end";
+      return false;
+    }
+    // 静态排他锁（人工封路 / 其它任务的静态锁）不可被时空预约覆盖
+    const auto static_owner = Owner(resource_id);
+    if (static_owner.has_value() && *static_owner != mission_id) {
+      if (message) {
+        *message = "resource statically locked by: " + *static_owner + " (" + resource_id + ")";
+      }
+      return false;
+    }
+    pending.emplace_back(resource_id, interval);
+  }
+  // 时空冲突校验（对**同一批次内**的重复资源也要查：先查已落表的，
+  // 再把本批次内部的重叠也一并检查）
+  for (std::size_t i = 0; i < pending.size(); ++i) {
+    for (std::size_t j = i + 1; j < pending.size(); ++j) {
+      if (pending[i].first == pending[j].first &&
+          pending[i].second.OverlapsWith(pending[j].second)) {
+        if (message) {
+          *message = "intra-batch time-space overlap on " + pending[i].first;
+        }
+        return false;
+      }
+    }
+  }
+  PruneExpiredTimeSpace(time_space_reservations_, std::chrono::steady_clock::now());
+  for (const auto& [resource_id, interval] : pending) {
+    const auto it = time_space_reservations_.find(resource_id);
+    if (it == time_space_reservations_.end()) {
+      continue;
+    }
+    for (const auto& res : it->second) {
+      if (res.mission_id != mission_id && res.interval.OverlapsWith(interval)) {
+        if (message) {
+          *message = "time-space contention on " + resource_id + " with " + res.mission_id;
+        }
+        return false;
+      }
+    }
+  }
+  // 全部通过 -> 一次性落表
+  for (const auto& [resource_id, interval] : pending) {
+    time_space_reservations_[resource_id].push_back(
+        TimeSpaceReservation{mission_id, resource_id, interval});
+  }
+  if (message) {
+    *message = "time-space reservation confirmed for " + std::to_string(pending.size()) +
+               " resource(s)";
+  }
+  return true;
+}
+
+std::vector<std::string> ResourceTable::ReleaseTimeSpaceResources(
+    const std::string& mission_id, const std::vector<std::string>& resource_ids) {
+  std::vector<std::string> released;
+  for (const auto& resource_id : resource_ids) {
+    const auto it = time_space_reservations_.find(resource_id);
+    if (it == time_space_reservations_.end()) {
+      continue;
+    }
+    auto& list = it->second;
+    const std::size_t before = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(),
+                               [&mission_id](const TimeSpaceReservation& r) {
+                                 return r.mission_id == mission_id;
+                               }),
+               list.end());
+    if (list.size() != before) {
+      released.push_back(resource_id);
+    }
+    if (list.empty()) {
+      time_space_reservations_.erase(it);
+    }
+  }
+  return released;
+}
+
+bool ResourceTable::ExtendTimeSpaceReservation(
+    const std::string& mission_id, const std::string& resource_id,
+    const std::chrono::steady_clock::time_point& new_end, std::string* message) {
+  PruneExpiredTimeSpace(time_space_reservations_, std::chrono::steady_clock::now());
+  auto it = time_space_reservations_.find(resource_id);
+  if (it == time_space_reservations_.end()) {
+    if (message) *message = "no time-space reservation for " + resource_id;
+    return false;
+  }
+  // 找到本任务在该资源上的预约并确认延长不与他人冲突
+  const auto mine = std::find_if(
+      it->second.begin(), it->second.end(),
+      [&mission_id](const TimeSpaceReservation& r) { return r.mission_id == mission_id; });
+  if (mine == it->second.end()) {
+    if (message) *message = "no time-space reservation for mission " + mission_id + " on " + resource_id;
+    return false;
+  }
+  if (new_end <= mine->interval.end) {
+    if (message) *message = "no extension needed";
+    return true;  // 幂等：未延长
+  }
+  const TimeInterval extended{mine->interval.start, new_end};
+  for (const auto& res : it->second) {
+    if (res.mission_id == mission_id) {
+      continue;
+    }
+    if (res.interval.OverlapsWith(extended)) {
+      if (message) {
+        *message = "extension conflicts with mission " + res.mission_id + " on " + resource_id;
+      }
+      return false;
+    }
+  }
+  mine->interval.end = new_end;
+  if (message) *message = "time-space reservation extended";
+  return true;
+}
+
 ResourceTable::ReleaseResult ResourceTable::Release(const std::string& mission_id) {
   ReleaseResult result;
   // A7：入口先剪除过期时空预约

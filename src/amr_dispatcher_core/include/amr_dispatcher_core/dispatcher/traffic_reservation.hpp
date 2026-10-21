@@ -60,6 +60,29 @@ class ResourceTable {
   std::vector<std::string> ReleaseResources(
       const std::string& mission_id, const std::vector<std::string>& resource_ids);
 
+  // 时空预约**批量**提交（全有或全无）：一条路径涉及多个资源，
+  // 必须整条路径全部预约成功才落表；任一失败则全部回滚，不留半套预约。
+  // 逐个调用 ReserveTimeSpace 无法保证这一点（中途失败会留下前面的预约）。
+  // 返回失败时 message 给出冲突资源与占用方。
+  bool ReserveTimeSpaceBatch(
+      const std::string& mission_id,
+      const std::vector<std::pair<std::string, TimeInterval>>& resource_intervals,
+      std::string* message);
+
+  // 延长某任务在某资源上的时空窗口（车辆执行滞后时用）。
+  // 延长区间与他人预约冲突则不改动（返回 false）。
+  bool ExtendTimeSpaceReservation(const std::string& mission_id, const std::string& resource_id,
+                                  const std::chrono::steady_clock::time_point& new_end,
+                                  std::string* message);
+
+  // 逐资源释放某任务持有的时空预约区间（车辆**确认驶离**后调用）。
+  //   * 只释放 owner == mission_id 的区间，他人区间不动；
+  //   * 该任务在某资源上没有区间 -> 幂等跳过；
+  // 返回实际释放的资源 id 列表（保序）。
+  // 评审 B.2：窗口到期 != 资源已释放——物理释放必须由确认驶离驱动。
+  std::vector<std::string> ReleaseTimeSpaceResources(
+      const std::string& mission_id, const std::vector<std::string>& resource_ids);
+
   // 人工封路：owner = "traffic_block:<reason>"，对任务预留不可见覆盖。
   bool Block(const std::string& resource_id, const std::string& reason, std::string* message);
   bool Unblock(const std::string& resource_id, std::string* message);
