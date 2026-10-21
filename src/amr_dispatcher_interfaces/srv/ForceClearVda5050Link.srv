@@ -1,0 +1,9 @@
+# 操作员强制清除离线 VDA 5050 链路（Spec §5.2 人工强解半边）
+# 用途：受管车辆永久损坏/无法重连时，摘除离线挂载（解除全队派发挂起）
+#       并释放该车名下全部路权锁。仅当该车当前 online==false 才受理。
+string vehicle_id          # 目标车辆 serialNumber（须在受管清单内）
+string reason              # 操作员备注，写进 WARN 审计日志
+---
+bool success               # false = 车辆不在清单/仍在线/前置校验失败
+string message             # 拒绝原因或操作摘要
+string[] released_resources # 实际释放的路权锁 id 清单

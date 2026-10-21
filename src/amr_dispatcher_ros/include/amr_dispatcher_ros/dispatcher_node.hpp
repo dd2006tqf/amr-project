@@ -36,6 +36,7 @@
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
+#include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/pause_mission.hpp"
 #include "amr_dispatcher_interfaces/srv/release_resource.hpp"
 #include "amr_dispatcher_interfaces/srv/reserve_resource.hpp"
@@ -108,6 +109,13 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ReleaseResourceCb(
       const std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Request> req,
       std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Response> resp);
+
+  // Task 7（终审 I1 闭合）：人工强制清除离线 VDA 5050 链路——摘除离线挂载
+  //（解除 EnforceVda5050LinkGuard 挂起）并释放该车名下全部路权锁（Spec §5.2
+  // "人工强解"半边）。仅受理 online==false 的受管车辆，防误杀活车。
+  void ForceClearVda5050LinkCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp);
 
   // 12 Core Services
   void EnqueueMissionCb(
@@ -258,6 +266,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveResource>::SharedPtr reserve_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
+  rclcpp::Service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
+      force_clear_vda5050_link_srv_;
   // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
   rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
   // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）

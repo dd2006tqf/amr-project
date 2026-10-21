@@ -36,6 +36,7 @@ set(srv_files
   "srv/ReserveFacilityResource.srv"
   "srv/GetOperatorSnapshot.srv"
   "srv/ValidateSiteConfig.srv"
+  "srv/ForceClearVda5050Link.srv"
 )
 
 set(action_files

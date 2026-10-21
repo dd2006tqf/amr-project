@@ -112,6 +112,11 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   release_srv_ = create_service<amr_dispatcher_interfaces::srv::ReleaseResource>(
       "/dispatcher/release_resource",
       std::bind(&DispatcherNode::ReleaseResourceCb, this, std::placeholders::_1, std::placeholders::_2));
+  force_clear_vda5050_link_srv_ =
+      create_service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>(
+          "/dispatcher/force_clear_vda5050_link",
+          std::bind(&DispatcherNode::ForceClearVda5050LinkCb, this,
+                    std::placeholders::_1, std::placeholders::_2));
 
   // 12 Core Services Registration
   enqueue_srv_ = create_service<amr_dispatcher_interfaces::srv::EnqueueMission>(
@@ -407,6 +412,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   topology_pub_.reset();
   vda5050_order_pubs_.clear();   // Task 6：随生命周期收口，重 configure 时重建
   vda5050_vehicle_ids_.clear();
+  vda5050_links_.clear();        // 终审 M4：与 SetupVda5050Links 开头清旧对齐，防残留链
+  vda5050_next_order_update_id_.clear();
   last_deadlock_findings_.clear();
   tracking_error_sub_.reset();
   odom_sub_.reset();
@@ -628,6 +635,79 @@ void DispatcherNode::ReleaseResourceCb(
   auto res = reservation_table_->Release(req->holder_id);
   resp->success = res.released;
   resp->message = res.message;
+}
+
+void DispatcherNode::ForceClearVda5050LinkCb(
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
+    std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp) {
+  // Task 7（终审 I1 闭合）：仅受理"受管清单内且当前离线"的车辆——在线车辆
+  // 强清会误杀活车；锁保留/释放决定只在断链语义下才有安全依据。
+  const auto link_it = vda5050_links_.find(req->vehicle_id);
+  if (link_it == vda5050_links_.end()) {
+    resp->success = false;
+    resp->message = "Vehicle " + req->vehicle_id + " not in managed list";
+    return;
+  }
+  if (link_it->second.online) {
+    resp->success = false;
+    resp->message =
+        "Vehicle " + req->vehicle_id + " is ONLINE — refusing to force-clear a live link";
+    return;
+  }
+
+  // ---- 1) 锁归属反推：锁 owner 是 mission_id，与车辆的关系经 mission_route_paths_ ----
+  // 受管车辆派生 mission 的路径存档包含了它实际走的 route_ 锁的"合法"路径。
+  // 规则：锁 owner 为 mission M 且 mission_route_paths_[M] 非空 -> 该 mission 名下的
+  // route_ 锁视为该车名下（单车主权下唯一；多车绑定仍靠 mission 粒度，见剪裁）。
+  std::unordered_map<std::string, std::vector<std::string>> mission_owned_ids;
+  if (reservation_table_) {
+    for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
+      const auto path_it = mission_route_paths_.find(owner);
+      if (path_it == mission_route_paths_.end() || path_it->second.empty()) {
+        continue;  // 非本系统派生 owner（traffic_block 等）或无路径存档 -> 保守跳过
+      }
+      mission_owned_ids[owner].push_back(resource_id);
+    }
+  }
+
+  // ---- 2) 解除挂载 ----
+  vda5050_links_.erase(link_it);
+  const auto id_it = std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(),
+                               req->vehicle_id);
+  if (id_it != vda5050_vehicle_ids_.end()) {
+    vda5050_vehicle_ids_.erase(id_it);
+  }
+  vda5050_order_pubs_.erase(req->vehicle_id);
+  vda5050_next_order_update_id_.erase(req->vehicle_id);
+
+  // ---- 3) 释放该车名下锁 ----
+  std::vector<std::string> released;
+  if (reservation_table_) {
+    for (const auto& [mission_id, ids] : mission_owned_ids) {
+      const auto freed = reservation_table_->ReleaseResources(mission_id, ids);
+      released.insert(released.end(), freed.begin(), freed.end());
+    }
+  }
+  resp->released_resources.assign(released.begin(), released.end());
+
+  // ---- 4) 审计与响应 ----
+  resp->success = true;
+  resp->message = "Force-cleared offline link for " + req->vehicle_id + ", released " +
+                  std::to_string(released.size()) + " resource(s)" +
+                  (req->reason.empty() ? "" : " | reason: " + req->reason);
+  RCLCPP_WARN(get_logger(),
+              "VDA 5050 link %s FORCE-CLEARED by operator (reason=\"%s\", released %zu "
+              "resource(s) [%s])",
+              req->vehicle_id.c_str(), req->reason.c_str(), released.size(),
+              [&released]() {
+                std::string joined;
+                for (std::size_t i = 0; i < released.size(); ++i) {
+                  if (i) joined += ",";
+                  joined += released[i];
+                }
+                return joined;
+              }()
+                  .c_str());
 }
 
 void DispatcherNode::EnqueueMissionCb(
@@ -2075,6 +2155,14 @@ void DispatcherNode::ReArmQueueStartRequest() {
 // ---- Task 5：VDA 5050 逐段解锁与断链守卫（Spec §5.2/§5.3）----
 
 void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
+  // 终审 M4：reconfigure 必须先无条件清旧链路态——否则空化 vda5050_vehicle_ids
+  // 会残留陈旧 link 继续喂 EnforceVda5050LinkGuard 的挂起守卫（离线车永远
+  // 封锁全队派发，且无人工解除途径）。
+  vda5050_links_.clear();
+  vda5050_vehicle_ids_.clear();
+  vda5050_order_pubs_.clear();
+  vda5050_next_order_update_id_.clear();
+
   vda5050_state_stale_sec_ = get_parameter("vda5050_state_stale_sec").as_double();
   // 订阅策略：ROS 2 无通配订阅，网关按 MQTT 发现的小车懒建 /fleet/{vid}/* 话题。
   // 采用参数显式清单（逗号分隔 id）——确定性、参数为空时零行为变化，
