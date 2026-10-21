@@ -2525,6 +2525,12 @@ bool DispatcherNode::EnforceVda5050LinkGuard() {
   bool blocked = false;
   const auto now = std::chrono::steady_clock::now();
   for (const auto& [vehicle_id, link] : vda5050_links_) {
+    if (vda5050_quarantined_.count(vehicle_id) > 0) {
+      // 隔离态车辆已被移出调度池：它的离线是**已知且已处置**的状态，
+      // 不再挂起全队派发（否则人工强清后车队仍然冻结，隔离就失去意义）。
+      // 恢复需显式调用 RestoreVda5050Link（并核实物理位置）。
+      continue;
+    }
     if (!link.online) {
       const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
           /*vehicle_online=*/false, /*state_stale=*/false);
@@ -2570,6 +2576,32 @@ void DispatcherNode::PublishState() {
   }
   if (!msg.active_mission_ids.empty()) {
     msg.active_mission_id = msg.active_mission_ids.front();
+  }
+
+  // 受管车辆链路与调度状态（结构化消息，评审 P0.4）：
+  // 供 Web 控制台展示与多车可观测性；隔离态显式暴露。
+  const auto link_now = std::chrono::steady_clock::now();
+  for (const auto& vehicle_id : vda5050_vehicle_ids_) {
+    const auto link_it = vda5050_links_.find(vehicle_id);
+    if (link_it == vda5050_links_.end()) {
+      continue;
+    }
+    const auto& link = link_it->second;
+    amr_dispatcher_interfaces::msg::VehicleLinkState vlink;
+    vlink.vehicle_id = vehicle_id;
+    vlink.backend = amr_dispatcher_core::fleet::VehicleBackendLabel(
+        amr_dispatcher_core::fleet::VehicleExecutionBackend::kVda5050);
+    vlink.online = link.online;
+    vlink.busy = false;
+    vlink.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    vlink.position_valid = link.seen_state;
+    vlink.battery_percent = 100.0;
+    vlink.state_age_ms = link.seen_state
+                             ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   link_now - link.last_state_time)
+                                   .count()
+                             : -1;
+    msg.vehicle_links.push_back(vlink);
   }
 
   // ExecuteMission 进度反馈：按派发起点的直线距离折算 percent_complete

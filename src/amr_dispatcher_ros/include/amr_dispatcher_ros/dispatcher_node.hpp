@@ -19,6 +19,7 @@
 #include "amr_dispatcher_core/dispatcher/station_topology.hpp"
 #include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
 #include "amr_dispatcher_core/fleet/force_clear_link.hpp"
+#include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
 #include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
 #include "amr_dispatcher_core/planning/path_planner_interface.hpp"
