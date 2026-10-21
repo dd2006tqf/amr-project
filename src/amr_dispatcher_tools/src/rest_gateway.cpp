@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +30,8 @@
 #include "amr_dispatcher_interfaces/msg/mission_event.hpp"
 #include "amr_dispatcher_interfaces/msg/safety_state.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
+#include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
+#include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/get_system_readiness.hpp"
 #include "amr_dispatcher_interfaces/srv/submit_order.hpp"
 
@@ -48,6 +51,10 @@ class RestGatewayNode : public rclcpp::Node {
     submit_cli_ = create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
     cancel_cli_ = create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
     readiness_cli_ = create_client<amr_dispatcher_interfaces::srv::GetSystemReadiness>("/system/ready");
+    force_clear_cli_ = create_client<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>(
+        "/dispatcher/force_clear_vda5050_link");
+    restore_cli_ = create_client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>(
+        "/dispatcher/restore_vda5050_link");
 
     estop_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/estop", 10);
 
@@ -182,6 +189,95 @@ class RestGatewayNode : public rclcpp::Node {
       }
     } else if (method == "GET" && (path == "/api/operator/snapshot" || path == "/api/v1/state")) {
       response_body = FormatSnapshotJson();
+    } else if (method == "GET" && path == "/api/v1/vehicle_links") {
+      response_body = FormatVehicleLinksJson();
+    } else if (method == "POST" && path == "/api/v1/force_clear_link") {
+      // 危险操作：请求体 JSON {vehicle_id, confirm_vehicle_id, operator_id, reason}
+      // 服务端会复验全部准入条件（前端隐藏按钮不是安全边界）。
+      size_t body_start = request.find("\r\n\r\n");
+      const std::string body =
+          (body_start != std::string::npos) ? request.substr(body_start + 4) : "";
+      const std::string vehicle_id = JsonStringField(body, "vehicle_id");
+      const std::string confirm_id = JsonStringField(body, "confirm_vehicle_id");
+      const std::string operator_id = JsonStringField(body, "operator_id");
+      const std::string reason = JsonStringField(body, "reason");
+      if (vehicle_id.empty() || confirm_id.empty() || operator_id.empty() || reason.empty()) {
+        status_code = "400 Bad Request";
+        response_body =
+            "{\"error\":\"missing_fields\",\"detail\":\"vehicle_id, confirm_vehicle_id, "
+            "operator_id, reason are all required\"}";
+      } else {
+        auto req = std::make_shared<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request>();
+        req->vehicle_id = vehicle_id;
+        req->confirm_vehicle_id = confirm_id;
+        req->operator_id = operator_id;
+        req->reason = reason;
+        if (force_clear_cli_->wait_for_service(1s)) {
+          auto fut = force_clear_cli_->async_send_request(req);
+          if (fut.wait_for(2s) == std::future_status::ready) {
+            auto res = fut.get();
+            response_body = std::string("{\"status\":\"") +
+                            (res->success ? "ok" : "rejected") + "\",\"message\":\"" +
+                            res->message + "\",\"quarantined\":" +
+                            (res->quarantined ? "true" : "false") + ",\"released_resources\":[";
+            for (std::size_t i = 0; i < res->released_resources.size(); ++i) {
+              if (i) response_body += ",";
+              response_body += "\"" + res->released_resources[i] + "\"";
+            }
+            response_body += "]}";
+            if (!res->success) {
+              status_code = "409 Conflict";
+            }
+          } else {
+            status_code = "504 Gateway Timeout";
+            response_body = "{\"error\":\"timeout\"}";
+          }
+        } else {
+          status_code = "503 Service Unavailable";
+          response_body = "{\"error\":\"service_unavailable\"}";
+        }
+      }
+    } else if (method == "POST" && path == "/api/v1/restore_link") {
+      // 请求体 JSON {vehicle_id, confirm_vehicle_id, operator_id, reason, position_verified}
+      size_t body_start = request.find("\r\n\r\n");
+      const std::string body =
+          (body_start != std::string::npos) ? request.substr(body_start + 4) : "";
+      const std::string vehicle_id = JsonStringField(body, "vehicle_id");
+      const std::string confirm_id = JsonStringField(body, "confirm_vehicle_id");
+      const std::string operator_id = JsonStringField(body, "operator_id");
+      const std::string reason = JsonStringField(body, "reason");
+      const bool position_verified = JsonBoolField(body, "position_verified");
+      if (vehicle_id.empty() || confirm_id.empty() || operator_id.empty() || reason.empty()) {
+        status_code = "400 Bad Request";
+        response_body =
+            "{\"error\":\"missing_fields\",\"detail\":\"vehicle_id, confirm_vehicle_id, "
+            "operator_id, reason are all required\"}";
+      } else {
+        auto req = std::make_shared<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request>();
+        req->vehicle_id = vehicle_id;
+        req->confirm_vehicle_id = confirm_id;
+        req->operator_id = operator_id;
+        req->reason = reason;
+        req->position_verified = position_verified;
+        if (restore_cli_->wait_for_service(1s)) {
+          auto fut = restore_cli_->async_send_request(req);
+          if (fut.wait_for(2s) == std::future_status::ready) {
+            auto res = fut.get();
+            response_body = std::string("{\"status\":\"") +
+                            (res->success ? "ok" : "rejected") + "\",\"message\":\"" +
+                            res->message + "\"}";
+            if (!res->success) {
+              status_code = "409 Conflict";
+            }
+          } else {
+            status_code = "504 Gateway Timeout";
+            response_body = "{\"error\":\"timeout\"}";
+          }
+        } else {
+          status_code = "503 Service Unavailable";
+          response_body = "{\"error\":\"service_unavailable\"}";
+        }
+      }
     } else if (method == "GET" && path == "/api/system/ready") {
       if (readiness_cli_->wait_for_service(500ms)) {
         auto req = std::make_shared<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request>();
@@ -517,6 +613,62 @@ class RestGatewayNode : public rclcpp::Node {
     return query.substr(pos + target.size(), end - (pos + target.size()));
   }
 
+  // 极简 JSON 字符串字段提取（请求体由本项目自己的控制台产生，格式可控）：
+  // 形如 "key": "value" -> value；缺失或非字符串返回空串。
+  std::string JsonStringField(const std::string& body, const std::string& key) {
+    const std::string target = "\"" + key + "\"";
+    auto pos = body.find(target);
+    if (pos == std::string::npos) return "";
+    pos = body.find(':', pos);
+    if (pos == std::string::npos) return "";
+    ++pos;
+    while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
+    if (pos >= body.size() || body[pos] != '"') return "";
+    ++pos;
+    std::string value;
+    while (pos < body.size() && body[pos] != '"') {
+      if (body[pos] == '\\' && pos + 1 < body.size()) ++pos;  // 跳过转义字符
+      value.push_back(body[pos]);
+      ++pos;
+    }
+    return value;
+  }
+
+  // 极简 JSON 布尔字段提取：true / false。
+  bool JsonBoolField(const std::string& body, const std::string& key) {
+    const std::string target = "\"" + key + "\"";
+    auto pos = body.find(target);
+    if (pos == std::string::npos) return false;
+    pos = body.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
+    return body.compare(pos, 4, "true") == 0;
+  }
+
+  std::string FormatVehicleLinksJson() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::ostringstream os;
+    os << "{\"vehicle_links\":[";
+    const auto& links = latest_state_.vehicle_links;
+    for (std::size_t i = 0; i < links.size(); ++i) {
+      const auto& v = links[i];
+      if (i) os << ",";
+      os << "{\"vehicle_id\":\"" << v.vehicle_id << "\""
+         << ",\"backend\":\"" << v.backend << "\""
+         << ",\"online\":" << (v.online ? "true" : "false")
+         << ",\"busy\":" << (v.busy ? "true" : "false")
+         << ",\"quarantined\":" << (v.quarantined ? "true" : "false")
+         << ",\"position_valid\":" << (v.position_valid ? "true" : "false")
+         << ",\"current_station_id\":\"" << v.current_station_id << "\""
+         << ",\"battery_percent\":" << v.battery_percent
+         << ",\"state_age_ms\":" << v.state_age_ms
+         << ",\"last_error\":\"" << v.last_error << "\"}";
+    }
+    os << "]}";
+    return os.str();
+  }
+
   std::string FormatSnapshotJson() {
     std::lock_guard<std::mutex> lock(data_mutex_);
     std::ostringstream os;
@@ -558,6 +710,9 @@ class RestGatewayNode : public rclcpp::Node {
   rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_cli_;
+  rclcpp::Client<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
+      force_clear_cli_;
+  rclcpp::Client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr restore_cli_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
 
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
