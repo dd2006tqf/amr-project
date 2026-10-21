@@ -39,7 +39,7 @@ struct MissionTransition {
 struct Mission {
   std::string id;
   std::string order_id;              // 关联业务订单号（批量提交/整单取消用），可空
-  std::string fleet_id = "default";  // V1.2 多机预留
+  std::string fleet_id;  // 绑定的车辆 id（空 = 由选车策略决定）
   std::string type = "transport";    // transport / charge / patrol ...
   std::string pickup_station;
   std::string dropoff_station;
