@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **566/566 unit and integration tests passing in ~3 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
+   - **659/659 unit and integration tests passing in ~5 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
@@ -51,6 +51,15 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Direct order dispatch**: dispatcher publishes serialized VDA 5050 orders (`orderId = mission_id`, full polyline trajectory control points) to `/fleet/{vid}/send_order`; vehicle identity is validated against every state report.
    - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (8 stages, incl. kill -9 chaos drill).
    - **Operator force-clear (`/dispatcher/force_clear_vda5050_link`)**: closes the Spec 5.2 "manual release" branch — for a vehicle that is permanently dead and will never reconnect, the operator can atomically detach its offline link, release the locks bound to that vehicle, abort its in-flight mission, and unblock fleet dispatch. Rejected for online vehicles (never kills a live link).
+   - **Force-clear = quarantine, not removal**: communication loss never implies "safe to release". The force-clear requires an operator id, a mandatory reason, and a `confirm_vehicle_id` that must match the target exactly; the vehicle is then moved into a **quarantined** state — still visible and auditable, but excluded from vehicle selection until an explicit `restore_link` (which requires the operator to have physically verified the vehicle's position).
+
+10. **True Multi-Vehicle Fleet Concurrency (Two Execution Backends)**:
+   - **Backend separation**: `local_sim` vehicles run the local motion chain (`/plan/{vid}` -> `path_tracker` -> `safety_gate` -> `chassis`); `vda5050` vehicles own their controllers and receive **only** the MQTT order (no local `/plan`, no local execution slot) — their completion is judged by `lastNodeId` reaching the order's final node. The two chains never impersonate each other.
+   - **Per-vehicle topic & TF isolation**: `/plan/{vid}`, `/odom/{vid}`, `/tracking/error/{vid}`, `/cmd_vel_raw/{vid}`, `/cmd_vel_safe/{vid}` plus `{vid}/odom` / `{vid}/base_link` frames. E-stop and bumper remain **global** safety signals — any vehicle's emergency stop halts the whole fleet. Compatibility red line: with no managed-vehicle list, every topic name stays byte-identical to before.
+   - **Vehicle selection with three-state outcome**: `kAssigned` / `kDeferred` (temporarily unavailable -> the mission **stays queued**) / `kIndeterminate` (state unknown -> auto-assignment paused) / `kRejected` (permanently unsatisfiable -> mission failed with a reason). Explicitly bound vehicles (`assigned_vehicle_id`) get **no exemption** from the hard constraints: online, enabled, not busy, not quarantined, capability-matched, battery above threshold, valid position, fresh state.
+   - **Head-of-line avoidance**: a busy head mission no longer blocks the queue — the scheduler scans the first N queued missions and dispatches the first one that can actually be assigned.
+   - **Time-space traffic coordination (`traffic_mode: time_space`)**: per-resource enter/exit windows (edge = channel, node = intersection) with accel/turn/safety-margin overhead, all-or-nothing commit, extension on deviation, and confirmed-departure release — a window expiring is **not** a resource being released. `static` remains the default.
+   - **Verified end-to-end**: `scripts/check_vda5050_e2e.sh` Stage 7 (two VDA 5050 vehicles, isolated ROS domain, no ROS trackers allowed to stand in) and Stage 8 (two local simulated vehicles, each with its own tracker/gate/chassis on two **disjoint** corridors) both assert genuine concurrency — simultaneous in-flight windows, no cross-talk, no cross-release.
 
 ---
 
@@ -139,7 +148,7 @@ The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav
 ./scripts/check_all.sh
 ```
 Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
-- [Step 1] Build pure C++ core and run 566 GTest unit & integration tests via ctest (~3s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
+- [Step 1] Build pure C++ core and run 659 GTest unit & integration tests via ctest (~5s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
@@ -156,12 +165,14 @@ Automated end-to-end integration test verifying `nav2_map_server` -> `map_ingest
 ```bash
 ./scripts/check_vda5050_e2e.sh
 ```
-Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet adapter — spins up an isolated stack (mosquitto :18884, dispatcher, `vda5050_gateway_node`, REST gateway, MQTT packet capturer, virtual AMR) on `ROS_DOMAIN_ID=77`, then asserts across 7 stages:
+Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet adapter — spins up an isolated stack (mosquitto :18884, dispatcher, `vda5050_gateway_node`, REST gateway, MQTT packet capturer, virtual AMR) on `ROS_DOMAIN_ID=77`, then asserts across 9 stages:
 - Stage 0: `scripts/mock_vda5050_vehicle.py --self-test` (T1-T7 virtual-vehicle contract tests: order parsing, polyline stepping, released=false braking, state-file resume).
 - Stage 4: full closed loop for mission `e2e_m1` — wire-contract validation (orderUpdateId, monotonic sequenceId, >=2 control points), physical trajectory continuity along the polyline, Spec 5.3 trailing unlock, mission completion with zero residual locks.
 - Stage 5: protocol-level `released=false` halt at an unreleased edge boundary, then resume after an order update carrying `released=true`.
 - Stage 6: disconnect guard chaos drill — `kill -9` the vehicle, LWT `CONNECTIONBROKEN`, locks retained (never released while offline), dispatch suspended, state persisted across restart, automatic re-verification, mission resumption, and queued mission auto-dispatch wakeup.
 - Stage 6.8: operator force-clear — force-clearing an **online** vehicle is refused; a second `kill -9` puts the vehicle offline, the retained locks are proven still held (iron rule), the force-clear service then releases exactly that vehicle's locks, aborts its in-flight mission, and unblocks dispatch for the next queued mission.
+- Stage 7: **dual VDA 5050 vehicle concurrency** (isolated `ROS_DOMAIN_ID=78`) — two standard-protocol vehicles, each explicitly bound to one mission; asserts they fly **simultaneously**, that each vehicle receives only its own order, that both missions complete, and that the lock table drains. No ROS tracker is allowed to stand in for a VDA 5050 vehicle here.
+- Stage 8: **dual local simulated vehicle concurrency** (isolated `ROS_DOMAIN_ID=80`) — two `local_sim` vehicles, each with its own `path_tracker` / `safety_gate` / `chassis` on two **disjoint** corridors of the demo map; asserts simultaneous dispatch, that each vehicle really moved (odometry travel) with non-crossed starting poses, both missions completed, and zero residual locks.
 On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
 
 ### 4. Launch Physical Serial Device Simulator
