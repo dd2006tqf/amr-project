@@ -49,6 +49,35 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# 单元测试：把网关里"会打死进程"的解析逻辑抽成纯函数后单测覆盖。
+# 模式与 amr_dispatcher_ros 的 ROS_UNIT_TESTS 一致：header-only 接口库 + gtest。
+if(BUILD_TESTING)
+  find_package(GTest REQUIRED)
+  include(GoogleTest)
+  enable_testing()
+
+  add_library(amr_dispatcher_tools_helpers INTERFACE)
+  target_include_directories(amr_dispatcher_tools_helpers INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+
+  set(TOOLS_UNIT_TESTS
+    test_http_limits
+    test_bearer_auth
+    test_idempotency_store
+    test_json_escape
+  )
+  foreach(test_name IN LISTS TOOLS_UNIT_TESTS)
+    set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
+    if(EXISTS "${test_src}")
+      add_executable(${test_name} "${test_src}")
+      target_link_libraries(${test_name} PRIVATE
+        amr_dispatcher_tools_helpers GTest::gtest GTest::gtest_main)
+      gtest_discover_tests(${test_name})
+    endif()
+  endforeach()
+endif()
+
 install(DIRECTORY include/
   DESTINATION include
 )
