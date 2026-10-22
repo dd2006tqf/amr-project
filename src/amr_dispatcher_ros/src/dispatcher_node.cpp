@@ -1693,7 +1693,18 @@ void DispatcherNode::ScheduleTick() {
 
   for (const auto& candidate_mission : candidates) {
     // 1) 选车（三态）
-    const auto decision = SelectVehicleForMission(candidate_mission);
+    // 兼容红线：**legacy 单车模式**（既无 local_sim 受管车、也无 VDA 5050 受管车）
+    // 不走选车流程 —— 那里没有"车辆"概念，唯一的执行槽位是空串键
+    // （vehicle_current_mission_[""]），与改动前逐字等价。
+    // 若此处也调选车，request.vehicles 为空 -> 核心返回 kRejected
+    // ("no managed vehicles configured") -> 单车任务被永久判负（实测踩过）。
+    amr_dispatcher_core::fleet::VehicleAssignmentDecision decision;
+    if (HasAnyManagedVehicle()) {
+      decision = SelectVehicleForMission(candidate_mission);
+    } else {
+      decision.outcome = amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned;
+      decision.strategy = "legacy_single_vehicle";
+    }
     if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kDeferred) {
       saw_deferred = true;
       deferred_reason = decision.reject_reason;
@@ -2004,9 +2015,17 @@ void DispatcherNode::ScheduleTick() {
     PublishPlanForVehicle(dispatch_vehicle_id, path_msg);
     AssignTrackingSlot(m.id, dispatch_vehicle_id);
   }
-  RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints)",
+  RCLCPP_INFO(get_logger(), "Dispatched mission: %s (order=%s, type=%s, prio=%d, %s->%s, %zu waypoints, vehicle=%s)",
               m.id.c_str(), m.order_id.c_str(), m.type.c_str(), m.priority,
-              m.pickup_station.c_str(), m.dropoff_station.c_str(), waypoints.size());
+              m.pickup_station.c_str(), m.dropoff_station.c_str(), waypoints.size(),
+              dispatch_vehicle_id.empty() ? "<unassigned>" : dispatch_vehicle_id.c_str());
+
+  // A5/A7：多车并发 —— 本单已占用一台车，但**其它车可能仍空闲**。
+  // 重新武装启动请求：下个 tick 若还有空闲槽位，队列中的下一单会被派给另一台车，
+  // 从而形成真并发（否则第二单要等第一单完成才派发，"两车同时在跑"根本无从发生）。
+  // 单车场景行为不变：此时唯一槽位已被本单占满，ScheduleTick 的
+  // HasFreeVehicleSlot() 门控会直接返回（兼容红线：单车路径逐字不变）。
+  ReArmQueueStartRequest();
 
   if (event_pub_ && event_pub_->is_activated()) {
     amr_dispatcher_interfaces::msg::MissionEvent msg;
