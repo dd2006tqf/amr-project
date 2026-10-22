@@ -28,6 +28,11 @@
 # ==============================================================================
 
 set -eo pipefail
+# `set -e` 下命令替换里的 python 非零会**直接终止脚本**，跳过下方所有 fail()
+# 诊断分支（现象：退出码 1、日志末尾毫无线索）。ERR 陷阱把出错行号与命令
+# 打到 stderr，让这类"静默退出"变成可排查的失败。
+set -E
+trap 'echo "[E2E-FATAL] line=${LINENO} status=$? cmd=${BASH_COMMAND}" >&2' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -1460,6 +1465,33 @@ fi
 if ! wait_log "发现车辆 mock_amr_12" "${TMP_DIR}/gateway.log" 15; then
     fail "网关未发现 mock_amr_12"
 fi
+
+# 7.4b 等网关的 send_order 订阅在 DDS 里真正完成匹配
+#     网关是**发现车辆后才懒建** send_order 订阅的（vda5050_gateway_node.cpp:
+#     EnsureVehicle）。"网关日志说发现了车辆" 只证明 MQTT 侧看到了车，
+#     不证明 ROS 订阅端已完成 DDS 匹配。此前这里只 sleep 1.5s 就提单，
+#     订单偶发**静默丢失**（dispatcher 日志有 order published，网关日志没有
+#     "Order 已下发 MQTT"，车端永远收不到）——本机实测 5 次里复现 2 次。
+#     这里显式等到订阅可见：这是补齐前置条件，不是放宽断言。
+wait_subscription() {
+    local topic="$1" timeout_sec="$2"
+    local count=0
+    local max_count=$((timeout_sec * 5))
+    while [ ${count} -lt ${max_count} ]; do
+        if ros2 topic info "${topic}" 2>/dev/null | grep -qE '^Subscription count: [1-9]'; then
+            return 0
+        fi
+        sleep 0.2
+        count=$((count + 1))
+    done
+    return 1
+}
+for serial in mock_amr_11 mock_amr_12; do
+    if ! wait_subscription "/fleet/${serial}/send_order" 15; then
+        fail "并发场景网关未就绪: /fleet/${serial}/send_order 无 ROS 订阅者（DDS 未匹配，订单会静默丢失）"
+    fi
+done
+echo "[Stage 7.1b] 网关 send_order 订阅已与调度器完成 DDS 匹配 (PASS)"
 sleep 1.5
 echo "[Stage 7.1] 双 VDA 5050 车已上线（网关发现两台车） (PASS)"
 
@@ -1569,10 +1601,14 @@ fi
 echo "[Stage 7.4] 两单同时在飞: ${OVERLAP} (PASS)"
 
 # 7.7b 断言：两台车各自真的收到了**自己**的订单并动了起来（不串线）
+# 注意：订单是异步链路（dispatcher -> ROS send_order -> 网关 -> MQTT -> 车），
+# 上一段"两单同时在飞"只等到派发日志落盘，此刻订单报文**可能还在路上**。
+# 因此这里按"有限等待"读车端日志（15s 超时仍收不到才算失败），
+# 而不是瞬时 grep —— 瞬时判定会把正常的传播时延误报成"订单串线/丢失"。
 for pair in "mock_amr_11 dual_m1" "mock_amr_12 dual_m2"; do
     set -- ${pair}
     VEH="$1"; MISSION="$2"
-    if ! grep -q "接收订单 (new): orderId=${MISSION}" "${TMP_DIR}/${VEH}.log"; then
+    if ! wait_log "接收订单 \(new\): orderId=${MISSION}" "${TMP_DIR}/${VEH}.log" 15; then
         fail "并发场景 ${VEH} 未收到自己的订单 ${MISSION}（订单串线）"
     fi
     # 另一单不得出现在本车日志里
@@ -1745,7 +1781,7 @@ fi
 # 8.5 两台车的运动采集器：**必须先于提单启动**，否则采样窗口只能覆盖任务的
 #     后半段（短任务已完成、车已停住 -> "车没动"的假阴性）。
 cat <<'PYEOF' > "${TMP_DIR}/odom_collector.py"
-import json, sys
+import json, os, sys
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
@@ -1769,8 +1805,13 @@ class Collector(Node):
                                     msg.pose.pose.orientation.w])
 
     def dump(self):
-        with open(out_path, "w") as f:
+        # 原子落盘：断言阶段与本采集器并发（本进程还在 0.5s 周期写同一文件），
+        # 直接 open(w)+json.dump 会让读者读到**截断的 JSON**（实测复现率很高），
+        # 断言脚本在 set -e 下会因此静默中途退出。先写 tmp 再 os.replace。
+        tmp = out_path + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(self.samples, f)
+        os.replace(tmp, out_path)
 
     def dump_tick(self):
         # 周期性落盘：SIGTERM 不会执行 finally（默认直接终止进程），
@@ -1881,10 +1922,21 @@ if [ $? -ne 0 ]; then
 fi
 echo "[Stage 8.5] 两单同时在飞: ${LOCAL_OVERLAP} (PASS)"
 
-# 8.8 断言：两台车**各自真的动了**（状态不串线）——读取采集器落盘的 /odom/{vid} 轨迹
+# 8.6 断言：两单都完成（先等到任务真正跑完，再判"车动没动"）
+#     顺序是有意的：任务在派发后不到 1s 才刚起步，此刻读里程必然接近 0。
+#     旧顺序（先判里程、后等完成）在机器负载高时会读到"车还没走"，
+#     把调度/链路都正常、只是刚起步的场景判成失败。
+if ! wait_log "Mission completed: local_m1 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
+    fail "本地双车场景 local_m1 未能在 90s 内完成"
+fi
+if ! wait_log "Mission completed: local_m2 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
+    fail "本地双车场景 local_m2 未能在 90s 内完成"
+fi
+echo "[Stage 8.6] 双单均已完成 (PASS)"
+
+# 8.7 断言：两台车**各自真的动了**（状态不串线）——读取采集器落盘的 /odom/{vid} 轨迹
 sleep 2
-# 采集器收到 SIGTERM 后由 finally 分支落盘（KeyboardInterrupt / SIGTERM 均触发）；
-# 给一点时间让它把轨迹写完。
+# 采集器周期落盘（0.5s，原子替换），文件出现即可读。
 for i in $(seq 1 30); do
     [ -s "${TMP_DIR}/odom_samples.json" ] && break
     sleep 0.2
@@ -1893,9 +1945,12 @@ if [ ! -s "${TMP_DIR}/odom_samples.json" ]; then
     fail "本地双车场景未能采集到 /odom 轨迹（采集器日志: ${TMP_DIR}/collector.log）"
 fi
 
-LOCAL_MOTION=$(python3 - "${TMP_DIR}/odom_samples.json" <<'EOF'
+# 注意：脚本是 `set -e`，命令替换里的 python 一旦非零会**直接终止脚本**
+# （退出码照样是 1，但跳过下面的 fail 分支、没有任何诊断输出）。
+# 所以这里在 if 条件里求值，失败走 fail() 打印现场。
+LOCAL_MOTION=""
+if ! LOCAL_MOTION=$(python3 - "${TMP_DIR}/odom_samples.json" <<'EOF'
 import json, math, sys
-
 with open(sys.argv[1]) as f:
     data = json.load(f)
 
@@ -1931,22 +1986,12 @@ if dist(p1[0], p2[0]) < 1.0:
     sys.exit(1)
 sys.exit(0)
 EOF
-)
-if [ $? -ne 0 ]; then
+); then
     fail "本地双车场景运动/状态断言失败: ${LOCAL_MOTION}"
 fi
-echo "[Stage 8.6] 两台车各自在动、起点互不串线: ${LOCAL_MOTION} (PASS)"
+echo "[Stage 8.7] 两台车各自在动、起点互不串线: ${LOCAL_MOTION} (PASS)"
 
-# 8.9 断言：两单都完成
-if ! wait_log "Mission completed: local_m1 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
-    fail "本地双车场景 local_m1 未能在 90s 内完成"
-fi
-if ! wait_log "Mission completed: local_m2 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
-    fail "本地双车场景 local_m2 未能在 90s 内完成"
-fi
-echo "[Stage 8.7] 双单均已完成 (PASS)"
-
-# 8.10 断言：锁表无残留（无交叉误释放）
+# 8.9 断言：锁表无残留（无交叉误释放）
 if ! LOCAL_RESV=$(timeout 15 ros2 service call /v2/list_traffic_reservations \
         amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
     fail "本地双车场景 list_traffic_reservations 调用失败"
