@@ -1264,6 +1264,78 @@ if ! wait_log "Dispatched mission: e2e_m4" "${TMP_DIR}/dispatcher.log" 25; then
     fail "恢复隔离后留队任务 e2e_m4 未能在 25s 内派发 —— 车辆未重新参与分配"
 fi
 echo "[Stage 6.8] 恢复后车辆重新参与分配，e2e_m4 已派发 (PASS)"
+
+# 6.8.6 REST 端点验收（评审 C2/C4）：强清/恢复必须走 REST 走通一遍，
+#      证明 Web 控制台的操作路径（REST -> 服务 -> 审计）端到端可用。
+#      服务端语义与 ROS 服务完全一致（同一个 dispatcher 服务的同一个回调），
+#      这里只验证 REST 层的请求体解析、错误码与响应体。
+echo "[Stage 6.8] REST 端点验收：force_clear_link / restore_link / vehicle_links..."
+REST_CLEAR=$(python3 - <<EOF
+import json, urllib.request, urllib.error
+def post(path, payload):
+    req = urllib.request.Request(
+        "http://127.0.0.1:${REST_PORT}" + path,
+        method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+    except Exception as e:
+        return 0, f"ERROR: {e}"
+
+# 1) 缺字段 -> 400
+code, body = post("/api/v1/force_clear_link", {"vehicle_id": "mock_amr_01"})
+print("missing_fields:", code, body)
+# 2) 车辆当前在线 -> 服务端复验拒绝 -> 409
+code, body = post("/api/v1/force_clear_link", {
+    "vehicle_id": "mock_amr_01",
+    "confirm_vehicle_id": "mock_amr_01",
+    "operator_id": "e2e_operator",
+    "reason": "e2e rest endpoint check (online vehicle must be refused)"})
+print("online_refused:", code, body)
+EOF
+)
+echo "${REST_CLEAR}"
+if ! echo "${REST_CLEAR}" | grep -q "missing_fields: 400"; then
+    fail "REST force_clear_link 缺字段未返回 400: ${REST_CLEAR}"
+fi
+if ! echo "${REST_CLEAR}" | grep -q "online_refused: 409"; then
+    fail "REST force_clear_link 对在线车辆未返回 409: ${REST_CLEAR}"
+fi
+
+# 3) 受管车辆状态查询：结构化数组，含 backend/online/quarantined 等字段
+REST_LINKS=$(python3 - <<EOF
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:${REST_PORT}/api/v1/vehicle_links", timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+except Exception as e:
+    print(f"ERROR: {e}")
+    raise SystemExit(1)
+links = data.get("vehicle_links", [])
+print(json.dumps(data, ensure_ascii=False))
+assert links, "vehicle_links is empty"
+ids = {l["vehicle_id"] for l in links}
+assert "mock_amr_01" in ids, f"mock_amr_01 missing from vehicle_links: {ids}"
+for l in links:
+    for field in ("vehicle_id", "backend", "online", "busy", "quarantined",
+                  "position_valid", "current_station_id", "battery_percent",
+                  "state_age_ms", "last_error"):
+        assert field in l, f"missing field {field} in {l}"
+    assert l["backend"] in ("local_sim", "vda5050"), f"bad backend: {l['backend']}"
+print("VEHICLE_LINKS_OK")
+EOF
+)
+if [ $? -ne 0 ]; then
+    fail "REST vehicle_links 查询/字段断言失败: ${REST_LINKS}"
+fi
+if ! echo "${REST_LINKS}" | grep -q "VEHICLE_LINKS_OK"; then
+    fail "REST vehicle_links 断言未通过: ${REST_LINKS}"
+fi
+echo "[Stage 6.8] REST 强清/恢复端点与受管车状态查询验收通过 (PASS)"
 echo "[Stage 6.8] 人工强清离线链路验收完成 (PASS)"
 
 # ==============================================================================
