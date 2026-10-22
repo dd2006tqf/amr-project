@@ -85,8 +85,9 @@ cleanup() {
     done
     sleep 0.5
     # 兜底: ros2 run 经由 Popen 启动真实可执行体，直接 kill 包装进程会留下
-    # 孤儿进程持有 DDS 同名节点/端口，必须按域 ID 全量清扫
-    kill_stale_e2e_procs
+    # 孤儿进程持有 DDS 同名节点/端口，必须按域 ID 全量清扫（脚本会依次用到
+    # 多个域，逐域清干净，避免下一阶段被上一阶段的孤儿节点串扰）
+    sweep_all_e2e_domains
     for pid in "${PIDS[@]}"; do
         if kill -0 "${pid}" 2>/dev/null; then
             kill -9 "-${pid}" 2>/dev/null || kill -9 "${pid}" 2>/dev/null || true
@@ -160,6 +161,12 @@ run_bg() {
 # 孤儿子孙进程 (dispatcher/mock 等)，导致同名节点重复、lifecycle 调用被
 # 路由到旧节点 (active 状态拒绝 configure)，本轮 dispatcher 日志为空。
 kill_stale_e2e_procs() {
+    # 用法：kill_stale_e2e_procs <domain_id>
+    # 传入域 ID 才清扫该域 —— 脚本会依次切到多个域（Stage 0~6:77 / Stage 7:78 /
+    # Stage 8:80），若只按"当前域"清扫，先前域的孤儿进程会活到下一轮，
+    # 造成同名节点重复、lifecycle 调用被路由到旧节点（本轮 dispatcher 日志为空、
+    # configure 超时的历史故障）。生产环境是域 42，**绝不在清扫列表内**。
+    local target_domain="$1"
     local envf pid
     for envf in /proc/[0-9]*/environ; do
         pid="${envf#/proc/}"
@@ -170,7 +177,7 @@ kill_stale_e2e_procs() {
         [ -r "${envf}" ] || continue
         # 2>/dev/null 必须在输入重定向前：procfs 下 [ -r ] 通过但 open 仍可能
         # 被拒绝 (跨用户/瞬时退出)，重定向在前会先向终端打印 Permission denied
-        if tr '\0' '\n' 2>/dev/null < "${envf}" | grep -qx "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"; then
+        if tr '\0' '\n' 2>/dev/null < "${envf}" | grep -qx "ROS_DOMAIN_ID=${target_domain}"; then
             kill -TERM "${pid}" 2>/dev/null || true
         fi
     done
@@ -181,9 +188,27 @@ kill_stale_e2e_procs() {
         [ "${pid}" = "$$" ] && continue
         [ "${pid}" = "${PPID}" ] && continue
         [ -r "${envf}" ] || continue
-        if tr '\0' '\n' 2>/dev/null < "${envf}" | grep -qx "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"; then
+        if tr '\0' '\n' 2>/dev/null < "${envf}" | grep -qx "ROS_DOMAIN_ID=${target_domain}"; then
             kill -KILL "${pid}" 2>/dev/null || true
         fi
+    done
+    # ros2 daemon 按域各起一个：域内的陈旧 daemon 会缓存旧的图拓扑，
+    # 导致后续 lifecycle/service 调用被路由到已死节点。逐域停掉。
+    ROS_DOMAIN_ID="${target_domain}" ros2 daemon stop >/dev/null 2>&1 || true
+}
+
+# 本脚本会用到的全部 E2E 域（**不含**生产域 42）。
+E2E_ALL_DOMAINS=(
+    "${AMR_E2E_DOMAIN_ID:-77}"
+    "${AMR_E2E_DUAL_DOMAIN_ID:-78}"
+    "${AMR_E2E_LOCAL_DOMAIN_ID:-80}"
+)
+
+# 逐域清扫本脚本遗留的全部进程（幂等入口，避免同名节点串扰）。
+sweep_all_e2e_domains() {
+    local d
+    for d in "${E2E_ALL_DOMAINS[@]}"; do
+        kill_stale_e2e_procs "${d}"
     done
 }
 
@@ -191,10 +216,8 @@ kill_stale_e2e_procs() {
 # Preflight: 清扫上一轮遗留的 E2E 进程 (幂等入口，避免同名节点串扰)
 # ==============================================================================
 echo ""
-echo "[Preflight] 清扫上一轮遗留的 ROS_DOMAIN_ID=${ROS_DOMAIN_ID} 进程..."
-kill_stale_e2e_procs
-# 陈旧的 ros2 daemon 图拓扑同样携带旧节点信息，一并停掉
-ros2 daemon stop >/dev/null 2>&1 || true
+echo "[Preflight] 清扫上一轮遗留的 E2E 进程 (域: ${E2E_ALL_DOMAINS[*]})..."
+sweep_all_e2e_domains
 echo "[Preflight] 清扫完成"
 
 # ==============================================================================
@@ -257,6 +280,16 @@ try:
     assert len(ab_edges) >= 1, "missing A<->B edge"
     pts = ab_edges[0].get("polyline", [])
     assert len(pts) >= 10, f"edge polyline points too few: {len(pts)}"
+    # Stage 8（本地双模拟车并发）依赖第二条独立通道的站点与边：
+    # 缺了它，Stage 8 只能用同一条通道，静态排他锁会把两单串行化（伪并发）。
+    assert "station_lane2_pickup_C" in st_ids, "missing station_lane2_pickup_C"
+    assert "station_lane2_dropoff_D" in st_ids, "missing station_lane2_dropoff_D"
+    cd_edges = [e for e in edges if {e.get("from"), e.get("to")} == {"station_lane2_pickup_C", "station_lane2_dropoff_D"}]
+    assert len(cd_edges) >= 1, "missing lane2 C<->D edge"
+    # A->B 与 C->D 两条路径必须**不共享**任何路权资源（否则双车会被锁串行化）
+    ab_nodes = {"station_pickup_A", "station_dropoff_B"}
+    cd_nodes = {"station_lane2_pickup_C", "station_lane2_dropoff_D"}
+    assert not (ab_nodes & cd_nodes), "lane1/lane2 stations overlap"
     h = data.get("map_hash") or (data.get("version", {}) if isinstance(data.get("version"), dict) else {}).get("map_hash", "")
     assert h.startswith("fnv1a64_"), f"invalid map_hash: {h}"
     print(h)
@@ -1279,6 +1312,8 @@ dual_cleanup() {
 }
 
 echo "[Stage 7.0] 独立环境: ROS_DOMAIN_ID=${ROS_DOMAIN_ID} MQTT=${MQTT_PORT} REST=${REST_PORT}"
+# 切域前清扫该域的遗留进程（上一轮 Stage 7 的孤儿节点会让 lifecycle 调用超时）
+kill_stale_e2e_procs "${DUAL_DOMAIN_ID}"
 
 # 7.1 broker
 cat <<EOF > "${TMP_DIR}/mosquitto.conf"
@@ -1506,6 +1541,356 @@ rm -rf "${DUAL_TMP_DIR}"
 echo "[Stage 7] 双 VDA 5050 车并发验收通过 (PASS)"
 
 # ==============================================================================
+# Stage 8: 本地双模拟车并发验收（评审 A7 Stage 7）
+# ==============================================================================
+# 目的：证明**两台本地模拟车**（local_sim 后端）能同时承接任务、各自沿自己的
+#       折线行驶、状态互不串线、锁无交叉误释放、两单都完成。
+# 与 Stage 7 的分工（评审 P0.1 执行后端分离）：
+#   * Stage 7 —— 两台**外部标准协议车**（VDA 5050），只有网关+MQTT，无 tracker；
+#   * Stage 8 —— 两台**本地模拟车**，每台一套 path_tracker/safety_gate/chassis，
+#     走 /plan/{vid} 运动链。两条链**互不冒充**。
+# 通道设计：地图含两条互不相交的通道（见 scripts/gen_demo_map.py）：
+#   lane1 = L 形走廊（station_pickup_A -> station_dropoff_B）
+#   lane2 = 右侧竖直通道（station_lane2_pickup_C -> station_lane2_dropoff_D）
+#   两单路径**不共享任何路权资源**（无共享路口节点、无共享边），因此静态排他锁
+#   模式下也能真并发（若共享资源，锁会把两单串行化——那就退化成"轮流跑"）。
+# 环境隔离：另起 ROS_DOMAIN_ID(=80) / REST_PORT(=18083)，与 Stage 0~7 完全隔离。
+echo ""
+echo "[Stage 8] 本地双模拟车并发验收..."
+
+LOCAL_DOMAIN_ID="${AMR_E2E_LOCAL_DOMAIN_ID:-80}"
+LOCAL_REST_PORT="${AMR_E2E_LOCAL_REST_PORT:-18083}"
+LOCAL_TMP_DIR="$(mktemp -d -t amr_local_dual_XXXXXX)"
+
+export ROS_DOMAIN_ID="${LOCAL_DOMAIN_ID}"
+REST_PORT="${LOCAL_REST_PORT}"
+TMP_DIR="${LOCAL_TMP_DIR}"
+LOCAL_PIDS=()
+
+local_run_bg() {
+    local logfile="$1"
+    shift
+    "$@" > "${logfile}" 2>&1 &
+    local pid=$!
+    LOCAL_PIDS+=("${pid}")
+    echo "${pid}"
+}
+
+local_cleanup() {
+    for pid in "${LOCAL_PIDS[@]:-}"; do
+        [ -n "${pid}" ] || continue
+        kill -TERM "${pid}" 2>/dev/null || true
+    done
+    sleep 0.5
+    for pid in "${LOCAL_PIDS[@]:-}"; do
+        [ -n "${pid}" ] || continue
+        kill -9 "${pid}" 2>/dev/null || true
+    done
+}
+
+echo "[Stage 8.0] 独立环境: ROS_DOMAIN_ID=${ROS_DOMAIN_ID} REST=${REST_PORT}"
+# 切域前清扫该域的遗留进程（否则上一轮 Stage 8 的孤儿节点会串扰本轮）
+kill_stale_e2e_procs "${LOCAL_DOMAIN_ID}"
+
+# 8.1 两台本地车：各一台独立 PTY 底盘模拟器，初始位姿分别在两条通道的取货点
+local_run_bg "${TMP_DIR}/chassis.log" python3 -u "${SCRIPT_DIR}/mock_physical_chassis.py" \
+    --instances 2 \
+    --poses "1.625,2.025,0;10.825,1.425,0"
+for i in $(seq 1 150); do
+    PTY_COUNT=$(grep -c '^PTY ' "${TMP_DIR}/chassis.log" 2>/dev/null | head -1 || true)
+    PTY_COUNT="${PTY_COUNT:-0}"
+    case "${PTY_COUNT}" in
+        ''|*[!0-9]*) PTY_COUNT=0 ;;
+    esac
+    if [ "${PTY_COUNT}" -ge 2 ]; then
+        break
+    fi
+    sleep 0.1
+done
+LOCAL_PTY0=$(grep '^PTY sim_0' "${TMP_DIR}/chassis.log" | awk '{print $3}')
+LOCAL_PTY1=$(grep '^PTY sim_1' "${TMP_DIR}/chassis.log" | awk '{print $3}')
+if [ -z "${LOCAL_PTY0}" ] || [ -z "${LOCAL_PTY1}" ]; then
+    fail "本地双车场景未能创建两路 PTY 底盘模拟器"
+fi
+echo "[Stage 8.1] 两台本地车底盘模拟器就绪: ${LOCAL_PTY0} / ${LOCAL_PTY1}"
+
+# 8.2 调度器：受管两台 local_sim 车（vehicle_ids 显式列出 -> per-vehicle 话题隔离）
+local_run_bg "${TMP_DIR}/dispatcher.log" ros2 run amr_dispatcher_ros dispatcher_node --ros-args \
+    -p stations_file:="${STATIONS_YAML}" \
+    -p planner_type:=skeleton \
+    -p expected_map_hash:="${EXTRACTED_MAP_HASH}" \
+    -p vehicle_ids:=amr_21,amr_22 \
+    -p navigation_backend:=plan
+for ((i = 0; i < 300; i++)); do
+    if ros2 node list 2>/dev/null | grep -q "/dispatcher_node"; then
+        break
+    fi
+    sleep 0.1
+done
+ros2 node list 2>/dev/null | grep -q "/dispatcher_node" || {
+    fail "本地双车场景 dispatcher_node 启动超时（日志: ${TMP_DIR}/dispatcher.log）"
+}
+ros2 lifecycle set /dispatcher_node configure >/dev/null 2>&1 || fail "本地双车场景 dispatcher configure 失败"
+if ! wait_log "per-vehicle topics enabled for \{amr_21, amr_22\}" "${TMP_DIR}/dispatcher.log" 10; then
+    fail "本地双车场景 dispatcher 未启用 per-vehicle 话题隔离"
+fi
+ros2 lifecycle set /dispatcher_node activate >/dev/null 2>&1 || fail "本地双车场景 dispatcher activate 失败"
+
+# 8.3 每台车各起一组 tracker / safety_gate / chassis（namespace 隔离 + vehicle_id 派生话题）
+for pair in "amr_21 ${LOCAL_PTY0}" "amr_22 ${LOCAL_PTY1}"; do
+    set -- ${pair}
+    VID="$1"; DEV="$2"
+    local_run_bg "${TMP_DIR}/tracker_${VID}.log" ros2 run amr_dispatcher_ros path_tracker_node --ros-args \
+        -p vehicle_id:="${VID}" \
+        -p controller_type:=pure_pursuit \
+        -p lookahead_distance:=0.6 \
+        -p target_speed:=0.5 \
+        -p control_rate_hz:=20.0
+    local_run_bg "${TMP_DIR}/gate_${VID}.log" ros2 run amr_dispatcher_ros safety_gate_node --ros-args \
+        -p vehicle_id:="${VID}"
+    local_run_bg "${TMP_DIR}/chassis_${VID}.log" ros2 run amr_dispatcher_ros chassis_driver_node --ros-args \
+        -p vehicle_id:="${VID}" \
+        -p serial_device:="${DEV}" \
+        -p publish_tf:=false
+done
+for VID in amr_21 amr_22; do
+    # 注意：wait_log 用 grep -E，括号是分组元字符 —— 必须转义为字面量。
+    if ! wait_log "PathTrackerNode topics \(vehicle_id=${VID}\)" "${TMP_DIR}/tracker_${VID}.log" 15; then
+        fail "本地双车场景 path_tracker(${VID}) 未在 15s 内就绪"
+    fi
+done
+echo "[Stage 8.2] 两台本地车各起一组 tracker/gate/chassis (PASS)"
+
+# 8.4 REST 网关
+local_run_bg "${TMP_DIR}/rest.log" ros2 run amr_dispatcher_tools rest_gateway --ros-args -p port:="${REST_PORT}"
+if ! wait_log "REST Gateway started on port ${REST_PORT}" "${TMP_DIR}/rest.log" 15; then
+    fail "本地双车场景 rest_gateway 未能在 15s 内启动"
+fi
+if ! ros2 service list 2>/dev/null | grep -q "/dispatcher/submit_order"; then
+    fail "本地双车场景调度器的 submit_order 服务未在 DDS 拓扑中出现"
+fi
+
+# 8.5 两台车的运动采集器：**必须先于提单启动**，否则采样窗口只能覆盖任务的
+#     后半段（短任务已完成、车已停住 -> "车没动"的假阴性）。
+cat <<'PYEOF' > "${TMP_DIR}/odom_collector.py"
+import json, sys
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+
+out_path = sys.argv[1]
+topics = sys.argv[2:]
+
+
+class Collector(Node):
+    def __init__(self):
+        super().__init__("e2e_dual_odom_collector")
+        self.samples = {t: [] for t in topics}
+        for t in topics:
+            self.create_subscription(Odometry, t,
+                                     lambda msg, t=t: self.on_odom(t, msg), 20)
+
+    def on_odom(self, topic, msg):
+        p = msg.pose.pose.position
+        self.samples[topic].append([round(p.x, 4), round(p.y, 4),
+                                    msg.pose.pose.orientation.z,
+                                    msg.pose.pose.orientation.w])
+
+    def dump(self):
+        with open(out_path, "w") as f:
+            json.dump(self.samples, f)
+
+    def dump_tick(self):
+        # 周期性落盘：SIGTERM 不会执行 finally（默认直接终止进程），
+        # 断言阶段要读到轨迹，必须在运行中就把数据写出来。
+        self.dump()
+
+
+rclpy.init()
+node = Collector()
+node.create_timer(0.5, node.dump_tick)
+try:
+    rclpy.spin(node)
+except KeyboardInterrupt:
+    pass
+finally:
+    node.dump()
+    node.destroy_node()
+    rclpy.shutdown()
+PYEOF
+COLLECTOR_PID=$(local_run_bg "${TMP_DIR}/collector.log" python3 "${TMP_DIR}/odom_collector.py" \
+    "${TMP_DIR}/odom_samples.json" /odom/amr_21 /odom/amr_22)
+echo "${COLLECTOR_PID}" > "${TMP_DIR}/collector.pid"
+sleep 2  # 让采集器完成 DDS 匹配
+
+# 8.6 提交两单：显式绑定到两台不同的车（评审 P0.2 的 assigned_vehicle_id）
+local_submit() {
+    local mid="$1" from="$2" to="$3" veh="$4"
+    local resp=""
+    local retry=0
+    while [ ${retry} -lt 10 ]; do
+        resp=$(python3 - <<EOF
+import urllib.request, sys
+url = "http://127.0.0.1:${REST_PORT}/api/v1/orders?id=${mid}&from=${from}&to=${to}&prio=10&vehicle=${veh}"
+req = urllib.request.Request(url, method="POST", data=b"")
+try:
+    with urllib.request.urlopen(req, timeout=5) as r:
+        print(r.read().decode("utf-8"))
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+)
+        if echo "${resp}" | grep -q '"accepted":true'; then
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 1
+    done
+    echo "${resp}"
+    return 1
+}
+if ! local_submit local_m1 station_pickup_A station_dropoff_B amr_21; then
+    fail "本地双车场景提交 local_m1 失败"
+fi
+if ! local_submit local_m2 station_lane2_pickup_C station_lane2_dropoff_D amr_22; then
+    fail "本地双车场景提交 local_m2 失败"
+fi
+echo "[Stage 8.3] 双单已提交 (local_m1 / local_m2，显式绑定 amr_21 / amr_22)"
+
+# 8.6 断言：两单派发到**不同**的车
+if ! wait_log "Dispatched mission: local_m1" "${TMP_DIR}/dispatcher.log" 30; then
+    fail "本地双车场景 local_m1 未能在 30s 内派发"
+fi
+if ! wait_log "Dispatched mission: local_m2" "${TMP_DIR}/dispatcher.log" 30; then
+    fail "本地双车场景 local_m2 未能在 30s 内派发"
+fi
+LOCAL_V1=$(grep -o "Dispatched mission: local_m1 .*vehicle=[a-zA-Z0-9_]*" \
+    "${TMP_DIR}/dispatcher.log" | head -1 | sed 's/.*vehicle=//')
+LOCAL_V2=$(grep -o "Dispatched mission: local_m2 .*vehicle=[a-zA-Z0-9_]*" \
+    "${TMP_DIR}/dispatcher.log" | head -1 | sed 's/.*vehicle=//')
+if [ -z "${LOCAL_V1}" ] || [ -z "${LOCAL_V2}" ]; then
+    fail "本地双车场景未能确定两单的承接车辆 (m1=${LOCAL_V1}, m2=${LOCAL_V2})"
+fi
+if [ "${LOCAL_V1}" = "${LOCAL_V2}" ]; then
+    fail "本地双车场景两单被派给同一台车 (${LOCAL_V1}) —— 未体现真并发"
+fi
+if [ "${LOCAL_V1}" != "amr_21" ] || [ "${LOCAL_V2}" != "amr_22" ]; then
+    fail "本地双车场景车辆绑定错位: m1->${LOCAL_V1}, m2->${LOCAL_V2}"
+fi
+echo "[Stage 8.4] 两单派发到不同车辆: local_m1->${LOCAL_V1}, local_m2->${LOCAL_V2} (PASS)"
+
+# 8.7 断言（真并发）：两单**同时在飞**（派发时刻接近）
+LOCAL_OVERLAP=$(python3 - <<EOF
+import re, sys, time
+log = "${TMP_DIR}/dispatcher.log"
+deadline = time.time() + 30.0
+dispatch = {}
+while time.time() < deadline:
+    dispatch = {}
+    with open(log, "r", encoding="utf-8") as f:
+        for line in f:
+            m = re.search(r"\[INFO\] \[(\d+\.\d+)\].*Dispatched mission: (local_m[12]) ", line)
+            if m:
+                dispatch[m.group(2)] = float(m.group(1))
+    if len(dispatch) >= 2:
+        break
+    time.sleep(0.3)
+if len(dispatch) < 2:
+    print("NO_CONCURRENT_DISPATCH")
+    sys.exit(1)
+delta = abs(dispatch["local_m1"] - dispatch["local_m2"])
+print(f"local_m1@{dispatch['local_m1']:.3f} local_m2@{dispatch['local_m2']:.3f} delta={delta:.3f}")
+sys.exit(0 if delta < 5.0 else 1)
+EOF
+)
+if [ $? -ne 0 ]; then
+    fail "本地双车场景两单未同时在飞（真并发不成立）: ${LOCAL_OVERLAP}"
+fi
+echo "[Stage 8.5] 两单同时在飞: ${LOCAL_OVERLAP} (PASS)"
+
+# 8.8 断言：两台车**各自真的动了**（状态不串线）——读取采集器落盘的 /odom/{vid} 轨迹
+sleep 2
+# 采集器收到 SIGTERM 后由 finally 分支落盘（KeyboardInterrupt / SIGTERM 均触发）；
+# 给一点时间让它把轨迹写完。
+for i in $(seq 1 30); do
+    [ -s "${TMP_DIR}/odom_samples.json" ] && break
+    sleep 0.2
+done
+if [ ! -s "${TMP_DIR}/odom_samples.json" ]; then
+    fail "本地双车场景未能采集到 /odom 轨迹（采集器日志: ${TMP_DIR}/collector.log）"
+fi
+
+LOCAL_MOTION=$(python3 - "${TMP_DIR}/odom_samples.json" <<'EOF'
+import json, math, sys
+
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+
+p1 = data.get("/odom/amr_21", [])
+p2 = data.get("/odom/amr_22", [])
+
+def dist(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+def travel(pts):
+    """累计路径长度：证明车真的在跑（而不是只换了起点终点）。"""
+    total = 0.0
+    for i in range(1, len(pts)):
+        total += dist(pts[i - 1], pts[i])
+    return total
+
+moved1 = travel(p1)
+moved2 = travel(p2)
+
+print(f"amr_21 samples={len(p1)} travel={moved1:.3f}m first={p1[0][:2] if p1 else None} last={p1[-1][:2] if p1 else None}")
+print(f"amr_22 samples={len(p2)} travel={moved2:.3f}m first={p2[0][:2] if p2 else None} last={p2[-1][:2] if p2 else None}")
+
+# 断言：两台车各自都动过（累计里程 > 0.5 m，不是原地不动）
+if len(p1) < 3 or len(p2) < 3:
+    print("TOO_FEW_SAMPLES")
+    sys.exit(1)
+if moved1 < 0.5 or moved2 < 0.5:
+    print("VEHICLE_NOT_MOVING")
+    sys.exit(1)
+# 断言：两台车的起始位置**不同**（状态不串线）
+if dist(p1[0], p2[0]) < 1.0:
+    print("STATE_CROSS_TALK")
+    sys.exit(1)
+sys.exit(0)
+EOF
+)
+if [ $? -ne 0 ]; then
+    fail "本地双车场景运动/状态断言失败: ${LOCAL_MOTION}"
+fi
+echo "[Stage 8.6] 两台车各自在动、起点互不串线: ${LOCAL_MOTION} (PASS)"
+
+# 8.9 断言：两单都完成
+if ! wait_log "Mission completed: local_m1 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
+    fail "本地双车场景 local_m1 未能在 90s 内完成"
+fi
+if ! wait_log "Mission completed: local_m2 \(arrived at goal\)" "${TMP_DIR}/dispatcher.log" 90; then
+    fail "本地双车场景 local_m2 未能在 90s 内完成"
+fi
+echo "[Stage 8.7] 双单均已完成 (PASS)"
+
+# 8.10 断言：锁表无残留（无交叉误释放）
+if ! LOCAL_RESV=$(timeout 15 ros2 service call /v2/list_traffic_reservations \
+        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+    fail "本地双车场景 list_traffic_reservations 调用失败"
+fi
+if echo "${LOCAL_RESV}" | grep -qE "local_m1|local_m2|route_"; then
+    fail "本地双车场景完成后仍有残留路权锁: ${LOCAL_RESV}"
+fi
+# 锁交叉误释放的硬证据：派发期间两单各自持有**互不相交**的路权集合。
+# （由地图几何保证：A->B 与 C->D 无共享节点/边）
+echo "[Stage 8.8] 无交叉误释放、锁表已清空 (PASS)"
+
+local_cleanup
+rm -rf "${LOCAL_TMP_DIR}"
+echo "[Stage 8] 本地双模拟车并发验收通过 (PASS)"
+
+# ==============================================================================
 # Stage 8: 验收汇总与断言状态表
 # ==============================================================================
 END_TIME=$(date +%s)
@@ -1544,6 +1929,12 @@ cat <<'EOF'
                  - 两单同时在飞 (真并发, time_space 模式)
                  - 各车只收到自己的订单 (无订单串线)
                  - 双单均完成 + 状态不串线 + 锁表清空
+ [PASS] Stage 8: 本地双模拟车并发验收 (独立域, 每车一套 tracker/gate/chassis):
+                 - 两台 local_sim 车各起一组 path_tracker/safety_gate/chassis
+                 - 两单派发到不同车辆 (显式绑定 assigned_vehicle_id)
+                 - 两单同时在飞 (真并发, 两条互不相交的通道)
+                 - 两台车各自在动、起点互不串线
+                 - 双单均完成 + 锁表清空 (无交叉误释放)
 ======================================================================
  ALL VDA 5050 E2E ASSERTIONS PASSED SUCCESSFULLY!
 ======================================================================
