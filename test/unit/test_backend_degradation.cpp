@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <thread>
 
 using namespace amr_dispatcher_core::chassis;
@@ -11,14 +12,20 @@ namespace {
 
 class StubBackend : public ChassisBackend {
  public:
-  explicit StubBackend(std::string name) : name_(std::move(name)) {}
+  explicit StubBackend(std::string name, std::shared_ptr<bool> open_flag = nullptr)
+      : name_(std::move(name)),
+        open_flag_(open_flag ? std::move(open_flag) : std::make_shared<bool>(false)) {}
   std::string Name() const override { return name_; }
-  bool Open(std::string* /*err*/) override { opened_ = true; return true; }
-  void Close() override { opened_ = false; }
-  bool IsOpen() const override { return opened_; }
+  bool Open(std::string* /*err*/) override { *open_flag_ = true; return true; }
+  void Close() override { *open_flag_ = false; }
+  bool IsOpen() const override { return *open_flag_; }
   bool WriteCommand(const ChassisCommand&, std::string*) override { return true; }
   std::optional<std::string> Read(std::string*) override { return std::nullopt; }
-  bool opened_ = false;
+  // 开关状态存放在**外部**共享标志里：SwitchTo 会销毁旧后端对象，
+  // 直接持有旧对象指针再读成员是 use-after-free（堆块可能被新后端复用，
+  // 偶发读到新对象的 opened_=true 而误判"未关闭"）。
+  std::shared_ptr<bool> open_flag_;
+
  private:
   std::string name_;
 };
@@ -75,16 +82,20 @@ TEST(BackendDegradationTest, CooldownPreventsRapidFlip) {
 }
 
 TEST(BackendDegradationTest, SwitchToKnownIndexClosesOld) {
+  auto a_opened = std::make_shared<bool>(false);
   std::vector<BackendDescriptor> descs{
-      {"a", [](const ChassisBackendConfig&) { return std::make_unique<StubBackend>("a"); }},
+      {"a",
+       [a_opened](const ChassisBackendConfig&) {
+         return std::make_unique<StubBackend>("a", a_opened);
+       }},
       {"b", [](const ChassisBackendConfig&) { return std::make_unique<StubBackend>("b"); }},
   };
   BackendDegradationController ctrl(std::move(descs), {});
-  auto* old = static_cast<StubBackend*>(ctrl.current().get());
-  EXPECT_TRUE(old->opened_);
+  EXPECT_TRUE(*a_opened);
   std::string r;
   EXPECT_TRUE(ctrl.SwitchTo(1, &r));
-  EXPECT_FALSE(old->opened_);  // 已关闭
+  // 旧后端对象在 SwitchTo 内已被销毁，只能经外部标志观察其 Close 是否发生
+  EXPECT_FALSE(*a_opened);  // 已关闭
   EXPECT_TRUE(r.find("b") != std::string::npos);
   EXPECT_EQ(ctrl.current()->Name(), "b");
 }
