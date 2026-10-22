@@ -44,6 +44,8 @@ add_library(${PROJECT_NAME}
   src/planning/skeleton_planner.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
+  src/dispatcher/dispatch_state_snapshot.cpp
+  src/dispatcher/audit_log.cpp
   src/dispatcher/mission_comparator.cpp
   src/dispatcher/traffic_reservation.cpp
   src/dispatcher/mission_event_log.cpp
@@ -120,6 +122,8 @@ if(BUILD_TESTING)
     test_stanley
     test_mission_queue
     test_mission_state
+    test_dispatch_state_snapshot
+    test_audit_log
     test_traffic_reservation
     test_mission_event_log
     test_link_quality
