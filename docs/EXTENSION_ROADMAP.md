@@ -48,6 +48,9 @@
   - **人工强清改隔离语义**：强清不摘车，隔离车不再参与自动分配但仍可见可审计
   - 端到端验收：双 VDA 5050 车并发（Stage 7，独立域、无 tracker 冒充）
     与双本地模拟车并发（Stage 8，各一套 tracker/gate/chassis、两条互不相交的通道）
+  - **Web 控制台浏览器端验收**：`scripts/check_web_console_e2e.sh` 用 headless Chrome
+    + CDP 真实点击按钮，断言在线车强清被**服务端**拒绝、缺审计字段/未核实位置
+    时**根本不发请求**、离线车强清后进入隔离态、显式恢复后解除隔离
 - [x] **时空窗交通协调 (Spatio-Temporal Reservation - 一期完成)**：
   - 逐资源区间（边=通道 / 节点=路口）进出时刻，占用时长含加减速、转弯附加时间
     与车辆尺寸安全余量；最小安全间隔 `min_headway_sec`

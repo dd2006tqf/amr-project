@@ -397,3 +397,21 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 - **Query Parameters**: `id` — 任务/订单 ID
 - **Response**: `{"status": "ok", "canceled": true}`（`canceled` 反映 CancelOrder 的 `success`）
 - **错误**: 下游服务不可用 → `503` `{"error": "service_unavailable"}`；调用超时 → `504` `{"error": "timeout"}`
+
+---
+
+## 6. Web 操作台浏览器端验收
+
+`tools/operator_console.html` 是零依赖单文件控制台。上述 REST 端点的**浏览器端**
+行为由 `./scripts/check_web_console_e2e.sh` 自动化验收（headless Chrome + CDP 真实点击）：
+
+| 阶段 | 断言 |
+|---|---|
+| panel | 受管车辆面板渲染（id / backend / 在线态 / 位置 / 电量 / 状态时延） |
+| force_clear_online | 在线车强清被**服务端**拒绝（409）——前端隐藏按钮不是安全边界 |
+| force_clear_offline | 缺 `operator_id` / `reason` 时**根本不发请求**；离线车强清受理 → 车辆转入**隔离态**（面板可见） |
+| restore_guard | 未勾选"已核实车辆物理位置"时**根本不发请求** |
+| restore | 勾选后显式恢复 → 解除隔离，车辆重回调度池 |
+
+环境隔离：ROS 栈在容器内跑独立域（`ROS_DOMAIN_ID=82` / MQTT :18890 / REST :18092），
+浏览器在宿主机通过容器 IP 直连网关。

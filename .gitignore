@@ -22,3 +22,5 @@ test_report_matrix.json
 # 地图导入引擎生成的拓扑站点文件（由 map_ingest_node 运行时生成）
 config/generated/
 
+# check_web_console_e2e.sh 在容器内工作区留下的临时运行目录
+.wc_stamp/

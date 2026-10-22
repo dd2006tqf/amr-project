@@ -49,9 +49,10 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 9. **VDA 5050 Native Fleet Adapter (MQTT)**:
    - **`vda5050_gateway_node`**: bidirectional bridge between ROS 2 topics and standard VDA 5050 v2 JSON over MQTT (`uagv/v2/{manufacturer}/{serialNumber}/{order|instantActions|state|connection}`), with QoS1 heartbeats and LWT `CONNECTIONBROKEN` detection.
    - **Direct order dispatch**: dispatcher publishes serialized VDA 5050 orders (`orderId = mission_id`, full polyline trajectory control points) to `/fleet/{vid}/send_order`; vehicle identity is validated against every state report.
-   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (8 stages, incl. kill -9 chaos drill).
+   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (9 stages, incl. kill -9 chaos drill).
    - **Operator force-clear (`/dispatcher/force_clear_vda5050_link`)**: closes the Spec 5.2 "manual release" branch — for a vehicle that is permanently dead and will never reconnect, the operator can atomically detach its offline link, release the locks bound to that vehicle, abort its in-flight mission, and unblock fleet dispatch. Rejected for online vehicles (never kills a live link).
    - **Force-clear = quarantine, not removal**: communication loss never implies "safe to release". The force-clear requires an operator id, a mandatory reason, and a `confirm_vehicle_id` that must match the target exactly; the vehicle is then moved into a **quarantined** state — still visible and auditable, but excluded from vehicle selection until an explicit `restore_link` (which requires the operator to have physically verified the vehicle's position).
+   - **Browser-level acceptance**: `scripts/check_web_console_e2e.sh` drives headless Chrome over CDP and really clicks the console buttons — asserting that force-clearing an online vehicle is refused **by the server** (UI hiding is not a security boundary), that missing audit fields or an unverified physical position issue **no REST request at all**, and that the quarantine / restore round-trip is visible in the managed-vehicle panel.
 
 10. **True Multi-Vehicle Fleet Concurrency (Two Execution Backends)**:
    - **Backend separation**: `local_sim` vehicles run the local motion chain (`/plan/{vid}` -> `path_tracker` -> `safety_gate` -> `chassis`); `vda5050` vehicles own their controllers and receive **only** the MQTT order (no local `/plan`, no local execution slot) — their completion is judged by `lastNodeId` reaching the order's final node. The two chains never impersonate each other.
@@ -175,13 +176,24 @@ Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet
 - Stage 8: **dual local simulated vehicle concurrency** (isolated `ROS_DOMAIN_ID=80`) — two `local_sim` vehicles, each with its own `path_tracker` / `safety_gate` / `chassis` on two **disjoint** corridors of the demo map; asserts simultaneous dispatch, that each vehicle really moved (odometry travel) with non-crossed starting poses, both missions completed, and zero residual locks.
 On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
 
-### 4. Launch Physical Serial Device Simulator
+### 4. Run Web Operator Console Browser-Level Acceptance
+```bash
+./scripts/check_web_console_e2e.sh
+```
+Headless-Chrome + CDP harness that **really clicks the console buttons** (no more eyeballing the UI). The ROS stack runs inside the Docker container on an isolated domain (`ROS_DOMAIN_ID=82`, MQTT :18890, REST :18092); the browser runs on the host and talks to the gateway over the container IP. Asserts across 5 phases:
+- Panel: the managed-vehicle table renders with id / backend / online state / position / battery / state age.
+- Force-clear of an **online** vehicle is refused **by the server** (proving that hiding the button in the UI is *not* a security boundary).
+- Missing audit fields (`vehicle_id` / `operator_id` / `reason`) are blocked in the browser — **no REST request is issued at all**.
+- Force-clear of an **offline** vehicle is accepted: the vehicle moves into **quarantine** and the panel shows it.
+- Restore without ticking "physical position verified" is blocked in the browser; with the tick, quarantine is lifted and the vehicle rejoins the dispatch pool.
+
+### 5. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 5. Open Web Operator Console
+### 6. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/
