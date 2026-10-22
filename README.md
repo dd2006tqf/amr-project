@@ -62,6 +62,13 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Time-space traffic coordination (`traffic_mode: time_space`)**: per-resource enter/exit windows (edge = channel, node = intersection) with accel/turn/safety-margin overhead, all-or-nothing commit, extension on deviation, and confirmed-departure release — a window expiring is **not** a resource being released. `static` remains the default.
    - **Verified end-to-end**: `scripts/check_vda5050_e2e.sh` Stage 7 (two VDA 5050 vehicles, isolated ROS domain, no ROS trackers allowed to stand in) and Stage 8 (two local simulated vehicles, each with its own tracker/gate/chassis on two **disjoint** corridors) both assert genuine concurrency — simultaneous in-flight windows, no cross-talk, no cross-release.
 
+11. **Hardened REST Gateway**:
+   - **No single request can kill the process**: every handler is exception-guarded (`400` on failure), socket receive/send timeouts are 5 s, request body is capped at 1 MiB and the header block at 8 KiB, and `Transfer-Encoding: chunked` is rejected outright instead of guessing a length.
+   - **Connections are decoupled from service**: the accept loop hands work to a bounded pool (4 workers, 32 pending) — a silent or slow client occupies one worker for at most one timeout instead of locking the whole gateway.
+   - **Exact routing and escaping**: substring path matching is gone (`/api/v1/ordersXYZ` is now `404`), and every response field goes through JSON escaping, so a quote or newline in a rejection reason no longer produces an unparseable body.
+   - **Static Bearer auth, off by default** (`auth_token` / `estop_token`; empty = disabled, so existing deployments and all e2e runs are unchanged), with constant-time token comparison.
+   - **Idempotency that survives failure**: a key is only consumed after the backend actually accepts the order — a `503`/`504` rolls it back so the client's retry is not silently swallowed.
+
 ---
 
 ## 🗺️ Custom Map Ingestion & Topology Engine
@@ -187,13 +194,28 @@ Headless-Chrome + CDP harness that **really clicks the console buttons** (no mor
 - Force-clear of an **offline** vehicle is accepted: the vehicle moves into **quarantine** and the panel shows it.
 - Restore without ticking "physical position verified" is blocked in the browser; with the tick, quarantine is lifted and the vehicle rejoins the dispatch pool.
 
-### 5. Launch Physical Serial Device Simulator
+### 5. Run REST Gateway Hardening Acceptance
+```bash
+./scripts/check_rest_gateway_hardening.sh
+```
+Regression coverage for defects reproduced on this machine against the old gateway
+(a single malformed request could `std::terminate` the process, and one silent
+connection could lock the whole gateway out of service). Starts two gateway instances
+on an isolated domain (`ROS_DOMAIN_ID=86`, ports 18096 / 18097) and asserts, over raw
+sockets: malformed / negative / oversized `Content-Length` and non-numeric `prio` return
+`400` **with the process still alive**, a 2 MiB body returns `413`, chunked transfer is
+rejected, `/api/v1/ordersXYZ` is `404` (exact routing, not substring), a silent
+connection does not block other clients, static Bearer auth returns `401` only when an
+`auth_token` is configured (default off), responses parse as valid JSON, and an
+idempotency key is **not burned** when the backend is unavailable.
+
+### 6. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 6. Open Web Operator Console
+### 7. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/

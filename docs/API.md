@@ -253,6 +253,35 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 
 默认监听端口：`8080`
 
+### 5.1 网关参数与安全边界
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `port` | `8080` | 监听端口。 |
+| `html_path` | `tools/operator_console.html` | 操作台单文件路径（含若干回退路径）。 |
+| `auth_token` | `""` | 静态 Bearer Token。**空 = 鉴权关闭**（现网与全部 e2e 行为不变）。非空时除 `GET /`、`GET /index.html` 外全部端点要求 `Authorization: Bearer <token>`，否则 `401`。 |
+| `estop_token` | `""` | `/api/operator/estop` 单独口令；空则回退 `auth_token`。 |
+| `cors_allow_origin` | `""` | 允许的跨域来源。**空 = 不下发任何 CORS 头**（操作台与网关同源时不需要）；旧实现无条件下发 `Access-Control-Allow-Origin: *`。 |
+| `worker_threads` | `4` | 连接处理线程数。主线程只 `accept`，静默/慢连接只占住一个工作线程。 |
+| `max_pending_connections` | `32` | 待处理连接上限；超限立即回 `503 gateway_overloaded` 并关闭，避免无界积压。 |
+
+**健壮性契约**（`scripts/check_rest_gateway_hardening.sh` 逐条断言）：
+
+| 情形 | 响应 |
+|---|---|
+| `Content-Length` 非数字 / 负数 / 溢出 | `400 bad_request`，**进程存活** |
+| `Content-Length` 超过 1 MiB | `413 payload_too_large` |
+| 请求头段超过 8 KiB | `400 bad_request` |
+| `Transfer-Encoding: chunked` | `400 bad_request`（网关不实现分块传输，不猜长度） |
+| `prio` 非整数 / 越界 | `400 invalid_priority` |
+| 路径不是精确匹配（如 `/api/v1/ordersXYZ`） | `404 not_found` |
+| 建连后不发数据 | 该连接 5s 收发超时；**其它连接不受影响** |
+| 处理过程中抛任何异常 | `400 bad_request`（不再 `std::terminate`） |
+
+> 幂等语义：`idempotency_key` 先占位、**后端确认受理后**才记账。后端不可用
+> （`503`）或超时（`504`）时该 key 被回滚，客户端可用同一 key 重试；已受理
+> 的 key 重放返回 `{"status":"ignored","reason":"idempotent_duplicate"}`。
+
 ### `GET /api/v1/state`
 查询调度系统当前整体健康度与队列信息。
 - **Response**:

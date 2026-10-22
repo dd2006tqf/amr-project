@@ -59,6 +59,25 @@
     执行偏离靠延期扩窗（`ExtendTimeSpace`）
   - `traffic_mode: static | time_space`，**默认 static**（现网行为不变）
 
+## Phase 2.5: 企业级加固 (Enterprise Hardening - 2026 Q4, 进行中)
+- [x] **REST 网关健壮化 (Complete)**：
+  - 已复现的致命缺陷全部修复：畸形 `Content-Length` / 非数字 `prio` 曾让
+    网关 `std::terminate`；静默连接曾把单线程 accept 卡死到全线不可用
+  - 异常兜底（任何处理异常 -> `400`，不再 terminate）、5s 收发超时、
+    请求体 1 MiB / 头部 8 KiB 上限、分块传输拒绝、精确路由
+  - 有界工作线程池（4 worker / 32 待处理），过载快速回 `503`
+  - 静态 Bearer Token（`auth_token`，**默认关闭**，常量时间比较）与
+    可配 CORS 来源（默认不下发 CORS 头）
+  - 幂等键改为"后端确认受理后才记账"，`503/504` 回滚允许重试
+  - 验收：`scripts/check_rest_gateway_hardening.sh`（独立域 86，21 条断言）
+  - 单测基建：tools 包 57 例（http_limits / bearer_auth / idempotency_store /
+    json_escape），容器内 `ctest --test-dir build/amr_dispatcher_tools`
+- [ ] **状态持久化与审计落盘**（YAML 快照 + JSONL 审计，默认关闭）
+- [ ] **dispatcher_node 分层重构**（派发决策下沉 core 纯函数、可单测）
+- [ ] **拓扑级静态绕行接通**（`FindRoutePathAvoiding` 接入死锁恢复；
+  A* / 动态障碍绕行**不在本轮范围**）
+- [ ] **CI 门禁 + L2 契约真断言 + `/metrics`**
+
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
 - [ ] **分布式对等协商 (Peer-to-Peer Conflict Resolution)**：
   - 当中心调度离线或网络分区时，机器人之间通过局域网广播进行右侧让行或优先级协商
