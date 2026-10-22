@@ -208,4 +208,34 @@ std::vector<Mission> MissionQueue::Snapshot() const {
   return snapshot;
 }
 
+std::vector<Mission> MissionQueue::SnapshotForPersistence() const {
+  Sort();
+  return items_;  // 保持 state 原样：落盘往返必须逐字还原
+}
+
+std::size_t MissionQueue::Restore(const std::vector<Mission>& missions,
+                                 const std::vector<std::string>& paused_order_ids) {
+  items_.clear();
+  paused_order_ids_.clear();
+  dirty_ = false;
+  for (const auto& id : paused_order_ids) {
+    if (!id.empty()) {
+      paused_order_ids_.insert(id);
+    }
+  }
+  std::size_t restored = 0;
+  for (const auto& incoming : missions) {
+    if (incoming.id.empty() || Contains(incoming.id)) {
+      continue;  // 坏数据/重复 id：跳过而不是让整个恢复失败
+    }
+    if (items_.size() >= config_.max_size) {
+      break;
+    }
+    items_.push_back(incoming);
+    ++restored;
+  }
+  dirty_ = true;  // 恢复后首次访问时按当前比较器重排
+  return restored;
+}
+
 }  // namespace amr_dispatcher_core::dispatcher

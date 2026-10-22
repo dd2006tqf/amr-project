@@ -78,6 +78,17 @@ class MissionQueue {
   // 按出队顺序导出快照（调度状态话题/CLI 列表用）。
   std::vector<Mission> Snapshot() const;
 
+  // 落盘用的快照：与 Snapshot() 的区别是**不改写 state**。
+  // Snapshot() 会把 state 重算成 kPaused/kPending（面向话题展示），
+  // 直接拿它落盘会把暂停标记丢掉、往返不保真。
+  std::vector<Mission> SnapshotForPersistence() const;
+
+  // 从快照恢复：清空现有内容后按给定顺序重建，并恢复暂停订单标记。
+  // 序号游标不在这里管理（由调用方按 max(sequence)+1 兜底）。
+  // 返回实际入队条数（重复 id / 空 id 会被跳过）。
+  std::size_t Restore(const std::vector<Mission>& missions,
+                      const std::vector<std::string>& paused_order_ids);
+
  private:
   void Sort() const;
 
