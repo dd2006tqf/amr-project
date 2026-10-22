@@ -265,3 +265,83 @@ TEST(TimeSpacePlanningTest, CommitIsSeparateFromPlan_AllOrNothingByCallerContrac
   wf::CommitTimeSpaceOccupancy(&occupancy, "m1", plan1.windows);
   EXPECT_FALSE(occupancy.by_resource.empty());
 }
+
+// ---- 零时长边界 ----
+
+TEST(TimeSpacePlanningTest, ZeroLengthSegment_StillOccupiesOverheadTime) {
+  auto c = MakeCandidate("m1");
+  c.path_node_ids = {"A", "B"};
+  c.segment_lengths_m = {0.0};  // 零长边（例如站点与骨架重合）
+  const auto plan = wf::PlanTimeSpaceReservation(c, wf::TimeSpaceOccupancy{}, MakeConfig());
+
+  ASSERT_TRUE(plan.feasible);
+  bool saw_edge = false;
+  for (const auto& w : plan.windows) {
+    if (w.resource_id != "route_edge:A__B") continue;
+    saw_edge = true;
+    // 零长边仍付出加减速 + 转弯 + 安全余量的占用时间（不是 0 时长）
+    const double duration =
+        std::chrono::duration_cast<std::chrono::duration<double>>(w.exit - w.enter).count();
+    EXPECT_GT(duration, 0.0);
+    EXPECT_NEAR(duration, 1.0 + 0.5 + 0.2, 1e-6);
+  }
+  EXPECT_TRUE(saw_edge);
+}
+
+TEST(TimeSpacePlanningTest, ZeroOverheadConfig_ProducesZeroDurationWindow_AndNeverConflicts) {
+  auto c = MakeCandidate("m1");
+  c.path_node_ids = {"A", "B"};
+  c.segment_lengths_m = {0.0};
+  wf::MotionTimingConfig cfg;
+  cfg.cruise_speed_mps = 1.0;
+  cfg.accel_overhead_sec = 0.0;
+  cfg.turn_overhead_sec = 0.0;
+  cfg.safety_margin_m = 0.0;
+  cfg.min_headway_sec = 0.0;
+
+  const auto plan = wf::PlanTimeSpaceReservation(c, wf::TimeSpaceOccupancy{}, cfg);
+  ASSERT_TRUE(plan.feasible);
+
+  // 零时长窗口：[t, t) —— 空区间，与任何区间都不重叠
+  for (const auto& w : plan.windows) {
+    EXPECT_FALSE(w.enter < w.exit);
+  }
+
+  // 与别人的占用表同资源也不冲突（空区间不构成重叠）
+  wf::TimeSpaceOccupancy occupancy;
+  wf::TimeSpaceOccupancy::Entry other;
+  other.mission_id = "m_other";
+  other.enter = c.earliest_start;
+  other.exit = c.earliest_start + std::chrono::seconds(30);
+  occupancy.by_resource["route_edge:A__B"].push_back(other);
+
+  const auto plan2 = wf::PlanTimeSpaceReservation(c, occupancy, cfg);
+  EXPECT_TRUE(plan2.feasible);
+  EXPECT_TRUE(plan2.conflicts.empty());
+}
+
+TEST(TimeSpacePlanningTest, ZeroLengthSegment_ConflictsWithOverlappingOccupant) {
+  auto c = MakeCandidate("m1");
+  c.path_node_ids = {"A", "B"};
+  c.segment_lengths_m = {0.0};
+
+  // m_other 占用 route_edge:A__B 整个 30s —— m1 的零长边虽只占 overhead，
+  // 但仍与对方区间重叠 -> 必须被检出并整体后移
+  wf::TimeSpaceOccupancy occupancy;
+  wf::TimeSpaceOccupancy::Entry other;
+  other.mission_id = "m_other";
+  other.enter = c.earliest_start;
+  other.exit = c.earliest_start + std::chrono::seconds(30);
+  occupancy.by_resource["route_edge:A__B"].push_back(other);
+
+  const auto plan = wf::PlanTimeSpaceReservation(c, occupancy, MakeConfig());
+  ASSERT_TRUE(plan.feasible) << plan.reject_reason;
+  EXPECT_FALSE(plan.conflicts.empty());
+  EXPECT_EQ(plan.conflicts.front().resource_id, "route_edge:A__B");
+  EXPECT_GT(plan.total_delay_sec, 0.0);
+  // 后移后必须完全落在对方窗口之后
+  for (const auto& w : plan.windows) {
+    if (w.resource_id != "route_edge:A__B") continue;
+    EXPECT_GE(w.enter, other.exit);
+  }
+}

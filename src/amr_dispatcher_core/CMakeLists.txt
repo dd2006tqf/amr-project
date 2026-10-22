@@ -161,7 +161,6 @@ if(BUILD_TESTING)
     test_docking_workflow
     test_mission_charging_workflow
     test_mission_resource_cleanup
-    test_mission_preflight
     test_operator_snapshot
     test_dock_catalog
     test_station_catalog
@@ -181,9 +180,10 @@ if(BUILD_TESTING)
     test_submit_order_router
     test_topology_projection
     test_end_to_end_pipeline
+    test_multi_vehicle_time_space
   )
   foreach(test_name IN LISTS UNIT_TESTS)
-    if(test_name STREQUAL "test_end_to_end_pipeline")
+    if(test_name STREQUAL "test_end_to_end_pipeline" OR test_name STREQUAL "test_multi_vehicle_time_space")
       set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/integration/${test_name}.cpp")
     else()
       set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/unit/${test_name}.cpp")

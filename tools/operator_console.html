@@ -357,6 +357,9 @@
             <input id="forceClearVehicleId" placeholder="车辆 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
             <input id="forceClearOperator" placeholder="操作员 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
             <input id="forceClearReason" placeholder="原因（必填，如：车辆物理故障下线）" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;">
+              <input type="checkbox" id="positionVerified"> 已核实车辆物理位置
+            </label>
             <button id="forceClearBtn" class="danger" style="border:none;padding:8px 14px;border-radius:6px;cursor:pointer;">强制清除链路</button>
             <button id="restoreLinkBtn" class="secondary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">恢复车辆</button>
           </div>
@@ -602,7 +605,9 @@
             vehicle_id: vehicleId,
             confirm_vehicle_id: vehicleId,
             operator_id: operatorId,
-            reason: reason
+            reason: reason,
+            // 强清是"通信失联"场景：物理位置**未**核实，安全责任由操作员承担
+            position_verified: false
           })
         });
         const result = await res.json();
@@ -628,6 +633,12 @@
       const reason = document.getElementById('forceClearReason').value.trim();
       if (!vehicleId || !operatorId || !reason) {
         setStatus('恢复需要填写车辆 id、操作员 id 与原因', false);
+        return;
+      }
+      // 恢复前置：操作员必须**已核实车辆物理位置**（服务端同样复验）
+      if (!document.getElementById('positionVerified').checked) {
+        setStatus('恢复前必须勾选"已核实车辆物理位置"', false);
+        alert('恢复前请先勾选"已核实车辆物理位置"。\n位置未核实的车可能仍占着通道，放回调度池会撞车。');
         return;
       }
       const confirmed = window.confirm(

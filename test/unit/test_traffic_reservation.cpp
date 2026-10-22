@@ -233,3 +233,79 @@ TEST(ResourceTableTest, ReserveTimeSpacePrunesExpiredAtEntry) {
   EXPECT_TRUE(t.ReserveTimeSpace("m2", "route_edge:A__B", now - 7s, now - 2s, &msg))
       << "msg=" << msg;
 }
+
+// ---- B2：延期扩窗（ExtendTimeSpaceReservation）----
+
+TEST(ResourceTableTest, ExtendTimeSpaceReservation_ExtendsOwnWindow) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", t0, t0 + 10s, &msg));
+
+  EXPECT_TRUE(t.ExtendTimeSpaceReservation("m1", "route_edge:A__B", t0 + 30s, &msg))
+      << "msg=" << msg;
+  EXPECT_EQ(t.TimeSpaceReservationCount(), 1u);
+}
+
+TEST(ResourceTableTest, ExtendTimeSpaceReservation_ShorterEndIsIdempotentNoOp) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", t0, t0 + 30s, &msg));
+
+  // 缩短到已有结束时间之前：无需延长，返回成功但不改表
+  EXPECT_TRUE(t.ExtendTimeSpaceReservation("m1", "route_edge:A__B", t0 + 20s, &msg));
+  EXPECT_NE(msg.find("no extension"), std::string::npos);
+}
+
+TEST(ResourceTableTest, ExtendTimeSpaceReservation_ConflictsWithOtherMission) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", t0, t0 + 10s, &msg));
+  ASSERT_TRUE(t.ReserveTimeSpace("m2", "route_edge:A__B", t0 + 20s, t0 + 40s, &msg));
+
+  // m1 想延到 30s：会压到 m2 的窗口 -> 拒绝且不改动
+  EXPECT_FALSE(t.ExtendTimeSpaceReservation("m1", "route_edge:A__B", t0 + 30s, &msg));
+  EXPECT_NE(msg.find("m2"), std::string::npos);
+  // m1 的窗口未被改动：再试一次延长到 12s（仍不冲突）应成功
+  EXPECT_TRUE(t.ExtendTimeSpaceReservation("m1", "route_edge:A__B", t0 + 12s, &msg));
+}
+
+TEST(ResourceTableTest, ExtendTimeSpaceReservation_UnknownResourceOrMissionFails) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", t0, t0 + 10s, &msg));
+
+  EXPECT_FALSE(t.ExtendTimeSpaceReservation("m1", "route_edge:ZZ__YY", t0 + 30s, &msg));
+  EXPECT_FALSE(t.ExtendTimeSpaceReservation("m_other", "route_edge:A__B", t0 + 30s, &msg));
+}
+
+// ---- time_space 模式：读单持有的资源（与 Snapshot() 的静态锁互补）----
+
+TEST(ResourceTableTest, TimeSpaceResourcesOf_ListsOnlyOwnResources) {
+  ResourceTable t;
+  const auto t0 = std::chrono::steady_clock::now();
+  std::string msg;
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_edge:A__B", t0, t0 + 10s, &msg));
+  ASSERT_TRUE(t.ReserveTimeSpace("m1", "route_node:B", t0, t0 + 10s, &msg));
+  ASSERT_TRUE(t.ReserveTimeSpace("m2", "route_edge:C__D", t0, t0 + 10s, &msg));
+
+  const auto mine = t.TimeSpaceResourcesOf("m1");
+  ASSERT_EQ(mine.size(), 2u);
+  EXPECT_EQ(mine[0], "route_edge:A__B");  // 按资源 id 排序
+  EXPECT_EQ(mine[1], "route_node:B");
+  // m2 看不到 m1 的资源
+  EXPECT_EQ(t.TimeSpaceResourcesOf("m2").size(), 1u);
+  EXPECT_TRUE(t.TimeSpaceResourcesOf("m_unknown").empty());
+}
+
+TEST(ResourceTableTest, TimeSpaceResourcesOf_EmptyWhenOnlyStaticLocks) {
+  ResourceTable t;
+  ASSERT_TRUE(t.Reserve("m1", {"route_edge:A__B"}).success);
+  // 静态锁不在时空预约表里：time_space 模式读单持有资源必须读预约表
+  EXPECT_TRUE(t.TimeSpaceResourcesOf("m1").empty());
+  // 静态锁仍可从 Snapshot() 读到（两套视图互补）
+  ASSERT_EQ(t.Snapshot().size(), 1u);
+}

@@ -12,6 +12,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
+#include "amr_dispatcher_ros/assignment_dispatch_decision.hpp"
 #include "amr_dispatcher_ros/mission_identity.hpp"
 #include "amr_dispatcher_ros/vehicle_topic_names.hpp"
 
@@ -1705,22 +1706,25 @@ void DispatcherNode::ScheduleTick() {
       decision.outcome = amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned;
       decision.strategy = "legacy_single_vehicle";
     }
-    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kDeferred) {
+    // 三态 -> 调度动作的映射写死在纯函数里（可单测，A7）：
+    // kDeferred 留队 / kIndeterminate 暂停自动分配 / kRejected 判负。
+    const auto dispatch_decision = DecideAssignmentDispatch(decision);
+    if (dispatch_decision.action == AssignmentDispatchAction::kStayQueued) {
       saw_deferred = true;
-      deferred_reason = decision.reject_reason;
+      deferred_reason = dispatch_decision.reason;
       continue;  // 留队等待，下个 tick 重试
     }
-    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kIndeterminate) {
+    if (dispatch_decision.action == AssignmentDispatchAction::kPauseAutoAssignment) {
       saw_indeterminate = true;
-      indeterminate_reason = decision.reject_reason;
+      indeterminate_reason = dispatch_decision.reason;
       continue;  // 状态不确定：暂停自动分配
     }
-    if (decision.outcome == amr_dispatcher_core::fleet::AssignmentOutcome::kRejected) {
+    if (dispatch_decision.action == AssignmentDispatchAction::kReject) {
       // 永久不满足 -> 该单判负（不静默改派）
       RCLCPP_WARN(get_logger(), "Queued mission %s rejected by vehicle selection: %s",
-                  candidate_mission.id.c_str(), decision.reject_reason.c_str());
+                  candidate_mission.id.c_str(), dispatch_decision.reason.c_str());
       if (queue_->Cancel(candidate_mission.id)) {
-        RejectedQueuedMission(candidate_mission, decision.reject_reason);
+        RejectedQueuedMission(candidate_mission, dispatch_decision.reason);
       }
       continue;
     }
@@ -2532,22 +2536,24 @@ std::string DispatcherNode::ResolveDispatchVehicleId(
   // A6：显式指定优先（必须在受管清单内），否则由选车策略决定。
   // 返回空串 = 未选到车（调度侧已据三态结果处理留队/暂停/拒绝）。
   const auto decision = SelectVehicleForMission(mission);
-  switch (decision.outcome) {
-    case amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned:
+  // 三态 -> 动作的映射与排队派发链共用同一纯函数（A7）
+  const auto dispatch_decision = DecideAssignmentDispatch(decision);
+  switch (dispatch_decision.action) {
+    case AssignmentDispatchAction::kDispatch:
       return decision.vehicle_id;
-    case amr_dispatcher_core::fleet::AssignmentOutcome::kDeferred:
+    case AssignmentDispatchAction::kStayQueued:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                            "Mission %s: vehicle assignment deferred (%s)",
-                           mission.id.c_str(), decision.reject_reason.c_str());
+                           mission.id.c_str(), dispatch_decision.reason.c_str());
       return "";
-    case amr_dispatcher_core::fleet::AssignmentOutcome::kIndeterminate:
+    case AssignmentDispatchAction::kPauseAutoAssignment:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                            "Mission %s: vehicle state indeterminate (%s) — auto assignment paused",
-                           mission.id.c_str(), decision.reject_reason.c_str());
+                           mission.id.c_str(), dispatch_decision.reason.c_str());
       return "";
-    case amr_dispatcher_core::fleet::AssignmentOutcome::kRejected:
+    case AssignmentDispatchAction::kReject:
       RCLCPP_WARN(get_logger(), "Mission %s: vehicle assignment rejected: %s",
-                  mission.id.c_str(), decision.reject_reason.c_str());
+                  mission.id.c_str(), dispatch_decision.reason.c_str());
       return "";
   }
   return "";

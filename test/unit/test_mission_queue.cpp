@@ -102,3 +102,98 @@ TEST(MissionQueueTest, RejectUnknownComparatorFallsBack) {
   MissionQueue q{{.comparator = "nonsense"}};
   EXPECT_EQ(q.comparator_name(), "priority_fifo");
 }
+
+// ---- A6：队首阻塞规避（PeekN / PopById）----
+
+TEST(MissionQueueTest, PeekN_ReturnsFirstNInDispatchOrder) {
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("a", 1, 1)).accepted);
+  ASSERT_TRUE(q.Push(MakeMission("b", 5, 2)).accepted);
+  ASSERT_TRUE(q.Push(MakeMission("c", 3, 3)).accepted);
+
+  const auto head = q.PeekN(2);
+  ASSERT_EQ(head.size(), 2u);
+  EXPECT_EQ(head[0].id, "b");  // 优先级最高者排在队首
+  EXPECT_EQ(head[1].id, "c");
+  // Peek 不改变队列
+  EXPECT_EQ(q.size(), 3u);
+}
+
+TEST(MissionQueueTest, PeekN_SkipsPausedOrders) {
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("a", 9, 1)).accepted);
+  ASSERT_TRUE(q.Push(MakeMission("b", 8, 2)).accepted);
+  q.PauseOrder("order_a");
+
+  const auto head = q.PeekN(4);
+  ASSERT_EQ(head.size(), 1u);
+  EXPECT_EQ(head[0].id, "b");
+}
+
+TEST(MissionQueueTest, PeekN_ZeroOrEmptyReturnsNothing) {
+  MissionQueue q;
+  EXPECT_TRUE(q.PeekN(0).empty());
+  EXPECT_TRUE(q.PeekN(8).empty());
+  ASSERT_TRUE(q.Push(MakeMission("a", 1, 1)).accepted);
+  EXPECT_TRUE(q.PeekN(0).empty());
+  EXPECT_EQ(q.size(), 1u);
+}
+
+TEST(MissionQueueTest, PopById_DispatchesNonHeadMission) {
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("a", 9, 1)).accepted);
+  ASSERT_TRUE(q.Push(MakeMission("b", 8, 2)).accepted);
+
+  // 队首 "a" 暂无合格车辆 -> 直接出后面的 "b"（队首阻塞规避）
+  const auto popped = q.PopById("b");
+  ASSERT_TRUE(popped.success);
+  ASSERT_TRUE(popped.mission.has_value());
+  EXPECT_EQ(popped.mission->id, "b");
+  EXPECT_EQ(popped.mission->state, MissionState::kActive);
+  EXPECT_EQ(q.size(), 1u);
+  EXPECT_TRUE(q.Contains("a"));
+}
+
+TEST(MissionQueueTest, PopById_UnknownMissionFailsWithoutChangingQueue) {
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("a", 1, 1)).accepted);
+
+  const auto popped = q.PopById("nope");
+  EXPECT_FALSE(popped.success);
+  EXPECT_FALSE(popped.mission.has_value());
+  EXPECT_FALSE(popped.message.empty());
+  EXPECT_EQ(q.size(), 1u);
+}
+
+TEST(MissionQueueTest, PopById_PausedOrderFailsWithoutChangingQueue) {
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("a", 1, 1)).accepted);
+  q.PauseOrder("order_a");
+
+  const auto popped = q.PopById("a");
+  EXPECT_FALSE(popped.success);
+  EXPECT_TRUE(popped.all_paused);
+  EXPECT_EQ(q.size(), 1u);
+  // 恢复后同一 id 可正常出队
+  q.ResumeOrder("order_a");
+  EXPECT_TRUE(q.PopById("a").success);
+  EXPECT_TRUE(q.empty());
+}
+
+TEST(MissionQueueTest, PeekNThenPopById_SkipsUndispatchableHead) {
+  // 端到端复现队首阻塞规避：前 N 个候选里挑第一个真正可派的任务
+  MissionQueue q;
+  ASSERT_TRUE(q.Push(MakeMission("head", 10, 1)).accepted);   // 无合格车 -> 跳过
+  ASSERT_TRUE(q.Push(MakeMission("mid", 9, 2)).accepted);     // 也无合格车 -> 跳过
+  ASSERT_TRUE(q.Push(MakeMission("tail", 8, 3)).accepted);    // 有合格车 -> 派它
+
+  const auto candidates = q.PeekN(8);
+  ASSERT_EQ(candidates.size(), 3u);
+  EXPECT_EQ(candidates[0].id, "head");
+
+  const auto popped = q.PopById("tail");
+  ASSERT_TRUE(popped.success);
+  EXPECT_EQ(q.size(), 2u);
+  EXPECT_TRUE(q.Contains("head"));
+  EXPECT_TRUE(q.Contains("mid"));
+}

@@ -40,10 +40,15 @@ std::optional<FacilityCatalog> LoadFacilityCatalog(const std::filesystem::path& 
   bool in_resource = false;
   bool has_id = false;
   bool has_type = false;
+  bool incomplete = false;  // 有 id 却缺 type 的记录：配置错误，不得静默丢弃
 
   auto flush_resource = [&]() {
-    if (in_resource && has_id && has_type) {
-      catalog.resources.push_back(current);
+    if (in_resource && has_id) {
+      if (!has_type) {
+        incomplete = true;  // 记录不完整 -> 整份目录判负
+      } else {
+        catalog.resources.push_back(current);
+      }
     }
     current = FacilityResource{};
     in_resource = false;
@@ -98,6 +103,9 @@ std::optional<FacilityCatalog> LoadFacilityCatalog(const std::filesystem::path& 
     }
   }
   flush_resource();
+  if (incomplete) {
+    return std::nullopt;  // 存在缺 type 的资源记录 -> 配置错误，整份判负
+  }
 
   std::string message;
   if (!ValidateFacilityCatalog(catalog, &message)) {
