@@ -12,15 +12,40 @@ import sys
 import time
 
 
+def parse_poses(spec):
+    """解析 --poses "x,y,yaw;x,y,yaw;..." -> [(x, y, yaw), ...]。
+
+    多车并发 e2e 用：两台车分别站在不同通道的取货点，起点不重合。
+    容错：分段用 ';' 分隔，段内用 ',' 分隔，字段不足则该项按 (0,0,0) 处理。
+    """
+    poses = []
+    for chunk in spec.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(",")
+        try:
+            x = float(parts[0])
+            y = float(parts[1])
+            yaw = float(parts[2]) if len(parts) > 2 else 0.0
+        except (ValueError, IndexError):
+            x, y, yaw = 0.0, 0.0, 0.0
+        poses.append((x, y, yaw))
+    return poses
+
+
 def main():
     # 多车支持（--instances N）：每台车一组独立 PTY + 独立初始位姿，
     # 便于 e2e 起两台 local_sim 车验证真并发。
     #   * 实例 0：从 (--start-x, --start-y) 出发
     #   * 实例 i>0：沿 --start-x 方向平移 --lane-offset * i，避免两车起点重合
+    #   * --poses "x,y,yaw;x,y,yaw"：逐台指定初始位姿（e2e 双车并发用：
+    #     两台车分别站在**不同通道**的取货点上，起点互不重合）
     instances = 1
     start_x = 0.0
     start_y = 0.0
     lane_offset = 0.0
+    poses = []
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "--instances" and i + 1 < len(args):
@@ -31,9 +56,11 @@ def main():
             start_y = float(args[i + 1])
         elif arg == "--lane-offset" and i + 1 < len(args):
             lane_offset = float(args[i + 1])
+        elif arg == "--poses" and i + 1 < len(args):
+            poses = parse_poses(args[i + 1])
 
-    if instances == 1:
-        run_instance(pty.openpty(), start_x, start_y, "sim")
+    if instances == 1 and not poses:
+        run_instance(pty.openpty(), start_x, start_y, "sim", yaw=0.0)
         return
 
     # 多车：各起一个独立 PTY 模拟器（后台线程）。
@@ -48,15 +75,19 @@ def main():
         slave_name = os.ttyname(pair[1])
         label = "sim_%d" % index
         print("PTY %s %s" % (label, slave_name), flush=True)
-        pty_pairs.append((pair, start_x + lane_offset * index, start_y, label))
+        if index < len(poses):
+            px, py, pyaw = poses[index]
+        else:
+            px, py, pyaw = start_x + lane_offset * index, start_y, 0.0
+        pty_pairs.append((pair, px, py, pyaw, label))
 
     import threading
     errors = []
 
     def worker(item):
-        pair, sx, sy, label = item
+        pair, sx, sy, syaw, label = item
         try:
-            run_instance(pair, sx, sy, label, banner=False)
+            run_instance(pair, sx, sy, label, banner=False, yaw=syaw)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -72,7 +103,7 @@ def main():
         raise SystemExit(1)
 
 
-def run_instance(pty_pair, start_x, start_y, label, banner=True):
+def run_instance(pty_pair, start_x, start_y, label, banner=True, yaw=0.0):
     # 创建虚拟物理伪终端主从对 (Master / Slave)
     master_fd, slave_fd = pty_pair
     slave_name = os.ttyname(slave_fd)
@@ -89,7 +120,7 @@ def run_instance(pty_pair, start_x, start_y, label, banner=True):
 
     x = start_x
     y = start_y
-    yaw = 0.0
+    yaw = yaw
     vx = 0.0
     wz = 0.0
     battery = 24.5
