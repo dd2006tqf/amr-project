@@ -191,6 +191,10 @@ class RestGatewayNode : public rclcpp::Node {
     declare_parameter("worker_threads", 4);
     // 待处理连接上限：过载时快速回 503，而不是无界积压
     declare_parameter("max_pending_connections", 32);
+    // 幂等键落盘（空 = 仅内存，重启即失；配置后跨重启去重）
+    declare_parameter("idempotency_store_file", "");
+    declare_parameter("idempotency_capacity", 4096);
+    declare_parameter("idempotency_ttl_sec", 3600);
 
     port_ = get_parameter("port").as_int();
     html_path_ = get_parameter("html_path").as_string();
@@ -205,9 +209,24 @@ class RestGatewayNode : public rclcpp::Node {
         std::max(1, static_cast<int>(get_parameter("max_pending_connections").as_int())));
 
     IdempotencyStore::Options idem;
-    idem.capacity = 4096;
-    idem.ttl_sec = 3600;
+    idem.capacity = static_cast<std::size_t>(
+        std::max(1, static_cast<int>(get_parameter("idempotency_capacity").as_int())));
+    idem.ttl_sec = static_cast<std::int64_t>(get_parameter("idempotency_ttl_sec").as_int());
     idempotency_ = IdempotencyStore(idem);
+    idempotency_store_file_ = get_parameter("idempotency_store_file").as_string();
+    if (!idempotency_store_file_.empty()) {
+      std::ifstream in(idempotency_store_file_);
+      if (in) {
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        const std::size_t loaded = idempotency_.Restore(text, NowEpochSec());
+        RCLCPP_INFO(get_logger(), "Idempotency store restored from %s: %zu key(s)",
+                    idempotency_store_file_.c_str(), loaded);
+      } else {
+        RCLCPP_INFO(get_logger(), "Idempotency store file %s not found (starting empty)",
+                    idempotency_store_file_.c_str());
+      }
+    }
 
     submit_cli_ = create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
     cancel_cli_ = create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
@@ -1209,8 +1228,51 @@ class RestGatewayNode : public rclcpp::Node {
   }
 
   void CommitIdempotency(const std::string& key) {
-    std::lock_guard<std::mutex> lock(idempotency_mutex_);
-    idempotency_.Commit(key, NowEpochSec());
+    std::string text;
+    {
+      std::lock_guard<std::mutex> lock(idempotency_mutex_);
+      idempotency_.Commit(key, NowEpochSec());
+      if (idempotency_store_file_.empty()) {
+        return;
+      }
+      idempotency_.PruneExpired(NowEpochSec());
+      text = idempotency_.Serialize();
+    }
+    PersistIdempotency(text);
+  }
+
+  // 原子落盘：tmp + rename。写失败只告警——去重是尽力而为，不能因此拒绝已经
+  // 被后端受理的订单（订单已经进队列了，返回错误反而误导调用方）。
+  void PersistIdempotency(const std::string& text) {
+    const std::filesystem::path final_path(idempotency_store_file_);
+    const std::filesystem::path tmp_path(final_path.string() + ".tmp");
+    std::error_code ec;
+    if (final_path.has_parent_path()) {
+      std::filesystem::create_directories(final_path.parent_path(), ec);
+    }
+    {
+      std::ofstream out(tmp_path, std::ios::trunc);
+      if (!out) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                             "Cannot open idempotency store temp file %s", tmp_path.c_str());
+        return;
+      }
+      out << text;
+      out.flush();
+      if (!out) {
+        out.close();
+        std::filesystem::remove(tmp_path, ec);
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                             "Failed writing idempotency store %s", tmp_path.c_str());
+        return;
+      }
+    }
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+      std::filesystem::remove(tmp_path, ec);
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                           "Atomic rename of idempotency store failed: %s", ec.message().c_str());
+    }
   }
 
   void AbortIdempotency(const std::string& key) {
@@ -1238,6 +1300,7 @@ class RestGatewayNode : public rclcpp::Node {
   std::mutex data_mutex_;
   std::mutex idempotency_mutex_;
   IdempotencyStore idempotency_;
+  std::string idempotency_store_file_;
 
   rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
