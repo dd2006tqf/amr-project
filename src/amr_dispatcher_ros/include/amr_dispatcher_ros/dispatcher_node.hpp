@@ -348,7 +348,6 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unique_ptr<amr_dispatcher_core::dispatcher::MissionEventLog> event_log_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::DeadlockDetector> deadlock_detector_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::RecoveryPolicy> recovery_policy_;
-  std::unique_ptr<amr_dispatcher_core::dispatcher::StationTopologyGraph> topology_graph_;
 
   std::unordered_map<std::string, amr_dispatcher_core::dispatcher::Mission> active_missions_;
   std::unordered_map<std::string, std::size_t> mission_attempts_;
