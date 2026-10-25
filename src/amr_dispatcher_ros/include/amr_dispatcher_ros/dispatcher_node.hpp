@@ -12,6 +12,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include "amr_dispatcher_core/dispatcher/deadlock_detector.hpp"
+#include "amr_dispatcher_core/dispatcher/dispatch_state_snapshot.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_comparator.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_event_log.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_queue.hpp"
@@ -208,6 +209,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 清点排队等待记录 + 活跃任务/进度 + 预约表 WFG 数据；不自带锁，调用方沿用各自约定
   amr_dispatcher_core::dispatcher::DeadlockSnapshot BuildDeadlockSnapshot();
   void PublishState();
+  // ---- 批次 2：调度状态持久化与审计落盘（全部默认关闭）----
+  // 变更后打脏标记；ScheduleTick 里按 debounce 窗口合并写盘（不阻塞派发节拍）
+  void MarkStateDirty();
+  // 立即落盘（on_deactivate / on_shutdown / 恢复失败等需要确定性的场合）
+  void FlushStateSnapshot();
+  // 组一份当前状态的快照（不做 IO）
+  amr_dispatcher_core::dispatcher::DispatchStateSnapshot BuildStateSnapshot();
+  // 追加一条审计记录（audit_log_file 为空时只打日志）
+  void AppendAudit(const std::string& action, const std::string& vehicle_id,
+                   const std::string& mission_id, const std::string& operator_id,
+                   const std::string& reason,
+                   const std::vector<std::string>& released_resources = {});
+  static std::string IsoTimestampNow();
   // 结果/取消/恢复后重新武装队列启动请求（行为树 runtime 门控的输入）
   void ReArmQueueStartRequest();
   void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
@@ -341,6 +355,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> mission_last_progress_;
   std::mutex active_missions_mutex_;
   std::uint64_t next_sequence_ = 1;
+
+  // ---- 批次 2：状态持久化（state_snapshot_file 为空 = 关闭，默认关闭）----
+  // 变更打脏 + 防抖合并写盘：高频派发/完成不会被翻译成高频磁盘写
+  std::string state_snapshot_file_;
+  double state_snapshot_debounce_sec_ = 2.0;
+  std::string audit_log_file_;
+  bool state_snapshot_dirty_ = false;
+  std::chrono::steady_clock::time_point state_snapshot_dirty_at_{};
+  // 快照里的隔离车辆：on_configure 先记下，等 SetupVda5050Links 建完链路再灌回去
+  std::vector<std::string> restored_quarantined_;
+  std::uint64_t state_snapshot_writes_ = 0;
+  std::uint64_t state_snapshot_failures_ = 0;
+  std::string last_state_snapshot_error_;
   bool deadlock_flag_ = false;
   // 最近一次 DeadlockTick 的环路径快照（findings[].cycle_path；无死锁时清空），
   // PublishState 据此投影 /dispatcher/topology_state 的死锁输入

@@ -89,6 +89,11 @@ class MissionQueue {
   std::size_t Restore(const std::vector<Mission>& missions,
                       const std::vector<std::string>& paused_order_ids);
 
+  // 追加恢复（不改动暂停标记）：用于"暂停订单下的任务"——它们不能进
+  // Restore 的第一批（会被容量上限挤掉），要在暂停标记生效后再补回。
+  // 返回实际追加条数（重复 id / 空 id / 超容量会被跳过）。
+  std::size_t RestoreAppend(const std::vector<Mission>& missions);
+
  private:
   void Sort() const;
 

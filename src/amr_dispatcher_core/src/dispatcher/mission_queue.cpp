@@ -196,6 +196,24 @@ bool MissionQueue::Contains(const std::string& mission_id) const {
                      [&mission_id](const Mission& m) { return m.id == mission_id; });
 }
 
+std::size_t MissionQueue::RestoreAppend(const std::vector<Mission>& missions) {
+  std::size_t appended = 0;
+  for (const auto& incoming : missions) {
+    if (incoming.id.empty() || Contains(incoming.id)) {
+      continue;
+    }
+    if (items_.size() >= config_.max_size) {
+      break;
+    }
+    items_.push_back(incoming);
+    ++appended;
+  }
+  if (appended > 0) {
+    dirty_ = true;
+  }
+  return appended;
+}
+
 std::vector<Mission> MissionQueue::Snapshot() const {
   Sort();
   std::vector<Mission> snapshot;

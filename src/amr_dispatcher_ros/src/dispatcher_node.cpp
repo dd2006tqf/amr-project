@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "amr_dispatcher_core/dispatcher/audit_log.hpp"
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
@@ -55,6 +57,10 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("time_space_turn_overhead_sec", 0.5);
   declare_parameter("time_space_safety_margin_m", 0.2);
   declare_parameter("time_space_min_headway_sec", 2.0);
+  // 批次 2：状态持久化与审计落盘（全部默认关闭 = 现网行为不变）
+  declare_parameter("state_snapshot_file", "");
+  declare_parameter("state_snapshot_debounce_sec", 2.0);
+  declare_parameter("audit_log_file", "");
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -94,6 +100,96 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   // catalog_reloader_ 已就位（即使初始加载失败也持有空目录，热重载后由 reload_timer_ 同步）。
   RebuildPlanner();
 
+  // ---- 批次 2：调度状态恢复（state_snapshot_file 为空 = 关闭）----
+  state_snapshot_file_ = get_parameter("state_snapshot_file").as_string();
+  state_snapshot_debounce_sec_ = get_parameter("state_snapshot_debounce_sec").as_double();
+  audit_log_file_ = get_parameter("audit_log_file").as_string();
+  if (!state_snapshot_file_.empty()) {
+    std::string reason;
+    const auto restored = amr_dispatcher_core::dispatcher::LoadDispatchState(
+        state_snapshot_file_, &reason);
+    if (!restored.has_value()) {
+      if (reason == "not_found") {
+        RCLCPP_INFO(get_logger(), "No dispatch state snapshot at %s (fresh start)",
+                    state_snapshot_file_.c_str());
+      } else {
+        // 坏快照绝不"尽力而为"：拒绝恢复并保留现场，人工判断后再清理
+        RCLCPP_ERROR(get_logger(),
+                     "Refusing to restore dispatch state from %s: %s (starting fresh; "
+                     "the file is left untouched for inspection)",
+                     state_snapshot_file_.c_str(), reason.c_str());
+      }
+    } else {
+      // 地图版本门禁：拿旧拓扑的队列去派发 = 派到不存在的站点
+      const std::string current_map_hash =
+          catalog_reloader_ ? catalog_reloader_->catalog().map_hash : std::string();
+      if (!restored->map_hash.empty() && !current_map_hash.empty() &&
+          restored->map_hash != current_map_hash) {
+        RCLCPP_ERROR(get_logger(),
+                     "Refusing to restore dispatch state: snapshot map_hash=%s does not match "
+                     "current map_hash=%s (topology changed); starting with an empty queue",
+                     restored->map_hash.c_str(), current_map_hash.c_str());
+        AppendAudit("restore_state_rejected", "", "", "system",
+                    "map_hash mismatch: snapshot=" + restored->map_hash +
+                        " current=" + current_map_hash);
+      } else {
+        std::vector<amr_dispatcher_core::dispatcher::Mission> queued = restored->queued_missions;
+        // 暂停订单下的任务先移出队列：它们在暂停期间本就不可派发，
+        // 先入队再标暂停会被容量上限挤掉（等于丢单），所以恢复完暂停标记再补回。
+        std::vector<amr_dispatcher_core::dispatcher::Mission> paused_backlog;
+        std::unordered_set<std::string> paused_orders(restored->paused_order_ids.begin(),
+                                                      restored->paused_order_ids.end());
+        for (const auto& m : queued) {
+          if (!m.order_id.empty() && paused_orders.count(m.order_id) > 0) {
+            paused_backlog.push_back(m);  // 暂停期间本就不可派发：稍后补回
+          }
+        }
+        queued.erase(std::remove_if(queued.begin(), queued.end(),
+                                    [&paused_orders](const auto& m) {
+                                      return !m.order_id.empty() &&
+                                             paused_orders.count(m.order_id) > 0;
+                                    }),
+                     queued.end());
+        // 重启时仍在执行的任务：新进程没有任何车辆在跑它们，重新入队而不是假装在途
+        for (const auto& m : restored->active_missions) {
+          amr_dispatcher_core::dispatcher::Mission requeued = m;
+          requeued.state = amr_dispatcher_core::dispatcher::MissionState::kPending;
+          requeued.result = amr_dispatcher_core::dispatcher::MissionResult::kNone;
+          requeued.reservation_id.clear();  // 旧锁属于已死亡的进程
+          if (!requeued.order_id.empty() && paused_orders.count(requeued.order_id) > 0) {
+            paused_backlog.push_back(std::move(requeued));
+          } else {
+            queued.push_back(std::move(requeued));
+          }
+        }
+        std::size_t restored_count = queue_->Restore(queued, restored->paused_order_ids);
+        if (!paused_backlog.empty()) {
+          // 暂停标记已在 Restore 里生效，现在把它们补回队列（不受"可派"语义影响）
+          restored_count += queue_->RestoreAppend(paused_backlog);
+        }
+        next_sequence_ = restored->next_sequence;
+        // 隔离态必须等 SetupVda5050Links 之后再灌：它会先 clear() 旧链路态
+        // （含 vda5050_quarantined_），此处直接 insert 会被随后的 clear 抹掉。
+        restored_quarantined_ = restored->quarantined_vehicle_ids;
+        RCLCPP_INFO(get_logger(),
+                    "Restored dispatch state from %s: %zu queued (%zu re-queued from active), "
+                    "%zu paused order(s), %zu quarantined vehicle(s), next_sequence=%llu",
+                    state_snapshot_file_.c_str(), restored_count,
+                    restored->active_missions.size(), restored->paused_order_ids.size(),
+                    restored->quarantined_vehicle_ids.size(),
+                    static_cast<unsigned long long>(next_sequence_));
+        if (restored_count < queued.size()) {
+          RCLCPP_WARN(get_logger(),
+                      "Snapshot contained %zu mission(s) that could not be restored "
+                      "(duplicate ids, empty ids, or over queue capacity)",
+                      queued.size() - restored_count);
+        }
+        AppendAudit("restore_state", "", "", "system",
+                    "restored " + std::to_string(restored_count) + " queued mission(s)");
+      }
+    }
+  }
+
   state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::DispatcherState>(
       "/dispatcher/state", 10);
   event_pub_ = create_publisher<amr_dispatcher_interfaces::msg::MissionEvent>(
@@ -112,6 +208,13 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 
   // Task 5：VDA 5050 状态/链路接入（逐段解锁 + 断链守卫），按参数建订阅
   SetupVda5050Links(get_parameter("vda5050_vehicles").as_string());
+  // 批次 2：把快照里的隔离车辆重新置为隔离（SetupVda5050Links 已先清空该集合）
+  for (const auto& vid : restored_quarantined_) {
+    vda5050_quarantined_.insert(vid);
+    RCLCPP_WARN(get_logger(), "Restored vehicle %s as QUARANTINED (from state snapshot)",
+                vid.c_str());
+  }
+  restored_quarantined_.clear();
 
   // P0.6 / A4：per-vehicle 计划发布端与位姿/到达订阅（空清单 = 单车兼容，零行为变化）
   SetupVehicleTopics(get_parameter("vehicle_ids").as_string());
@@ -387,6 +490,8 @@ void DispatcherNode::RebuildPlanner() {
 }
 
 CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*state*/) {
+  // 批次 2：停 tick 之前强制落盘，避免最后一次变更停在内存里
+  FlushStateSnapshot();
   schedule_timer_.reset();
   deadlock_timer_.reset();
   state_timer_.reset();
@@ -486,12 +591,21 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   odom_sub_.reset();
   queue_.reset();
   reservation_table_.reset();
+  // 批次 2：持久化通道随生命周期收口（快照文件本身保留，供下次启动恢复）
+  state_snapshot_dirty_ = false;
+  last_state_snapshot_error_.clear();
   event_log_.reset();
   deadlock_detector_.reset();
   recovery_policy_.reset();
   planner_.reset();
   catalog_reloader_.reset();
   reload_timer_.reset();
+  // 批次 2：持久化开关随生命周期收口（配置在下一次 configure 重新读取）。
+  // 手动生命周期切换（deactivate -> cleanup -> configure）不应把上一次的
+  // 队列当成"重启恢复"再灌一遍。
+  state_snapshot_file_.clear();
+  audit_log_file_.clear();
+  restored_quarantined_.clear();
   queue_start_requested_ = false;
   vehicle_current_mission_.clear();
   mission_tracking_vehicle_.clear();
@@ -504,6 +618,8 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
 }
 
 CallbackReturn DispatcherNode::on_shutdown(const rclcpp_lifecycle::State& /*state*/) {
+  // 批次 2：进程退出前强制落盘（未启用持久化时是空操作）
+  FlushStateSnapshot();
   return CallbackReturn::SUCCESS;
 }
 
@@ -556,8 +672,8 @@ void DispatcherNode::SubmitOrderCb(
   resp->accepted = res.accepted;
   resp->mission_id = m.id;
   resp->message = res.message;
-
   if (res.accepted) {
+    MarkStateDirty();
     if (route.start_if_idle) {
       queue_start_requested_ = true;
     }
@@ -595,6 +711,9 @@ void DispatcherNode::CancelOrderCb(
   if (!req->mission_id.empty()) {
     bool ok = queue_->Cancel(req->mission_id);
     if (ok) {
+      MarkStateDirty();
+    }
+    if (ok) {
       // action 提交的任务在排队中被取消：helper 终结 handle + 释放 HandleGoal 预占
       CleanupMissionCancel(req->mission_id, "mission canceled by operator");
       resp->success = true;
@@ -612,6 +731,7 @@ void DispatcherNode::CancelOrderCb(
           PublishStopPathForMission(req->mission_id);
         }
         active_missions_.erase(it);
+        MarkStateDirty();
         // helper：终结 ExecuteMission goal（未受理 action cancel → 降级 abort(3)）
         // 并级联取消在途 NavigateSequence goal（清 pending_nav_*）
         CleanupMissionCancel(req->mission_id, "mission canceled by operator");
@@ -639,6 +759,9 @@ void DispatcherNode::CancelOrderCb(
       }
     }
     std::size_t count = queue_->CancelOrder(req->order_id);
+    if (count > 0) {
+      MarkStateDirty();
+    }
     for (const auto& id : action_mission_ids) {
       CleanupMissionCancel(id, "mission canceled by operator");
     }
@@ -661,6 +784,7 @@ void DispatcherNode::PauseMissionCb(
     return;
   }
   queue_->PauseOrder(req->mission_id);
+  MarkStateDirty();
   resp->success = true;
   resp->message = "Paused order/mission: " + req->mission_id;
 }
@@ -674,6 +798,7 @@ void DispatcherNode::ResumeMissionCb(
     return;
   }
   queue_->ResumeOrder(req->mission_id);
+  MarkStateDirty();
   resp->success = true;
   resp->message = "Resumed order/mission: " + req->mission_id;
   ReArmQueueStartRequest();  // 恢复后的暂停任务重新参与出队派发
@@ -790,6 +915,7 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   // 但不再参与自动分配（选车时 quarantined -> 不合格），需显式恢复。
   vda5050_quarantined_.insert(req->vehicle_id);
   resp->quarantined = true;
+  MarkStateDirty();
 
   // ---- 4) 审计与响应 ----
   resp->success = true;
@@ -812,6 +938,8 @@ void DispatcherNode::ForceClearVda5050LinkCb(
                 return joined;
               }()
                   .c_str());
+  // 审计落盘（audit_log_file 为空时只保留上面的 RCLCPP_WARN）
+  AppendAudit("force_clear", req->vehicle_id, "", req->operator_id, req->reason, released);
 }
 
 void DispatcherNode::RestoreVda5050LinkCb(
@@ -839,6 +967,8 @@ void DispatcherNode::RestoreVda5050LinkCb(
     return;
   }
   vda5050_quarantined_.erase(req->vehicle_id);
+  MarkStateDirty();
+  AppendAudit("restore", req->vehicle_id, "", req->operator_id, req->reason);
   resp->success = true;
   resp->message = "Restored vehicle " + req->vehicle_id + " to dispatch pool | reason: " +
                   req->reason + " | operator: " + req->operator_id;
@@ -1621,6 +1751,17 @@ void DispatcherNode::ScheduleTick() {
   // 已受理的 ExecuteMission action 取消需在提前返回之前处理（10Hz 延迟 ≤100ms）
   ProcessActionCancels();
 
+  // 批次 2：防抖状态落盘。放在所有提前 return 之前，保证即使队列空/门禁
+  // 阻断也照样把"已变更"的状态写下去（否则最后一次变更可能永远不落盘）。
+  if (state_snapshot_dirty_ && !state_snapshot_file_.empty()) {
+    const auto elapsed = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - state_snapshot_dirty_at_)
+                             .count();
+    if (elapsed >= state_snapshot_debounce_sec_) {
+      FlushStateSnapshot();
+    }
+  }
+
   // Task 5 Rule 2（Spec §5.2）：每 tick 先巡检受管小车链路。
   // 离线 -> 挂起新派发（不消费 queue_start_requested_，恢复后自动继续）、
   // 锁一律保留；在线但 state 陈旧 -> 仅软看门狗告警。受管清单为空时零开销跳过。
@@ -1838,6 +1979,7 @@ void DispatcherNode::ScheduleTick() {
   amr_dispatcher_core::dispatcher::Mission m = *pop.mission;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kActive;
   m.assigned_vehicle_id = dispatch_vehicle_id;  // 落定承接车辆（审计用）
+  MarkStateDirty();  // 出队派发：排队集与在途集都变了
 
   // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负
   const amr_dispatcher_core::catalog::Station* from_st = nullptr;
@@ -2097,6 +2239,7 @@ void DispatcherNode::CompleteMission(std::string mission_id_in, const std::strin
     active_missions_.erase(it);
   }
   // ExecuteMission goal 成功收口；action 模式清在途导航 goal（result 到达前的兜底取消）
+  MarkStateDirty();  // 在途任务集变化
   FinishExecuteGoal(mission_id, ExecuteFinish::kSucceed, reason, 0);
   mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
   ForgetMissionDispatchState(mission_id);    // 路由锁记账/等待记录/派发起点遗忘
@@ -2166,6 +2309,7 @@ void DispatcherNode::FailMission(std::string mission_id_in, const std::string& r
     mission_copy = it->second;
     active_missions_.erase(it);
   }
+  MarkStateDirty();  // 在途任务集变化
   // ExecuteMission goal 失败收口（error_code=1）；action 模式取消在途导航 goal
   FinishExecuteGoal(mission_id, ExecuteFinish::kAbort, reason, 1);
   mission_dispatch_time_.erase(mission_id);  // plan 模式无 handle 时的派发时刻遗忘
@@ -3271,6 +3415,98 @@ bool DispatcherNode::EnforceVda5050LinkGuard() {
     }
   }
   return blocked;
+}
+
+// ---- 批次 2：调度状态持久化与审计落盘 ----
+
+std::string DispatcherNode::IsoTimestampNow() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  std::tm utc{};
+  gmtime_r(&seconds, &utc);
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  return std::string(buf);
+}
+
+void DispatcherNode::MarkStateDirty() {
+  if (state_snapshot_file_.empty()) {
+    return;  // 未启用持久化：零开销
+  }
+  if (!state_snapshot_dirty_) {
+    state_snapshot_dirty_at_ = std::chrono::steady_clock::now();
+  }
+  state_snapshot_dirty_ = true;
+}
+
+amr_dispatcher_core::dispatcher::DispatchStateSnapshot DispatcherNode::BuildStateSnapshot() {
+  amr_dispatcher_core::dispatcher::DispatchStateSnapshot snapshot;
+  snapshot.map_hash = catalog_reloader_ ? catalog_reloader_->catalog().map_hash : std::string();
+  snapshot.next_sequence = next_sequence_;
+  if (queue_) {
+    snapshot.queued_missions = queue_->SnapshotForPersistence();
+    for (const auto& m : snapshot.queued_missions) {
+      if (!m.order_id.empty() && queue_->IsOrderPaused(m.order_id) &&
+          std::find(snapshot.paused_order_ids.begin(), snapshot.paused_order_ids.end(),
+                    m.order_id) == snapshot.paused_order_ids.end()) {
+        snapshot.paused_order_ids.push_back(m.order_id);
+      }
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    for (const auto& [id, mission] : active_missions_) {
+      snapshot.active_missions.push_back(mission);
+    }
+  }
+  for (const auto& vid : vda5050_quarantined_) {
+    snapshot.quarantined_vehicle_ids.push_back(vid);
+  }
+  return snapshot;
+}
+
+void DispatcherNode::FlushStateSnapshot() {
+  if (state_snapshot_file_.empty()) {
+    return;
+  }
+  const auto snapshot = BuildStateSnapshot();
+  std::string message;
+  if (amr_dispatcher_core::dispatcher::WriteDispatchStateAtomic(state_snapshot_file_, snapshot,
+                                                               &message)) {
+    ++state_snapshot_writes_;
+    state_snapshot_dirty_ = false;
+    last_state_snapshot_error_.clear();
+    return;
+  }
+  // 写失败不清脏标记：下一个 debounce 周期重试，避免"改过但永远没落盘"
+  ++state_snapshot_failures_;
+  last_state_snapshot_error_ = message;
+  RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                       "Dispatch state snapshot write failed (%s): %s", state_snapshot_file_.c_str(),
+                       message.c_str());
+}
+
+void DispatcherNode::AppendAudit(const std::string& action, const std::string& vehicle_id,
+                                 const std::string& mission_id, const std::string& operator_id,
+                                 const std::string& reason,
+                                 const std::vector<std::string>& released_resources) {
+  if (audit_log_file_.empty()) {
+    return;  // 未配置审计文件：仅保留原有 RCLCPP_WARN
+  }
+  amr_dispatcher_core::dispatcher::AuditRecord record;
+  record.stamp_iso8601 = IsoTimestampNow();
+  record.operator_id = operator_id;
+  record.action = action;
+  record.vehicle_id = vehicle_id;
+  record.mission_id = mission_id;
+  record.reason = reason;
+  record.released_resources = released_resources;
+  std::string message;
+  if (!amr_dispatcher_core::dispatcher::AppendAuditRecord(audit_log_file_, record, &message)) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                         "Audit log append failed (%s): %s", audit_log_file_.c_str(),
+                         message.c_str());
+  }
 }
 
 void DispatcherNode::PublishState() {

@@ -287,3 +287,30 @@ TEST(MissionQueueTest, SnapshotRestoreRoundTrip_PreservesDispatchOrder) {
     EXPECT_NE(m.id, "p_mid");
   }
 }
+
+TEST(MissionQueueTest, RestoreAppend_AddsPausedBacklogAfterMarkersRestored) {
+  // 场景：暂停订单下的任务先入队会被容量挤掉，所以要等暂停标记生效后再补回
+  MissionQueue q(MissionQueue::Config{2, "priority_fifo"});
+  // 暂停标记挂的是订单号：MakeMission 会把 order_id 设为 "order_<id>"
+  ASSERT_EQ(q.Restore({MakeMission("live", 5, 1)}, {"order_paused_a"}), 1u);
+  EXPECT_TRUE(q.IsOrderPaused("order_paused_a"));
+
+  EXPECT_EQ(q.RestoreAppend({MakeMission("paused_a", 9, 2)}), 1u);
+  EXPECT_EQ(q.size(), 2u);
+  EXPECT_TRUE(q.Contains("paused_a"));
+  // 暂停标记仍有效：补回的任务不出队
+  const auto pop = q.PopNext();
+  ASSERT_TRUE(pop.success);
+  EXPECT_EQ(pop.mission->id, "live");
+}
+
+TEST(MissionQueueTest, RestoreAppend_SkipsDuplicatesAndRespectsCapacity) {
+  MissionQueue q(MissionQueue::Config{2, "priority_fifo"});
+  ASSERT_EQ(q.Restore({MakeMission("a", 1, 1)}, {}), 1u);
+  EXPECT_EQ(q.RestoreAppend({MakeMission("a", 1, 2), MakeMission("b", 1, 3),
+                             MakeMission("c", 1, 4)}),
+            1u);
+  EXPECT_EQ(q.size(), 2u);
+  EXPECT_TRUE(q.Contains("b"));
+  EXPECT_FALSE(q.Contains("c"));
+}
