@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **710/710 unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
+   - **737/737 unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
@@ -68,6 +68,13 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Exact routing and escaping**: substring path matching is gone (`/api/v1/ordersXYZ` is now `404`), and every response field goes through JSON escaping, so a quote or newline in a rejection reason no longer produces an unparseable body.
    - **Static Bearer auth, off by default** (`auth_token` / `estop_token`; empty = disabled, so existing deployments and all e2e runs are unchanged), with constant-time token comparison.
    - **Idempotency that survives failure**: a key is only consumed after the backend actually accepts the order — a `503`/`504` rolls it back so the client's retry is not silently swallowed.
+
+12. **Dispatch State Persistence & Audit Trail**:
+   - **Queue survives a crash**: queued missions (with priority, sequence, deadline, vehicle binding), paused orders, in-flight missions, quarantined vehicles and the sequence cursor are written to an atomic YAML snapshot. `state_snapshot_file` is **empty by default** — persistence is opt-in and existing deployments are unchanged.
+   - **Writes are debounced and atomic**: changes are coalesced over a configurable window and written `tmp -> flush -> read-back verify -> rename`, so a reader only ever sees the old snapshot or the new one. A failed write keeps the dirty flag and retries.
+   - **Refuses to restore onto a changed map**: if the snapshot's `map_hash` no longer matches the loaded topology, restoration is rejected outright — dispatching yesterday's queue against today's map would route to stations that may not exist.
+   - **In-flight missions are re-queued, not faked**: a restart has no vehicle running them, so they go back into the queue instead of being reported as active.
+   - **Audit trail on disk**: force-clear / restore / state-restore decisions are appended as one-line JSON (`operator_id`, `reason`, released resources), so "who quarantined this vehicle and why" is answerable after the process that handled it is gone.
 
 ---
 
@@ -156,7 +163,7 @@ The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav
 ./scripts/check_all.sh
 ```
 Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
-- [Step 1] Build pure C++ core and run 710 GTest unit & integration tests via ctest (~4s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
+- [Step 1] Build pure C++ core and run 737 GTest unit & integration tests via ctest (~4s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
@@ -209,13 +216,27 @@ connection does not block other clients, static Bearer auth returns `401` only w
 `auth_token` is configured (default off), responses parse as valid JSON, and an
 idempotency key is **not burned** when the backend is unavailable.
 
-### 6. Launch Physical Serial Device Simulator
+### 6. Run State Persistence & Audit Acceptance
+```bash
+./scripts/check_state_persistence_e2e.sh
+```
+Proves that dispatch state survives a hard crash. Runs an isolated stack
+(`ROS_DOMAIN_ID=87`, REST 18098, MQTT 18891) with `state_snapshot_file` and
+`audit_log_file` configured, submits three orders (one paused) plus a quarantined
+vehicle, then `kill -9`s the dispatcher — no graceful shutdown, so nothing can be
+flushed on the way out. On restart it asserts: the queue is back, the paused order is
+still paused, the quarantined vehicle is still quarantined, `next_sequence` did not
+regress, the force-clear audit line is on disk, and a snapshot whose `map_hash` no
+longer matches the topology is **refused** (never dispatch a queue against a map that
+has changed underneath it).
+
+### 7. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 7. Open Web Operator Console
+### 8. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/

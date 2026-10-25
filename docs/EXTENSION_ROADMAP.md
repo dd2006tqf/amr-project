@@ -72,7 +72,18 @@
   - 验收：`scripts/check_rest_gateway_hardening.sh`（独立域 86，21 条断言）
   - 单测基建：tools 包 57 例（http_limits / bearer_auth / idempotency_store /
     json_escape），容器内 `ctest --test-dir build/amr_dispatcher_tools`
-- [ ] **状态持久化与审计落盘**（YAML 快照 + JSONL 审计，默认关闭）
+- [x] **状态持久化与审计落盘 (Complete)**：
+  - `state_snapshot_file`：排队任务（含优先级/序号/截止期/绑车）、暂停订单、
+    在途任务、隔离车辆、`next_sequence` 游标 -> 原子 YAML 快照
+    （`tmp` -> `flush` 校验 -> 回读校验 -> `rename`）；变更按防抖窗口合并写盘
+  - 恢复语义：文件损坏/版本不认识 -> 拒绝恢复并保留现场；`map_hash` 与当前
+    拓扑不一致 -> **拒绝恢复**（不拿旧拓扑派发）；在途任务**重新入队**
+    （重启后没有车在跑它们）；暂停订单先不入队、标记生效后补回；游标不回退
+  - `audit_log_file`：强清 / 解隔离 / 恢复决策写成 JSONL（operator_id、
+    reason、released_resources），O_APPEND 单行追加
+  - 幂等键可落盘（`idempotency_store_file`），跨重启去重
+  - **默认全部关闭**（参数留空 = 现网行为逐字不变）
+  - 验收：`scripts/check_state_persistence_e2e.sh`（独立域 87）
 - [ ] **dispatcher_node 分层重构**（派发决策下沉 core 纯函数、可单测）
 - [ ] **拓扑级静态绕行接通**（`FindRoutePathAvoiding` 接入死锁恢复；
   A* / 动态障碍绕行**不在本轮范围**）

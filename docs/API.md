@@ -247,6 +247,43 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
   Spec §5.3 逐段解锁）才可让后车进入；执行偏离靠 `ExtendTimeSpace` 延期扩窗。
 - **默认仍为 `static`** —— 时空窗模式在多车并发与单测全绿后才显式启用。
 
+### 调度状态持久化与审计落盘（`state_snapshot_file` / `audit_log_file`）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `state_snapshot_file` | `""` | 调度状态快照路径。**空 = 关闭持久化**（进程重启即失，现网行为不变）。 |
+| `state_snapshot_debounce_sec` | `2.0` | 变更合并写盘窗口：派发/完成/取消/暂停/快照脏标记合并后再落盘，避免高频磁盘写。 |
+| `audit_log_file` | `""` | 审计 JSONL 路径。空 = 不落审计（仅保留 `RCLCPP_WARN`）。 |
+
+**快照内容**：`format_version` / `map_hash` / `next_sequence` / 排队任务（含
+`priority`、`sequence`、`deadline_unix_ms`、`expected_seconds`、`assigned_vehicle_id`）/
+暂停订单 id 列表 / 在途任务 / 隔离车辆 id 列表。
+
+**恢复语义**：
+
+| 情形 | 处置 |
+|---|---|
+| 文件不存在 | 视为首次启动（`No dispatch state snapshot ... (fresh start)`） |
+| 文件损坏 / 版本不认识 / 未知状态枚举 | **拒绝恢复**并保留现场文件，从空队列启动 + `ERROR` 日志 |
+| `map_hash` 与当前拓扑不一致 | **拒绝恢复**（不拿旧拓扑的队列去派发），从空队列启动 |
+| 快照里"在途"的任务 | 重启后**重新入队**——新进程没有任何车在跑它们，不假装在途 |
+| 暂停订单下的任务 | 先不入队，待暂停标记生效后再补回（避免被容量上限挤掉） |
+| `next_sequence` | 取快照游标，且不低于已见最大 `sequence`（杜绝恢复后撞号） |
+| 隔离车辆 | 恢复为隔离态（仍在受管清单，但不参与自动分配） |
+
+**落盘原子性**：`tmp` → `flush` 校验 → 回读反序列化校验 → `rename(2)`；
+任一步失败删除 tmp、保留旧文件，脏标记不清（下个周期重试）。
+
+**审计记录**（JSONL，一行一条）：`stamp` / `operator_id` / `action` /
+`vehicle_id` / `mission_id` / `reason` / `released_resources[]`。
+当前会写审计的操作：`force_clear`、`restore`、`restore_state`（启动恢复）、
+`restore_state_rejected`（`map_hash` 不匹配拒绝恢复）。
+
+验收：`./scripts/check_state_persistence_e2e.sh`（独立域 87 / REST 18098 /
+MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → 重启 →
+队列/暂停标记/隔离态保留、`next_sequence` 不回退、审计落盘、`map_hash`
+不匹配时拒绝恢复。
+
 ---
 
 ## 5. REST HTTP 网关接口 (REST API)
