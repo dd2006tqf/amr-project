@@ -14,6 +14,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
+#include "amr_dispatcher_core/workflow/fleet_link_guard.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
 #include "amr_dispatcher_ros/assignment_dispatch_decision.hpp"
 #include "amr_dispatcher_ros/mission_identity.hpp"
@@ -2467,7 +2468,14 @@ void DispatcherNode::DeadlockTick() {
     return;
   }
 
-  const auto snap = BuildDeadlockSnapshot();
+  // 与 DetectTrafficDeadlockCb 统一锁约定：BuildDeadlockSnapshot 读 active_missions_，
+  // 当前虽是单线程 spin（无并发语义变化），但约定不统一迟早会在切
+  // MultiThreadedExecutor 时变成数据竞争。
+  amr_dispatcher_core::dispatcher::DeadlockSnapshot snap;
+  {
+    std::lock_guard<std::mutex> lock(active_missions_mutex_);
+    snap = BuildDeadlockSnapshot();
+  }
 
   const auto findings = deadlock_detector_->Detect(snap);
   deadlock_flag_ = !findings.empty();
@@ -3379,40 +3387,46 @@ bool DispatcherNode::EnforceVda5050LinkGuard() {
   if (vda5050_links_.empty()) {
     return false;  // 未配置受管小车：关闭状态，零开销
   }
-  bool blocked = false;
+  // 判定下沉 core 纯函数（隔离车跳过 / 任一离线车阻断 / stale 只告警），
+  // ROS 侧只做"采集 + 按判定打日志"。铁律 retain_all_locks 恒真。
+  amr_dispatcher_core::workflow::FleetLinkGuardRequest request;
+  request.state_stale_sec = vda5050_state_stale_sec_;
   const auto now = std::chrono::steady_clock::now();
   for (const auto& [vehicle_id, link] : vda5050_links_) {
-    if (vda5050_quarantined_.count(vehicle_id) > 0) {
-      // 隔离态车辆已被移出调度池：它的离线是**已知且已处置**的状态，
-      // 不再挂起全队派发（否则人工强清后车队仍然冻结，隔离就失去意义）。
-      // 恢复需显式调用 RestoreVda5050Link（并核实物理位置）。
-      continue;
-    }
-    if (!link.online) {
-      const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
-          /*vehicle_online=*/false, /*state_stale=*/false);
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                           "Dispatch suspended: %s (vehicle %s). On recovery the vehicle's "
-                           "position is re-verified via state before any lock is released.",
-                           guard.message.c_str(), vehicle_id.c_str());
-      blocked = true;  // 任一受管小车离线即挂起新派发（单车 /plan 执行模型）
-      continue;
-    }
+    amr_dispatcher_core::workflow::VehicleLinkInput input;
+    input.vehicle_id = vehicle_id;
+    input.online = link.online;
+    input.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    input.seen_state = link.seen_state;
     if (link.seen_state) {
-      const double age_sec =
+      input.state_age_sec =
           std::chrono::duration_cast<std::chrono::milliseconds>(now - link.last_state_time)
               .count() /
           1000.0;
-      if (age_sec > vda5050_state_stale_sec_) {
-        // 在线但 state 陈旧：仅告警——陈旧不是释放依据，也不阻塞派发（Spec §5.3）
-        const auto guard = amr_dispatcher_core::workflow::EvaluateVehicleLinkGuard(
-            /*vehicle_online=*/true, /*state_stale=*/true);
+    }
+    request.vehicles.push_back(std::move(input));
+  }
+  const auto decision =
+      amr_dispatcher_core::workflow::EvaluateFleetLinkGuard(request);
+  for (const auto& verdict : decision.verdicts) {
+    switch (verdict.kind) {
+      case amr_dispatcher_core::workflow::VehicleLinkVerdict::Kind::kSuspendDispatch:
+        // 日志文案逐字保留（e2e 直接 grep "Dispatch suspended:"）
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Dispatch suspended: %s (vehicle %s). On recovery the vehicle's "
+                             "position is re-verified via state before any lock is released.",
+                             verdict.message.c_str(), verdict.vehicle_id.c_str());
+        break;
+      case amr_dispatcher_core::workflow::VehicleLinkVerdict::Kind::kStaleWarning:
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000, "VDA 5050 vehicle %s: %s",
-                             vehicle_id.c_str(), guard.message.c_str());
-      }
+                             verdict.vehicle_id.c_str(), verdict.message.c_str());
+        break;
+      case amr_dispatcher_core::workflow::VehicleLinkVerdict::Kind::kSkip:
+      case amr_dispatcher_core::workflow::VehicleLinkVerdict::Kind::kHealthy:
+        break;
     }
   }
-  return blocked;
+  return decision.block_new_dispatch;
 }
 
 // ---- 批次 2：调度状态持久化与审计落盘 ----

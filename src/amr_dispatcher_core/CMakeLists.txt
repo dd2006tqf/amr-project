@@ -81,6 +81,7 @@ add_library(${PROJECT_NAME}
   src/workflow/mission_event_log.cpp
   src/workflow/traffic_planning.cpp
   src/workflow/dynamic_unlocking.cpp
+  src/workflow/fleet_link_guard.cpp
   src/workflow/time_space_planning.cpp
   src/workflow/workflow_control.cpp
   src/workflow/mission_estimator.cpp
@@ -126,6 +127,7 @@ if(BUILD_TESTING)
     test_dispatch_state_snapshot
     test_audit_log
     test_deadlock_snapshot_assembly
+    test_fleet_link_guard
     test_traffic_reservation
     test_mission_event_log
     test_link_quality
