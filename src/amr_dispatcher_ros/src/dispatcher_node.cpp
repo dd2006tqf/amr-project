@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "amr_dispatcher_core/dispatcher/audit_log.hpp"
+#include "amr_dispatcher_core/dispatcher/deadlock_snapshot_assembly.hpp"
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
@@ -2434,34 +2435,31 @@ void DispatcherNode::FailMission(std::string mission_id_in, const std::string& r
 }
 
 amr_dispatcher_core::dispatcher::DeadlockSnapshot DispatcherNode::BuildDeadlockSnapshot() {
-  amr_dispatcher_core::dispatcher::DeadlockSnapshot snap;
-  // 等待记录只对仍在排队的任务有效：被批量取消/离场的等待者不进 waiting_for
-  //（防 WFG 残留幽灵等待者；派发成功/终态路径已即时遗忘，此处兜底清扫）
-  if (queue_) {
-    for (auto wait = pending_wait_.begin(); wait != pending_wait_.end();) {
-      if (queue_->Contains(wait->first)) {
-        ++wait;
-      } else {
-        wait = pending_wait_.erase(wait);
-      }
-    }
-  }
-  for (const auto& [id, m] : active_missions_) {
-    snap.active_missions.push_back(m);
-    snap.last_progress[id] = mission_last_progress_[id];
-  }
-  // WFG 数据上环：held_by 与预留资源集合来自预约表快照（resource -> owner），
-  // waiting_for 来自 Peek 预留失败的排队任务，长持锁取证时刻来自任务预留记账
-  //（人工 ReserveResourceCb 不记，避免长持锁误报）
+  // 组包逻辑下沉 core 纯函数（AssembleDeadlockSnapshot），这里只做三件事：
+  // 采集容器 -> 调纯函数 -> 按返回的 id 清单清扫幽灵等待者。
+  amr_dispatcher_core::dispatcher::DeadlockSnapshotSources sources;
+  sources.active_missions = active_missions_;
+  sources.last_progress = mission_last_progress_;
+  sources.reservation_acquired_at = mission_reserved_at_;
+  sources.pending_wait = pending_wait_;
   if (reservation_table_) {
-    for (const auto& [resource_id, owner_id] : reservation_table_->Snapshot()) {
-      snap.allocation_graph.held_by[resource_id] = owner_id;
-      snap.reserved_resource_ids.insert(resource_id);
+    sources.reserved_resources = reservation_table_->Snapshot();
+  }
+  // 等待记录只对仍在排队的任务有效：被批量取消/离场的等待者不进 waiting_for
+  //（防 WFG 残留幽灵等待者；派发成功/终态路径已即时遗忘，此处兜底清扫）。
+  // 队列尚未建立时不做判定（与原实现 queue_ == nullptr 分支一致）。
+  sources.filter_stale_waiters = (queue_ != nullptr);
+  if (queue_) {
+    for (const auto& queued : queue_->SnapshotForPersistence()) {
+      sources.queued_mission_ids.insert(queued.id);
     }
   }
-  snap.allocation_graph.waiting_for = pending_wait_;
-  snap.reservation_acquired_at = mission_reserved_at_;
-  return snap;
+
+  auto assembly = amr_dispatcher_core::dispatcher::AssembleDeadlockSnapshot(sources);
+  for (const auto& stale_id : assembly.stale_wait_mission_ids) {
+    pending_wait_.erase(stale_id);
+  }
+  return std::move(assembly.snapshot);
 }
 
 void DispatcherNode::DeadlockTick() {
