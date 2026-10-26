@@ -170,8 +170,8 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
           restored_count += queue_->RestoreAppend(paused_backlog);
         }
         next_sequence_ = restored->next_sequence;
-        // 隔离态必须等 SetupVda5050Links 之后再灌：它会先 clear() 旧链路态
-        // （含 vda5050_quarantined_），此处直接 insert 会被随后的 clear 抹掉。
+        // 隔离态必须等 SetupVda5050Links 之后再灌：它会先 clear() 旧链路态，
+        // 此处直接写入会被随后的 clear 抹掉。
         restored_quarantined_ = restored->quarantined_vehicle_ids;
         RCLCPP_INFO(get_logger(),
                     "Restored dispatch state from %s: %zu queued (%zu re-queued from active), "
@@ -210,11 +210,16 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
 
   // Task 5：VDA 5050 状态/链路接入（逐段解锁 + 断链守卫），按参数建订阅
   SetupVda5050Links(get_parameter("vda5050_vehicles").as_string());
-  // 批次 2：把快照里的隔离车辆重新置为隔离（SetupVda5050Links 已先清空该集合）
+  // 批次 2：把快照里的隔离车辆重新置为隔离（SetupVda5050Links 已先清空链路态表）
   for (const auto& vid : restored_quarantined_) {
-    vda5050_quarantined_.insert(vid);
-    RCLCPP_WARN(get_logger(), "Restored vehicle %s as QUARANTINED (from state snapshot)",
-                vid.c_str());
+    if (SetVehicleQuarantined(vid, true)) {
+      RCLCPP_WARN(get_logger(), "Restored vehicle %s as QUARANTINED (from state snapshot)",
+                  vid.c_str());
+    } else {
+      RCLCPP_WARN(get_logger(),
+                  "Snapshot lists %s as quarantined but it is not a managed vehicle; ignored",
+                  vid.c_str());
+    }
   }
   restored_quarantined_.clear();
 
@@ -578,10 +583,11 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   topology_pub_.reset();
   vda5050_order_pubs_.clear();   // Task 6：随生命周期收口，重 configure 时重建
   vda5050_vehicle_ids_.clear();
-  vda5050_links_.clear();        // 终审 M4：与 SetupVda5050Links 开头清旧对齐，防残留链
+  vda5050_link_subs_.clear();    // 终审 M4：与 SetupVda5050Links 开头清旧对齐，防残留链
+  vda5050_link_states_.clear();
   vda5050_next_order_update_id_.clear();
   vda5050_mission_vehicle_.clear();  // Task 7：mission->车辆绑定随生命周期收口
-  vda5050_quarantined_.clear();      // Task 7：隔离态随生命周期收口
+  // 隔离态随生命周期收口（隔离位存在链路态表里，上方的 clear 已经清掉）
   // P0.6：per-vehicle 资源随生命周期收口，重 configure 时重建
   vehicle_plan_pubs_.clear();
   vehicle_odom_subs_.clear();
@@ -844,12 +850,9 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   decision_req.confirm_vehicle_id = req->confirm_vehicle_id;
   decision_req.operator_id = req->operator_id;
   decision_req.reason = req->reason;
-  decision_req.vehicle_in_managed_list =
-      vda5050_links_.find(req->vehicle_id) != vda5050_links_.end();
-  const auto link_it = vda5050_links_.find(req->vehicle_id);
-  decision_req.vehicle_online = (link_it != vda5050_links_.end()) && link_it->second.online;
-  decision_req.vehicle_quarantined =
-      vda5050_quarantined_.find(req->vehicle_id) != vda5050_quarantined_.end();
+  decision_req.vehicle_in_managed_list = IsManagedVda5050Vehicle(req->vehicle_id);
+  decision_req.vehicle_online = IsVehicleOnline(req->vehicle_id);
+  decision_req.vehicle_quarantined = IsVehicleQuarantined(req->vehicle_id);
   decision_req.mission_vehicle_bindings = vda5050_mission_vehicle_;
   if (reservation_table_) {
     for (const auto& [resource_id, owner] : reservation_table_->Snapshot()) {
@@ -915,7 +918,7 @@ void DispatcherNode::ForceClearVda5050LinkCb(
   // ---- 3) 车辆转入隔离态（**不摘除**受管清单）----
   // 评审 P0.5：通信失联不等于可以释放路权。强清后车辆仍然可见、可审计，
   // 但不再参与自动分配（选车时 quarantined -> 不合格），需显式恢复。
-  vda5050_quarantined_.insert(req->vehicle_id);
+  SetVehicleQuarantined(req->vehicle_id, true);
   resp->quarantined = true;
   MarkStateDirty();
 
@@ -954,12 +957,9 @@ void DispatcherNode::RestoreVda5050LinkCb(
   decision_req.confirm_vehicle_id = req->confirm_vehicle_id;
   decision_req.operator_id = req->operator_id;
   decision_req.reason = req->reason;
-  decision_req.vehicle_in_managed_list =
-      vda5050_links_.find(req->vehicle_id) != vda5050_links_.end();
-  decision_req.vehicle_quarantined =
-      vda5050_quarantined_.find(req->vehicle_id) != vda5050_quarantined_.end();
-  const auto link_it = vda5050_links_.find(req->vehicle_id);
-  decision_req.vehicle_online = (link_it != vda5050_links_.end()) && link_it->second.online;
+  decision_req.vehicle_in_managed_list = IsManagedVda5050Vehicle(req->vehicle_id);
+  decision_req.vehicle_quarantined = IsVehicleQuarantined(req->vehicle_id);
+  decision_req.vehicle_online = IsVehicleOnline(req->vehicle_id);
   decision_req.position_verified = req->position_verified;
 
   const auto decision = amr_dispatcher_core::fleet::PlanRestoreLink(decision_req);
@@ -968,7 +968,7 @@ void DispatcherNode::RestoreVda5050LinkCb(
     resp->message = decision.reject_reason;
     return;
   }
-  vda5050_quarantined_.erase(req->vehicle_id);
+  SetVehicleQuarantined(req->vehicle_id, false);
   MarkStateDirty();
   AppendAudit("restore", req->vehicle_id, "", req->operator_id, req->reason);
   resp->success = true;
@@ -2936,12 +2936,12 @@ void DispatcherNode::RefreshVehicleStates() {
       continue;
     }
     auto& state = it->second;
-    const auto link_it = vda5050_links_.find(vehicle_id);
-    if (link_it == vda5050_links_.end()) {
+    const auto link_it = vda5050_link_states_.find(vehicle_id);
+    if (link_it == vda5050_link_states_.end()) {
       continue;
     }
     state.online = link_it->second.online;
-    state.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    state.quarantined = link_it->second.quarantined;
     state.busy = !vda5050_mission_vehicle_.empty() &&
                  std::any_of(vda5050_mission_vehicle_.begin(), vda5050_mission_vehicle_.end(),
                              [&](const auto& entry) { return entry.second == vehicle_id; });
@@ -3065,16 +3065,39 @@ void DispatcherNode::PublishStopPathForMission(const std::string& mission_id) {
   PublishPlanForVehicle(vehicle_id, empty);
 }
 
+bool DispatcherNode::IsManagedVda5050Vehicle(const std::string& vehicle_id) const {
+  return vda5050_link_states_.find(vehicle_id) != vda5050_link_states_.end();
+}
+
+bool DispatcherNode::IsVehicleOnline(const std::string& vehicle_id) const {
+  const auto it = vda5050_link_states_.find(vehicle_id);
+  return it != vda5050_link_states_.end() && it->second.online;
+}
+
+bool DispatcherNode::IsVehicleQuarantined(const std::string& vehicle_id) const {
+  const auto it = vda5050_link_states_.find(vehicle_id);
+  return it != vda5050_link_states_.end() && it->second.quarantined;
+}
+
+bool DispatcherNode::SetVehicleQuarantined(const std::string& vehicle_id, bool quarantined) {
+  const auto it = vda5050_link_states_.find(vehicle_id);
+  if (it == vda5050_link_states_.end()) {
+    return false;  // 不在受管清单：不能隔离一个不受管的车
+  }
+  it->second.quarantined = quarantined;
+  return true;
+}
+
 void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
   // 终审 M4：reconfigure 必须先无条件清旧链路态——否则空化 vda5050_vehicle_ids
   // 会残留陈旧 link 继续喂 EnforceVda5050LinkGuard 的挂起守卫（离线车永远
   // 封锁全队派发，且无人工解除途径）。
-  vda5050_links_.clear();
+  vda5050_link_subs_.clear();
+  vda5050_link_states_.clear();
   vda5050_vehicle_ids_.clear();
   vda5050_order_pubs_.clear();
   vda5050_next_order_update_id_.clear();
   vda5050_mission_vehicle_.clear();
-  vda5050_quarantined_.clear();
 
   vda5050_state_stale_sec_ = get_parameter("vda5050_state_stale_sec").as_double();
   // 订阅策略：ROS 2 无通配订阅，网关按 MQTT 发现的小车懒建 /fleet/{vid}/* 话题。
@@ -3103,7 +3126,8 @@ void DispatcherNode::SetupVda5050Links(const std::string& vehicles_param) {
     return;  // 未配置受管小车：逐段解锁/断链守卫整体关闭（现网行为不变）
   }
   for (const auto& vehicle_id : vehicle_ids) {
-    auto& link = vda5050_links_[vehicle_id];
+    vda5050_link_states_.emplace(vehicle_id, amr_dispatcher_core::fleet::Vda5050LinkState{});
+    auto& link = vda5050_link_subs_[vehicle_id];
     link.state_sub = create_subscription<std_msgs::msg::String>(
         "/fleet/" + vehicle_id + "/state", rclcpp::QoS(10),
         [this, vehicle_id](const std_msgs::msg::String::SharedPtr msg) {
@@ -3235,16 +3259,18 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
                          vehicle_id.c_str(), report->vehicle_id.c_str());
     return;
   }
-  auto link_it = vda5050_links_.find(vehicle_id);
-  if (link_it != vda5050_links_.end()) {
-    link_it->second.seen_state = true;
-    link_it->second.last_state_time = std::chrono::steady_clock::now();
-    // 选车输入：最近一帧的定位与电量（位置不可用 -> 该车不合格）
-    link_it->second.position_valid = report->agv_position_initialized;
-    link_it->second.position_x = report->x;
-    link_it->second.position_y = report->y;
-    link_it->second.battery_percent = report->battery_percent;
-    if (!link_it->second.online) {
+  auto link_it = vda5050_link_states_.find(vehicle_id);
+  if (link_it != vda5050_link_states_.end()) {
+    // 选车输入：最近一帧的定位与电量（位置不可用 -> 该车不合格）。
+    // 迁移规则在 core（ApplyStateObservation）：数据照常更新，但**不改 online**。
+    amr_dispatcher_core::fleet::Vda5050StateObservation observation;
+    observation.position_initialized = report->agv_position_initialized;
+    observation.x = report->x;
+    observation.y = report->y;
+    observation.battery_percent = report->battery_percent;
+    const auto applied = amr_dispatcher_core::fleet::ApplyStateObservation(
+        &link_it->second, observation, std::chrono::steady_clock::now());
+    if (applied == amr_dispatcher_core::fleet::LinkStateApplyAction::kUpdatedWhileOffline) {
       // 离线期间收到 state 绝不可回置 online=true：DDS 跨话题乱序可能把断链前
       // 的最后一帧 state 排在 online=false 之后送达，若据此回置，链路会"永久
       // 在线"并绕过 Spec §5.2 的调度挂起（e2e Stage 6.4 曾复现）。
@@ -3351,14 +3377,14 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
 
 void DispatcherNode::Vda5050OnlineCb(const std::string& vehicle_id,
                                      const std_msgs::msg::Bool::SharedPtr msg) {
-  auto it = vda5050_links_.find(vehicle_id);
-  if (it == vda5050_links_.end()) {
+  auto it = vda5050_link_states_.find(vehicle_id);
+  if (it == vda5050_link_states_.end()) {
     return;
   }
-  if (it->second.online == msg->data) {
-    return;  // 状态未变（transient_local 重放/重复报文）：不重复告警
+  // 状态未变（transient_local 重放/重复报文）不重复告警——翻转判定在 core
+  if (!amr_dispatcher_core::fleet::ApplyOnlineReport(&it->second, msg->data)) {
+    return;
   }
-  it->second.online = msg->data;
   if (!msg->data) {
     // Rule 2（Spec §5.2 断链锁定保护）：仅标记离线 + 软看门狗告警，绝不释放任何锁。
     // 锁保留直至该车重连后 state 重核对坐标，或操作员人工强制解除。
@@ -3384,7 +3410,7 @@ void DispatcherNode::Vda5050OnlineCb(const std::string& vehicle_id,
 }
 
 bool DispatcherNode::EnforceVda5050LinkGuard() {
-  if (vda5050_links_.empty()) {
+  if (vda5050_link_states_.empty()) {
     return false;  // 未配置受管小车：关闭状态，零开销
   }
   // 判定下沉 core 纯函数（隔离车跳过 / 任一离线车阻断 / stale 只告警），
@@ -3392,11 +3418,11 @@ bool DispatcherNode::EnforceVda5050LinkGuard() {
   amr_dispatcher_core::workflow::FleetLinkGuardRequest request;
   request.state_stale_sec = vda5050_state_stale_sec_;
   const auto now = std::chrono::steady_clock::now();
-  for (const auto& [vehicle_id, link] : vda5050_links_) {
+  for (const auto& [vehicle_id, link] : vda5050_link_states_) {
     amr_dispatcher_core::workflow::VehicleLinkInput input;
     input.vehicle_id = vehicle_id;
     input.online = link.online;
-    input.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    input.quarantined = link.quarantined;
     input.seen_state = link.seen_state;
     if (link.seen_state) {
       input.state_age_sec =
@@ -3471,8 +3497,10 @@ amr_dispatcher_core::dispatcher::DispatchStateSnapshot DispatcherNode::BuildStat
       snapshot.active_missions.push_back(mission);
     }
   }
-  for (const auto& vid : vda5050_quarantined_) {
-    snapshot.quarantined_vehicle_ids.push_back(vid);
+  for (const auto& [vid, link_state] : vda5050_link_states_) {
+    if (link_state.quarantined) {
+      snapshot.quarantined_vehicle_ids.push_back(vid);
+    }
   }
   return snapshot;
 }
@@ -3548,8 +3576,8 @@ void DispatcherNode::PublishState() {
   // 供 Web 控制台展示与多车可观测性；隔离态显式暴露。
   const auto link_now = std::chrono::steady_clock::now();
   for (const auto& vehicle_id : vda5050_vehicle_ids_) {
-    const auto link_it = vda5050_links_.find(vehicle_id);
-    if (link_it == vda5050_links_.end()) {
+    const auto link_it = vda5050_link_states_.find(vehicle_id);
+    if (link_it == vda5050_link_states_.end()) {
       continue;
     }
     const auto& link = link_it->second;
@@ -3559,7 +3587,7 @@ void DispatcherNode::PublishState() {
         amr_dispatcher_core::fleet::VehicleExecutionBackend::kVda5050);
     vlink.online = link.online;
     vlink.busy = false;
-    vlink.quarantined = vda5050_quarantined_.count(vehicle_id) > 0;
+    vlink.quarantined = link.quarantined;
     vlink.position_valid = link.seen_state;
     vlink.battery_percent = 100.0;
     vlink.state_age_ms = link.seen_state

@@ -62,6 +62,7 @@ add_library(${PROJECT_NAME}
   src/catalog/zone_catalog.cpp
   src/fleet/fleet_catalog.cpp
   src/fleet/fleet_runtime_state.cpp
+  src/fleet/vda5050_link_state.cpp
   src/fleet/vehicle_adapter_interface.cpp
   src/fleet/vda5050_serializer.cpp
   src/fleet/vda5050_order_builder.cpp
@@ -128,6 +129,7 @@ if(BUILD_TESTING)
     test_audit_log
     test_deadlock_snapshot_assembly
     test_fleet_link_guard
+    test_vda5050_link_state
     test_traffic_reservation
     test_mission_event_log
     test_link_quality

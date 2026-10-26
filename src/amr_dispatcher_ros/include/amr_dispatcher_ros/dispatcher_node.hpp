@@ -21,6 +21,7 @@
 #include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
 #include "amr_dispatcher_core/fleet/force_clear_link.hpp"
 #include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
+#include "amr_dispatcher_core/fleet/vda5050_link_state.hpp"
 #include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
 #include "amr_dispatcher_core/workflow/time_space_planning.hpp"
 #include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
@@ -321,6 +322,12 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 按参数 vda5050_vehicles（逗号分隔车辆 id 列表，空 = 关闭）为每台受管小车
   // 建立 /fleet/{vid}/state 与 /fleet/{vid}/online 订阅（on_configure 时一次建齐）。
   void SetupVda5050Links(const std::string& vehicles_param);
+  // ---- VDA 5050 链路态查询/变更（隔离位存在链路态表里，避免两处各存一份）----
+  bool IsManagedVda5050Vehicle(const std::string& vehicle_id) const;
+  bool IsVehicleOnline(const std::string& vehicle_id) const;
+  bool IsVehicleQuarantined(const std::string& vehicle_id) const;
+  // 返回 false 表示该车不在受管清单（快照里的陈旧隔离记录属于这种情况）
+  bool SetVehicleQuarantined(const std::string& vehicle_id, bool quarantined);
   void Vda5050StateCb(const std::string& vehicle_id,
                       const std_msgs::msg::String::SharedPtr msg);
   void Vda5050OnlineCb(const std::string& vehicle_id,
@@ -425,20 +432,16 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ---- Task 5：逐段路权动态释放与断链安全守卫（Spec §5.2/§5.3）----
   // 单台受管 VDA 5050 小车的链路态（单线程 spin，无并发；M7 约束适用）
-  struct Vda5050Link {
+  // ROS 订阅句柄：只放 rclcpp 对象，生命周期随 on_cleanup/SetupVda5050Links 收口
+  struct Vda5050LinkSubs {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr state_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr online_sub;
-    bool online = true;  // 乐观初值：online=false 到达前不阻塞派发（与网关 transient_local 重放收敛）
-    bool seen_state = false;
-    std::chrono::steady_clock::time_point last_state_time{};  // state 陈旧检测
-    // 最近一帧 state 的定位与电量（选车输入：位置不可用即不合格）
-    bool position_valid = false;
-    double position_x = 0.0;
-    double position_y = 0.0;
-    double battery_percent = 100.0;
   };
-  // vehicle_id -> 链路态（key 即 vda5050_vehicles 解析后的 id，保序去重）
-  std::unordered_map<std::string, Vda5050Link> vda5050_links_;
+  // 两个表的 key 集合必须一致（都由 vda5050_vehicle_ids_ 驱动），
+  // 拆开是为了让"链路纯数据"能直接喂给 core 的纯函数（守卫/选车）。
+  std::unordered_map<std::string, Vda5050LinkSubs> vda5050_link_subs_;
+  std::unordered_map<std::string, amr_dispatcher_core::fleet::Vda5050LinkState>
+      vda5050_link_states_;
   // vehicle_id -> 隔离态集合（人工强清后置入；恢复时移除）。
   // 隔离车仍可见/可审计，但不参与自动分配（选车时视为不合格）。
   std::unordered_set<std::string> vda5050_quarantined_;
