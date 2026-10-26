@@ -84,7 +84,32 @@
   - 幂等键可落盘（`idempotency_store_file`），跨重启去重
   - **默认全部关闭**（参数留空 = 现网行为逐字不变）
   - 验收：`scripts/check_state_persistence_e2e.sh`（独立域 87）
-- [ ] **dispatcher_node 分层重构**（派发决策下沉 core 纯函数、可单测）
+- [x] **dispatcher_node 分层重构 (Complete)**：
+  - 派发主链从"单个 426 行 `ScheduleTick` 内联决策 + 副作用"改为
+    "采集 -> core 纯函数出有序 step -> 按序落地"：
+    - `workflow/dispatch_gate_planning.hpp` `EvaluateDispatchGates`
+      （队列空 / 容量 / 空闲槽位 / 地图版本；**判据优先顺序**与
+      "前序门禁提前返回不覆盖 `map_version_valid_`"由单测锁定）
+    - `workflow/dispatch_endpoint_resolution.hpp` `ResolveDispatchEndpoints`
+      （目录站点 / 车辆当前位姿 / 失败文案 `unknown dropoff station: <id>`）
+    - `workflow/dispatch_tick_planning.hpp` `PlanDispatchTick`
+      （三态处置、队首阻塞规避、一 tick 一派、两类拒绝的记账/告警先后；
+      预留经 `try_reserve` 回调注入，纯函数只出**有序** step 列表）
+    - `fleet/assignment_dispatch_action.hpp`、`fleet/vehicle_assignment_request_builder.hpp`、
+      `fleet/vda5050_vehicle_binding.hpp`（选车动作映射、选车请求构建、
+      订单绑车与 round-robin 游标）
+    - `dispatcher/deadlock_snapshot_assembly.hpp`、`workflow/fleet_link_guard.hpp`、
+      `fleet/vda5050_link_state.hpp`（快照组包、链路守卫、链路纯数据）
+  - ROS 侧 `ScheduleTick` 拆为 `ScheduleGatesPass` / `SelectReadyCandidate` /
+    `ExecuteDispatch` 三段；`Vda5050Link` 拆成订阅句柄表与纯数据表
+  - 兼容红线逐条保持：legacy 单车不经选车、启动请求消费点不变、
+    `candidates.empty()` 分支仍不 rearm、日志文案与 throttle 窗口逐字不变、
+    守卫永不释放锁
+  - 验收：core 820 例（新增 5 个 suite 约 50 例）+ ROS 25 例、三套 e2e 与
+    `check_all.sh` 全 PASS
+  - 说明：原计划用 `dispatch_trace_file` 新旧路径 diff 做机械防线；实际改为
+    "纯函数单测锁定 step 顺序 + 同一套 e2e 全量回归"，未引入该调试参数
+
 - [ ] **拓扑级静态绕行接通**（`FindRoutePathAvoiding` 接入死锁恢复；
   A* / 动态障碍绕行**不在本轮范围**）
 - [ ] **CI 门禁 + L2 契约真断言 + `/metrics`**
