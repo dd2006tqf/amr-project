@@ -73,8 +73,10 @@ add_library(${PROJECT_NAME}
   src/facility/facility_catalog.cpp
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
+  src/facility/facility_adapter_interface.cpp
   src/workflow/mission_profile.cpp
   src/workflow/order_payload.cpp
+  src/workflow/payload_schema.cpp
   src/workflow/fulfillment_workflow.cpp
   src/workflow/payload_workflow.cpp
   src/workflow/mission_runtime_workflow.cpp
@@ -92,6 +94,7 @@ add_library(${PROJECT_NAME}
   src/workflow/mission_preflight.cpp
   src/workflow/station_transport_workflow.cpp
   src/workflow/station_sequence_workflow.cpp
+  src/workflow/order_batch_bundling.cpp
   src/workflow/docking_workflow.cpp
   src/workflow/mission_charging_workflow.cpp
   src/workflow/mission_resource_cleanup.cpp
@@ -158,6 +161,7 @@ if(BUILD_TESTING)
     test_mission_profile_builders
     test_queued_mission
     test_order_payload
+    test_payload_schema
     test_fulfillment_workflow
     test_payload_workflow
     test_mission_runtime_workflow
@@ -190,6 +194,7 @@ if(BUILD_TESTING)
     test_vehicle_assignment_request_builder
     test_vehicle_selection_strategy
     test_auto_charging_planning
+    test_order_batch_bundling
     test_assignment_dispatch_action
     test_vda5050_vehicle_binding
     test_dispatch_gate_planning
@@ -199,6 +204,7 @@ if(BUILD_TESTING)
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
+    test_facility_adapter_interface
     test_submit_order_router
     test_topology_projection
     test_end_to_end_pipeline
