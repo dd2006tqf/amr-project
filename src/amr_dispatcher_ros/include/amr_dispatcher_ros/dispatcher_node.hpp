@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -203,6 +204,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void NavResultCb(const std::string& mission_id, const GoalHandleNavigate::WrappedResult& result);
 
   void ScheduleTick();
+  // ScheduleTick 的三段（机械切分，语义与切分前逐字一致）：
+  //   1. ScheduleGatesPass：链路守卫 / 容量 / 空闲槽位 / 地图版本 / BT 启动请求
+  //   2. SelectReadyCandidate：PeekN 扫描 + 三态处理 + 队首阻塞规避 + 锁预留
+  //   3. ExecuteDispatch：出队落定 + 起终点解析 + 下发（/plan、VDA 订单、action）
+  bool ScheduleGatesPass();
+  // 已选到车且预留成功的候选（三段之间传递的唯一载荷）
+  struct ReadyCandidate {
+    amr_dispatcher_core::dispatcher::Mission mission;
+    std::string vehicle_id;
+    std::vector<std::string> route_locks;
+  };
+  std::optional<ReadyCandidate> SelectReadyCandidate();
+  void ExecuteDispatch(ReadyCandidate candidate);
   // 依 planner_type_ + 当前站点目录重建 planner_（on_configure 与参数热更共用）
   void RebuildPlanner();
   void DeadlockTick();

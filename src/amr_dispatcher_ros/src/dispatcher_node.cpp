@@ -1752,6 +1752,18 @@ void DispatcherNode::NavResultCb(const std::string& mission_id,
 }
 
 void DispatcherNode::ScheduleTick() {
+  // 批次 3C-7：机械切分为三段（门禁 / 选车 / 落地），语义与切分前逐字一致。
+  if (!ScheduleGatesPass()) {
+    return;
+  }
+  auto candidate = SelectReadyCandidate();
+  if (!candidate.has_value()) {
+    return;
+  }
+  ExecuteDispatch(*candidate);
+}
+
+bool DispatcherNode::ScheduleGatesPass() {
   // 已受理的 ExecuteMission action 取消需在提前返回之前处理（10Hz 延迟 ≤100ms）
   ProcessActionCancels();
 
@@ -1770,21 +1782,21 @@ void DispatcherNode::ScheduleTick() {
   // 离线 -> 挂起新派发（不消费 queue_start_requested_，恢复后自动继续）、
   // 锁一律保留；在线但 state 陈旧 -> 仅软看门狗告警。受管清单为空时零开销跳过。
   if (EnforceVda5050LinkGuard()) {
-    return;
+    return false;
   }
 
   if (!queue_ || queue_->empty()) {
-    return;
+    return false;
   }
   const std::size_t max_active = get_parameter("max_active_missions").as_int();
   if (active_missions_.size() >= max_active) {
-    return;
+    return false;
   }
 
   // 执行模型：每台受管车同时只跑一条 /plan（多车则可并发多条）。
   // 无可用执行槽位 -> 本 tick 不派发（任务留队，等某台车完成或状态变化后重试）。
   if (!HasFreeVehicleSlot()) {
-    return;
+    return false;
   }
 
   // 地图版本门禁：配置了期望哈希且目录已加载时，
@@ -1800,7 +1812,7 @@ void DispatcherNode::ScheduleTick() {
                            "Map hash mismatch: expected %s, got %s, dispatching paused",
                            expected_map_hash_.c_str(),
                            catalog.map_hash.empty() ? "<missing>" : catalog.map_hash.c_str());
-      return;
+      return false;
     }
   }
 
@@ -1811,10 +1823,13 @@ void DispatcherNode::ScheduleTick() {
   runtime_input.tick.queue_start_requested = queue_start_requested_;
   const auto runtime_result = amr_dispatcher_bt::TickMissionRuntimeBehaviorTree(runtime_input);
   if (!runtime_result.success || !runtime_result.decision.start_queued_mission) {
-    return;
+    return false;
   }
   queue_start_requested_ = false;  // 启动请求被本次派发消费
+  return true;
+}
 
+std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandidate() {
   // ---- A6 选车（PeekN 扫描 + 三态处理 + 队首阻塞规避）----
   // 队首任务可能因"暂无合格车辆"而不可派；此时**不能**让整条队列堵死：
   // 扫描前 N 个排队任务，挑第一个能选到车且能预留锁的。
@@ -1823,15 +1838,10 @@ void DispatcherNode::ScheduleTick() {
   const std::size_t scan_depth = static_cast<std::size_t>(scan_depth_param);
   const auto candidates = queue_->PeekN(scan_depth);
   if (candidates.empty()) {
-    return;  // 队列任务全部暂停：与 PopNext 失败等价，本 tick 结束
+    return std::nullopt;  // 队列任务全部暂停：与 PopNext 失败等价，本 tick 结束
   }
 
-  struct Candidate {
-    amr_dispatcher_core::dispatcher::Mission mission;
-    std::string vehicle_id;
-    std::vector<std::string> route_locks;
-  };
-  std::vector<Candidate> ready;         // 选到车 + 预留成功的候选（按队列顺序）
+  std::optional<ReadyCandidate> ready;  // 选到车 + 预留成功的候选（本 tick 只取一个）
   bool saw_deferred = false;
   bool saw_indeterminate = false;
   std::string deferred_reason;
@@ -1936,15 +1946,15 @@ void DispatcherNode::ScheduleTick() {
       mission_reserved_at_[candidate_mission.id] = std::chrono::steady_clock::now();
     }
     pending_wait_.erase(candidate_mission.id);
-    Candidate ready_candidate;
+    ReadyCandidate ready_candidate;
     ready_candidate.mission = candidate_mission;
     ready_candidate.vehicle_id = decision.vehicle_id;
     ready_candidate.route_locks = std::move(route_locks);
-    ready.push_back(std::move(ready_candidate));
+    ready = std::move(ready_candidate);
     break;  // 本 tick 只派一个（保持"一次一个"的节奏与可观测性）
   }
 
-  if (ready.empty()) {
+  if (!ready.has_value()) {
     if (saw_indeterminate) {
       // 状态不确定 -> 暂停自动分配（不消费启动请求，等状态恢复自动继续）
       auto_assignment_paused_ = true;
@@ -1957,14 +1967,16 @@ void DispatcherNode::ScheduleTick() {
                            deferred_reason.c_str());
       ReArmQueueStartRequest();  // 留队等待，下个 tick 重试
     }
-    return;
+    return std::nullopt;
   }
   auto_assignment_paused_ = false;
+  return ready;
+}
 
-  const std::string candidate_id = ready.front().mission.id;
-  const std::string candidate_order_id = ready.front().mission.order_id;
-  std::vector<std::string> route_locks = std::move(ready.front().route_locks);
-  const std::string dispatch_vehicle_id = ready.front().vehicle_id;
+void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
+  const std::string candidate_id = candidate.mission.id;
+  std::vector<std::string> route_locks = std::move(candidate.route_locks);
+  const std::string dispatch_vehicle_id = candidate.vehicle_id;
   // 执行后端（评审 P0.1）：VDA 5050 车自带控制器，不走本地 /plan 运动链。
   const bool is_vda5050_dispatch =
       std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(),
