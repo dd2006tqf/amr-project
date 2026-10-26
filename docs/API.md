@@ -336,12 +336,16 @@ MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → �
 ```
 
 ### `POST /api/v1/orders`
-提交订单，支持 `idempotency_key` 幂等性防护。
+提交订单，支持 `idempotency_key` 幂等性防护与上游调度契约字段。
 - **Query Parameters**:
   - `id`: 任务 ID
+  - `order_id`: 业务订单号（若未提供则默认同 id）
   - `from`: 起始站点
   - `to`: 目标站点
   - `prio`: 优先级（整数）
+  - `type`: 任务类型（如 `transport`、`charge` 等）
+  - `deadline_unix_ms`: 期望截止时间戳（毫秒）
+  - `expected_seconds`: 预估执行耗时（秒）
   - `idempotency_key`: 幂等性令牌（相同 key 重复请求将被自动去重过滤）
   - `vehicle`: **显式指定承接车辆** id（空 = 由选车策略决定）。
     显式指定不豁免硬约束：车辆必须在线、未隔离、未忙、能力匹配、电量达标、
@@ -366,6 +370,11 @@ Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-
 | `amr_queue_size` / `amr_queue_capacity` | gauge | `/dispatcher/state` |
 | `amr_active_missions` | gauge | 同上 |
 | `amr_deadlock_active` | gauge | 同上 |
+| `amr_dispatch_total` | counter | 累计派发成功计数 |
+| `amr_dispatch_rejected_total` | counter | 累计派发拒绝计数 |
+| `amr_dispatch_deferred_total` | counter | 累计派发推迟计数 |
+| `amr_lock_contention_total` | counter | 累计锁冲突拒绝计数 |
+| `amr_event_total` | counter | 累计任务生命周期事件计数 |
 | `amr_vehicle_online{vehicle_id}` / `amr_vehicle_busy{vehicle_id}` | gauge | `VehicleLinkState[]` |
 | `amr_vehicle_quarantined{vehicle_id}` | gauge | 同上 |
 | `amr_vehicle_battery_percent{vehicle_id}` | gauge | 同上 |

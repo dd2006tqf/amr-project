@@ -139,6 +139,23 @@
     转义/数值格式/空族省略），`scripts/check_metrics_e2e.sh` 对真实进程断言格式
     合法性与口令隔离
 
+- [x] **批次 6：功能与接口补齐 (Batch 6 Complete)**：
+  - [x] **选车策略可插拔**：定义 `VehicleSelectionStrategy`（`nearest` / `battery_preferred`）；
+    `battery_preferred` 基于 50% 门限平滑软打折（最大 25% 惩罚），严格以 `vehicle_id`
+    字典序破同分；`RankVehiclesForSelection` 单测 12 例。
+  - [x] **低电量自动充电编排**：`PlanAutoCharging` 纯函数；涵盖机会充电与临界电量优先级分级、
+    车级去重（`has_pending_charge_mission`）、离线/忙碌/隔离保护及充电桩有效性检查；
+    接入 `ScheduleGatesPass` tick 驱动，单测 11 例。
+  - [x] **订单批处理 / 拼单**：`PlanOrderBatchBundling` 纯函数；支持同起止站批量订单的
+    Exact Match 归集，以及首尾相连站点的多 leg 路线串联（Route Chaining）；
+    防回环检测；单测 6 例。
+  - [x] **上游契约字段透传与整单取消**：REST 网关补齐透传 `order_id`、`deadline_unix_ms`、
+    `expected_seconds`、`type`；`/api/workflows/cancel` 支持 `order_id` 整单取消。
+  - [x] **物理设施适配器抽象**：抽象 `IFacilityAdapter` 硬件控制接口与 `MockFacilityAdapter`
+    内存实现，统一门/电梯等现场设备的动作指令与互斥锁语义；单测 4 例。
+  - [x] **订单载荷 Schema 校验**：`PayloadSchema` 规则校验引擎，覆盖字段类型约束、必填约束、
+    枚举范围与数值极值限制；单测 5 例。
+
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
 - [ ] **分布式对等协商 (Peer-to-Peer Conflict Resolution)**：
   - 当中心调度离线或网络分区时，机器人之间通过局域网广播进行右侧让行或优先级协商
