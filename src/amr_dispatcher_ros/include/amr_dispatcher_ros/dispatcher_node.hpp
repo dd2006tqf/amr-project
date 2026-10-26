@@ -204,6 +204,11 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void NavResultCb(const std::string& mission_id, const GoalHandleNavigate::WrappedResult& result);
 
   void ScheduleTick();
+  // 批次 6.2：低电量自动插充电单（每 tick 检查一次，去重按"车"而非"站点"）。
+  // 决策在 core（PlanAutoCharging，纯函数）；这里只做采集与入队。
+  void PlanAutoChargingTick();
+  // 该车当前是否已有充电单（排队或在途）——去重键
+  bool HasPendingChargeMission(const std::string& vehicle_id) const;
   // ScheduleTick 的三段（机械切分，语义与切分前逐字一致）：
   //   1. ScheduleGatesPass：链路守卫 / 容量 / 空闲槽位 / 地图版本 / BT 启动请求
   //   2. SelectReadyCandidate：PeekN 扫描 + 三态处理 + 队首阻塞规避 + 锁预留
@@ -304,6 +309,13 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 自动选车打分策略（参数 vehicle_selection_strategy；未知值回落到 nearest）
   amr_dispatcher_core::fleet::VehicleSelectionStrategy vehicle_selection_strategy_{
       amr_dispatcher_core::fleet::VehicleSelectionStrategy::kNearest};
+  // 批次 6.2：低电量自动插充电单（参数 auto_charging_*；默认关闭）
+  bool auto_charging_enabled_{false};
+  std::string auto_charging_station_;
+  double auto_charging_opportunity_threshold_percent_{30.0};
+  double auto_charging_critical_threshold_percent_{15.0};
+  int auto_charging_opportunity_priority_{0};
+  int auto_charging_critical_priority_{5};
   // 选车状态最大时延（毫秒）：超龄 -> 状态不确定。
   int64_t vehicle_state_max_age_ms_{5000};
   // 当前是否处于"状态不确定"导致的自动分配暂停（kIndeterminate）。

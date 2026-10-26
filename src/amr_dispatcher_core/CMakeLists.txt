@@ -86,6 +86,7 @@ add_library(${PROJECT_NAME}
   src/workflow/dynamic_unlocking.cpp
   src/workflow/fleet_link_guard.cpp
   src/workflow/time_space_planning.cpp
+  src/workflow/auto_charging_planning.cpp
   src/workflow/workflow_control.cpp
   src/workflow/mission_estimator.cpp
   src/workflow/mission_preflight.cpp
@@ -188,6 +189,7 @@ if(BUILD_TESTING)
     test_vehicle_assignment
     test_vehicle_assignment_request_builder
     test_vehicle_selection_strategy
+    test_auto_charging_planning
     test_assignment_dispatch_action
     test_vda5050_vehicle_binding
     test_dispatch_gate_planning

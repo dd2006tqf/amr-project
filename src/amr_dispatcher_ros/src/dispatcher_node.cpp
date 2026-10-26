@@ -16,6 +16,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
+#include "amr_dispatcher_core/workflow/auto_charging_planning.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_endpoint_resolution.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_tick_planning.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
@@ -1804,6 +1805,10 @@ bool DispatcherNode::ScheduleGatesPass() {
     return false;
   }
 
+  // 批次 6.2：低电量自动插充电单（默认关闭；开着才扫车）。
+  // 放在门禁之前：队列空时正是插充电单的时机，且插单本身要武装启动请求。
+  PlanAutoChargingTick();
+
   // 无状态门禁判据（队列空 / 容量 / 空闲槽位 / 地图版本）聚合为纯函数：
   // 判据的**优先顺序**（容量已超时不再报地图哈希不匹配）由 core 单测锁定。
   const bool catalog_loaded = catalog_reloader_ != nullptr && catalog_reloader_->loaded();
@@ -2645,6 +2650,101 @@ void DispatcherNode::DeadlockTick() {
                       act.mission_id.c_str());
         }
       }
+    }
+  }
+}
+
+bool DispatcherNode::HasPendingChargeMission(const std::string& vehicle_id) const {
+  if (vehicle_id.empty() || !queue_) {
+    return false;
+  }
+  for (const auto& queued : queue_->SnapshotForPersistence()) {
+    if (queued.type == "charge" && queued.assigned_vehicle_id == vehicle_id) {
+      return true;
+    }
+  }
+  for (const auto& [_, mission] : active_missions_) {
+    if (mission.type == "charge" && mission.assigned_vehicle_id == vehicle_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void DispatcherNode::PlanAutoChargingTick() {
+  if (!auto_charging_enabled_ || !queue_ || auto_charging_station_.empty()) {
+    return;
+  }
+  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+    return;  // 目录未加载：无法确认充电站存在，不猜
+  }
+  const auto& catalog = catalog_reloader_->catalog();
+  const bool charger_known =
+      amr_dispatcher_core::catalog::FindStation(catalog, auto_charging_station_) != nullptr;
+
+  // 拷贝一份车辆清单再遍历：插单会改队列，但不会改 vehicle_states_
+  for (const auto& [vehicle_id, state] : vehicle_states_) {
+    amr_dispatcher_core::workflow::AutoChargingRequest request;
+    request.enabled = true;
+    request.vehicle_id = vehicle_id;
+    request.online = state.online;
+    request.busy = state.busy;
+    request.quarantined = state.quarantined;
+    request.battery_percent = state.battery_percent;
+    // VDA 5050 车从未收到 state 时电量是默认值 100：按"未知"处理，绝不当作满电
+    // 去抑制充电，也绝不当作空电去误叫车（PlanAutoCharging 对未知只回 kSkip）。
+    request.battery_known =
+        state.state_time != std::chrono::steady_clock::time_point{};
+    request.has_pending_charge_mission = HasPendingChargeMission(vehicle_id);
+    request.charger_station_id = auto_charging_station_;
+    request.charger_station_known = charger_known;
+    request.opportunity_threshold_percent = auto_charging_opportunity_threshold_percent_;
+    request.critical_threshold_percent = auto_charging_critical_threshold_percent_;
+    request.opportunity_priority = auto_charging_opportunity_priority_;
+    request.critical_priority = auto_charging_critical_priority_;
+
+    const auto decision = amr_dispatcher_core::workflow::PlanAutoCharging(request);
+    if (decision.kind != amr_dispatcher_core::workflow::AutoChargingDecision::Kind::kQueueCharge) {
+      continue;
+    }
+    amr_dispatcher_core::dispatcher::Mission mission;
+    StampMissionIdentity(mission, next_sequence_, "charge_");
+    mission.order_id = "charge_" + vehicle_id;
+    mission.type = "charge";
+    mission.dropoff_station = decision.charger_station_id;
+    // 显式绑定到这台车：充电是"这台车的事"，不能被选车策略分给别人
+    mission.assigned_vehicle_id = vehicle_id;
+    mission.priority = decision.priority;
+    auto push = queue_->Push(mission);
+    if (!push.accepted) {
+      RCLCPP_WARN(get_logger(), "Auto charging enqueue rejected for %s: %s",
+                  vehicle_id.c_str(), push.message.c_str());
+      continue;
+    }
+    queue_start_requested_ = true;
+    MarkStateDirty();
+    RCLCPP_INFO(get_logger(),
+                "Auto charging queued: %s -> %s (battery %.1f%%, %s, priority %d)",
+                vehicle_id.c_str(), decision.charger_station_id.c_str(),
+                state.battery_percent, decision.reason.c_str(), decision.priority);
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent msg;
+      msg.stamp = now();
+      msg.mission_id = mission.id;
+      msg.order_id = mission.order_id;
+      msg.event = "charge_queued";
+      msg.from_state = "PENDING";
+      msg.to_state = "PENDING";
+      msg.reason = decision.reason;
+      event_pub_->publish(msg);
+    }
+    if (event_log_) {
+      amr_dispatcher_core::dispatcher::MissionEvent evt;
+      evt.stamp = "now";
+      evt.mission_id = mission.id;
+      evt.event = "charge_queued";
+      evt.message = decision.reason;
+      event_log_->Append(evt);
     }
   }
 }
