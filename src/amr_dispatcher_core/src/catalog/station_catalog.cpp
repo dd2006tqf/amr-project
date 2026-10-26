@@ -444,8 +444,21 @@ std::optional<double> EstimateRouteDistance(
   return distance_m;
 }
 
-std::optional<std::vector<std::string>> FindRoutePath(
-    const StationCatalog& catalog, const std::string& from, const std::string& to) {
+namespace {
+
+// 资源键：与 dispatcher::ResourceTable::RouteEdgeId 的格式保持一致
+// （无序两端、`route_edge:` 前缀 + `__` 分隔）。core 的 catalog 层不依赖
+// dispatcher 层，故在此按同一契约拼键——两者格式若漂移，
+// test_station_catalog 的 FindRoutePathAvoiding 用例会直接失败。
+std::string RouteEdgeResourceKey(const std::string& a, const std::string& b) {
+  return a <= b ? "route_edge:" + a + "__" + b : "route_edge:" + b + "__" + a;
+}
+
+// FindRoutePath 与 FindRoutePathAvoiding 的唯一实现：
+// blocked 为空时与原实现逐字等价（无禁用边）。
+std::optional<std::vector<std::string>> FindRoutePathImpl(
+    const StationCatalog& catalog, const std::string& from, const std::string& to,
+    const std::unordered_set<std::string>& blocked_edge_keys) {
   if (from == to) {
     return std::vector<std::string>{from};
   }
@@ -498,6 +511,11 @@ std::optional<std::vector<std::string>> FindRoutePath(
       if (!edge.enabled) {
         continue;
       }
+      // 静态绕行：整条边（两个方向）被禁用即跳过
+      if (!blocked_edge_keys.empty() &&
+          blocked_edge_keys.count(RouteEdgeResourceKey(edge.from, edge.to)) > 0) {
+        continue;
+      }
       const auto edge_from = index_of(edge.from);
       const auto edge_to = index_of(edge.to);
       if (!edge_from.has_value() || !edge_to.has_value()) {
@@ -531,6 +549,20 @@ std::optional<std::vector<std::string>> FindRoutePath(
   }
   std::reverse(path.begin(), path.end());
   return path;
+}
+
+}  // namespace
+
+std::optional<std::vector<std::string>> FindRoutePath(
+    const StationCatalog& catalog, const std::string& from, const std::string& to) {
+  static const std::unordered_set<std::string> kNoBlockedEdges;
+  return FindRoutePathImpl(catalog, from, to, kNoBlockedEdges);
+}
+
+std::optional<std::vector<std::string>> FindRoutePathAvoiding(
+    const StationCatalog& catalog, const std::string& from, const std::string& to,
+    const std::unordered_set<std::string>& blocked_edge_keys) {
+  return FindRoutePathImpl(catalog, from, to, blocked_edge_keys);
 }
 
 bool ValidateStationCatalog(const StationCatalog& catalog, std::string* message) {

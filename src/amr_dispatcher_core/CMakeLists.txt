@@ -191,6 +191,7 @@ if(BUILD_TESTING)
     test_dispatch_gate_planning
     test_dispatch_endpoint_resolution
     test_dispatch_tick_planning
+    test_find_route_path_avoiding
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
