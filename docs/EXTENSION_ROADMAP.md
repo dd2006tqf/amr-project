@@ -110,18 +110,24 @@
   - 说明：原计划用 `dispatch_trace_file` 新旧路径 diff 做机械防线；实际改为
     "纯函数单测锁定 step 顺序 + 同一套 e2e 全量回归"，未引入该调试参数
 
-- [ ] **拓扑级静态绕行**（`FindRoutePathAvoiding` 接入死锁恢复；
-  A* / 动态障碍绕行**不在本轮范围**）
+- [x] **拓扑级静态绕行与在途交通协调 (Phase 7 Complete)**：
   - [x] `catalog::FindRoutePathAvoiding`：与 `FindRoutePath` 共用同一个 Dijkstra，
     禁用键 = 路权资源键（`route_edge:<lo>__<hi>`），保证"规划时绕开的边"与
-    "预约时锁住的边"是同一套资源；`FindRoutePathAvoidingTest` 10 例
-  - [ ] 接入 `DeadlockTick`。**本轮未做**，原因（如实记录）：
-    绕行触发面是 WFG 环，而环的成因是 `pending_wait_` —— 该记录**只对排队中**
-    的任务生成（`SelectReadyCandidate` 的预留被拒分支），在途任务从不产生等待记录。
-    于是环路只可能由"两个排队任务互等"构成，而排队任务并不持有任何锁，
-    真实调度器上造不出可绕行的环；在没有新的等待来源（在途任务改道/让行）
-    之前接线属于不可达代码。已落地的核心能力（绕行寻路、决策与"新路预约成功
-    才释放旧锁"的落地顺序）为后续接线做好铺垫，接线时需先定义在途任务的等待语义
+    "预约时锁住的边"是同一套资源；`FindRoutePathAvoidingTest` 10 例。
+  - [x] **运行时交通协调状态模型 (P0)**：定义 `TrafficCoordinationState`（RUNNING / BLOCKED /
+    REPLANNING / WAITING_FOR_RESOURCE / RECOVERY_FAILED），并在快照组包中引入
+    `in_flight_pending_wait`，使在途等待无缝注入 WFG 图论环检测；单测 3 例。
+  - [x] **在途安全重规划与两阶段资源置换 (P1)**：实现 `PlanInFlightReroute` 纯函数；
+    从当前安全停靠锚点重新规划绕行替代路线，严格执行“先申请新路权，成功后再释放旧未来锁，
+    当前节点锁绝不提前释放”的安全事务铁律；单测 3 例。
+  - [x] **死锁分级恢复协调器 (P2)**：实现 `PlanDeadlockRecovery` 纯函数；
+    优先选取死锁环中具有替代路线的较低优先级车辆执行拓扑绕行破环，无解时安全驻车等待；
+    接入 `DeadlockTick`，实现 local_sim 与 VDA 5050 航线/订单更新发布；单测 2 例。
+  - [x] **全流程矩阵化验证 (P3)**：新增 `scripts/check_traffic_coordination_e2e.sh`
+    端到端集成测试，测试矩阵扩充至 1012 例，全部通过。
+  - [ ] **高层规划器插件 (CBS / 冲突搜索)**：当高密度多车通道频繁出现拓扑绕道瓶颈时，
+    可作为高级多车联合规划插件接入当前已打通的在途事务置换链路。
+
 - [x] **CI 门禁 + L2 契约真断言 + `/metrics` (Complete)**：
   - CI 新增 `e2e-fleet` job：`check_map_ingest_e2e.sh` 与 `check_vda5050_e2e.sh`
     在 `ros:jazzy-ros-base` 容器内以 `AMR_E2E_INNER=1` 直接跑（脚本自带内层守卫，
