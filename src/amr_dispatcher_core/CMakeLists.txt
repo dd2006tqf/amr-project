@@ -68,6 +68,7 @@ add_library(${PROJECT_NAME}
   src/fleet/vda5050_order_builder.cpp
   src/fleet/force_clear_link.cpp
   src/fleet/vehicle_assignment.cpp
+  src/fleet/vehicle_assignment_request_builder.cpp
   src/facility/facility_catalog.cpp
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
@@ -184,6 +185,7 @@ if(BUILD_TESTING)
     test_vda5050_order_builder
     test_force_clear_link
     test_vehicle_assignment
+    test_vehicle_assignment_request_builder
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow

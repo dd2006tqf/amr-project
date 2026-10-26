@@ -11,6 +11,7 @@
 #include "amr_dispatcher_core/dispatcher/audit_log.hpp"
 #include "amr_dispatcher_core/dispatcher/deadlock_snapshot_assembly.hpp"
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
+#include "amr_dispatcher_core/fleet/vehicle_assignment_request_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
@@ -2957,39 +2958,25 @@ void DispatcherNode::RefreshVehicleStates() {
 
 amr_dispatcher_core::fleet::VehicleAssignmentRequest DispatcherNode::BuildAssignmentRequest(
     const amr_dispatcher_core::dispatcher::Mission& mission) {
-  amr_dispatcher_core::fleet::VehicleAssignmentRequest request;
-  request.requested_vehicle_id = mission.assigned_vehicle_id;
-  request.pickup_station_id = mission.pickup_station;
-  request.dropoff_station_id = mission.dropoff_station;
-  request.required_capability = required_capability_;
-  request.min_battery_percent = min_battery_percent_;
-  request.state_max_age_ms = vehicle_state_max_age_ms_;
+  // 刷新动态部分（IO：读订阅与里程计）留在 ROS 侧；排序与路网成本计算
+  // 下沉 core 纯函数（BuildVehicleAssignmentRequest），可单测。
   RefreshVehicleStates();
-  // 保序：vehicle_states_ 是 unordered_map，遍历序不稳定 -> 先按 id 排序，
-  // 保证同分时裁决顺序确定（核心按输入顺序 tiebreak）。
-  std::vector<std::string> ordered_ids;
-  ordered_ids.reserve(vehicle_states_.size());
-  for (const auto& [id, _] : vehicle_states_) {
-    ordered_ids.push_back(id);
+  amr_dispatcher_core::fleet::VehicleAssignmentRequestInputs inputs;
+  inputs.vehicles.reserve(vehicle_states_.size());
+  for (const auto& [_, state] : vehicle_states_) {
+    inputs.vehicles.push_back(state);
   }
-  std::sort(ordered_ids.begin(), ordered_ids.end());
-  for (const auto& id : ordered_ids) {
-    request.vehicles.push_back(vehicle_states_.at(id));
+  inputs.requested_vehicle_id = mission.assigned_vehicle_id;
+  inputs.pickup_station_id = mission.pickup_station;
+  inputs.dropoff_station_id = mission.dropoff_station;
+  inputs.required_capability = required_capability_;
+  inputs.min_battery_percent = min_battery_percent_;
+  inputs.state_max_age_ms = vehicle_state_max_age_ms_;
+  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
+    inputs.catalog = &catalog_reloader_->catalog();
+    inputs.catalog_loaded = true;
   }
-  // 到取货点的路网成本（评审问题 3：路网路径成本，非欧氏距离）
-  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() && !mission.pickup_station.empty()) {
-    const auto& catalog = catalog_reloader_->catalog();
-    for (const auto& id : ordered_ids) {
-      const auto& state = vehicle_states_.at(id);
-      const auto cost = amr_dispatcher_core::fleet::EstimateVehicleApproachCost(
-          catalog, state.position_x, state.position_y, state.current_station_id,
-          mission.pickup_station);
-      if (cost.has_value()) {
-        request.distance_to_pickup_m[id] = *cost;
-      }
-    }
-  }
-  return request;
+  return amr_dispatcher_core::fleet::BuildVehicleAssignmentRequest(inputs);
 }
 
 amr_dispatcher_core::fleet::VehicleAssignmentDecision DispatcherNode::SelectVehicleForMission(
