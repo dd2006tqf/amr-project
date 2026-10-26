@@ -137,14 +137,102 @@ jobs:
           [ "$missing" -eq 0 ] && echo "10 个可执行文件全部就位"
           exit "$missing"
 
-      # 行为树与核心库的单测（与 scripts/build.sh 的 core 测试互补）
-      - name: Run Core and BT Unit Tests
+      # 各包单测。tools 与 ros 的用例数随开发演进（不写死数字），
+      # 但任何一个包失败都必须让 job 变红——此前只跑 core + bt，
+      # 网关的四组纯逻辑与 L2 契约测试在 CI 里从未被执行过。
+      - name: Run Unit Tests (core / bt / tools / ros)
         shell: bash
         run: |
           set -e
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          ctest --test-dir build/amr_dispatcher_core --output-on-failure
-          if [ -d build/amr_dispatcher_bt ]; then
-            ctest --test-dir build/amr_dispatcher_bt --output-on-failure
-          fi
+          for pkg in amr_dispatcher_core amr_dispatcher_bt \
+                     amr_dispatcher_tools amr_dispatcher_ros; do
+            if [ -d "build/${pkg}" ]; then
+              echo "=== ctest: ${pkg} ==="
+              ctest --test-dir "build/${pkg}" --output-on-failure
+            fi
+          done
+
+  # 三套 e2e 的门禁 job。
+  #
+  # 直接在 ros:jazzy-ros-base 容器 job 内以 AMR_E2E_INNER=1 运行：
+  # 这些脚本都带"内层执行守卫"（检测到未设置 AMR_E2E_INNER 才尝试 docker exec
+  # 穿透），因此在容器里直接跑不会去找 amr_dispatcher 容器，也不需要 DinD。
+  #
+  # web 控制台 e2e 不在这里：它需要宿主机 Chrome + 独立容器，放进手动/nightly
+  # job（见 README 的"验证"一节），常规 CI 不把它当成门禁。
+  e2e-fleet:
+    runs-on: ubuntu-24.04
+    container:
+      image: ros:jazzy-ros-base
+    timeout-minutes: 20
+    needs: build-ros2-jazzy
+    steps:
+      - uses: actions/checkout@v4
+
+      # 依赖清单与 build-ros2-jazzy 保持一致，额外补 e2e 需要的地图服务与 MQTT：
+      #   nav2_map_server  -> check_map_ingest_e2e.sh
+      #   mosquitto + paho -> check_vda5050_e2e.sh
+      - name: Install E2E Dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ros-jazzy-behaviortree-cpp \
+            ros-jazzy-hardware-interface \
+            ros-jazzy-nav2-map-server \
+            ros-jazzy-launch-testing \
+            ros-jazzy-launch-testing-ros \
+            mosquitto \
+            python3-paho-mqtt \
+            python3-yaml \
+            build-essential \
+            libyaml-cpp-dev \
+            libgtest-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Build Workspace
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+          source install/setup.bash
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      - name: Map Ingest E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_map_ingest_e2e.sh
+
+      - name: VDA 5050 Fleet E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_vda5050_e2e.sh
+
+      # 失败时把 e2e 现场日志带出来（脚本把 TMP_DIR 打在输出里，
+      # 这里按前缀兜底收集），否则只能看 GitHub 的日志行数上限。
+      - name: Upload E2E Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            /tmp/amr_*/**/*.log
+            /tmp/amr_*/**/*.jsonl
+          if-no-files-found: ignore

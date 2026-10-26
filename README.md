@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **737/737 unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
+   - **830+ unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning). The exact count is reported by `ctest`, not hard-coded here.
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
@@ -171,7 +171,7 @@ The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav
 ./scripts/check_all.sh
 ```
 Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
-- [Step 1] Build pure C++ core and run 737 GTest unit & integration tests via ctest (~4s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
+- [Step 1] Build pure C++ core and run the full GTest unit & integration suite via ctest (~4s, 100% green; the count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
@@ -238,13 +238,36 @@ regress, the force-clear audit line is on disk, and a snapshot whose `map_hash` 
 longer matches the topology is **refused** (never dispatch a queue against a map that
 has changed underneath it).
 
-### 7. Launch Physical Serial Device Simulator
+### 7. Run `/metrics` Endpoint Acceptance
+```bash
+./scripts/check_metrics_e2e.sh
+```
+Starts the gateway on an isolated domain (`ROS_DOMAIN_ID=88`, port 18098) with
+`metrics_token` deliberately different from `auth_token`, then asserts the scrape
+output is **valid** Prometheus exposition rather than text that merely looks like it:
+`text/plain; version=0.0.4`, `# HELP`/`# TYPE` for every sample, every sample line
+parseable (label values escaped), no scientific notation, no empty metric families for
+an empty fleet, token isolation (scraping token cannot reach business endpoints), and
+self-proving `amr_gateway_requests_total` samples for both `401` and `200`.
+Without a `DispatcherState` publisher the scheduling gauges degrade to `0` instead of
+disappearing, so a scrape never sees a hole.
+
+### 8. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 8. Open Web Operator Console
+### 9. CI Gates
+GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
+`build-ros2-jazzy` (colcon build of all five packages + **every** package's ctest suite,
+including the gateway helpers and the L2 launch contract test), and `e2e-fleet`
+(`check_map_ingest_e2e.sh` + `check_vda5050_e2e.sh` inside the ROS container).
+Web-console acceptance stays a **manual/nightly** job: it needs a host-side Chrome plus
+an isolated container, which a standard runner does not provide — this is stated here
+rather than implied to be covered by CI.
+
+### 10. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/

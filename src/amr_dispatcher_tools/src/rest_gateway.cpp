@@ -17,6 +17,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -47,6 +48,7 @@
 #include "amr_dispatcher_tools/http_limits.hpp"
 #include "amr_dispatcher_tools/idempotency_store.hpp"
 #include "amr_dispatcher_tools/json_escape.hpp"
+#include "amr_dispatcher_tools/metrics_format.hpp"
 
 using namespace std::chrono_literals;
 
@@ -191,6 +193,8 @@ class RestGatewayNode : public rclcpp::Node {
     declare_parameter("worker_threads", 4);
     // 待处理连接上限：过载时快速回 503，而不是无界积压
     declare_parameter("max_pending_connections", 32);
+    // /metrics 抓取口令；留空 = 复用 auth_token（再空 = 不鉴权）
+    declare_parameter("metrics_token", "");
     // 幂等键落盘（空 = 仅内存，重启即失；配置后跨重启去重）
     declare_parameter("idempotency_store_file", "");
     declare_parameter("idempotency_capacity", 4096);
@@ -204,6 +208,10 @@ class RestGatewayNode : public rclcpp::Node {
       estop_token_ = auth_token_;
     }
     cors_allow_origin_ = get_parameter("cors_allow_origin").as_string();
+    metrics_token_ = get_parameter("metrics_token").as_string();
+    if (metrics_token_.empty()) {
+      metrics_token_ = auth_token_;  // 未单独配置 -> 跟主鉴权同口令
+    }
     const int worker_threads = std::max(1, static_cast<int>(get_parameter("worker_threads").as_int()));
     max_pending_ = static_cast<std::size_t>(
         std::max(1, static_cast<int>(get_parameter("max_pending_connections").as_int())));
@@ -364,6 +372,7 @@ class RestGatewayNode : public rclcpp::Node {
         HttpResponse resp;
         resp.status = "503 Service Unavailable";
         resp.body = JsonErrorBody("gateway_overloaded", "too many pending connections");
+        RecordRequestStatus(resp.status);
         WriteAll(client_fd, SerializeResponse(resp, false));
         close(client_fd);
         continue;
@@ -398,12 +407,14 @@ class RestGatewayNode : public rclcpp::Node {
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, SerializeResponse(resp, false));
     } catch (...) {
       RCLCPP_WARN(get_logger(), "请求处理未知异常（已兜底为 400）");
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, SerializeResponse(resp, false));
     }
   }
@@ -512,6 +523,7 @@ class RestGatewayNode : public rclcpp::Node {
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, SerializeResponse(resp, false));
       DrainForClose(client_fd, 64U * 1024U);
       return;
@@ -520,6 +532,7 @@ class RestGatewayNode : public rclcpp::Node {
       HttpResponse resp;
       resp.status = "413 Payload Too Large";
       resp.body = JsonErrorBody("payload_too_large");
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, SerializeResponse(resp, false));
       DrainForClose(client_fd);
       return;
@@ -530,6 +543,7 @@ class RestGatewayNode : public rclcpp::Node {
       resp.status = "204 No Content";
       resp.body.clear();
       resp.content_type.clear();
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, SerializeResponse(resp, true));
       return;
     }
@@ -546,16 +560,28 @@ class RestGatewayNode : public rclcpp::Node {
       raw += ExtraHeaders();
       raw += "Connection: close\r\n\r\n";
       raw += resp.body;
+      RecordRequestStatus(resp.status);
       WriteAll(client_fd, raw);
       return;
     }
 
     const HttpResponse resp = Dispatch(req);
+    RecordRequestStatus(resp.status);
     WriteAll(client_fd, SerializeResponse(resp, true));
+  }
+
+  // 状态码按前三位归类（"200 OK" -> "200"），保证指标标签基数有限
+  void RecordRequestStatus(const std::string& status) {
+    const std::string code = status.substr(0, std::min<std::size_t>(3, status.size()));
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    ++request_counts_[code];
   }
 
   bool Authorize(const HttpRequest& req) const {
     // 急停可单独配口令；estop_token 为空时回退 auth_token
+    if (req.path == "/metrics") {
+      return IsAuthorized(req.authorization, metrics_token_);
+    }
     if (req.path == "/api/operator/estop") {
       return IsAuthorized(req.authorization, estop_token_);
     }
@@ -591,6 +617,12 @@ class RestGatewayNode : public rclcpp::Node {
     }
     if (method == "POST" && PathMatches(path, "/api/v1/restore_link")) {
       return HandleRestore(req);
+    }
+    if (method == "GET" && PathMatches(path, "/metrics")) {
+      resp.status = "200 OK";
+      resp.content_type = "text/plain; version=0.0.4; charset=utf-8";
+      resp.body = RenderMetrics();
+      return resp;
     }
     if (method == "GET" && PathMatches(path, "/api/system/ready")) {
       return HandleReadiness();
@@ -1159,6 +1191,93 @@ class RestGatewayNode : public rclcpp::Node {
     return body.compare(pos, 4, "true") == 0;
   }
 
+  // ---------------------------------------------------------------------------
+  // /metrics：Prometheus 文本格式（对外契约，渲染逻辑在 metrics_format.hpp 单测）
+  // ---------------------------------------------------------------------------
+  std::string RenderMetrics() {
+    using amr_dispatcher_tools::MetricFamily;
+    using amr_dispatcher_tools::MetricSample;
+    using amr_dispatcher_tools::MetricType;
+
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::vector<MetricFamily> families;
+
+    MetricFamily queue;
+    queue.name = "amr_queue_size";
+    queue.help = "Missions currently waiting in the dispatch queue";
+    queue.type = MetricType::kGauge;
+    queue.samples.push_back(MetricSample{{}, static_cast<double>(latest_state_.queue_size)});
+    families.push_back(std::move(queue));
+
+    MetricFamily capacity;
+    capacity.name = "amr_queue_capacity";
+    capacity.help = "Configured mission queue capacity";
+    capacity.type = MetricType::kGauge;
+    capacity.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.queue_capacity)});
+    families.push_back(std::move(capacity));
+
+    MetricFamily active;
+    active.name = "amr_active_missions";
+    active.help = "Missions currently executing";
+    active.type = MetricType::kGauge;
+    active.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.active_missions_count)});
+    families.push_back(std::move(active));
+
+    MetricFamily deadlock;
+    deadlock.name = "amr_deadlock_active";
+    deadlock.help = "1 when the dispatcher reports an active deadlock, else 0";
+    deadlock.type = MetricType::kGauge;
+    deadlock.samples.push_back(
+        MetricSample{{}, latest_state_.deadlock_detected ? 1.0 : 0.0});
+    families.push_back(std::move(deadlock));
+
+    MetricFamily online;
+    online.name = "amr_vehicle_online";
+    online.help = "Per-vehicle link online flag (1 = online)";
+    online.type = MetricType::kGauge;
+    MetricFamily busy;
+    busy.name = "amr_vehicle_busy";
+    busy.help = "Per-vehicle busy flag (1 = executing a mission)";
+    busy.type = MetricType::kGauge;
+    MetricFamily quarantined;
+    quarantined.name = "amr_vehicle_quarantined";
+    quarantined.help = "Per-vehicle quarantine flag (1 = excluded from auto assignment)";
+    quarantined.type = MetricType::kGauge;
+    MetricFamily battery;
+    battery.name = "amr_vehicle_battery_percent";
+    battery.help = "Per-vehicle battery percentage";
+    battery.type = MetricType::kGauge;
+    for (const auto& link : latest_state_.vehicle_links) {
+      const std::vector<std::pair<std::string, std::string>> labels{
+          {"vehicle_id", link.vehicle_id}};
+      online.samples.push_back(
+          MetricSample{labels, link.online ? 1.0 : 0.0});
+      busy.samples.push_back(MetricSample{labels, link.busy ? 1.0 : 0.0});
+      quarantined.samples.push_back(MetricSample{labels, link.quarantined ? 1.0 : 0.0});
+      battery.samples.push_back(
+          MetricSample{labels, link.battery_percent});
+    }
+    families.push_back(std::move(online));
+    families.push_back(std::move(busy));
+    families.push_back(std::move(quarantined));
+    families.push_back(std::move(battery));
+
+    // 网关自身的请求计数（按状态码分标签；只为已发生的组合产生样本）
+    MetricFamily requests;
+    requests.name = "amr_gateway_requests_total";
+    requests.help = "HTTP requests handled by the gateway, partitioned by status code";
+    requests.type = MetricType::kCounter;
+    for (const auto& [code, count] : request_counts_) {
+      requests.samples.push_back(
+          MetricSample{{{"code", code}}, static_cast<double>(count)});
+    }
+    families.push_back(std::move(requests));
+
+    return amr_dispatcher_tools::RenderMetricFamilies(families);
+  }
+
   std::string FormatVehicleLinksJson() {
     std::lock_guard<std::mutex> lock(data_mutex_);
     std::ostringstream os;
@@ -1301,6 +1420,9 @@ class RestGatewayNode : public rclcpp::Node {
   std::mutex idempotency_mutex_;
   IdempotencyStore idempotency_;
   std::string idempotency_store_file_;
+  std::string metrics_token_;
+  // /metrics 用：按 HTTP 状态码聚合的请求计数（只在 worker 线程写、读时持 data_mutex_）
+  std::map<std::string, std::size_t> request_counts_;
 
   rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;

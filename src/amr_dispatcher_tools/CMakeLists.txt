@@ -66,6 +66,7 @@ if(BUILD_TESTING)
     test_bearer_auth
     test_idempotency_store
     test_json_escape
+    test_metrics_format
   )
   foreach(test_name IN LISTS TOOLS_UNIT_TESTS)
     set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")

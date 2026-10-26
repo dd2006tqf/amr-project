@@ -298,6 +298,9 @@ MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → �
 | `html_path` | `tools/operator_console.html` | 操作台单文件路径（含若干回退路径）。 |
 | `auth_token` | `""` | 静态 Bearer Token。**空 = 鉴权关闭**（现网与全部 e2e 行为不变）。非空时除 `GET /`、`GET /index.html` 外全部端点要求 `Authorization: Bearer <token>`，否则 `401`。 |
 | `estop_token` | `""` | `/api/operator/estop` 单独口令；空则回退 `auth_token`。 |
+| `metrics_token` | `""` | `/metrics` 抓取口令；空则回退 `auth_token`（两者都空 = 不鉴权）。与业务口令分开配，是为了让抓取端只拿到只读指标的读取权。 |
+| `idempotency_store_file` | `""` | 幂等键落盘路径；空 = 仅内存（重启即失）。 |
+| `idempotency_capacity` / `idempotency_ttl_sec` | `4096` / `3600` | 幂等键容量上限与 TTL。 |
 | `cors_allow_origin` | `""` | 允许的跨域来源。**空 = 不下发任何 CORS 头**（操作台与网关同源时不需要）；旧实现无条件下发 `Access-Control-Allow-Origin: *`。 |
 | `worker_threads` | `4` | 连接处理线程数。主线程只 `accept`，静默/慢连接只占住一个工作线程。 |
 | `max_pending_connections` | `32` | 待处理连接上限；超限立即回 `503 gateway_overloaded` 并关闭，避免无界积压。 |
@@ -351,6 +354,29 @@ MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → �
   "mission_id": "task_1001"
 }
 ```
+
+### `GET /metrics`
+Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-8`），
+供抓取端直接拉取。渲染逻辑在 `amr_dispatcher_tools/metrics_format.hpp`，
+格式契约由 `MetricsFormatTest`（宿主 ctest）与 `scripts/check_metrics_e2e.sh`
+（真实进程抓取）双重锁定。
+
+| 指标 | 类型 | 来源 |
+|---|---|---|
+| `amr_queue_size` / `amr_queue_capacity` | gauge | `/dispatcher/state` |
+| `amr_active_missions` | gauge | 同上 |
+| `amr_deadlock_active` | gauge | 同上 |
+| `amr_vehicle_online{vehicle_id}` / `amr_vehicle_busy{vehicle_id}` | gauge | `VehicleLinkState[]` |
+| `amr_vehicle_quarantined{vehicle_id}` | gauge | 同上 |
+| `amr_vehicle_battery_percent{vehicle_id}` | gauge | 同上 |
+| `amr_gateway_requests_total{code}` | counter | 网关自身按状态码计数 |
+
+格式约定（抓取端解析失败即视为缺陷，e2e 逐条断言）：
+- 每个指标都带 `# HELP` / `# TYPE`；**没有样本的族不输出**（避免空族）
+- 标签值里的 `\`、`"`、换行按 exposition 规范转义
+- 数值不使用科学计数法；非有限值写 `NaN` / `+Inf` / `-Inf`
+
+未收到 `DispatcherState` 时，调度类指标输出 `0` 而不是缺样本（抓取端无需处理空洞）。
 
 ### `GET /api/v1/vehicle_links`
 查询**受管车辆**的链路与调度状态（结构化消息 `VehicleLinkState`，

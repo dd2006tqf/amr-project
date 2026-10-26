@@ -105,7 +105,7 @@
   - 兼容红线逐条保持：legacy 单车不经选车、启动请求消费点不变、
     `candidates.empty()` 分支仍不 rearm、日志文案与 throttle 窗口逐字不变、
     守卫永不释放锁
-  - 验收：core 820 例（新增 5 个 suite 约 50 例）+ ROS 25 例、三套 e2e 与
+  - 验收：core 830 例（新增 6 个 suite 约 60 例）+ ROS 25 例、三套 e2e 与
     `check_all.sh` 全 PASS
   - 说明：原计划用 `dispatch_trace_file` 新旧路径 diff 做机械防线；实际改为
     "纯函数单测锁定 step 顺序 + 同一套 e2e 全量回归"，未引入该调试参数
@@ -122,7 +122,22 @@
     真实调度器上造不出可绕行的环；在没有新的等待来源（在途任务改道/让行）
     之前接线属于不可达代码。已落地的核心能力（绕行寻路、决策与"新路预约成功
     才释放旧锁"的落地顺序）为后续接线做好铺垫，接线时需先定义在途任务的等待语义
-- [ ] **CI 门禁 + L2 契约真断言 + `/metrics`**
+- [x] **CI 门禁 + L2 契约真断言 + `/metrics` (Complete)**：
+  - CI 新增 `e2e-fleet` job：`check_map_ingest_e2e.sh` 与 `check_vda5050_e2e.sh`
+    在 `ros:jazzy-ros-base` 容器内以 `AMR_E2E_INNER=1` 直接跑（脚本自带内层守卫，
+    不需要 DinD）；失败时上传 `/tmp/amr_*` 现场日志。web 控制台 e2e 需要宿主机
+    Chrome + 独立容器，**如实标注**为手动/nightly，不进常规门禁
+  - `build-ros2-jazzy` 的单测从"只看 core + bt"改为遍历 core / bt / tools / ros
+    四个包——此前网关的四组纯逻辑与 L2 契约在 CI 里从未被执行
+  - L2 契约：`test/l2_launch_contracts/test_lifecycle_contracts.py` 从
+    `assertTrue(True)` 改为 launch_testing 真断言（真起 coordinator + dispatcher，
+    断言 `/system/ready` / `/system/healthy` 可调用、dispatcher 未激活时
+    `ready=false` 且 `state=INITIALIZING`、`/system/ready_flag` 的
+    transient_local 当前值为 false），已注册进 `add_launch_test`
+  - `/metrics`：`GET /metrics` 输出 Prometheus 文本格式（`metrics_token` 独立口令，
+    空则回退 `auth_token`）。渲染逻辑在 `tools/metrics_format.hpp`（12 例单测锁定
+    转义/数值格式/空族省略），`scripts/check_metrics_e2e.sh` 对真实进程断言格式
+    合法性与口令隔离
 
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
 - [ ] **分布式对等协商 (Peer-to-Peer Conflict Resolution)**：
