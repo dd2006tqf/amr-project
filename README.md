@@ -242,7 +242,7 @@ has changed underneath it).
 ```bash
 ./scripts/check_metrics_e2e.sh
 ```
-Starts the gateway on an isolated domain (`ROS_DOMAIN_ID=88`, port 18098) with
+Starts the gateway on an isolated domain (`ROS_DOMAIN_ID=88`, port 18099) with
 `metrics_token` deliberately different from `auth_token`, then asserts the scrape
 output is **valid** Prometheus exposition rather than text that merely looks like it:
 `text/plain; version=0.0.4`, `# HELP`/`# TYPE` for every sample, every sample line

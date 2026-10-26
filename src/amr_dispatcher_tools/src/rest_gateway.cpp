@@ -771,6 +771,12 @@ class RestGatewayNode : public rclcpp::Node {
     const std::string to = GetQueryParam(req.query, "to");
     const std::string vehicle = GetQueryParam(req.query, "vehicle");
     const std::string ikey = GetQueryParam(req.query, "idempotency_key");
+    // 批次 6.4：补齐上游契约字段透传（此前网关只传 id/from/to/prio/vehicle，
+    // 业务订单号、截止期、任务类型在网关这一层被静默丢弃）。
+    const std::string order_id = GetQueryParam(req.query, "order_id");
+    const std::string mission_type = GetQueryParam(req.query, "type");
+    const std::string deadline_text = GetQueryParam(req.query, "deadline_unix_ms");
+    const std::string expected_text = GetQueryParam(req.query, "expected_seconds");
 
     std::int32_t prio = 5;
     const std::string prio_text = GetQueryParam(req.query, "prio", "5");
@@ -786,6 +792,29 @@ class RestGatewayNode : public rclcpp::Node {
         resp.status = "400 Bad Request";
         resp.body = JsonErrorBody("invalid_priority", "prio must be an integer");
         return resp;
+    }
+
+    // 可选数值字段：给了就必须是合法整数（绝不静默当 0——那会让任务"没有截止期"
+    // 而调用方以为设上了）。截止期额外要求为正数。
+    std::int64_t deadline_unix_ms = 0;
+    if (!deadline_text.empty()) {
+      std::int32_t parsed = 0;
+      if (ParseInt32Strict(deadline_text, &parsed) != IntParseStatus::kOk || parsed <= 0) {
+        resp.status = "400 Bad Request";
+        resp.body = JsonErrorBody("invalid_deadline", "deadline_unix_ms must be a positive integer");
+        return resp;
+      }
+      deadline_unix_ms = parsed;
+    }
+    std::int32_t expected_seconds = 0;
+    if (!expected_text.empty()) {
+      if (ParseInt32Strict(expected_text, &expected_seconds) != IntParseStatus::kOk ||
+          expected_seconds < 0) {
+        resp.status = "400 Bad Request";
+        resp.body = JsonErrorBody("invalid_expected_seconds",
+                                  "expected_seconds must be a non-negative integer");
+        return resp;
+      }
     }
 
     // 幂等：先占位，只有后端**确认受理**才 Commit；失败/超时 Abort 允许重试
@@ -811,9 +840,13 @@ class RestGatewayNode : public rclcpp::Node {
 
     auto request = std::make_shared<amr_dispatcher_interfaces::srv::SubmitOrder::Request>();
     request->mission_id = mid;
+    request->order_id = order_id;
+    request->mission_type = mission_type;
     request->pickup_station = from;
     request->dropoff_station = to;
     request->priority = prio;
+    request->deadline_unix_ms = deadline_unix_ms;
+    request->expected_seconds = expected_seconds;
     request->assigned_vehicle_id = vehicle;
 
     if (!submit_cli_->wait_for_service(1s)) {
@@ -840,8 +873,17 @@ class RestGatewayNode : public rclcpp::Node {
   HttpResponse HandleCancel(const HttpRequest& req) {
     HttpResponse resp;
     const std::string mid = GetQueryParam(req.query, "id");
+    // 批次 6.4：整单取消。`CancelOrder.srv` 的契约是"mission_id 为空则按
+    // order_id 取消整单"，但网关此前只传 mission_id，整单取消在 REST 层不可达。
+    const std::string order_id = GetQueryParam(req.query, "order_id");
+    if (mid.empty() && order_id.empty()) {
+      resp.status = "400 Bad Request";
+      resp.body = JsonErrorBody("missing_identifier", "either id or order_id is required");
+      return resp;
+    }
     auto request = std::make_shared<amr_dispatcher_interfaces::srv::CancelOrder::Request>();
     request->mission_id = mid;
+    request->order_id = order_id;
     if (!cancel_cli_->wait_for_service(1s)) {
       resp.status = "503 Service Unavailable";
       resp.body = JsonErrorBody("service_unavailable");
@@ -854,7 +896,8 @@ class RestGatewayNode : public rclcpp::Node {
       return resp;
     }
     auto res = fut.get();
-    resp.body = "{\"status\":\"ok\",\"canceled\":" + std::string(res->success ? "true" : "false") + "}";
+    resp.body = "{\"status\":\"ok\",\"canceled\":" + std::string(res->success ? "true" : "false") +
+                ",\"canceled_count\":" + std::to_string(res->canceled_count) + "}";
     return resp;
   }
 

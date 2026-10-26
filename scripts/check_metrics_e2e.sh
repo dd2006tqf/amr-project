@@ -11,7 +11,7 @@
 #   * 网关自身请求计数可自证：请求过 401 与 200 后，两个 code 都有样本
 #   * metrics_token 独立生效：/metrics 用 metrics_token，业务端点仍用 auth_token
 #
-# 环境隔离：ROS_DOMAIN_ID=88 / REST 18098，不属于生产（42 / 8080），也不与
+# 环境隔离：ROS_DOMAIN_ID=88 / REST 18099，不属于生产（42 / 8080），也不与
 #           其它 e2e（77/78/80/82/84/86/87）重叠。只起 rest_gateway，
 #           不依赖 dispatcher（无 DispatcherState 时指标应退化为 0 而不是崩溃）。
 #
@@ -23,7 +23,7 @@ trap 'echo "[METRICS-FATAL] line=${LINENO} status=$? cmd=${BASH_COMMAND}" >&2' E
 
 CONTAINER="${AMR_METRICS_CONTAINER:-amr_dispatcher}"
 METRICS_DOMAIN_ID="${AMR_METRICS_DOMAIN_ID:-88}"
-METRICS_PORT="${AMR_METRICS_PORT:-18098}"
+METRICS_PORT="${AMR_METRICS_PORT:-18099}"
 CONTAINER_WORKDIR="${AMR_METRICS_WORKDIR:-/workspace}"
 AUTH_TOKEN="metrics-e2e-auth-token"
 METRICS_TOKEN="metrics-e2e-scrape-token"
