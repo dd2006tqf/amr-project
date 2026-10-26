@@ -16,6 +16,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
+#include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
 #include "amr_dispatcher_core/workflow/fleet_link_guard.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
 #include "amr_dispatcher_ros/assignment_dispatch_decision.hpp"
@@ -1785,41 +1786,48 @@ bool DispatcherNode::ScheduleGatesPass() {
     return false;
   }
 
-  if (!queue_ || queue_->empty()) {
-    return false;
+  // 无状态门禁判据（队列空 / 容量 / 空闲槽位 / 地图版本）聚合为纯函数：
+  // 判据的**优先顺序**（容量已超时不再报地图哈希不匹配）由 core 单测锁定。
+  const bool catalog_loaded = catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+  amr_dispatcher_core::workflow::DispatchGateRequest gate_req;
+  gate_req.queue_empty = !queue_ || queue_->empty();
+  gate_req.active_mission_count = active_missions_.size();
+  gate_req.max_active_missions =
+      static_cast<std::size_t>(get_parameter("max_active_missions").as_int());
+  gate_req.has_free_vehicle_slot = HasFreeVehicleSlot();
+  gate_req.expected_map_hash = expected_map_hash_;
+  gate_req.catalog_loaded = catalog_loaded;
+  if (catalog_loaded) {
+    gate_req.catalog_map_hash = catalog_reloader_->catalog().map_hash;
   }
-  const std::size_t max_active = get_parameter("max_active_missions").as_int();
-  if (active_missions_.size() >= max_active) {
-    return false;
+  const auto gate = amr_dispatcher_core::workflow::EvaluateDispatchGates(gate_req);
+  if (gate.map_gate_evaluated) {
+    map_version_valid_ = gate.map_version_valid;
   }
-
-  // 执行模型：每台受管车同时只跑一条 /plan（多车则可并发多条）。
-  // 无可用执行槽位 -> 本 tick 不派发（任务留队，等某台车完成或状态变化后重试）。
-  if (!HasFreeVehicleSlot()) {
-    return false;
-  }
-
-  // 地图版本门禁：配置了期望哈希且目录已加载时，
-  // 若目录哈希缺失，或与期望哈希不一致，均判定为环境地图与部署目录不匹配——暂停出队派发。
-  // 直接 return（不消费 queue_start_requested_），哈希恢复一致后派发自动继续。
-  map_version_valid_ = true;
-  if (!expected_map_hash_.empty() && catalog_reloader_ != nullptr &&
-      catalog_reloader_->loaded()) {
-    const auto& catalog = catalog_reloader_->catalog();
-    if (catalog.map_hash.empty() || catalog.map_hash != expected_map_hash_) {
-      map_version_valid_ = false;
+  switch (gate.kind) {
+    case amr_dispatcher_core::workflow::DispatchGateDecision::Kind::kPass:
+      break;
+    case amr_dispatcher_core::workflow::DispatchGateDecision::Kind::kQueueEmpty:
+    case amr_dispatcher_core::workflow::DispatchGateDecision::Kind::kCapacityExceeded:
+    case amr_dispatcher_core::workflow::DispatchGateDecision::Kind::kNoFreeVehicleSlot:
+      // 执行模型：每台受管车同时只跑一条 /plan（多车则可并发多条）。
+      // 无可用执行槽位 -> 本 tick 不派发（任务留队，等某台车完成或状态变化后重试）。
+      return false;
+    case amr_dispatcher_core::workflow::DispatchGateDecision::Kind::kMapVersionMismatch:
+      // 地图版本门禁：目录哈希缺失或与期望不一致 -> 环境地图与部署目录不匹配，
+      // 暂停出队派发。不消费 queue_start_requested_，哈希恢复一致后派发自动继续。
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
                            "Map hash mismatch: expected %s, got %s, dispatching paused",
                            expected_map_hash_.c_str(),
-                           catalog.map_hash.empty() ? "<missing>" : catalog.map_hash.c_str());
+                           gate_req.catalog_map_hash.empty() ? "<missing>"
+                                                             : gate_req.catalog_map_hash.c_str());
       return false;
-    }
   }
 
   // 行为树出队派发门控：runtime 树按"空闲 + 启动请求"给派发决策，
   // 未请求启动时即使队列有任务也不出队（启动请求由提单/入队/结果链武装）。
   amr_dispatcher_bt::MissionRuntimeBehaviorTreeInput runtime_input;
-  runtime_input.tick.mission_active = !HasFreeVehicleSlot();
+  runtime_input.tick.mission_active = !gate_req.has_free_vehicle_slot;
   runtime_input.tick.queue_start_requested = queue_start_requested_;
   const auto runtime_result = amr_dispatcher_bt::TickMissionRuntimeBehaviorTree(runtime_input);
   if (!runtime_result.success || !runtime_result.decision.start_queued_mission) {
