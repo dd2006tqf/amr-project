@@ -95,6 +95,9 @@ add_library(${PROJECT_NAME}
   src/workflow/station_transport_workflow.cpp
   src/workflow/station_sequence_workflow.cpp
   src/workflow/order_batch_bundling.cpp
+  src/workflow/traffic_coordination_model.cpp
+  src/workflow/in_flight_reroute_planning.cpp
+  src/workflow/traffic_recovery_coordinator.cpp
   src/workflow/docking_workflow.cpp
   src/workflow/mission_charging_workflow.cpp
   src/workflow/mission_resource_cleanup.cpp
@@ -134,6 +137,9 @@ if(BUILD_TESTING)
     test_dispatch_state_snapshot
     test_audit_log
     test_deadlock_snapshot_assembly
+    test_traffic_coordination_model
+    test_in_flight_reroute_planning
+    test_traffic_recovery_coordinator
     test_fleet_link_guard
     test_vda5050_link_state
     test_traffic_reservation

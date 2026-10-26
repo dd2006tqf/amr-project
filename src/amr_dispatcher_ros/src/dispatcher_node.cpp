@@ -17,6 +17,8 @@
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/auto_charging_planning.hpp"
+#include "amr_dispatcher_core/workflow/in_flight_reroute_planning.hpp"
+#include "amr_dispatcher_core/workflow/traffic_recovery_coordinator.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_endpoint_resolution.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_tick_planning.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
@@ -1630,6 +1632,7 @@ void DispatcherNode::ForgetMissionDispatchState(const std::string& mission_id) {
   // 幂等，供 Complete/Fail/取消/死锁取消/预占判负等终态路径共用
   mission_reserved_at_.erase(mission_id);
   pending_wait_.erase(mission_id);
+  in_flight_pending_wait_.erase(mission_id);
   mission_dispatch_start_.erase(mission_id);
   mission_route_paths_.erase(mission_id);  // Task 5：行驶路径存档随终态遗忘
   vda5050_mission_vehicle_.erase(mission_id);  // Task 7：mission->车辆绑定随终态遗忘
@@ -2527,6 +2530,7 @@ amr_dispatcher_core::dispatcher::DeadlockSnapshot DispatcherNode::BuildDeadlockS
   sources.last_progress = mission_last_progress_;
   sources.reservation_acquired_at = mission_reserved_at_;
   sources.pending_wait = pending_wait_;
+  sources.in_flight_pending_wait = in_flight_pending_wait_;
   if (reservation_table_) {
     sources.reserved_resources = reservation_table_->Snapshot();
   }
@@ -2574,6 +2578,163 @@ void DispatcherNode::DeadlockTick() {
 
   if (deadlock_flag_) {
     RCLCPP_WARN(get_logger(), "Deadlock findings count: %zu", findings.size());
+
+    // Phase 7 (P1/P2): 优先对有向死锁环尝试执行安全拓扑绕行破环
+    bool cycle_resolved_by_reroute = false;
+    for (const auto& finding : findings) {
+      if (finding.kind == amr_dispatcher_core::dispatcher::DeadlockKind::kMutualBlock &&
+          !finding.cycle_path.empty() && catalog_reloader_) {
+        amr_dispatcher_core::workflow::DeadlockRecoveryRequest recovery_req;
+        recovery_req.catalog = &catalog_reloader_->catalog();
+        recovery_req.cycle_mission_ids = finding.mission_ids;
+
+        // 提取死锁环中涉及的边锁 (奇数位资源为锁名)
+        for (std::size_t i = 1; i < finding.cycle_path.size(); i += 2) {
+          if (finding.cycle_path[i].rfind("route_edge:", 0) == 0) {
+            recovery_req.cycle_blocked_edges.insert(finding.cycle_path[i]);
+          }
+        }
+
+        // 构建各涉案在途任务的候选状态
+        for (const auto& mid : finding.mission_ids) {
+          auto it = active_missions_.find(mid);
+          if (it == active_missions_.end()) {
+            continue;
+          }
+          amr_dispatcher_core::workflow::DeadlockRecoveryCandidate cand;
+          cand.mission_id = mid;
+          cand.priority = it->second.priority;
+          cand.destination_node = it->second.dropoff_station;
+
+          // 反查当前绑定的车辆与最近停靠的安全节点
+          auto track_it = mission_tracking_vehicle_.find(mid);
+          if (track_it != mission_tracking_vehicle_.end()) {
+            cand.vehicle_id = track_it->second;
+          } else {
+            auto vda_it = vda5050_mission_vehicle_.find(mid);
+            if (vda_it != vda5050_mission_vehicle_.end()) {
+              cand.vehicle_id = vda_it->second;
+            }
+          }
+
+          auto safe_node_it = vehicle_safe_nodes_.find(cand.vehicle_id);
+          if (safe_node_it != vehicle_safe_nodes_.end() && !safe_node_it->second.empty()) {
+            cand.current_safe_node = safe_node_it->second;
+          } else {
+            cand.current_safe_node = it->second.pickup_station;
+          }
+
+          auto path_it = mission_route_paths_.find(mid);
+          if (path_it != mission_route_paths_.end()) {
+            cand.full_original_path = path_it->second;
+          }
+          if (reservation_table_) {
+            for (const auto& [res_id, owner] : reservation_table_->Snapshot()) {
+              if (owner == mid) {
+                cand.current_held_locks.push_back(res_id);
+              }
+            }
+          }
+          recovery_req.candidates.push_back(std::move(cand));
+        }
+
+        const auto recovery_dec =
+            amr_dispatcher_core::workflow::PlanDeadlockRecovery(recovery_req);
+
+        if (recovery_dec.action ==
+            amr_dispatcher_core::workflow::DeadlockRecoveryDecision::Action::kRerouteMission) {
+          const auto& reroute = recovery_dec.reroute_decision;
+          const std::string& mid = recovery_dec.selected_mission_id;
+          RCLCPP_WARN(get_logger(),
+                      "Phase 7 Deadlock recovery: rerouting mission %s to break cycle",
+                      mid.c_str());
+
+          // 【两阶段置换步骤 1】先对新路线所需锁进行原子预留
+          bool reserve_ok = true;
+          if (!reroute.new_required_locks.empty() && reservation_table_) {
+            auto res = reservation_table_->Reserve(mid, reroute.new_required_locks);
+            reserve_ok = res.success;
+          }
+
+          if (reserve_ok) {
+            // 【两阶段置换步骤 2】预留成功：释放旧路线不再需要的废弃锁
+            if (!reroute.obsolete_locks.empty() && reservation_table_) {
+              reservation_table_->ReleaseResources(mid, reroute.obsolete_locks);
+            }
+
+            // 更新任务路线并下发新计划
+            mission_route_paths_[mid] = reroute.full_updated_path;
+            in_flight_pending_wait_.erase(mid);
+
+            auto track_it = mission_tracking_vehicle_.find(mid);
+            if (track_it != mission_tracking_vehicle_.end() && planner_) {
+              const std::string& vid = track_it->second;
+              auto pose_it = vehicle_poses_.find(vid);
+              amr_dispatcher_core::Pose2D start_pose{
+                  (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+                      ? pose_it->second.pose.x
+                      : current_pose_.x,
+                  (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+                      ? pose_it->second.pose.y
+                      : current_pose_.y,
+                  (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+                      ? pose_it->second.pose.yaw
+                      : current_pose_.yaw};
+              amr_dispatcher_core::Pose2D goal_pose{0.0, 0.0, 0.0};
+              const auto* dest_station =
+                  amr_dispatcher_core::catalog::FindStation(
+                      catalog_reloader_->catalog(), active_missions_[mid].dropoff_station);
+              if (dest_station) {
+                goal_pose.x = dest_station->x;
+                goal_pose.y = dest_station->y;
+                goal_pose.theta = dest_station->yaw;
+              }
+              const auto waypoints = planner_->Plan(start_pose, goal_pose);
+              nav_msgs::msg::Path path_msg;
+              path_msg.header.stamp = now();
+              path_msg.header.frame_id = "map";
+              for (const auto& wp : waypoints) {
+                geometry_msgs::msg::PoseStamped ps;
+                ps.header = path_msg.header;
+                ps.pose.position.x = wp.x;
+                ps.pose.position.y = wp.y;
+                ps.pose.orientation.z = std::sin(wp.theta / 2.0);
+                ps.pose.orientation.w = std::cos(wp.theta / 2.0);
+                path_msg.poses.push_back(ps);
+              }
+              PublishPlanForVehicle(vid, path_msg);
+            } else {
+              auto vda_it = vda5050_mission_vehicle_.find(mid);
+              if (vda_it != vda5050_mission_vehicle_.end()) {
+                PublishVda5050Order(mid, vda_it->second);
+              }
+            }
+
+            if (event_pub_ && event_pub_->is_activated()) {
+              amr_dispatcher_interfaces::msg::MissionEvent msg;
+              msg.stamp = now();
+              msg.mission_id = mid;
+              msg.order_id = active_missions_[mid].order_id;
+              msg.event = "rerouted";
+              msg.to_state = "RUNNING";
+              msg.reason = recovery_dec.message;
+              event_pub_->publish(msg);
+            }
+            cycle_resolved_by_reroute = true;
+            break;
+          } else {
+            RCLCPP_WARN(get_logger(),
+                        "Reroute reservation failed for mission %s; retaining original locks",
+                        mid.c_str());
+          }
+        }
+      }
+    }
+
+    if (cycle_resolved_by_reroute) {
+      return;  // 成功通过拓扑重规划破环，无需走降级取消/暂停
+    }
+
     auto actions = recovery_policy_->Decide(
         findings, [this](const std::string& mid) {
           auto it = mission_attempts_.find(mid);
@@ -3491,6 +3652,10 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
     RCLCPP_WARN(get_logger(), "Dynamic unlock skipped (vehicle %s, order %s): %s",
                 vehicle_id.c_str(), report->order_id.c_str(), decision.message.c_str());
     return;
+  }
+  // 更新该车最近一次确认到达的安全节点（供 Phase 7 交通协调与在途重规划锚定起点）
+  if (!report->last_node_id.empty()) {
+    vehicle_safe_nodes_[vehicle_id] = report->last_node_id;
   }
   if (!decision.lock_ids_to_release.empty()) {
     const auto released = reservation_table_->ReleaseResources(mission_it->first,

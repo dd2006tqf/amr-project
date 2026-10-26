@@ -45,6 +45,13 @@ DeadlockSnapshotAssembly AssembleDeadlockSnapshot(const DeadlockSnapshotSources&
     snap.allocation_graph.waiting_for[mission_id] = resources;
   }
 
+  // 注入在途活跃任务的等待关系（在途车在道口等锁）
+  for (const auto& [mission_id, resources] : sources.in_flight_pending_wait) {
+    if (sources.active_missions.find(mission_id) != sources.active_missions.end()) {
+      snap.allocation_graph.waiting_for[mission_id] = resources;
+    }
+  }
+
   snap.reservation_acquired_at = sources.reservation_acquired_at;
   return assembly;
 }

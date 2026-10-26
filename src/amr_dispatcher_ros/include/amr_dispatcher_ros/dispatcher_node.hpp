@@ -547,6 +547,12 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   };
   std::unordered_map<std::string, VehiclePose> vehicle_poses_;
 
+  // ---- Phase 7: 在途任务等待表与交通协调管理 ----
+  // mission_id -> 在途等待前方资源锁集合 (例如在道口等待 route_edge:B__C)
+  std::unordered_map<std::string, std::vector<std::string>> in_flight_pending_wait_;
+  // vehicle_id -> 最近一次确认到达的安全停靠节点 ID
+  std::unordered_map<std::string, std::string> vehicle_safe_nodes_;
+
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;
   rclcpp::TimerBase::SharedPtr state_timer_;

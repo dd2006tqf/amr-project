@@ -39,6 +39,10 @@ struct DeadlockSnapshotSources {
   // 不做幽灵判定，全部等待者原样进图。
   std::unordered_set<std::string> queued_mission_ids;
   bool filter_stale_waiters = true;
+
+  // 在途运行中等待资源的活跃任务 (mission_id -> waiting_resources)
+  // 用于支持在途任务互锁、在途与排队互锁的完整 WFG 图论成环检测
+  std::unordered_map<std::string, std::vector<std::string>> in_flight_pending_wait;
 };
 
 struct DeadlockSnapshotAssembly {
