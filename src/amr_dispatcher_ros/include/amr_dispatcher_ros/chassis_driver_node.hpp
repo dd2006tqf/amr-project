@@ -48,6 +48,15 @@ class ChassisDriverNode : public rclcpp::Node {
   std::chrono::milliseconds cmd_stale_timeout_{500};
   // B1：本轮失联零速是否已告警/已写帧（恢复后重置，避免每次 poll 刷屏）
   bool stale_zero_active_ = false;
+
+  // ---- P0.6 / A4：per-vehicle 话题与 TF 隔离 ----
+  // vehicle_id 空 = 单车兼容模式（话题名与 frame 名逐字不变）；
+  // 非空 = 话题按 {vid} 派生，TF frame 按 {vid}/odom、{vid}/base_link 派生。
+  std::string vehicle_id_;
+  std::string cmd_vel_topic_{"/cmd_vel_safe"};
+  std::string odom_topic_{"/odom"};
+  std::string link_health_topic_{"/chassis/link_health"};
+  std::string heartbeat_topic_{"/safety/heartbeat/chassis_driver"};
 };
 
 }  // namespace amr_dispatcher_ros

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,17 @@ std::optional<double> EstimateRouteDistance(
     const StationCatalog& catalog, const std::string& from, const std::string& to);
 std::optional<std::vector<std::string>> FindRoutePath(
     const StationCatalog& catalog, const std::string& from, const std::string& to);
+// 绕开指定路段的寻路（静态拓扑绕行）。
+//
+// `blocked_edge_keys` 的元素是**资源键**（`route_edge:<lo>__<hi>`，与
+// dispatcher::ResourceTable::RouteEdgeId 的输出一致），不是裸边名——
+// 绕行与路权预约必须用同一套键，否则"规划时绕开、预约时按另一套算"。
+// 两端点同键（无序）——双向边被禁时两个方向都不可走。
+// 实现与 FindRoutePath 共用同一个 Dijkstra（不复制第二份寻路）；
+// 空集合时行为与 FindRoutePath 逐字一致。
+std::optional<std::vector<std::string>> FindRoutePathAvoiding(
+    const StationCatalog& catalog, const std::string& from, const std::string& to,
+    const std::unordered_set<std::string>& blocked_edge_keys);
 bool ValidateStationCatalog(const StationCatalog& catalog, std::string* message);
 StationListProjection BuildStationListProjection(const StationCatalog& catalog);
 StationRouteListProjection BuildStationRouteListProjection(const StationCatalog& catalog);

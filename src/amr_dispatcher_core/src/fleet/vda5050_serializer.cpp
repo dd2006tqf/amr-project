@@ -562,6 +562,17 @@ std::optional<VehicleStateReport> DeserializeVda5050State(const std::string& jso
   report.x = x_val->num_val;
   report.y = y_val->num_val;
   report.yaw = theta_val->num_val;
+  // positionInitialized：缺省视为 true（VDA 5050 必填但部分实现省略），
+  // 显式 false 时位置不可信 -> 该车在自动选车中不合格。
+  if (const auto* init_val = pos_val->Find("positionInitialized")) {
+    if (init_val->IsBool()) {
+      report.agv_position_initialized = init_val->bool_val;
+    } else {
+      report.agv_position_initialized = true;
+    }
+  } else {
+    report.agv_position_initialized = true;
+  }
 
   // orderId
   const auto* order_id_val = root->Find("orderId");

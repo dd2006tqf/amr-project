@@ -44,6 +44,9 @@ add_library(${PROJECT_NAME}
   src/planning/skeleton_planner.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
+  src/dispatcher/dispatch_state_snapshot.cpp
+  src/dispatcher/audit_log.cpp
+  src/dispatcher/deadlock_snapshot_assembly.cpp
   src/dispatcher/mission_comparator.cpp
   src/dispatcher/traffic_reservation.cpp
   src/dispatcher/mission_event_log.cpp
@@ -59,15 +62,21 @@ add_library(${PROJECT_NAME}
   src/catalog/zone_catalog.cpp
   src/fleet/fleet_catalog.cpp
   src/fleet/fleet_runtime_state.cpp
+  src/fleet/vda5050_link_state.cpp
   src/fleet/vehicle_adapter_interface.cpp
   src/fleet/vda5050_serializer.cpp
   src/fleet/vda5050_order_builder.cpp
   src/fleet/force_clear_link.cpp
+  src/fleet/vehicle_assignment.cpp
+  src/fleet/vehicle_assignment_request_builder.cpp
+  src/fleet/vehicle_selection_strategy.cpp
   src/facility/facility_catalog.cpp
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
+  src/facility/facility_adapter_interface.cpp
   src/workflow/mission_profile.cpp
   src/workflow/order_payload.cpp
+  src/workflow/payload_schema.cpp
   src/workflow/fulfillment_workflow.cpp
   src/workflow/payload_workflow.cpp
   src/workflow/mission_runtime_workflow.cpp
@@ -77,11 +86,18 @@ add_library(${PROJECT_NAME}
   src/workflow/mission_event_log.cpp
   src/workflow/traffic_planning.cpp
   src/workflow/dynamic_unlocking.cpp
+  src/workflow/fleet_link_guard.cpp
+  src/workflow/time_space_planning.cpp
+  src/workflow/auto_charging_planning.cpp
   src/workflow/workflow_control.cpp
   src/workflow/mission_estimator.cpp
   src/workflow/mission_preflight.cpp
   src/workflow/station_transport_workflow.cpp
   src/workflow/station_sequence_workflow.cpp
+  src/workflow/order_batch_bundling.cpp
+  src/workflow/traffic_coordination_model.cpp
+  src/workflow/in_flight_reroute_planning.cpp
+  src/workflow/traffic_recovery_coordinator.cpp
   src/workflow/docking_workflow.cpp
   src/workflow/mission_charging_workflow.cpp
   src/workflow/mission_resource_cleanup.cpp
@@ -118,6 +134,14 @@ if(BUILD_TESTING)
     test_stanley
     test_mission_queue
     test_mission_state
+    test_dispatch_state_snapshot
+    test_audit_log
+    test_deadlock_snapshot_assembly
+    test_traffic_coordination_model
+    test_in_flight_reroute_planning
+    test_traffic_recovery_coordinator
+    test_fleet_link_guard
+    test_vda5050_link_state
     test_traffic_reservation
     test_mission_event_log
     test_link_quality
@@ -143,6 +167,7 @@ if(BUILD_TESTING)
     test_mission_profile_builders
     test_queued_mission
     test_order_payload
+    test_payload_schema
     test_fulfillment_workflow
     test_payload_workflow
     test_mission_runtime_workflow
@@ -152,13 +177,13 @@ if(BUILD_TESTING)
     test_workflow_mission_event_log
     test_traffic_planning
     test_dynamic_unlocking
+    test_time_space_planning
     test_workflow_control
     test_station_transport_workflow
     test_station_sequence_workflow
     test_docking_workflow
     test_mission_charging_workflow
     test_mission_resource_cleanup
-    test_mission_preflight
     test_operator_snapshot
     test_dock_catalog
     test_station_catalog
@@ -171,15 +196,28 @@ if(BUILD_TESTING)
     test_vda5050_serializer
     test_vda5050_order_builder
     test_force_clear_link
+    test_vehicle_assignment
+    test_vehicle_assignment_request_builder
+    test_vehicle_selection_strategy
+    test_auto_charging_planning
+    test_order_batch_bundling
+    test_assignment_dispatch_action
+    test_vda5050_vehicle_binding
+    test_dispatch_gate_planning
+    test_dispatch_endpoint_resolution
+    test_dispatch_tick_planning
+    test_find_route_path_avoiding
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
+    test_facility_adapter_interface
     test_submit_order_router
     test_topology_projection
     test_end_to_end_pipeline
+    test_multi_vehicle_time_space
   )
   foreach(test_name IN LISTS UNIT_TESTS)
-    if(test_name STREQUAL "test_end_to_end_pipeline")
+    if(test_name STREQUAL "test_end_to_end_pipeline" OR test_name STREQUAL "test_multi_vehicle_time_space")
       set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/integration/${test_name}.cpp")
     else()
       set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/unit/${test_name}.cpp")

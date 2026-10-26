@@ -49,6 +49,15 @@ class MissionQueue {
   PopResult PopNext();
   const Mission* Peek() const;
 
+  // 按出队顺序导出前 N 个**未暂停**的排队任务（head-of-line 规避用）。
+  // 队首任务可能因"暂无合格车辆"而暂时派不出去，此时必须能继续看后面的任务，
+  // 否则一个不可派的队首会把整条队列堵死。
+  std::vector<Mission> PeekN(std::size_t max_count) const;
+
+  // 按 mission_id 精确出队（配合 PeekN：跳过不可派的队首，直接出后续可派任务）。
+  // 找不到或该单处于暂停状态时返回失败，不改变队列内容。
+  PopResult PopById(const std::string& mission_id);
+
   // 返回 true 表示命中并删除；同时清理该订单的暂停标记。
   bool Cancel(const std::string& mission_id);
 
@@ -68,6 +77,22 @@ class MissionQueue {
 
   // 按出队顺序导出快照（调度状态话题/CLI 列表用）。
   std::vector<Mission> Snapshot() const;
+
+  // 落盘用的快照：与 Snapshot() 的区别是**不改写 state**。
+  // Snapshot() 会把 state 重算成 kPaused/kPending（面向话题展示），
+  // 直接拿它落盘会把暂停标记丢掉、往返不保真。
+  std::vector<Mission> SnapshotForPersistence() const;
+
+  // 从快照恢复：清空现有内容后按给定顺序重建，并恢复暂停订单标记。
+  // 序号游标不在这里管理（由调用方按 max(sequence)+1 兜底）。
+  // 返回实际入队条数（重复 id / 空 id 会被跳过）。
+  std::size_t Restore(const std::vector<Mission>& missions,
+                      const std::vector<std::string>& paused_order_ids);
+
+  // 追加恢复（不改动暂停标记）：用于"暂停订单下的任务"——它们不能进
+  // Restore 的第一批（会被容量上限挤掉），要在暂停标记生效后再补回。
+  // 返回实际追加条数（重复 id / 空 id / 超容量会被跳过）。
+  std::size_t RestoreAppend(const std::vector<Mission>& missions);
 
  private:
   void Sort() const;

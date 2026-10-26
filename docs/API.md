@@ -7,13 +7,35 @@
 |---|---|---|---|
 | `/odom` | `nav_msgs/msg/Odometry` | 50 Hz | 底盘里程计反馈（位置、姿态四元数、线速度、角速度） |
 | `/chassis/link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 底盘硬件通信链路健康指标（丢包率、CRC错、RTT时延） |
-| `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态） |
+| `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态、`vehicle_links[]` 受管车辆状态） |
 | `/dispatcher/events` | `amr_dispatcher_interfaces/msg/MissionEvent` | 事件触发 | 任务生命周期状态跃迁审计事件 |
 | `/dispatcher/topology_state` | `amr_dispatcher_interfaces/msg/TopologyState` | 2 Hz | 动态路网拓扑状态（任务活跃边、预约锁边及持有者、死锁站点、死锁标志），供 safety_gate 与 RViz 可视化消费 |
 | `/cmd_vel_safe` | `geometry_msgs/msg/Twist` | 50 Hz | 经过安全门控仲裁后的最终安全控制速度（下发至底盘驱动） |
 | `/safety/state` | `amr_dispatcher_interfaces/msg/SafetyState` | 10 Hz | 安全门控运行状态（是否允许运动、当前限速比例、阻断源） |
 | `/tracking/error` | `amr_dispatcher_interfaces/msg/TrackingError` | 20 Hz | 循迹跟踪误差（横向误差、航向误差、前视距离、到达标记） |
 | `/system/aggregated_link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 聚合系统多链路的整体健康评级 |
+
+#### 多车模式（per-vehicle）话题
+
+配置 `vehicle_ids`（逗号分隔的 local_sim 受管车清单）或 `vda5050_vehicles` 后，
+下列话题按 **`{vehicle_id}` 后缀**隔离，每台车一份。**兼容红线**：`vehicle_ids`
+与 `vda5050_vehicles` 都为空（legacy 单车模式）时，下列话题名**逐字不变**。
+
+| 话题形状 | 消息类型 | 描述 |
+|---|---|---|
+| `/plan/{vid}` | `nav_msgs/msg/Path` | 该车的待跟踪路点序列（VDA 5050 车**不发布**：其运动由自带控制器执行） |
+| `/odom/{vid}` | `nav_msgs/msg/Odometry` | 该车里程计反馈 |
+| `/tracking/error/{vid}` | `amr_dispatcher_interfaces/msg/TrackingError` | 该车循迹跟踪误差与到达标记 |
+| `/cmd_vel_raw/{vid}` | `geometry_msgs/msg/Twist` | 该车循迹控制器的原始期望速度 |
+| `/cmd_vel_safe/{vid}` | `geometry_msgs/msg/Twist` | 该车安全门控后的最终速度 |
+| `/safety/heartbeat/path_tracker/{vid}` | `std_msgs/msg/Bool` | 该车循迹节点心跳 |
+| `/safety/heartbeat/chassis_driver/{vid}` | `std_msgs/msg/Bool` | 该车底盘驱动心跳 |
+| `/chassis/link_health/{vid}` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 该车链路健康指标 |
+
+TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢同一 frame）。
+
+`/safety/estop`、`/safety/bumper` 是**全局安全信号** —— 任何位置的急停/碰撞都
+必须让全部车辆停车，因此多车模式下每台车的安全门**同时订阅**全局话题与本车话题。
 
 ### 订阅话题 (Subscribed Topics)
 | 话题名称 | 消息类型 | 描述 |
@@ -40,6 +62,10 @@
   - `int32 priority`: 优先级数值（越大越优先）
   - `int64 deadline_unix_ms`: 截止时间戳毫秒（供 EDF 调度策略）
   - `int32 expected_seconds`: 预估执行秒数（供 SJF 调度策略）
+  - `string assigned_vehicle_id`: **显式指定承接车辆** id（空 = 由选车策略决定）。
+    显式指定不豁免任何硬约束：车辆必须在线、未隔离、未忙、具备所需能力、
+    电量达标、位置有效且状态新鲜，否则该单按三态语义处置（留队/暂停/判负）。
+    *该字段为末尾追加，旧客户端不受影响。*
 - **响应参数**:
   - `bool accepted`: 是否入队成功
   - `string mission_id`: 最终任务 ID
@@ -79,6 +105,37 @@
 ### `/dispatcher/release_resource` (`amr_dispatcher_interfaces/srv/ReleaseResource`)
 凭 Token 释放已申请的拓扑互斥资源。
 - **请求参数**: `string resource_id`, `string holder_id`, `string token`
+- **响应参数**: `bool success`, `string message`
+
+### `/dispatcher/force_clear_vda5050_link` (`amr_dispatcher_interfaces/srv/ForceClearVda5050Link`)
+操作员强制清除**离线** VDA 5050 链路（Spec §5.2 人工强解半边）。
+
+**安全边界**（服务端复验，前端隐藏按钮不是安全边界）：
+- 通信失联 ≠ 可以释放路权。离线只说明通信异常，不证明车辆已停止。
+  本操作是**操作员的人工声明**，由操作员承担车辆物理占位的安全责任。
+- 强清**不摘车**：车辆转入**隔离态**（`quarantined`），仍可见/可审计，
+  但不再参与自动分配；恢复需调用 `/dispatcher/restore_vda5050_link`。
+- 在线车辆 → 拒绝（绝不误杀活车）；已隔离车辆 → 拒绝（避免重复操作）。
+
+- **请求参数**:
+  - `string vehicle_id`: 目标车辆 id（须在受管清单内）
+  - `string confirm_vehicle_id`: 操作员确认的车辆 id，**必须与 `vehicle_id` 完全一致**（防打错车）
+  - `string operator_id`: 操作员标识（必填，写入审计）
+  - `string reason`: 操作原因（必填，写入审计）
+- **响应参数**:
+  - `bool success`: 准入校验结果
+  - `string message`: 拒绝原因或操作摘要
+  - `string[] released_resources`: 实际释放的路权锁 id 清单
+  - `bool quarantined`: 受理后车辆已转入隔离态
+
+### `/dispatcher/restore_vda5050_link` (`amr_dispatcher_interfaces/srv/RestoreVda5050Link`)
+解除受管车辆的隔离态，使其重新参与自动调度。
+- **前置**: 该车曾被 `ForceClearVda5050Link` 隔离。
+- **条件**: 车辆在线 + 操作员已核实车辆物理位置（`position_verified`）。
+  位置未核实的车可能仍占着通道，放回调度池会撞车。
+- **请求参数**:
+  - `string vehicle_id`, `string confirm_vehicle_id`（须完全一致）,
+    `string operator_id`（必填）, `string reason`（必填）, `bool position_verified`
 - **响应参数**: `bool success`, `string message`
 
 ### `/v2/*` 核心调度服务（12 个）
@@ -144,9 +201,126 @@
 
 ---
 
-## 4. REST HTTP 网关接口 (REST API)
+## 4. 调度器参数 (dispatcher_node)
+
+多车车队化的关键参数（`config/dispatcher.yaml`，`dispatcher_node.ros__parameters`）。
+**兼容红线**：`vehicle_ids` 与 `vda5050_vehicles` 都为空时（legacy 单车模式），
+话题名、选车流程、派发节奏与改动前逐字一致。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `vehicle_ids` | `""` | 本调度器管理的 **local_sim** 受管车清单（逗号分隔 vehicle_id）。非空时为每台车建立 `/plan/{vid}`、`/odom/{vid}`、`/tracking/error/{vid}` 的隔离话题与独立执行槽位。 |
+| `vda5050_vehicles` | `""` | 受管 **VDA 5050** 外部车清单（逗号分隔 serialNumber）。这些车**不发布**本地 `/plan`、**不占用**本地执行槽位：运动由其自带控制器执行，完成判定为 state 报文 `lastNodeId` 推进到订单终点。 |
+| `fleet_catalog_file` | `""` | 车辆静态目录（`config/fleet.yaml`）。`robots[].backend` 取 `local_sim`（默认）/ `vda5050`；空 = 用上述两份清单 + 默认静态字段。 |
+| `required_capability` | `"transport"` | 选车所需能力标签（空 = 不限制）。 |
+| `min_battery_percent` | `0.0` | 选车电量下限，低于该值的车不合格。 |
+| `vehicle_state_max_age_ms` | `5000` | 车辆状态新鲜度上限；超时视为状态不确定（暂停自动分配，等状态恢复），**不**盲派。 |
+| `assignment_scan_depth` | `8` | 一次 tick 最多考察前 N 个排队任务（队首阻塞规避：队首不可派时继续找后面可派的）。 |
+| `traffic_mode` | `"static"` | 交通协调模式：`static` = 静态排他锁（现网行为）；`time_space` = 时空窗预约（多车可错峰并行）。 |
+| `time_space_cruise_speed_mps` | `1.0` | 时空窗模式把几何长度换算成时间占用区间用的巡航速度。 |
+| `time_space_accel_overhead_sec` | `1.0` | 每次进入资源额外支付的起步/刹停时间。 |
+| `time_space_turn_overhead_sec` | `0.5` | 按路径拐点数计的转弯附加时间。 |
+| `time_space_safety_margin_m` | `0.2` | 车辆尺寸安全余量（沿路径方向额外占用长度）。 |
+| `time_space_min_headway_sec` | `2.0` | 最小安全间隔：后车进入同一资源前必须与前车拉开该间隔。 |
+
+### 选车结果三态语义
+
+`PlanVehicleAssignment`（纯函数，核心库）返回四类结果，ROS 侧据此处置：
+
+| 结果 | 触发条件 | 调度处置 |
+|---|---|---|
+| `kAssigned` | 全部硬约束满足 | 派发 |
+| `kDeferred` | **暂时**不可用（车忙 / 离线 / 隔离 / 状态陈旧 / 无有效位置） | **任务留队等待**，下个 tick 重试（不判负） |
+| `kIndeterminate` | 状态**不确定**（从未收到该车状态报文） | **暂停自动分配**，等状态恢复 |
+| `kRejected` | **永久**不满足（显式指定车不存在 / 禁用 / 能力不符 / 电量不足） | 该单判负，附明确原因 |
+
+硬约束（`kAssigned` 必须全部满足，**显式指定车辆同样适用**）：
+`online ∧ enabled ∧ !busy ∧ !quarantined ∧ 具备能力 ∧ battery ≥ 阈值 ∧ position_valid ∧ 状态新鲜`。
+
+### 时空窗交通协调（`traffic_mode: time_space`）
+
+- **逐资源区间**：一条路径涉及多个资源（边=通道、节点=路口），每个资源单独
+  计算进入/离开时刻；路口窗口 = 进入路口到驶出路口的完整区间。
+- **全有或全无**：整条路径的预约必须全部成功才提交；任一资源失败则全部回滚，
+  不留半套预约。
+- **窗口到期 ≠ 资源已释放**：物理资源仍需车辆**确认驶离**（`lastNodeId` 推进，
+  Spec §5.3 逐段解锁）才可让后车进入；执行偏离靠 `ExtendTimeSpace` 延期扩窗。
+- **默认仍为 `static`** —— 时空窗模式在多车并发与单测全绿后才显式启用。
+
+### 调度状态持久化与审计落盘（`state_snapshot_file` / `audit_log_file`）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `state_snapshot_file` | `""` | 调度状态快照路径。**空 = 关闭持久化**（进程重启即失，现网行为不变）。 |
+| `state_snapshot_debounce_sec` | `2.0` | 变更合并写盘窗口：派发/完成/取消/暂停/快照脏标记合并后再落盘，避免高频磁盘写。 |
+| `audit_log_file` | `""` | 审计 JSONL 路径。空 = 不落审计（仅保留 `RCLCPP_WARN`）。 |
+
+**快照内容**：`format_version` / `map_hash` / `next_sequence` / 排队任务（含
+`priority`、`sequence`、`deadline_unix_ms`、`expected_seconds`、`assigned_vehicle_id`）/
+暂停订单 id 列表 / 在途任务 / 隔离车辆 id 列表。
+
+**恢复语义**：
+
+| 情形 | 处置 |
+|---|---|
+| 文件不存在 | 视为首次启动（`No dispatch state snapshot ... (fresh start)`） |
+| 文件损坏 / 版本不认识 / 未知状态枚举 | **拒绝恢复**并保留现场文件，从空队列启动 + `ERROR` 日志 |
+| `map_hash` 与当前拓扑不一致 | **拒绝恢复**（不拿旧拓扑的队列去派发），从空队列启动 |
+| 快照里"在途"的任务 | 重启后**重新入队**——新进程没有任何车在跑它们，不假装在途 |
+| 暂停订单下的任务 | 先不入队，待暂停标记生效后再补回（避免被容量上限挤掉） |
+| `next_sequence` | 取快照游标，且不低于已见最大 `sequence`（杜绝恢复后撞号） |
+| 隔离车辆 | 恢复为隔离态（仍在受管清单，但不参与自动分配） |
+
+**落盘原子性**：`tmp` → `flush` 校验 → 回读反序列化校验 → `rename(2)`；
+任一步失败删除 tmp、保留旧文件，脏标记不清（下个周期重试）。
+
+**审计记录**（JSONL，一行一条）：`stamp` / `operator_id` / `action` /
+`vehicle_id` / `mission_id` / `reason` / `released_resources[]`。
+当前会写审计的操作：`force_clear`、`restore`、`restore_state`（启动恢复）、
+`restore_state_rejected`（`map_hash` 不匹配拒绝恢复）。
+
+验收：`./scripts/check_state_persistence_e2e.sh`（独立域 87 / REST 18098 /
+MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → 重启 →
+队列/暂停标记/隔离态保留、`next_sequence` 不回退、审计落盘、`map_hash`
+不匹配时拒绝恢复。
+
+---
+
+## 5. REST HTTP 网关接口 (REST API)
 
 默认监听端口：`8080`
+
+### 5.1 网关参数与安全边界
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `port` | `8080` | 监听端口。 |
+| `html_path` | `tools/operator_console.html` | 操作台单文件路径（含若干回退路径）。 |
+| `auth_token` | `""` | 静态 Bearer Token。**空 = 鉴权关闭**（现网与全部 e2e 行为不变）。非空时除 `GET /`、`GET /index.html` 外全部端点要求 `Authorization: Bearer <token>`，否则 `401`。 |
+| `estop_token` | `""` | `/api/operator/estop` 单独口令；空则回退 `auth_token`。 |
+| `metrics_token` | `""` | `/metrics` 抓取口令；空则回退 `auth_token`（两者都空 = 不鉴权）。与业务口令分开配，是为了让抓取端只拿到只读指标的读取权。 |
+| `idempotency_store_file` | `""` | 幂等键落盘路径；空 = 仅内存（重启即失）。 |
+| `idempotency_capacity` / `idempotency_ttl_sec` | `4096` / `3600` | 幂等键容量上限与 TTL。 |
+| `cors_allow_origin` | `""` | 允许的跨域来源。**空 = 不下发任何 CORS 头**（操作台与网关同源时不需要）；旧实现无条件下发 `Access-Control-Allow-Origin: *`。 |
+| `worker_threads` | `4` | 连接处理线程数。主线程只 `accept`，静默/慢连接只占住一个工作线程。 |
+| `max_pending_connections` | `32` | 待处理连接上限；超限立即回 `503 gateway_overloaded` 并关闭，避免无界积压。 |
+
+**健壮性契约**（`scripts/check_rest_gateway_hardening.sh` 逐条断言）：
+
+| 情形 | 响应 |
+|---|---|
+| `Content-Length` 非数字 / 负数 / 溢出 | `400 bad_request`，**进程存活** |
+| `Content-Length` 超过 1 MiB | `413 payload_too_large` |
+| 请求头段超过 8 KiB | `400 bad_request` |
+| `Transfer-Encoding: chunked` | `400 bad_request`（网关不实现分块传输，不猜长度） |
+| `prio` 非整数 / 越界 | `400 invalid_priority` |
+| 路径不是精确匹配（如 `/api/v1/ordersXYZ`） | `404 not_found` |
+| 建连后不发数据 | 该连接 5s 收发超时；**其它连接不受影响** |
+| 处理过程中抛任何异常 | `400 bad_request`（不再 `std::terminate`） |
+
+> 幂等语义：`idempotency_key` 先占位、**后端确认受理后**才记账。后端不可用
+> （`503`）或超时（`504`）时该 key 被回滚，客户端可用同一 key 重试；已受理
+> 的 key 重放返回 `{"status":"ignored","reason":"idempotent_duplicate"}`。
 
 ### `GET /api/v1/state`
 查询调度系统当前整体健康度与队列信息。
@@ -162,13 +336,20 @@
 ```
 
 ### `POST /api/v1/orders`
-提交订单，支持 `idempotency_key` 幂等性防护。
+提交订单，支持 `idempotency_key` 幂等性防护与上游调度契约字段。
 - **Query Parameters**:
   - `id`: 任务 ID
+  - `order_id`: 业务订单号（若未提供则默认同 id）
   - `from`: 起始站点
   - `to`: 目标站点
   - `prio`: 优先级（整数）
+  - `type`: 任务类型（如 `transport`、`charge` 等）
+  - `deadline_unix_ms`: 期望截止时间戳（毫秒）
+  - `expected_seconds`: 预估执行耗时（秒）
   - `idempotency_key`: 幂等性令牌（相同 key 重复请求将被自动去重过滤）
+  - `vehicle`: **显式指定承接车辆** id（空 = 由选车策略决定）。
+    显式指定不豁免硬约束：车辆必须在线、未隔离、未忙、能力匹配、电量达标、
+    位置有效且状态新鲜；否则该单按三态语义处置（留队等待 / 暂停自动分配 / 判负）。
 - **Response (Success)**:
 ```json
 {
@@ -177,6 +358,104 @@
   "mission_id": "task_1001"
 }
 ```
+
+### `GET /metrics`
+Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-8`），
+供抓取端直接拉取。渲染逻辑在 `amr_dispatcher_tools/metrics_format.hpp`，
+格式契约由 `MetricsFormatTest`（宿主 ctest）与 `scripts/check_metrics_e2e.sh`
+（真实进程抓取）双重锁定。
+
+| 指标 | 类型 | 来源 |
+|---|---|---|
+| `amr_queue_size` / `amr_queue_capacity` | gauge | `/dispatcher/state` |
+| `amr_active_missions` | gauge | 同上 |
+| `amr_deadlock_active` | gauge | 同上 |
+| `amr_dispatch_total` | counter | 累计派发成功计数 |
+| `amr_dispatch_rejected_total` | counter | 累计派发拒绝计数 |
+| `amr_dispatch_deferred_total` | counter | 累计派发推迟计数 |
+| `amr_lock_contention_total` | counter | 累计锁冲突拒绝计数 |
+| `amr_event_total` | counter | 累计任务生命周期事件计数 |
+| `amr_vehicle_online{vehicle_id}` / `amr_vehicle_busy{vehicle_id}` | gauge | `VehicleLinkState[]` |
+| `amr_vehicle_quarantined{vehicle_id}` | gauge | 同上 |
+| `amr_vehicle_battery_percent{vehicle_id}` | gauge | 同上 |
+| `amr_gateway_requests_total{code}` | counter | 网关自身按状态码计数 |
+
+格式约定（抓取端解析失败即视为缺陷，e2e 逐条断言）：
+- 每个指标都带 `# HELP` / `# TYPE`；**没有样本的族不输出**（避免空族）
+- 标签值里的 `\`、`"`、换行按 exposition 规范转义
+- 数值不使用科学计数法；非有限值写 `NaN` / `+Inf` / `-Inf`
+
+未收到 `DispatcherState` 时，调度类指标输出 `0` 而不是缺样本（抓取端无需处理空洞）。
+
+### `GET /api/v1/vehicle_links`
+查询**受管车辆**的链路与调度状态（结构化消息 `VehicleLinkState`，
+不依赖平行数组）。覆盖 local_sim 与 vda5050 两类后端。
+- **Response**:
+```json
+{
+  "vehicle_links": [
+    {
+      "vehicle_id": "amr_01",
+      "backend": "local_sim",
+      "online": true,
+      "busy": false,
+      "quarantined": false,
+      "position_valid": true,
+      "current_station_id": "station_pickup_A",
+      "battery_percent": 100.0,
+      "state_age_ms": 42,
+      "last_error": ""
+    }
+  ]
+}
+```
+
+### `POST /api/v1/force_clear_link`
+操作员强制清除**离线**链路（危险操作，请求体为 JSON）。
+- **Request Body**:
+```json
+{
+  "vehicle_id": "mock_amr_01",
+  "confirm_vehicle_id": "mock_amr_01",
+  "operator_id": "operator_zhang",
+  "reason": "车辆报废，现场已确认无人"
+}
+```
+四个字段**全部必填**；`confirm_vehicle_id` 必须与 `vehicle_id` 完全一致。
+服务端复验准入条件（在线车拒 / 已隔离拒 / id 不匹配拒）——
+前端隐藏按钮不是安全边界。
+- **Response (Success)**:
+```json
+{
+  "status": "ok",
+  "message": "Force-cleared offline link for mock_amr_01, released 3 resource(s) | ...",
+  "quarantined": true,
+  "released_resources": ["route_node:station_pickup_A", "route_edge:station_dropoff_B__station_pickup_A"]
+}
+```
+- **失败**: 准入校验不通过 → `409 Conflict` `{"status":"rejected","message":"..."}`;
+  缺字段 → `400` `{"error":"missing_fields","detail":"..."}`;
+  服务不可用 → `503`；调用超时 → `504`。
+
+### `POST /api/v1/restore_link`
+解除车辆隔离态，使其重新参与自动调度（请求体为 JSON）。
+- **Request Body**:
+```json
+{
+  "vehicle_id": "mock_amr_01",
+  "confirm_vehicle_id": "mock_amr_01",
+  "operator_id": "operator_zhang",
+  "reason": "车辆已恢复在线，位置已现场核实",
+  "position_verified": true
+}
+```
+`position_verified` 表示操作员已核实车辆物理位置与通道占用 ——
+位置未核实的车可能仍占着通道，放回调度池会撞车。
+- **Response (Success)**:
+```json
+{ "status": "ok", "message": "Restored vehicle mock_amr_01 to dispatch pool | ..." }
+```
+- **失败**: 准入校验不通过 → `409 Conflict`；缺字段 → `400`；服务不可用 → `503`。
 
 ### `GET /api/operator/snapshot`
 查询完整运营快照大盘（与 `GET /api/v1/state` 为同一实现、同一响应体，路由别名）。
@@ -219,3 +498,21 @@
 - **Query Parameters**: `id` — 任务/订单 ID
 - **Response**: `{"status": "ok", "canceled": true}`（`canceled` 反映 CancelOrder 的 `success`）
 - **错误**: 下游服务不可用 → `503` `{"error": "service_unavailable"}`；调用超时 → `504` `{"error": "timeout"}`
+
+---
+
+## 6. Web 操作台浏览器端验收
+
+`tools/operator_console.html` 是零依赖单文件控制台。上述 REST 端点的**浏览器端**
+行为由 `./scripts/check_web_console_e2e.sh` 自动化验收（headless Chrome + CDP 真实点击）：
+
+| 阶段 | 断言 |
+|---|---|
+| panel | 受管车辆面板渲染（id / backend / 在线态 / 位置 / 电量 / 状态时延） |
+| force_clear_online | 在线车强清被**服务端**拒绝（409）——前端隐藏按钮不是安全边界 |
+| force_clear_offline | 缺 `operator_id` / `reason` 时**根本不发请求**；离线车强清受理 → 车辆转入**隔离态**（面板可见） |
+| restore_guard | 未勾选"已核实车辆物理位置"时**根本不发请求** |
+| restore | 勾选后显式恢复 → 解除隔离，车辆重回调度池 |
+
+环境隔离：ROS 栈在容器内跑独立域（`ROS_DOMAIN_ID=82` / MQTT :18890 / REST :18092），
+浏览器在宿主机通过容器 IP 直连网关。

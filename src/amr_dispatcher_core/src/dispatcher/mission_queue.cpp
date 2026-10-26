@@ -95,6 +95,46 @@ const Mission* MissionQueue::Peek() const {
   return it == items_.end() ? nullptr : &*it;
 }
 
+std::vector<Mission> MissionQueue::PeekN(const std::size_t max_count) const {
+  Sort();
+  std::vector<Mission> result;
+  if (max_count == 0) {
+    return result;
+  }
+  for (const auto& item : items_) {
+    if (IsOrderPaused(item.order_id)) {
+      continue;  // 暂停订单不参与出队
+    }
+    result.push_back(item);
+    if (result.size() >= max_count) {
+      break;
+    }
+  }
+  return result;
+}
+
+MissionQueue::PopResult MissionQueue::PopById(const std::string& mission_id) {
+  PopResult result;
+  Sort();
+  const auto it = std::find_if(items_.begin(), items_.end(),
+                               [&mission_id](const Mission& m) { return m.id == mission_id; });
+  if (it == items_.end()) {
+    result.message = "mission not found: " + mission_id;
+    return result;
+  }
+  if (IsOrderPaused(it->order_id)) {
+    result.all_paused = true;
+    result.message = "order is paused: " + it->order_id;
+    return result;
+  }
+  result.mission = *it;
+  result.mission->state = MissionState::kActive;
+  result.success = true;
+  result.message = "dispatched " + it->id;
+  items_.erase(it);
+  return result;
+}
+
 bool MissionQueue::Cancel(const std::string& mission_id) {
   const auto it = std::find_if(items_.begin(), items_.end(),
                                [&mission_id](const Mission& m) { return m.id == mission_id; });
@@ -156,6 +196,24 @@ bool MissionQueue::Contains(const std::string& mission_id) const {
                      [&mission_id](const Mission& m) { return m.id == mission_id; });
 }
 
+std::size_t MissionQueue::RestoreAppend(const std::vector<Mission>& missions) {
+  std::size_t appended = 0;
+  for (const auto& incoming : missions) {
+    if (incoming.id.empty() || Contains(incoming.id)) {
+      continue;
+    }
+    if (items_.size() >= config_.max_size) {
+      break;
+    }
+    items_.push_back(incoming);
+    ++appended;
+  }
+  if (appended > 0) {
+    dirty_ = true;
+  }
+  return appended;
+}
+
 std::vector<Mission> MissionQueue::Snapshot() const {
   Sort();
   std::vector<Mission> snapshot;
@@ -166,6 +224,36 @@ std::vector<Mission> MissionQueue::Snapshot() const {
     snapshot.push_back(std::move(copy));
   }
   return snapshot;
+}
+
+std::vector<Mission> MissionQueue::SnapshotForPersistence() const {
+  Sort();
+  return items_;  // 保持 state 原样：落盘往返必须逐字还原
+}
+
+std::size_t MissionQueue::Restore(const std::vector<Mission>& missions,
+                                 const std::vector<std::string>& paused_order_ids) {
+  items_.clear();
+  paused_order_ids_.clear();
+  dirty_ = false;
+  for (const auto& id : paused_order_ids) {
+    if (!id.empty()) {
+      paused_order_ids_.insert(id);
+    }
+  }
+  std::size_t restored = 0;
+  for (const auto& incoming : missions) {
+    if (incoming.id.empty() || Contains(incoming.id)) {
+      continue;  // 坏数据/重复 id：跳过而不是让整个恢复失败
+    }
+    if (items_.size() >= config_.max_size) {
+      break;
+    }
+    items_.push_back(incoming);
+    ++restored;
+  }
+  dirty_ = true;  // 恢复后首次访问时按当前比较器重排
+  return restored;
 }
 
 }  // namespace amr_dispatcher_core::dispatcher

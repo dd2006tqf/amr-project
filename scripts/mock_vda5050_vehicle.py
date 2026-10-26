@@ -309,6 +309,10 @@ class VirtualVehicle(object):
 
     # ---- 状态文件 (断链重启断点恢复) ---------------------------------------
     def save_state(self, path):
+        # 未配置状态文件时是 no-op（此前会拼出 ".tmp" 并在 os.replace 处炸掉：
+        # 多车并发场景未传 --state-file，异常会打断主循环，车直接退出）
+        if not path:
+            return
         data = {
             "header_id": self.header_id,
             "battery": self.battery,

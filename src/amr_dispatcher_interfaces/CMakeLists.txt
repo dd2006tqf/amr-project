@@ -14,6 +14,7 @@ set(msg_files
   "msg/TrackingError.msg"
   "msg/SafetyState.msg"
   "msg/TopologyState.msg"
+  "msg/VehicleLinkState.msg"
 )
 
 set(srv_files
@@ -37,6 +38,7 @@ set(srv_files
   "srv/GetOperatorSnapshot.srv"
   "srv/ValidateSiteConfig.srv"
   "srv/ForceClearVda5050Link.srv"
+  "srv/RestoreVda5050Link.srv"
 )
 
 set(action_files

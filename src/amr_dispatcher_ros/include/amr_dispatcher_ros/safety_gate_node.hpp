@@ -44,6 +44,9 @@ class SafetyGateNode : public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr manual_takeover_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr bumper_sub_;
+  // P0.6：全局急停/碰撞订阅（per-vehicle 模式下与本车话题并存，全局始终被尊重）
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr global_estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr global_bumper_sub_;
   // B1 心跳分源订阅（不再共用单话题）：每条只 Feed 自己的源，避免一侧挂掉拉低另一侧。
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_chassis_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_path_tracker_sub_;
@@ -85,6 +88,24 @@ class SafetyGateNode : public rclcpp::Node {
   std::chrono::milliseconds heartbeat_timeout_{500};
   // M5：降级限速线速度阈值（kClampSpeed 时生效，可按车型配置）
   double degraded_max_linear_x_mps_ = 0.2;
+
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  // vehicle_id 空 = 单车兼容模式（话题名逐字不变）；非空 = 按 {vid} 派生。
+  std::string vehicle_id_;
+  // 已解析后的最终话题名（启动期一次性定稿并打印）
+  std::string raw_cmd_vel_topic_{"/cmd_vel_raw"};
+  std::string safe_cmd_vel_topic_{"/cmd_vel_safe"};
+  std::string teleop_cmd_vel_topic_{"/cmd_vel_teleop"};
+  std::string estop_topic_{"/safety/estop"};
+  std::string bumper_topic_{"/safety/bumper"};
+  std::string manual_takeover_topic_{"/safety/manual_takeover"};
+  std::string chassis_heartbeat_topic_{"/safety/heartbeat/chassis_driver"};
+  std::string path_tracker_heartbeat_topic_{"/safety/heartbeat/path_tracker"};
+  std::string link_health_topic_{"/chassis/link_health"};
+  std::string safety_state_topic_{"/safety/state"};
+  // P0.6：全局急停/碰撞话题（per-vehicle 模式下与本车话题一并订阅）
+  bool subscribe_global_estop_ = true;
+  bool subscribe_global_bumper_ = true;
 };
 
 }  // namespace amr_dispatcher_ros

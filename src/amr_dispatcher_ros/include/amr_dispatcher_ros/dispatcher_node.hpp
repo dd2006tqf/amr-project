@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -11,6 +13,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include "amr_dispatcher_core/dispatcher/deadlock_detector.hpp"
+#include "amr_dispatcher_core/dispatcher/dispatch_state_snapshot.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_comparator.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_event_log.hpp"
 #include "amr_dispatcher_core/dispatcher/mission_queue.hpp"
@@ -18,6 +21,10 @@
 #include "amr_dispatcher_core/dispatcher/station_topology.hpp"
 #include "amr_dispatcher_core/dispatcher/traffic_reservation.hpp"
 #include "amr_dispatcher_core/fleet/force_clear_link.hpp"
+#include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
+#include "amr_dispatcher_core/fleet/vda5050_link_state.hpp"
+#include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
+#include "amr_dispatcher_core/workflow/time_space_planning.hpp"
 #include "amr_dispatcher_core/path_tracking/geometry_utils.hpp"
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
 #include "amr_dispatcher_core/planning/path_planner_interface.hpp"
@@ -38,6 +45,7 @@
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
+#include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/pause_mission.hpp"
 #include "amr_dispatcher_interfaces/srv/release_resource.hpp"
 #include "amr_dispatcher_interfaces/srv/reserve_resource.hpp"
@@ -117,6 +125,11 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ForceClearVda5050LinkCb(
       const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
       std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp);
+  // Task 7（评审 P0.5）：解除隔离，使车辆重新参与自动分配。
+  // 准入：须已隔离 + 在线 + 操作员声明已核实车辆物理位置。
+  void RestoreVda5050LinkCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Response> resp);
 
   // 12 Core Services
   void EnqueueMissionCb(
@@ -191,6 +204,24 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void NavResultCb(const std::string& mission_id, const GoalHandleNavigate::WrappedResult& result);
 
   void ScheduleTick();
+  // 批次 6.2：低电量自动插充电单（每 tick 检查一次，去重按"车"而非"站点"）。
+  // 决策在 core（PlanAutoCharging，纯函数）；这里只做采集与入队。
+  void PlanAutoChargingTick();
+  // 该车当前是否已有充电单（排队或在途）——去重键
+  bool HasPendingChargeMission(const std::string& vehicle_id) const;
+  // ScheduleTick 的三段（机械切分，语义与切分前逐字一致）：
+  //   1. ScheduleGatesPass：链路守卫 / 容量 / 空闲槽位 / 地图版本 / BT 启动请求
+  //   2. SelectReadyCandidate：PeekN 扫描 + 三态处理 + 队首阻塞规避 + 锁预留
+  //   3. ExecuteDispatch：出队落定 + 起终点解析 + 下发（/plan、VDA 订单、action）
+  bool ScheduleGatesPass();
+  // 已选到车且预留成功的候选（三段之间传递的唯一载荷）
+  struct ReadyCandidate {
+    amr_dispatcher_core::dispatcher::Mission mission;
+    std::string vehicle_id;
+    std::vector<std::string> route_locks;
+  };
+  std::optional<ReadyCandidate> SelectReadyCandidate();
+  void ExecuteDispatch(ReadyCandidate candidate);
   // 依 planner_type_ + 当前站点目录重建 planner_（on_configure 与参数热更共用）
   void RebuildPlanner();
   void DeadlockTick();
@@ -198,15 +229,142 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 清点排队等待记录 + 活跃任务/进度 + 预约表 WFG 数据；不自带锁，调用方沿用各自约定
   amr_dispatcher_core::dispatcher::DeadlockSnapshot BuildDeadlockSnapshot();
   void PublishState();
+  // ---- 批次 2：调度状态持久化与审计落盘（全部默认关闭）----
+  // 变更后打脏标记；ScheduleTick 里按 debounce 窗口合并写盘（不阻塞派发节拍）
+  void MarkStateDirty();
+  // 立即落盘（on_deactivate / on_shutdown / 恢复失败等需要确定性的场合）
+  void FlushStateSnapshot();
+  // 组一份当前状态的快照（不做 IO）
+  amr_dispatcher_core::dispatcher::DispatchStateSnapshot BuildStateSnapshot();
+  // 追加一条审计记录（audit_log_file 为空时只打日志）
+  void AppendAudit(const std::string& action, const std::string& vehicle_id,
+                   const std::string& mission_id, const std::string& operator_id,
+                   const std::string& reason,
+                   const std::vector<std::string>& released_resources = {});
+  static std::string IsoTimestampNow();
   // 结果/取消/恢复后重新武装队列启动请求（行为树 runtime 门控的输入）
   void ReArmQueueStartRequest();
   void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
   void OdomCb(const nav_msgs::msg::Odometry::SharedPtr msg);
 
+  // ---- P0.6 / A4：per-vehicle 话题与 TF 隔离（多车并发基础）----
+  // vehicle_ids 参数（逗号分隔）列出本调度器管理的 local_sim 车辆；
+  // 为每台车建立 /plan/{vid} 发布端、/odom/{vid} 与 /tracking/error/{vid} 订阅。
+  // 兼容性红线：vehicle_ids 为空（默认）时，plan_pub_ 与全局订阅行为逐字不变。
+  void SetupVehicleTopics(const std::string& vehicles_param);
+  // 按车辆 id 取计划发布端：非空且已建 -> /plan/{vid} 的发布端；否则回落到 legacy /plan。
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr PlanPublisherForVehicle(
+      const std::string& vehicle_id);
+  // 发布计划到指定车辆：vehicle_id 非空且有专属发布端 -> /plan/{vid}；否则 -> legacy /plan。
+  void PublishPlanForVehicle(const std::string& vehicle_id, const nav_msgs::msg::Path& path);
+  // per-vehicle 里程计：只更新 vehicle_poses_，不动 legacy 的 current_pose_/has_odom_。
+  void OdomCbForVehicle(const std::string& vehicle_id, const nav_msgs::msg::Odometry::SharedPtr msg);
+  // per-vehicle 跟踪误差回调：把 arrived 信号路由到"该车正在执行的任务"并完成它。
+  void TrackingErrorCbForVehicle(const std::string& vehicle_id,
+                                 const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+  // 派发目标车辆解析：显式指定优先（必须在受管清单内），否则由选车策略决定。
+  std::string ResolveDispatchVehicleId(const amr_dispatcher_core::dispatcher::Mission& mission);
+  // 向"执行该任务的那台车"补发空路径停车。
+  // legacy 模式（vehicle_id 为空）-> 回落 plan_pub_，与改动前逐字等价。
+  void PublishStopPathForMission(const std::string& mission_id);
+
+  // ---- B3：时空窗交通协调 ----
+  // 交通协调模式：static（静态排他锁，现网默认）| time_space（时空窗预约）
+  std::string traffic_mode_{"static"};
+  // 运动时序参数（把几何长度换算成时间占用区间）
+  amr_dispatcher_core::workflow::MotionTimingConfig time_space_timing_{};
+  // 时空窗占用表（仅 time_space 模式使用）：resource_id -> 区间列表
+  amr_dispatcher_core::workflow::TimeSpaceOccupancy time_space_occupancy_;
+  // mission_id -> 该单已预约的时间窗（延期/释放时用）
+  std::unordered_map<std::string, amr_dispatcher_core::workflow::ResourceTimeWindowSet>
+      time_space_windows_;
+  // 是否启用时空窗模式
+  bool UseTimeSpaceMode() const { return traffic_mode_ == "time_space"; }
+  // 为一单规划并【整条路径原子提交】时空窗预约；失败则整体回滚。
+  bool ReserveTimeSpaceForMission(const std::string& mission_id,
+                                  const std::vector<std::string>& path_node_ids,
+                                  std::string* message);
+  // 车辆确认驶离某资源后释放其时间窗（窗口到期 != 资源已释放）。
+  void ReleaseTimeSpaceForResources(const std::string& mission_id,
+                                    const std::vector<std::string>& resource_ids);
+  // 任务终态时全清其时空窗占用。
+  void ReleaseAllTimeSpaceForMission(const std::string& mission_id);
+
+  // ---- P0.6 / A6：受管车目录 + 选车上下文 ----
+  // 车辆静态配置（fleet.yaml）+ 动态状态（里程计 / VDA 5050 state）合成的运行时视图。
+  // 该表是选车（PlanVehicleAssignment）的唯一输入来源（评审问题 3：数据源闭合）。
+  std::unordered_map<std::string, amr_dispatcher_core::fleet::VehicleRuntimeState> vehicle_states_;
+  // 选车所需能力（默认 transport）。
+  std::string required_capability_{"transport"};
+  // 选车最低电量阈值（百分比）。
+  double min_battery_percent_{0.0};
+  // 派发计数器（累积；供 /dispatcher/state 与 /metrics）
+  struct DispatchCounters {
+    std::uint64_t dispatch_total = 0;
+    std::uint64_t dispatch_rejected_total = 0;
+    std::uint64_t dispatch_deferred_total = 0;
+    std::uint64_t lock_contention_total = 0;
+  };
+  DispatchCounters dispatch_counters_;
+  // 自动选车打分策略（参数 vehicle_selection_strategy；未知值回落到 nearest）
+  amr_dispatcher_core::fleet::VehicleSelectionStrategy vehicle_selection_strategy_{
+      amr_dispatcher_core::fleet::VehicleSelectionStrategy::kNearest};
+  // 批次 6.2：低电量自动插充电单（参数 auto_charging_*；默认关闭）
+  bool auto_charging_enabled_{false};
+  std::string auto_charging_station_;
+  double auto_charging_opportunity_threshold_percent_{30.0};
+  double auto_charging_critical_threshold_percent_{15.0};
+  int auto_charging_opportunity_priority_{0};
+  int auto_charging_critical_priority_{5};
+  // 选车状态最大时延（毫秒）：超龄 -> 状态不确定。
+  int64_t vehicle_state_max_age_ms_{5000};
+  // 当前是否处于"状态不确定"导致的自动分配暂停（kIndeterminate）。
+  bool auto_assignment_paused_{false};
+
+  // 选车永久拒绝的排队任务收口：出队 + 释放预留 + 事件 + 重新武装启动请求。
+  void RejectedQueuedMission(const amr_dispatcher_core::dispatcher::Mission& mission,
+                             const std::string& reason);
+  // 组装选车上下文：从 vehicle_states_ + 站点目录算"车到取货点"的路网成本。
+  amr_dispatcher_core::fleet::VehicleAssignmentRequest BuildAssignmentRequest(
+      const amr_dispatcher_core::dispatcher::Mission& mission);
+  // 按 mission.assigned_vehicle_id / 选车策略决定承接车辆。
+  // 返回值语义与核心三态一致（kAssigned/kDeferred/kIndeterminate/kRejected）。
+  amr_dispatcher_core::fleet::VehicleAssignmentDecision SelectVehicleForMission(
+      const amr_dispatcher_core::dispatcher::Mission& mission);
+  // 刷新车辆动态状态（里程计 / VDA 5050 state -> position_valid / state_time / 电量）。
+  void RefreshVehicleStates();
+  // 把车辆目录（fleet.yaml）合并进 vehicle_states_ 的静态字段。
+  void LoadFleetCatalog();
+
+  // ---- P0.6 / A5：per-vehicle 执行槽位 ----
+  // 车辆 -> 正在执行的任务（key 为空串 = legacy 全局 /plan 槽位，单车兼容）。
+  std::unordered_map<std::string, std::string> vehicle_current_mission_;
+  // 任务 -> 执行该任务的车（与上表互为逆映射；终态时成对清除）。
+  std::unordered_map<std::string, std::string> mission_tracking_vehicle_;
+  // 占用执行槽位（派发时调用）：同一台车已有在途任务时返回 false（不得抢占）。
+  bool AssignTrackingSlot(const std::string& mission_id, const std::string& vehicle_id);
+  // 释放执行槽位（终态/取消时调用，幂等）；返回被释放的车辆 id（空 = 无槽位）。
+  std::string ReleaseTrackingSlot(const std::string& mission_id);
+  // 该任务当前是否占用执行槽位。
+  bool IsMissionTracked(const std::string& mission_id) const;
+  // 该车当前是否在执行任务。
+  bool IsVehicleBusy(const std::string& vehicle_id) const;
+  // 是否还有空闲的受管车（无可用槽位 -> mission_active=true）。
+  // 无受管车清单时回落 legacy 单槽位语义。
+  bool HasFreeVehicleSlot() const;
+  // 是否配置了受管车清单（local_sim 或 vda5050）。空 = legacy 单车模式。
+  bool HasAnyManagedVehicle() const;
+
   // Task 5：VDA 5050 状态/链路接入（Spec §5.2 断链守卫 + §5.3 逐段解锁）
   // 按参数 vda5050_vehicles（逗号分隔车辆 id 列表，空 = 关闭）为每台受管小车
   // 建立 /fleet/{vid}/state 与 /fleet/{vid}/online 订阅（on_configure 时一次建齐）。
   void SetupVda5050Links(const std::string& vehicles_param);
+  // ---- VDA 5050 链路态查询/变更（隔离位存在链路态表里，避免两处各存一份）----
+  bool IsManagedVda5050Vehicle(const std::string& vehicle_id) const;
+  bool IsVehicleOnline(const std::string& vehicle_id) const;
+  bool IsVehicleQuarantined(const std::string& vehicle_id) const;
+  // 返回 false 表示该车不在受管清单（快照里的陈旧隔离记录属于这种情况）
+  bool SetVehicleQuarantined(const std::string& vehicle_id, bool quarantined);
   void Vda5050StateCb(const std::string& vehicle_id,
                       const std_msgs::msg::String::SharedPtr msg);
   void Vda5050OnlineCb(const std::string& vehicle_id,
@@ -218,9 +376,12 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // VDA 5050 订单，经 /fleet/{vid}/send_order 交给网关下发 MQTT order 话题。
   // 车辆绑定 = vda5050_vehicle_ids_ 上 round-robin（保序向量，不依赖
   // unordered_map 遍历序）；orderId = mission_id，orderUpdateId 按车递增。
-  void PublishVda5050Order(const std::string& mission_id);
-  void CompleteMission(const std::string& mission_id, const std::string& reason);
-  void FailMission(const std::string& mission_id, const std::string& reason);
+  void PublishVda5050Order(const std::string& mission_id,
+                           const std::string& assigned_vehicle_id = "");
+  // mission_id 按值接收：调用方可能传入 active_missions_ 的键引用，
+  // 而本函数会 erase 该条目（引用会悬空）。
+  void CompleteMission(std::string mission_id, const std::string& reason);
+  void FailMission(std::string mission_id, const std::string& reason);
 
   // M7：线程模型约束——queue_（MissionQueue 非线程安全）、reservation_table_、
   // active_missions_ 与参数热更回调共享状态，安全性依赖 main() 的单线程
@@ -231,13 +392,25 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unique_ptr<amr_dispatcher_core::dispatcher::MissionEventLog> event_log_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::DeadlockDetector> deadlock_detector_;
   std::unique_ptr<amr_dispatcher_core::dispatcher::RecoveryPolicy> recovery_policy_;
-  std::unique_ptr<amr_dispatcher_core::dispatcher::StationTopologyGraph> topology_graph_;
 
   std::unordered_map<std::string, amr_dispatcher_core::dispatcher::Mission> active_missions_;
   std::unordered_map<std::string, std::size_t> mission_attempts_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> mission_last_progress_;
   std::mutex active_missions_mutex_;
   std::uint64_t next_sequence_ = 1;
+
+  // ---- 批次 2：状态持久化（state_snapshot_file 为空 = 关闭，默认关闭）----
+  // 变更打脏 + 防抖合并写盘：高频派发/完成不会被翻译成高频磁盘写
+  std::string state_snapshot_file_;
+  double state_snapshot_debounce_sec_ = 2.0;
+  std::string audit_log_file_;
+  bool state_snapshot_dirty_ = false;
+  std::chrono::steady_clock::time_point state_snapshot_dirty_at_{};
+  // 快照里的隔离车辆：on_configure 先记下，等 SetupVda5050Links 建完链路再灌回去
+  std::vector<std::string> restored_quarantined_;
+  std::uint64_t state_snapshot_writes_ = 0;
+  std::uint64_t state_snapshot_failures_ = 0;
+  std::string last_state_snapshot_error_;
   bool deadlock_flag_ = false;
   // 最近一次 DeadlockTick 的环路径快照（findings[].cycle_path；无死锁时清空），
   // PublishState 据此投影 /dispatcher/topology_state 的死锁输入
@@ -259,7 +432,6 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   bool map_version_valid_{true};
   amr_dispatcher_core::path_tracking::Pose2D current_pose_{};
   bool has_odom_ = false;
-  std::string tracking_mission_id_;  // 当前正在跟踪 /plan 的任务（单车一次一个）
 
   rclcpp::Service<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_srv_;
@@ -269,6 +441,8 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
       force_clear_vda5050_link_srv_;
+  rclcpp::Service<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr
+      restore_vda5050_link_srv_;
   // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
   rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
   // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）
@@ -295,15 +469,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ---- Task 5：逐段路权动态释放与断链安全守卫（Spec §5.2/§5.3）----
   // 单台受管 VDA 5050 小车的链路态（单线程 spin，无并发；M7 约束适用）
-  struct Vda5050Link {
+  // ROS 订阅句柄：只放 rclcpp 对象，生命周期随 on_cleanup/SetupVda5050Links 收口
+  struct Vda5050LinkSubs {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr state_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr online_sub;
-    bool online = true;  // 乐观初值：online=false 到达前不阻塞派发（与网关 transient_local 重放收敛）
-    bool seen_state = false;
-    std::chrono::steady_clock::time_point last_state_time{};  // state 陈旧检测
   };
-  // vehicle_id -> 链路态（key 即 vda5050_vehicles 解析后的 id，保序去重）
-  std::unordered_map<std::string, Vda5050Link> vda5050_links_;
+  // 两个表的 key 集合必须一致（都由 vda5050_vehicle_ids_ 驱动），
+  // 拆开是为了让"链路纯数据"能直接喂给 core 的纯函数（守卫/选车）。
+  std::unordered_map<std::string, Vda5050LinkSubs> vda5050_link_subs_;
+  std::unordered_map<std::string, amr_dispatcher_core::fleet::Vda5050LinkState>
+      vda5050_link_states_;
+  // vehicle_id -> 隔离态集合（人工强清后置入；恢复时移除）。
+  // 隔离车仍可见/可审计，但不参与自动分配（选车时视为不合格）。
+  std::unordered_set<std::string> vda5050_quarantined_;
   // mission_id -> 派发时刻的行驶路径（travel order；Peek 阶段只留锁列表，路径在此存档，
   // 供 state 回推身后锁；终态经 ForgetMissionDispatchState 遗忘）
   std::unordered_map<std::string, std::vector<std::string>> mission_route_paths_;
@@ -348,6 +526,32 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  // vehicle_ids 清单（保序去重，来自参数 vehicle_ids；空 = 单车兼容模式）。
+  std::vector<std::string> vehicle_ids_;
+  // vehicle_id -> /plan/{vid} 发布端（on_configure 建，on_activate 激活，on_cleanup 释放）
+  std::unordered_map<std::string, rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr>
+      vehicle_plan_pubs_;
+  // vehicle_id -> /odom/{vid} 订阅
+  std::unordered_map<std::string, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr>
+      vehicle_odom_subs_;
+  // vehicle_id -> /tracking/error/{vid} 订阅
+  std::unordered_map<std::string, rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr>
+      vehicle_tracking_error_subs_;
+  // vehicle_id -> 最新里程计位姿（Pose2D + has_odom 标志）。
+  // 与 legacy 的 current_pose_/has_odom_ 并存：全局 /odom 仍只喂 legacy 字段。
+  struct VehiclePose {
+    amr_dispatcher_core::path_tracking::Pose2D pose{};
+    bool has_odom = false;
+  };
+  std::unordered_map<std::string, VehiclePose> vehicle_poses_;
+
+  // ---- Phase 7: 在途任务等待表与交通协调管理 ----
+  // mission_id -> 在途等待前方资源锁集合 (例如在道口等待 route_edge:B__C)
+  std::unordered_map<std::string, std::vector<std::string>> in_flight_pending_wait_;
+  // vehicle_id -> 最近一次确认到达的安全停靠节点 ID
+  std::unordered_map<std::string, std::string> vehicle_safe_nodes_;
 
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;

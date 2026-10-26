@@ -1,6 +1,16 @@
+--- # markers ---
 # demo_warehouse 站点语义标注（map_ingest_node markers_file 输入）
-# station_pickup_A 位于横向走廊起点附近；station_dropoff_B 位于纵向走廊内，
-# 任务路径必须沿 L 弯折线绕行，任何直线捷径都会穿墙。
+#
+# 通道布局（几何定义见 scripts/gen_demo_map.py）：
+#   lane1 = L 形走廊：横向段 world y∈[1.425,2.625]，竖直段 world x∈[7.425,8.575]
+#   lane2 = 右侧竖直通道 world x∈[10.225,11.425]，经顶部连接段与 lane1 相连
+#
+# 站点：
+#   station_pickup_A / station_dropoff_B  —— lane1：任务路径必须沿 L 弯折线
+#           绕行，任何直线捷径都会穿墙。
+#   station_lane2_pickup_C / station_lane2_dropoff_D —— lane2：C->D 沿 lane2
+#           直上，与 A->B 的路径**不共享任何路权资源**（无共享路口节点、无共享边），
+#           双车并发验收（本地双模拟车 e2e）依赖这一点。
 anchors:
   - id: "station_pickup_A"
     type: "pickup"
@@ -11,4 +21,14 @@ anchors:
     type: "dropoff"
     x: 8.0
     y: 5.5
+    yaw: 1.57
+  - id: "station_lane2_pickup_C"
+    type: "pickup"
+    x: 10.825
+    y: 1.025
+    yaw: 0.0
+  - id: "station_lane2_dropoff_D"
+    type: "dropoff"
+    x: 10.825
+    y: 4.975
     yaw: 1.57

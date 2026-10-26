@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **566/566 unit and integration tests passing in ~3 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning).
+   - **830+ unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning). The exact count is reported by `ctest`, not hard-coded here.
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
@@ -26,7 +26,15 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 4. **Graph Theory Wait-For-Graph (WFG) & 0ms Deadlock Detection**:
    - Real-time dynamic resource allocation model tracking lock dependencies.
    - **0ms deterministic DFS cycle detection** replacing naive timeout guessing, outputting complete cycle paths `[CarA -> Edge1 -> CarB -> Edge2 -> CarA]`.
-   - **Global Dynamic Re-routing (Dijkstra Bypass)**: automatically re-plans alternative detours around deadlock areas instead of dumb halting.
+   - **Static topology reroute (graph-level)**: `catalog::FindRoutePathAvoiding` shares one
+     Dijkstra with the dispatch path planner and takes the *same* resource keys as the
+     reservation table (`route_edge:<lo>__<hi>`), so a detour is planned against exactly the
+     edges the scheduler reserves. Covered by `FindRoutePathAvoidingTest`.
+   - **Not implemented — dynamic obstacle rerouting**: there is no perception input and no
+     reservation model for free-space detours, so the scheduler does **not** re-plan around
+     unexpected obstacles. Deadlock *recovery* still uses retry / pause / cancel
+     (`RecoveryPolicy`); wiring the static reroute into `DeadlockTick` is tracked as the
+     remaining item of Phase 2.5.
 
 5. **Time-Space Topology Reservation (Multi-AMR Concurrency)**:
    - Upgraded from spatial exclusive locking to **Time-Space 3D Interval Reservation** $[t_{\text{start}}, t_{\text{end}}]$.
@@ -49,8 +57,32 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 9. **VDA 5050 Native Fleet Adapter (MQTT)**:
    - **`vda5050_gateway_node`**: bidirectional bridge between ROS 2 topics and standard VDA 5050 v2 JSON over MQTT (`uagv/v2/{manufacturer}/{serialNumber}/{order|instantActions|state|connection}`), with QoS1 heartbeats and LWT `CONNECTIONBROKEN` detection.
    - **Direct order dispatch**: dispatcher publishes serialized VDA 5050 orders (`orderId = mission_id`, full polyline trajectory control points) to `/fleet/{vid}/send_order`; vehicle identity is validated against every state report.
-   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (8 stages, incl. kill -9 chaos drill).
+   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (9 stages, incl. kill -9 chaos drill).
    - **Operator force-clear (`/dispatcher/force_clear_vda5050_link`)**: closes the Spec 5.2 "manual release" branch — for a vehicle that is permanently dead and will never reconnect, the operator can atomically detach its offline link, release the locks bound to that vehicle, abort its in-flight mission, and unblock fleet dispatch. Rejected for online vehicles (never kills a live link).
+   - **Force-clear = quarantine, not removal**: communication loss never implies "safe to release". The force-clear requires an operator id, a mandatory reason, and a `confirm_vehicle_id` that must match the target exactly; the vehicle is then moved into a **quarantined** state — still visible and auditable, but excluded from vehicle selection until an explicit `restore_link` (which requires the operator to have physically verified the vehicle's position).
+   - **Browser-level acceptance**: `scripts/check_web_console_e2e.sh` drives headless Chrome over CDP and really clicks the console buttons — asserting that force-clearing an online vehicle is refused **by the server** (UI hiding is not a security boundary), that missing audit fields or an unverified physical position issue **no REST request at all**, and that the quarantine / restore round-trip is visible in the managed-vehicle panel.
+
+10. **True Multi-Vehicle Fleet Concurrency (Two Execution Backends)**:
+   - **Backend separation**: `local_sim` vehicles run the local motion chain (`/plan/{vid}` -> `path_tracker` -> `safety_gate` -> `chassis`); `vda5050` vehicles own their controllers and receive **only** the MQTT order (no local `/plan`, no local execution slot) — their completion is judged by `lastNodeId` reaching the order's final node. The two chains never impersonate each other.
+   - **Per-vehicle topic & TF isolation**: `/plan/{vid}`, `/odom/{vid}`, `/tracking/error/{vid}`, `/cmd_vel_raw/{vid}`, `/cmd_vel_safe/{vid}` plus `{vid}/odom` / `{vid}/base_link` frames. E-stop and bumper remain **global** safety signals — any vehicle's emergency stop halts the whole fleet. Compatibility red line: with no managed-vehicle list, every topic name stays byte-identical to before.
+   - **Vehicle selection with three-state outcome**: `kAssigned` / `kDeferred` (temporarily unavailable -> the mission **stays queued**) / `kIndeterminate` (state unknown -> auto-assignment paused) / `kRejected` (permanently unsatisfiable -> mission failed with a reason). Explicitly bound vehicles (`assigned_vehicle_id`) get **no exemption** from the hard constraints: online, enabled, not busy, not quarantined, capability-matched, battery above threshold, valid position, fresh state.
+   - **Head-of-line avoidance**: a busy head mission no longer blocks the queue — the scheduler scans the first N queued missions and dispatches the first one that can actually be assigned.
+   - **Time-space traffic coordination (`traffic_mode: time_space`)**: per-resource enter/exit windows (edge = channel, node = intersection) with accel/turn/safety-margin overhead, all-or-nothing commit, extension on deviation, and confirmed-departure release — a window expiring is **not** a resource being released. `static` remains the default.
+   - **Verified end-to-end**: `scripts/check_vda5050_e2e.sh` Stage 7 (two VDA 5050 vehicles, isolated ROS domain, no ROS trackers allowed to stand in) and Stage 8 (two local simulated vehicles, each with its own tracker/gate/chassis on two **disjoint** corridors) both assert genuine concurrency — simultaneous in-flight windows, no cross-talk, no cross-release.
+
+11. **Hardened REST Gateway**:
+   - **No single request can kill the process**: every handler is exception-guarded (`400` on failure), socket receive/send timeouts are 5 s, request body is capped at 1 MiB and the header block at 8 KiB, and `Transfer-Encoding: chunked` is rejected outright instead of guessing a length.
+   - **Connections are decoupled from service**: the accept loop hands work to a bounded pool (4 workers, 32 pending) — a silent or slow client occupies one worker for at most one timeout instead of locking the whole gateway.
+   - **Exact routing and escaping**: substring path matching is gone (`/api/v1/ordersXYZ` is now `404`), and every response field goes through JSON escaping, so a quote or newline in a rejection reason no longer produces an unparseable body.
+   - **Static Bearer auth, off by default** (`auth_token` / `estop_token`; empty = disabled, so existing deployments and all e2e runs are unchanged), with constant-time token comparison.
+   - **Idempotency that survives failure**: a key is only consumed after the backend actually accepts the order — a `503`/`504` rolls it back so the client's retry is not silently swallowed.
+
+12. **Dispatch State Persistence & Audit Trail**:
+   - **Queue survives a crash**: queued missions (with priority, sequence, deadline, vehicle binding), paused orders, in-flight missions, quarantined vehicles and the sequence cursor are written to an atomic YAML snapshot. `state_snapshot_file` is **empty by default** — persistence is opt-in and existing deployments are unchanged.
+   - **Writes are debounced and atomic**: changes are coalesced over a configurable window and written `tmp -> flush -> read-back verify -> rename`, so a reader only ever sees the old snapshot or the new one. A failed write keeps the dirty flag and retries.
+   - **Refuses to restore onto a changed map**: if the snapshot's `map_hash` no longer matches the loaded topology, restoration is rejected outright — dispatching yesterday's queue against today's map would route to stations that may not exist.
+   - **In-flight missions are re-queued, not faked**: a restart has no vehicle running them, so they go back into the queue instead of being reported as active.
+   - **Audit trail on disk**: force-clear / restore / state-restore decisions are appended as one-line JSON (`operator_id`, `reason`, released resources), so "who quarantined this vehicle and why" is answerable after the process that handled it is gone.
 
 ---
 
@@ -139,7 +171,7 @@ The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav
 ./scripts/check_all.sh
 ```
 Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
-- [Step 1] Build pure C++ core and run 566 GTest unit & integration tests via ctest (~3s, 100% green; count evolves with the test suite — your run's exact numbers land in the matrix).
+- [Step 1] Build pure C++ core and run the full GTest unit & integration suite via ctest (~4s, 100% green; the count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
@@ -156,21 +188,86 @@ Automated end-to-end integration test verifying `nav2_map_server` -> `map_ingest
 ```bash
 ./scripts/check_vda5050_e2e.sh
 ```
-Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet adapter — spins up an isolated stack (mosquitto :18884, dispatcher, `vda5050_gateway_node`, REST gateway, MQTT packet capturer, virtual AMR) on `ROS_DOMAIN_ID=77`, then asserts across 7 stages:
+Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet adapter — spins up an isolated stack (mosquitto :18884, dispatcher, `vda5050_gateway_node`, REST gateway, MQTT packet capturer, virtual AMR) on `ROS_DOMAIN_ID=77`, then asserts across 9 stages:
 - Stage 0: `scripts/mock_vda5050_vehicle.py --self-test` (T1-T7 virtual-vehicle contract tests: order parsing, polyline stepping, released=false braking, state-file resume).
 - Stage 4: full closed loop for mission `e2e_m1` — wire-contract validation (orderUpdateId, monotonic sequenceId, >=2 control points), physical trajectory continuity along the polyline, Spec 5.3 trailing unlock, mission completion with zero residual locks.
 - Stage 5: protocol-level `released=false` halt at an unreleased edge boundary, then resume after an order update carrying `released=true`.
 - Stage 6: disconnect guard chaos drill — `kill -9` the vehicle, LWT `CONNECTIONBROKEN`, locks retained (never released while offline), dispatch suspended, state persisted across restart, automatic re-verification, mission resumption, and queued mission auto-dispatch wakeup.
 - Stage 6.8: operator force-clear — force-clearing an **online** vehicle is refused; a second `kill -9` puts the vehicle offline, the retained locks are proven still held (iron rule), the force-clear service then releases exactly that vehicle's locks, aborts its in-flight mission, and unblocks dispatch for the next queued mission.
+- Stage 7: **dual VDA 5050 vehicle concurrency** (isolated `ROS_DOMAIN_ID=78`) — two standard-protocol vehicles, each explicitly bound to one mission; asserts they fly **simultaneously**, that each vehicle receives only its own order, that both missions complete, and that the lock table drains. No ROS tracker is allowed to stand in for a VDA 5050 vehicle here.
+- Stage 8: **dual local simulated vehicle concurrency** (isolated `ROS_DOMAIN_ID=80`) — two `local_sim` vehicles, each with its own `path_tracker` / `safety_gate` / `chassis` on two **disjoint** corridors of the demo map; asserts simultaneous dispatch, that each vehicle really moved (odometry travel) with non-crossed starting poses, both missions completed, and zero residual locks.
 On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
 
-### 4. Launch Physical Serial Device Simulator
+### 4. Run Web Operator Console Browser-Level Acceptance
+```bash
+./scripts/check_web_console_e2e.sh
+```
+Headless-Chrome + CDP harness that **really clicks the console buttons** (no more eyeballing the UI). The ROS stack runs inside the Docker container on an isolated domain (`ROS_DOMAIN_ID=82`, MQTT :18890, REST :18092); the browser runs on the host and talks to the gateway over the container IP. Asserts across 5 phases:
+- Panel: the managed-vehicle table renders with id / backend / online state / position / battery / state age.
+- Force-clear of an **online** vehicle is refused **by the server** (proving that hiding the button in the UI is *not* a security boundary).
+- Missing audit fields (`vehicle_id` / `operator_id` / `reason`) are blocked in the browser — **no REST request is issued at all**.
+- Force-clear of an **offline** vehicle is accepted: the vehicle moves into **quarantine** and the panel shows it.
+- Restore without ticking "physical position verified" is blocked in the browser; with the tick, quarantine is lifted and the vehicle rejoins the dispatch pool.
+
+### 5. Run REST Gateway Hardening Acceptance
+```bash
+./scripts/check_rest_gateway_hardening.sh
+```
+Regression coverage for defects reproduced on this machine against the old gateway
+(a single malformed request could `std::terminate` the process, and one silent
+connection could lock the whole gateway out of service). Starts two gateway instances
+on an isolated domain (`ROS_DOMAIN_ID=86`, ports 18096 / 18097) and asserts, over raw
+sockets: malformed / negative / oversized `Content-Length` and non-numeric `prio` return
+`400` **with the process still alive**, a 2 MiB body returns `413`, chunked transfer is
+rejected, `/api/v1/ordersXYZ` is `404` (exact routing, not substring), a silent
+connection does not block other clients, static Bearer auth returns `401` only when an
+`auth_token` is configured (default off), responses parse as valid JSON, and an
+idempotency key is **not burned** when the backend is unavailable.
+
+### 6. Run State Persistence & Audit Acceptance
+```bash
+./scripts/check_state_persistence_e2e.sh
+```
+Proves that dispatch state survives a hard crash. Runs an isolated stack
+(`ROS_DOMAIN_ID=87`, REST 18098, MQTT 18891) with `state_snapshot_file` and
+`audit_log_file` configured, submits three orders (one paused) plus a quarantined
+vehicle, then `kill -9`s the dispatcher — no graceful shutdown, so nothing can be
+flushed on the way out. On restart it asserts: the queue is back, the paused order is
+still paused, the quarantined vehicle is still quarantined, `next_sequence` did not
+regress, the force-clear audit line is on disk, and a snapshot whose `map_hash` no
+longer matches the topology is **refused** (never dispatch a queue against a map that
+has changed underneath it).
+
+### 7. Run `/metrics` Endpoint Acceptance
+```bash
+./scripts/check_metrics_e2e.sh
+```
+Starts the gateway on an isolated domain (`ROS_DOMAIN_ID=88`, port 18099) with
+`metrics_token` deliberately different from `auth_token`, then asserts the scrape
+output is **valid** Prometheus exposition rather than text that merely looks like it:
+`text/plain; version=0.0.4`, `# HELP`/`# TYPE` for every sample, every sample line
+parseable (label values escaped), no scientific notation, no empty metric families for
+an empty fleet, token isolation (scraping token cannot reach business endpoints), and
+self-proving `amr_gateway_requests_total` samples for both `401` and `200`.
+Without a `DispatcherState` publisher the scheduling gauges degrade to `0` instead of
+disappearing, so a scrape never sees a hole.
+
+### 8. Launch Physical Serial Device Simulator
 ```bash
 python3 scripts/mock_physical_chassis.py
 ```
 Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging tests.
 
-### 5. Open Web Operator Console
+### 9. CI Gates
+GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
+`build-ros2-jazzy` (colcon build of all five packages + **every** package's ctest suite,
+including the gateway helpers and the L2 launch contract test), and `e2e-fleet`
+(`check_map_ingest_e2e.sh` + `check_vda5050_e2e.sh` inside the ROS container).
+Web-console acceptance stays a **manual/nightly** job: it needs a host-side Chrome plus
+an isolated container, which a standard runner does not provide — this is stated here
+rather than implied to be covered by CI.
+
+### 10. Open Web Operator Console
 Simply launch `rest_gateway` or open in any browser:
 ```text
 http://127.0.0.1:8080/

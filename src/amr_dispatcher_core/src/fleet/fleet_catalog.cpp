@@ -163,6 +163,11 @@ std::optional<FleetCatalog> LoadFleetCatalog(const std::filesystem::path& path) 
       current.capabilities = SplitCommaList(*value);
       continue;
     }
+    if (auto value = ValueAfterColon(line, "backend")) {
+      // 执行后端（P0.1）：只接受已知标签，未知值回落 local_sim 并由校验报错
+      current.backend = value->empty() ? "local_sim" : *value;
+      continue;
+    }
   }
   flush_robot();
 
@@ -254,6 +259,43 @@ const FleetRobot* SelectFleetRobotForStationTask(
   return selected;
 }
 
+std::optional<double> EstimateVehicleApproachCost(
+    const StationCatalog& catalog, const double vehicle_x, const double vehicle_y,
+    const std::string& vehicle_station_id, const std::string& target_station_id) {
+  if (target_station_id.empty()) {
+    return std::nullopt;
+  }
+  const auto* target = FindStation(catalog, target_station_id);
+  if (target == nullptr) {
+    return std::nullopt;
+  }
+  // 规则 1：车挂在已知站点上 -> 直接算路网成本
+  if (!vehicle_station_id.empty()) {
+    return EstimateRouteDistance(catalog, vehicle_station_id, target_station_id);
+  }
+  // 规则 2：车在站点之间 -> 先直线接驳到最近站点，再叠路网成本
+  const Station* nearest = nullptr;
+  double nearest_dist = 0.0;
+  for (const auto& station : catalog.stations) {
+    if (station.frame_id != target->frame_id) {
+      continue;  // 跨 frame 不比较
+    }
+    const double d = std::hypot(station.x - vehicle_x, station.y - vehicle_y);
+    if (nearest == nullptr || d < nearest_dist) {
+      nearest = &station;
+      nearest_dist = d;
+    }
+  }
+  if (nearest == nullptr) {
+    return std::nullopt;
+  }
+  const auto route = EstimateRouteDistance(catalog, nearest->id, target_station_id);
+  if (!route.has_value()) {
+    return std::nullopt;
+  }
+  return nearest_dist + *route;
+}
+
 bool ValidateFleetCatalog(const FleetCatalog& catalog, std::string* message) {
   std::unordered_set<std::string> ids;
   for (const auto& robot : catalog.robots) {
@@ -278,6 +320,13 @@ bool ValidateFleetCatalog(const FleetCatalog& catalog, std::string* message) {
     if (!std::isfinite(robot.max_payload_kg) || robot.max_payload_kg < 0.0) {
       if (message != nullptr) {
         *message = "invalid payload for fleet robot: " + robot.id;
+      }
+      return false;
+    }
+    // 执行后端标签必须是已知值（local_sim / vda5050）——不猜、不静默回落
+    if (robot.backend != "local_sim" && robot.backend != "vda5050") {
+      if (message != nullptr) {
+        *message = "unknown execution backend for fleet robot " + robot.id + ": " + robot.backend;
       }
       return false;
     }

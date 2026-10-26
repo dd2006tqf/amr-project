@@ -4,11 +4,17 @@ from launch import LaunchDescription
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler, EmitEvent
+from launch.actions import (DeclareLaunchArgument, RegisterEventHandler, EmitEvent,
+                            OpaqueFunction)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.parameter_descriptions import ParameterValue
 import lifecycle_msgs.msg
+
+def launch_config_value(context, name):
+    """读取 launch 参数的字符串值（OpaqueFunction 上下文用）。"""
+    return context.perform_substitution(LaunchConfiguration(name))
+
 
 def generate_launch_description():
     # 可覆盖参数，默认值与改动前保持一致，不影响本机开发
@@ -31,6 +37,10 @@ def generate_launch_description():
     heartbeat_ms = LaunchConfiguration('heartbeat_ms')
     # Task 5：受管 VDA 5050 车辆列表（逗号分隔，默认空 = 功能关闭）
     vda5050_vehicles = LaunchConfiguration('vda5050_vehicles')
+    # P0.6 / A4：多车并发的 local_sim 车辆清单（逗号分隔；空 = 单车兼容模式）
+    vehicle_ids = LaunchConfiguration('vehicle_ids')
+    # 多车底盘串口清单（逗号分隔，与 vehicle_ids 一一对应；空 = 沿用 serial_device）
+    serial_devices = LaunchConfiguration('serial_devices')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -63,8 +73,7 @@ def generate_launch_description():
                         '吸附生成业务站点；为空时 map_ingest_node 等待有效文件。',
         ),
         DeclareLaunchArgument(
-            'use_vda5050',
-            default_value='false',
+            'use_vda5050',            default_value='false',
             description='为 true 时拉起 vda5050_gateway_node（VDA 5050 <-> ROS 2 MQTT 网关，'
                         '订阅 uagv/v2/+/+/{state,connection} 并发布 /fleet/* 话题）；'
                         '默认 false 保持向后兼容。',
@@ -77,11 +86,24 @@ def generate_launch_description():
                         '启用 Task 5 逐段路权动态释放与断链锁保留守卫；空 = 关闭（现网行为）。',
         ),
         DeclareLaunchArgument(
+            'vehicle_ids',
+            default_value='',
+            description='P0.6 多车并发的 local_sim 车辆清单（逗号分隔 vehicle_id，如 amr_01,amr_02）。'
+                        '非空时为每台车各起一组 path_tracker/safety_gate/chassis，'
+                        '话题按 /plan/{vid}、/odom/{vid}、/tracking/error/{vid} 隔离；'
+                        '空 = 单车兼容模式（话题名逐字不变）。',
+        ),
+        DeclareLaunchArgument(
+            'serial_devices',
+            default_value='',
+            description='多车底盘串口清单（逗号分隔，与 vehicle_ids 一一对应）。'
+                        '为空时所有车沿用 serial_device 参数（单机/仿真场景）。',
+        ),
+        DeclareLaunchArgument(
             'mqtt_broker_host',
             default_value='127.0.0.1',
             description='VDA 5050 网关连接的 MQTT Broker 地址（容器部署可传 broker 容器名）。',
-        ),
-        DeclareLaunchArgument(
+        ),        DeclareLaunchArgument(
             'mqtt_port',
             default_value='1883',
             description='VDA 5050 网关连接的 MQTT Broker 端口。',
@@ -154,6 +176,8 @@ def generate_launch_description():
             {'stations_file': stations_file},
             # Task 5：受管小车清单透传（空 = 逐段解锁/断链守卫关闭）
             {'vda5050_vehicles': ParameterValue(vda5050_vehicles, value_type=str)},
+            # P0.6 / A4：local_sim 车辆清单（空 = 单车兼容模式，话题名逐字不变）
+            {'vehicle_ids': ParameterValue(vehicle_ids, value_type=str)},
         ]
     )
 
@@ -181,11 +205,18 @@ def generate_launch_description():
         )
     )
 
+    # 单车兼容模式专用节点：仅当 vehicle_ids 为空时启用。
+    # 多车并发时由 _multi_vehicle_nodes() 逐车起同名节点（namespace 隔离）。
+    single_vehicle_only = IfCondition(PythonExpression([
+        "'", vehicle_ids, "' == ''",
+    ]))
+
     safety_gate_node = Node(
         package='amr_dispatcher_ros',
         executable='safety_gate_node',
         name='safety_gate_node',
         output='screen',
+        condition=single_vehicle_only,
         parameters=[safety_yaml]
     )
 
@@ -194,6 +225,7 @@ def generate_launch_description():
         executable='chassis_driver_node',
         name='chassis_driver_node',
         output='screen',
+        condition=single_vehicle_only,
         parameters=[
             chassis_yaml,
             {
@@ -210,6 +242,7 @@ def generate_launch_description():
         executable='path_tracker_node',
         name='path_tracker_node',
         output='screen',
+        condition=single_vehicle_only,
         parameters=[{
             'controller_type': 'pure_pursuit',
             'lookahead_distance': 0.6,
@@ -346,6 +379,71 @@ def generate_launch_description():
         }],
     )
 
+
+    # ---- P0.6 / A4：多车并发（local_sim 后端）逐车节点 ----
+    # 每台车一组 path_tracker / safety_gate / chassis_driver：
+    #   * namespace = vehicle_id  -> 节点名唯一（/amr_01/safety_gate_node）
+    #   * vehicle_id 参数         -> 话题按后缀派生（/plan/amr_01、/odom/amr_01、
+    #                                /cmd_vel_safe/amr_01 …），绝对名不受 namespace 影响
+    #   * TF frame 唯一化        -> {vid}/odom、{vid}/base_link
+    # 兼容性红线：vehicle_ids 为空时，本函数不产生任何节点，单车路径逐字不变。
+    def _multi_vehicle_nodes(context):
+        raw_ids = launch_config_value(context, 'vehicle_ids')
+        ids = [t.strip() for t in raw_ids.split(',') if t.strip()]
+        if not ids:
+            return []
+        raw_serials = launch_config_value(context, 'serial_devices')
+        serials = [t.strip() for t in raw_serials.split(',') if t.strip()]
+        default_serial = launch_config_value(context, 'serial_device')
+        health = launch_config_value(context, 'health_rate_hz')
+        nodes = []
+        for idx, vid in enumerate(ids):
+            serial = serials[idx] if idx < len(serials) else default_serial
+            ns = vid
+            nodes.append(Node(
+                package='amr_dispatcher_ros',
+                executable='path_tracker_node',
+                name='path_tracker_node',
+                namespace=ns,
+                output='screen',
+                parameters=[{
+                    'vehicle_id': vid,
+                    'controller_type': 'pure_pursuit',
+                    'lookahead_distance': 0.6,
+                    'target_speed': 0.5,
+                    'control_rate_hz': 20.0,
+                }],
+            ))
+            nodes.append(Node(
+                package='amr_dispatcher_ros',
+                executable='safety_gate_node',
+                name='safety_gate_node',
+                namespace=ns,
+                output='screen',
+                parameters=[
+                    safety_yaml,
+                    {'vehicle_id': vid},
+                ],
+            ))
+            nodes.append(Node(
+                package='amr_dispatcher_ros',
+                executable='chassis_driver_node',
+                name='chassis_driver_node',
+                namespace=ns,
+                output='screen',
+                parameters=[
+                    chassis_yaml,
+                    {
+                        'vehicle_id': vid,
+                        'serial_device': serial,
+                        'health_rate_hz': ParameterValue(health, value_type=float),
+                    },
+                ],
+            ))
+        return nodes
+
+    multi_vehicle_nodes = OpaqueFunction(function=_multi_vehicle_nodes)
+
     return LaunchDescription(declared_arguments + [
         dispatcher_node,
         configure_event,
@@ -353,6 +451,7 @@ def generate_launch_description():
         safety_gate_node,
         chassis_driver_node,
         path_tracker_node,
+        multi_vehicle_nodes,
         navigate_sequence_bridge_node,
         rest_gateway_node,
         dispatcher_visualizer_node,

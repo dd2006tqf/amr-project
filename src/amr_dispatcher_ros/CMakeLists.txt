@@ -267,6 +267,7 @@ if(BUILD_TESTING)
     test_nav_pose_builder
     test_mission_identity
     test_report_freshness
+    test_assignment_dispatch_decision
   )
   foreach(test_name IN LISTS ROS_UNIT_TESTS)
     set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
@@ -277,6 +278,17 @@ if(BUILD_TESTING)
       gtest_discover_tests(${test_name})
     endif()
   endforeach()
+
+  # L2 契约测试：真进程 + 真服务调用（不再是 assertTrue(True)）。
+  # 只在 launch_testing 可用时注册——宿主机的纯 CMake 构建没有它。
+  find_package(launch_testing_ament_cmake QUIET)
+  if(launch_testing_ament_cmake_FOUND)
+    add_launch_test(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../test/l2_launch_contracts/test_lifecycle_contracts.py"
+      TARGET test_lifecycle_contracts
+      TIMEOUT 120
+    )
+  endif()
 endif()
 
 # 安装

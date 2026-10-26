@@ -1,7 +1,16 @@
 # demo_warehouse 标准 ROS 2 nav2_map_server 地图描述（Task 9 端到端验收地图包）
-# 物理区域: 200x140 px @ 0.05 m/px = 10m x 7m
-# L 弯走廊: 横向 x∈[1.0,8.0] y=2.0 + 纵向 x=8.0 y∈[2.0,6.0]，宽 1.2m，
-# 其余区域为黑色障碍物。生成的 PGM 见 map.pgm（P5 二进制，254=通行 0=障碍）。
+# 物理区域: 260x140 px @ 0.05 m/px = 13m x 7m
+#
+# 两条**互不相交**的通道（多车并发验收的基础，生成脚本见 scripts/gen_demo_map.py）：
+#   lane1 = L 形走廊：横向段 world y∈[1.425,2.625]、竖直段 world x∈[7.425,8.575]
+#           （station_pickup_A -> station_dropoff_B 的路径必须沿 L 弯折线绕行，
+#             任何直线捷径都会穿墙）
+#   lane2 = 右侧竖直通道 world x∈[10.225,11.425]，经顶部连接段与 lane1 相连
+#           （station_lane2_pickup_C -> station_lane2_dropoff_D）
+# 两条任务路径不共享任何路权资源（无共享路口节点、无共享边），
+# 因此静态排他锁模式下两台车也能真正并行（e2e Stage 8 本地双模拟车并发）。
+#
+# PGM 约定: P5 二进制，254=通行 0=障碍；行号自上而下（row 0 = 地图顶部 = 最大 y）。
 image: map.pgm
 resolution: 0.05
 origin: [0.0, 0.0, 0.0]

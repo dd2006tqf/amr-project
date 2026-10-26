@@ -4,6 +4,7 @@
 
 #include "amr_dispatcher_ros/safety_publish_decision.hpp"
 #include "amr_dispatcher_ros/report_freshness.hpp"
+#include "amr_dispatcher_ros/vehicle_topic_names.hpp"
 
 using namespace std::chrono_literals;
 
@@ -18,12 +19,59 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("soft_timeout_ms", 2000);
   // M5：降级限速阈值参数化（原为硬编码 ±0.2，与 max_* 参数体系脱节）
   declare_parameter("degraded_max_linear_x_mps", 0.2);
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  declare_parameter("vehicle_id", "");
+  declare_parameter("raw_cmd_vel_topic", "");
+  declare_parameter("safe_cmd_vel_topic", "");
+  declare_parameter("chassis_heartbeat_topic", "");
+  declare_parameter("path_tracker_heartbeat_topic", "");
+  declare_parameter("teleop_cmd_vel_topic", "");
+  declare_parameter("estop_topic", "");
+  declare_parameter("bumper_topic", "");
+  declare_parameter("manual_takeover_topic", "");
+  declare_parameter("link_health_topic", "");
+  declare_parameter("safety_state_topic", "");
 
   // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
   // 周期路径（10Hz/50Hz）不再重复 get_parameter。
   heartbeat_timeout_ =
       std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
+
+  // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
+  vehicle_id_ = get_parameter("vehicle_id").as_string();
+  if (!vehicle_id_.empty() && !IsValidVehicleId(vehicle_id_)) {
+    RCLCPP_ERROR(get_logger(),
+                 "Invalid vehicle_id '%s' (must match [A-Za-z_][A-Za-z0-9_]*); "
+                 "falling back to legacy global topics",
+                 vehicle_id_.c_str());
+    vehicle_id_.clear();
+  }
+  raw_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("raw_cmd_vel_topic").as_string(),
+                                           "/cmd_vel_raw", vehicle_id_);
+  safe_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("safe_cmd_vel_topic").as_string(),
+                                            "/cmd_vel_safe", vehicle_id_);
+  teleop_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("teleop_cmd_vel_topic").as_string(),
+                                              "/cmd_vel_teleop", vehicle_id_);
+  estop_topic_ =
+      ResolveVehicleTopic(get_parameter("estop_topic").as_string(), "/safety/estop", vehicle_id_);
+  bumper_topic_ =
+      ResolveVehicleTopic(get_parameter("bumper_topic").as_string(), "/safety/bumper", vehicle_id_);
+  manual_takeover_topic_ = ResolveVehicleTopic(get_parameter("manual_takeover_topic").as_string(),
+                                               "/safety/manual_takeover", vehicle_id_);
+  chassis_heartbeat_topic_ = ResolveVehicleTopic(get_parameter("chassis_heartbeat_topic").as_string(),
+                                                 "/safety/heartbeat/chassis_driver", vehicle_id_);
+  path_tracker_heartbeat_topic_ =
+      ResolveVehicleTopic(get_parameter("path_tracker_heartbeat_topic").as_string(),
+                          "/safety/heartbeat/path_tracker", vehicle_id_);
+  link_health_topic_ = ResolveVehicleTopic(get_parameter("link_health_topic").as_string(),
+                                           "/chassis/link_health", vehicle_id_);
+  safety_state_topic_ =
+      ResolveVehicleTopic(get_parameter("safety_state_topic").as_string(), "/safety/state", vehicle_id_);
+  // P0.6 安全语义：急停/碰撞是**全局安全信号**——任何位置的急停都必须让全部车辆停车。
+  // 因此 per-vehicle 模式下，除本车话题外还必须订阅全局话题（全局始终被尊重）。
+  subscribe_global_estop_ = (estop_topic_ != "/safety/estop");
+  subscribe_global_bumper_ = (bumper_topic_ != "/safety/bumper");
 
   amr_dispatcher_core::safety::CmdVelGateConfig gate_cfg;
   gate_cfg.max_linear_x_mps = get_parameter("max_linear_x_mps").as_double();
@@ -55,11 +103,11 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   }
 
   raw_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      "/cmd_vel_raw", 10,
+      raw_cmd_vel_topic_, 10,
       std::bind(&SafetyGateNode::RawCmdVelCallback, this, std::placeholders::_1));
 
   teleop_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      "/cmd_vel_teleop", 10,
+      teleop_cmd_vel_topic_, 10,
       [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
         if (manual_takeover_active_) {
           RawCmdVelCallback(msg);
@@ -67,34 +115,48 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       });
 
   manual_takeover_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/manual_takeover", 10,
+      manual_takeover_topic_, 10,
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         manual_takeover_active_ = msg->data;
         RCLCPP_INFO(get_logger(), "Manual takeover changed: %s", manual_takeover_active_ ? "ON" : "OFF");
       });
 
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/estop", 10,
+      estop_topic_, 10,
       std::bind(&SafetyGateNode::EstopCallback, this, std::placeholders::_1));
 
   bumper_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/bumper", 10,
+      bumper_topic_, 10,
       std::bind(&SafetyGateNode::BumperCallback, this, std::placeholders::_1));
 
+  // P0.6：全局急停/碰撞——任何位置的急停都必须让全部车辆停车，故全局话题始终订阅。
+  if (subscribe_global_estop_) {
+    global_estop_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/safety/estop", 10,
+        std::bind(&SafetyGateNode::EstopCallback, this, std::placeholders::_1));
+  }
+  if (subscribe_global_bumper_) {
+    global_bumper_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/safety/bumper", 10,
+        std::bind(&SafetyGateNode::BumperCallback, this, std::placeholders::_1));
+  }
+
   // B1 心跳分源：每条心跳只 Feed 对应来源，一侧停止不会"替"另一侧续命。
+  // P0.6：per-vehicle 模式下订阅本车的心跳话题，但喂狗的来源标识保持
+  // "chassis_driver"/"path_tracker" 不变（来源标识是看门狗语义，不是话题名）。
   heartbeat_chassis_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/heartbeat/chassis_driver", 10,
+      chassis_heartbeat_topic_, 10,
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         WatchdogHeartbeatCallback(msg, "chassis_driver");
       });
   heartbeat_path_tracker_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/safety/heartbeat/path_tracker", 10,
+      path_tracker_heartbeat_topic_, 10,
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         WatchdogHeartbeatCallback(msg, "path_tracker");
       });
 
   link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-      "/chassis/link_health", 10,
+      link_health_topic_, 10,
       [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
         chassis_healthy_ = msg->is_healthy;
         chassis_loss_rate_ = msg->loss_rate;
@@ -108,9 +170,9 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
         deadlock_active_ = msg->deadlock_detected;
       });
 
-  safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_safe", 10);
+  safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(safe_cmd_vel_topic_, 10);
   safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
-      "/safety/state", 10);
+      safety_state_topic_, 10);
 
   watchdog_timer_ = create_wall_timer(
       100ms, std::bind(&SafetyGateNode::WatchdogTick, this));
@@ -122,6 +184,17 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
 
   RCLCPP_INFO(get_logger(), "SafetyGateNode initialized (max_vx=%.2f, max_wz=%.2f)",
               gate_cfg.max_linear_x_mps, gate_cfg.max_angular_z_radps);
+  // P0.6：打印最终话题名——多车现场核对接线的唯一依据（每个 vehicle 一组）。
+  RCLCPP_INFO(get_logger(),
+              "SafetyGateNode topics (vehicle_id=%s): raw=%s safe=%s teleop=%s "
+              "estop=%s (+global=%s) bumper=%s (+global=%s) manual_takeover=%s "
+              "heartbeat_chassis=%s heartbeat_tracker=%s link_health=%s safety_state=%s",
+              vehicle_id_.empty() ? "<legacy>" : vehicle_id_.c_str(), raw_cmd_vel_topic_.c_str(),
+              safe_cmd_vel_topic_.c_str(), teleop_cmd_vel_topic_.c_str(), estop_topic_.c_str(),
+              subscribe_global_estop_ ? "yes" : "no", bumper_topic_.c_str(),
+              subscribe_global_bumper_ ? "yes" : "no", manual_takeover_topic_.c_str(),
+              chassis_heartbeat_topic_.c_str(), path_tracker_heartbeat_topic_.c_str(),
+              link_health_topic_.c_str(), safety_state_topic_.c_str());
 }
 
 SafetyGateNode::~SafetyGateNode() = default;

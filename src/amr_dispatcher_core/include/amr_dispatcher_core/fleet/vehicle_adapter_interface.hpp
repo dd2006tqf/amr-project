@@ -66,6 +66,9 @@ struct VehicleStateReport {
   double x = 0.0;
   double y = 0.0;
   double yaw = 0.0;
+  // 定位是否已初始化（VDA 5050 agvPosition.positionInitialized）。
+  // false -> 车辆位置不可信 -> 选车时该车**不合格**（不盲派）。
+  bool agv_position_initialized = false;
   double battery_percent = 100.0;
   bool is_charging = false;
   bool estop_active = false;
