@@ -26,7 +26,15 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 4. **Graph Theory Wait-For-Graph (WFG) & 0ms Deadlock Detection**:
    - Real-time dynamic resource allocation model tracking lock dependencies.
    - **0ms deterministic DFS cycle detection** replacing naive timeout guessing, outputting complete cycle paths `[CarA -> Edge1 -> CarB -> Edge2 -> CarA]`.
-   - **Global Dynamic Re-routing (Dijkstra Bypass)**: automatically re-plans alternative detours around deadlock areas instead of dumb halting.
+   - **Static topology reroute (graph-level)**: `catalog::FindRoutePathAvoiding` shares one
+     Dijkstra with the dispatch path planner and takes the *same* resource keys as the
+     reservation table (`route_edge:<lo>__<hi>`), so a detour is planned against exactly the
+     edges the scheduler reserves. Covered by `FindRoutePathAvoidingTest`.
+   - **Not implemented — dynamic obstacle rerouting**: there is no perception input and no
+     reservation model for free-space detours, so the scheduler does **not** re-plan around
+     unexpected obstacles. Deadlock *recovery* still uses retry / pause / cancel
+     (`RecoveryPolicy`); wiring the static reroute into `DeadlockTick` is tracked as the
+     remaining item of Phase 2.5.
 
 5. **Time-Space Topology Reservation (Multi-AMR Concurrency)**:
    - Upgraded from spatial exclusive locking to **Time-Space 3D Interval Reservation** $[t_{\text{start}}, t_{\text{end}}]$.

@@ -110,8 +110,18 @@
   - 说明：原计划用 `dispatch_trace_file` 新旧路径 diff 做机械防线；实际改为
     "纯函数单测锁定 step 顺序 + 同一套 e2e 全量回归"，未引入该调试参数
 
-- [ ] **拓扑级静态绕行接通**（`FindRoutePathAvoiding` 接入死锁恢复；
+- [ ] **拓扑级静态绕行**（`FindRoutePathAvoiding` 接入死锁恢复；
   A* / 动态障碍绕行**不在本轮范围**）
+  - [x] `catalog::FindRoutePathAvoiding`：与 `FindRoutePath` 共用同一个 Dijkstra，
+    禁用键 = 路权资源键（`route_edge:<lo>__<hi>`），保证"规划时绕开的边"与
+    "预约时锁住的边"是同一套资源；`FindRoutePathAvoidingTest` 10 例
+  - [ ] 接入 `DeadlockTick`。**本轮未做**，原因（如实记录）：
+    绕行触发面是 WFG 环，而环的成因是 `pending_wait_` —— 该记录**只对排队中**
+    的任务生成（`SelectReadyCandidate` 的预留被拒分支），在途任务从不产生等待记录。
+    于是环路只可能由"两个排队任务互等"构成，而排队任务并不持有任何锁，
+    真实调度器上造不出可绕行的环；在没有新的等待来源（在途任务改道/让行）
+    之前接线属于不可达代码。已落地的核心能力（绕行寻路、决策与"新路预约成功
+    才释放旧锁"的落地顺序）为后续接线做好铺垫，接线时需先定义在途任务的等待语义
 - [ ] **CI 门禁 + L2 契约真断言 + `/metrics`**
 
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
