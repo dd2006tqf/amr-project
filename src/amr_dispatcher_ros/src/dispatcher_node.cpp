@@ -12,6 +12,7 @@
 #include "amr_dispatcher_core/dispatcher/deadlock_snapshot_assembly.hpp"
 #include "amr_dispatcher_core/dispatcher/topology_projection.hpp"
 #include "amr_dispatcher_core/fleet/vehicle_assignment_request_builder.hpp"
+#include "amr_dispatcher_core/fleet/vda5050_vehicle_binding.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
@@ -3185,16 +3186,15 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id,
   for (const auto& resource_id : reservation_table_->TimeSpaceResourcesOf(mission_id)) {
     held_locks.insert(resource_id);
   }
-  // 车辆绑定：优先用选车决策给出的承接车辆（A6）；为空时回落到保序清单上的
-  // round-robin（单车配置下结果恒定，与改动前一致）。
-  std::string vehicle_id = assigned_vehicle_id;
-  if (vehicle_id.empty() ||
-      std::find(vda5050_vehicle_ids_.begin(), vda5050_vehicle_ids_.end(), vehicle_id) ==
-          vda5050_vehicle_ids_.end()) {
-    const std::size_t idx = vda5050_rr_cursor_ % vda5050_vehicle_ids_.size();
-    vda5050_rr_cursor_ = (vda5050_rr_cursor_ + 1) % vda5050_vehicle_ids_.size();
-    vehicle_id = vda5050_vehicle_ids_[idx];
-  }
+  // 车辆绑定：优先用选车决策给出的承接车辆（A6）；为空或不在受管清单内时
+  // 回落到保序清单上的 round-robin（单车配置下结果恒定，与改动前一致）。
+  // 判定与游标推进下沉 core 纯函数（Vda5050VehicleBindingTest 覆盖环绕/跳号）。
+  amr_dispatcher_core::fleet::Vda5050VehicleBindingRequest binding_req;
+  binding_req.assigned_vehicle_id = assigned_vehicle_id;
+  binding_req.managed_vehicle_ids = &vda5050_vehicle_ids_;
+  binding_req.round_robin_cursor = &vda5050_rr_cursor_;
+  const std::string vehicle_id =
+      amr_dispatcher_core::fleet::BindVda5050Vehicle(binding_req).vehicle_id;
   const std::uint32_t update_id = vda5050_next_order_update_id_[vehicle_id]++;
   const auto& catalog = catalog_reloader_->catalog();
 
