@@ -30,6 +30,7 @@ VehicleAssignmentRequest BuildVehicleAssignmentRequest(
   request.required_capability = inputs.required_capability;
   request.min_battery_percent = inputs.min_battery_percent;
   request.state_max_age_ms = inputs.state_max_age_ms;
+  request.strategy = inputs.strategy;
 
   // 保序：调用方给的是无序容器导出的列表，遍历序不稳定；先按 id 排序，
   // 保证同分时裁决顺序确定（核心按输入顺序 tiebreak）。

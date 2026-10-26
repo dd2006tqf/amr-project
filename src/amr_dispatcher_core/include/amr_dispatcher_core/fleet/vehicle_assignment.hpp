@@ -27,6 +27,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "amr_dispatcher_core/fleet/vehicle_selection_strategy.hpp"
+
 namespace amr_dispatcher_core::fleet {
 
 // 车辆执行后端：决定"谁在跑这条路径"。
@@ -79,6 +81,8 @@ struct VehicleAssignmentRequest {
   int64_t state_max_age_ms = 5000;
   // vehicle_id -> 到 pickup 的路径成本（米）。缺项 = 距离不可算。
   std::unordered_map<std::string, double> distance_to_pickup_m;
+  // 自动选车的打分策略（显式指定车辆时不起作用）。默认 nearest = 改动前行为。
+  VehicleSelectionStrategy strategy = VehicleSelectionStrategy::kNearest;
 };
 
 // 选车结果分类。

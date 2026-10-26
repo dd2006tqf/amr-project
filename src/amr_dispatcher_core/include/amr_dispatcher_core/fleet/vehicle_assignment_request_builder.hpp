@@ -30,6 +30,8 @@ struct VehicleAssignmentRequestInputs {
   std::string required_capability;
   double min_battery_percent = 0.0;
   int state_max_age_ms = 5000;
+  // 自动选车打分策略（透传给核心；显式指定车辆时不起作用）
+  VehicleSelectionStrategy strategy = VehicleSelectionStrategy::kNearest;
   // 路网成本来源；nullptr 或未加载 -> 不填 distance_to_pickup_m
   const catalog::StationCatalog* catalog = nullptr;
   bool catalog_loaded = false;

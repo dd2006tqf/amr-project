@@ -1264,6 +1264,46 @@ class RestGatewayNode : public rclcpp::Node {
     families.push_back(std::move(quarantined));
     families.push_back(std::move(battery));
 
+    // 派发面计数器（来源：/dispatcher/state 的累积计数字段）
+    MetricFamily dispatch_total;
+    dispatch_total.name = "amr_dispatch_total";
+    dispatch_total.help = "Missions dispatched so far (cumulative)";
+    dispatch_total.type = MetricType::kCounter;
+    dispatch_total.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.dispatch_total)});
+    families.push_back(std::move(dispatch_total));
+
+    MetricFamily dispatch_rejected;
+    dispatch_rejected.name = "amr_dispatch_rejected_total";
+    dispatch_rejected.help = "Missions permanently rejected by vehicle selection";
+    dispatch_rejected.type = MetricType::kCounter;
+    dispatch_rejected.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.dispatch_rejected_total)});
+    families.push_back(std::move(dispatch_rejected));
+
+    MetricFamily dispatch_deferred;
+    dispatch_deferred.name = "amr_dispatch_deferred_total";
+    dispatch_deferred.help = "Dispatch attempts that stayed queued (deferred)";
+    dispatch_deferred.type = MetricType::kCounter;
+    dispatch_deferred.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.dispatch_deferred_total)});
+    families.push_back(std::move(dispatch_deferred));
+
+    MetricFamily contention;
+    contention.name = "amr_lock_contention_total";
+    contention.help = "Route lock reservation failures (static and time-space)";
+    contention.type = MetricType::kCounter;
+    contention.samples.push_back(
+        MetricSample{{}, static_cast<double>(latest_state_.lock_contention_total)});
+    families.push_back(std::move(contention));
+
+    MetricFamily events;
+    events.name = "amr_event_total";
+    events.help = "Mission events appended to the event log";
+    events.type = MetricType::kCounter;
+    events.samples.push_back(MetricSample{{}, static_cast<double>(latest_state_.event_total)});
+    families.push_back(std::move(events));
+
     // 网关自身的请求计数（按状态码分标签；只为已发生的组合产生样本）
     MetricFamily requests;
     requests.name = "amr_gateway_requests_total";

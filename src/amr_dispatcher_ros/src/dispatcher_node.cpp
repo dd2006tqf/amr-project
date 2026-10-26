@@ -53,6 +53,8 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("fleet_catalog_file", "");
   declare_parameter("required_capability", "transport");
   declare_parameter("min_battery_percent", 0.0);
+  // 自动选车的打分策略：nearest（默认，改动前行为）| battery_preferred（低电量软降权）
+  declare_parameter("vehicle_selection_strategy", "nearest");
   declare_parameter("vehicle_state_max_age_ms", 5000);
   // A6：选车扫描深度（队首阻塞规避）——一次 tick 最多考察前 N 个排队任务
   declare_parameter("assignment_scan_depth", 8);
@@ -252,6 +254,20 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   // P0.6 / A6：选车上下文（静态目录 + 参数）
   required_capability_ = get_parameter("required_capability").as_string();
   min_battery_percent_ = get_parameter("min_battery_percent").as_double();
+  {
+    const std::string label = get_parameter("vehicle_selection_strategy").as_string();
+    if (!amr_dispatcher_core::fleet::ParseVehicleSelectionStrategy(
+            label, &vehicle_selection_strategy_)) {
+      RCLCPP_WARN(get_logger(),
+                  "Invalid vehicle_selection_strategy '%s' — falling back to 'nearest' "
+                  "(unknown strategies are never guessed)",
+                  label.c_str());
+      vehicle_selection_strategy_ = amr_dispatcher_core::fleet::VehicleSelectionStrategy::kNearest;
+    }
+    RCLCPP_INFO(get_logger(), "Vehicle selection strategy: %s",
+                amr_dispatcher_core::fleet::VehicleSelectionStrategyLabel(
+                    vehicle_selection_strategy_));
+  }
   vehicle_state_max_age_ms_ = get_parameter("vehicle_state_max_age_ms").as_int();
   LoadFleetCatalog();
 
@@ -1947,6 +1963,8 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
         break;
       }
       case amr_dispatcher_core::workflow::DispatchStep::Kind::kRecordWait:
+        dispatch_counters_.dispatch_deferred_total++;
+        dispatch_counters_.lock_contention_total++;
         // 时空窗被拒是"先告警后记账"，静态锁被拒是"先记账后告警"（保持原顺序）。
         if (step.denial_kind ==
             amr_dispatcher_core::workflow::ReservationAttempt::DenialKind::kTimeSpace) {
@@ -2042,6 +2060,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
   }
 
   amr_dispatcher_core::dispatcher::Mission m = *pop.mission;
+  dispatch_counters_.dispatch_total++;
   m.state = amr_dispatcher_core::dispatcher::MissionState::kActive;
   m.assigned_vehicle_id = dispatch_vehicle_id;  // 落定承接车辆（审计用）
   MarkStateDirty();  // 出队派发：排队集与在途集都变了
@@ -2884,6 +2903,7 @@ void DispatcherNode::ReleaseTimeSpaceForResources(
 void DispatcherNode::RejectedQueuedMission(
     const amr_dispatcher_core::dispatcher::Mission& mission, const std::string& reason) {
   // 选车永久拒绝：任务判负（不进 active_missions_，走不到 Complete/Fail 的终态清理）
+  dispatch_counters_.dispatch_rejected_total++;
   RCLCPP_WARN(get_logger(), "Queued mission %s rejected: %s", mission.id.c_str(), reason.c_str());
   if (reservation_table_) {
     reservation_table_->Release(mission.id);
@@ -3031,6 +3051,7 @@ amr_dispatcher_core::fleet::VehicleAssignmentRequest DispatcherNode::BuildAssign
   inputs.required_capability = required_capability_;
   inputs.min_battery_percent = min_battery_percent_;
   inputs.state_max_age_ms = vehicle_state_max_age_ms_;
+  inputs.strategy = vehicle_selection_strategy_;
   if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
     inputs.catalog = &catalog_reloader_->catalog();
     inputs.catalog_loaded = true;
@@ -3609,6 +3630,12 @@ void DispatcherNode::PublishState() {
   msg.queue_capacity = queue_ ? static_cast<uint32_t>(queue_->capacity()) : 0;
   msg.active_missions_count = static_cast<uint32_t>(active_missions_.size());
   msg.deadlock_detected = deadlock_flag_;
+  msg.dispatch_total = dispatch_counters_.dispatch_total;
+  msg.dispatch_rejected_total = dispatch_counters_.dispatch_rejected_total;
+  msg.dispatch_deferred_total = dispatch_counters_.dispatch_deferred_total;
+  msg.lock_contention_total = dispatch_counters_.lock_contention_total;
+  // 事件总数直接取事件日志的累计计数（日志器自己维护，不另记一份）
+  msg.event_total = event_log_ ? event_log_->total_appended() : 0;
 
   for (const auto& [id, _] : active_missions_) {
     msg.active_mission_ids.push_back(id);

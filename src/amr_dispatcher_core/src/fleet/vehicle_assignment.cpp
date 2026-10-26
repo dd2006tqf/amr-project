@@ -1,7 +1,6 @@
 #include "amr_dispatcher_core/fleet/vehicle_assignment.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -241,20 +240,18 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
     return decision;
   }
 
-  // ---- 合格候选：按路径成本升序（距离不可算者排在后面）----
-  const VehicleRuntimeState* best = nullptr;
-  double best_cost = std::numeric_limits<double>::max();
+  // ---- 合格候选：按策略打分排序（nearest / battery_preferred）----
+  // 打分与同分裁决下沉到 vehicle_selection_strategy（纯函数，可单测）；
+  // 这里只负责把"已合格"的候选与成本表喂进去。
+  std::vector<VehicleRankEntry> rank_inputs;
+  rank_inputs.reserve(eligible.size());
   for (const auto* vehicle : eligible) {
-    const auto it = request.distance_to_pickup_m.find(vehicle->vehicle_id);
-    if (it == request.distance_to_pickup_m.end()) {
-      continue;
-    }
-    if (best == nullptr || it->second < best_cost) {
-      best = vehicle;
-      best_cost = it->second;
-    }
+    rank_inputs.push_back(
+        VehicleRankEntry{vehicle->vehicle_id, 0.0, vehicle->battery_percent});
   }
-  if (best == nullptr) {
+  const auto ranked = RankVehiclesForSelection(request.strategy, rank_inputs,
+                                               request.distance_to_pickup_m);
+  if (ranked.empty()) {
     // 全部合格车距离都不可算 -> 不盲派（宁可不动也不把任务派给到不了取货点的车）
     decision.outcome = AssignmentOutcome::kRejected;
     decision.strategy = "rejected";
@@ -263,8 +260,8 @@ VehicleAssignmentDecision PlanVehicleAssignment(const VehicleAssignmentRequest& 
   }
 
   decision.outcome = AssignmentOutcome::kAssigned;
-  decision.strategy = "nearest";
-  decision.vehicle_id = best->vehicle_id;
+  decision.strategy = VehicleSelectionStrategyLabel(request.strategy);
+  decision.vehicle_id = ranked.front().vehicle_id;
   return decision;
 }
 

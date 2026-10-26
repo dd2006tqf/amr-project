@@ -191,7 +191,10 @@ check(sample_names <= set(typed), f"每个样本都有 TYPE（缺: {sorted(sampl
 
 # 2.4 核心调度指标齐全
 for name in ("amr_queue_size", "amr_queue_capacity", "amr_active_missions",
-             "amr_deadlock_active", "amr_gateway_requests_total"):
+             "amr_deadlock_active", "amr_dispatch_total",
+             "amr_dispatch_rejected_total", "amr_dispatch_deferred_total",
+             "amr_lock_contention_total", "amr_event_total",
+             "amr_gateway_requests_total"):
     check(name in sample_names, f"包含指标 {name}")
 
 # 2.5 无 DispatcherState 时退化为 0（而不是缺样本或崩溃）

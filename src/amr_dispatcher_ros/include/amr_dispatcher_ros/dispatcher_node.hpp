@@ -293,6 +293,17 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::string required_capability_{"transport"};
   // 选车最低电量阈值（百分比）。
   double min_battery_percent_{0.0};
+  // 派发计数器（累积；供 /dispatcher/state 与 /metrics）
+  struct DispatchCounters {
+    std::uint64_t dispatch_total = 0;
+    std::uint64_t dispatch_rejected_total = 0;
+    std::uint64_t dispatch_deferred_total = 0;
+    std::uint64_t lock_contention_total = 0;
+  };
+  DispatchCounters dispatch_counters_;
+  // 自动选车打分策略（参数 vehicle_selection_strategy；未知值回落到 nearest）
+  amr_dispatcher_core::fleet::VehicleSelectionStrategy vehicle_selection_strategy_{
+      amr_dispatcher_core::fleet::VehicleSelectionStrategy::kNearest};
   // 选车状态最大时延（毫秒）：超龄 -> 状态不确定。
   int64_t vehicle_state_max_age_ms_{5000};
   // 当前是否处于"状态不确定"导致的自动分配暂停（kIndeterminate）。
