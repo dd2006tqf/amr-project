@@ -17,6 +17,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_endpoint_resolution.hpp"
+#include "amr_dispatcher_core/workflow/dispatch_tick_planning.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
 #include "amr_dispatcher_core/workflow/fleet_link_guard.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
@@ -1850,130 +1851,170 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
     return std::nullopt;  // 队列任务全部暂停：与 PopNext 失败等价，本 tick 结束
   }
 
-  std::optional<ReadyCandidate> ready;  // 选到车 + 预留成功的候选（本 tick 只取一个）
-  bool saw_deferred = false;
-  bool saw_indeterminate = false;
-  std::string deferred_reason;
-  std::string indeterminate_reason;
-
+  // ---- 组包（纯采集，无副作用）----
+  // 三态处置的顺序、"一 tick 只派一个"、"两类拒绝的记账/告警先后"都由
+  // core 的 PlanDispatchTick 产出有序 step 表达（DispatchTickPlanningTest 覆盖）。
+  amr_dispatcher_core::workflow::DispatchTickRequest tick_request;
+  tick_request.candidates.reserve(candidates.size());
+  std::unordered_map<std::string, amr_dispatcher_core::dispatcher::Mission> missions_by_id;
   for (const auto& candidate_mission : candidates) {
-    // 1) 选车（三态）
+    amr_dispatcher_core::workflow::DispatchCandidate candidate;
+    candidate.mission = candidate_mission;
     // 兼容红线：**legacy 单车模式**（既无 local_sim 受管车、也无 VDA 5050 受管车）
     // 不走选车流程 —— 那里没有"车辆"概念，唯一的执行槽位是空串键
     // （vehicle_current_mission_[""]），与改动前逐字等价。
     // 若此处也调选车，request.vehicles 为空 -> 核心返回 kRejected
     // ("no managed vehicles configured") -> 单车任务被永久判负（实测踩过）。
-    amr_dispatcher_core::fleet::VehicleAssignmentDecision decision;
     if (HasAnyManagedVehicle()) {
-      decision = SelectVehicleForMission(candidate_mission);
+      candidate.assignment = SelectVehicleForMission(candidate_mission);
     } else {
-      decision.outcome = amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned;
-      decision.strategy = "legacy_single_vehicle";
+      candidate.assignment.outcome = amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned;
+      candidate.assignment.strategy = "legacy_single_vehicle";
     }
-    // 三态 -> 调度动作的映射写死在纯函数里（可单测，A7）：
-    // kDeferred 留队 / kIndeterminate 暂停自动分配 / kRejected 判负。
-    const auto dispatch_decision = DecideAssignmentDispatch(decision);
-    if (dispatch_decision.action == AssignmentDispatchAction::kStayQueued) {
-      saw_deferred = true;
-      deferred_reason = dispatch_decision.reason;
-      continue;  // 留队等待，下个 tick 重试
-    }
-    if (dispatch_decision.action == AssignmentDispatchAction::kPauseAutoAssignment) {
-      saw_indeterminate = true;
-      indeterminate_reason = dispatch_decision.reason;
-      continue;  // 状态不确定：暂停自动分配
-    }
-    if (dispatch_decision.action == AssignmentDispatchAction::kReject) {
-      // 永久不满足 -> 该单判负（不静默改派）
-      RCLCPP_WARN(get_logger(), "Queued mission %s rejected by vehicle selection: %s",
-                  candidate_mission.id.c_str(), dispatch_decision.reason.c_str());
-      if (queue_->Cancel(candidate_mission.id)) {
-        RejectedQueuedMission(candidate_mission, dispatch_decision.reason);
-      }
-      continue;
-    }
-    // 2) 预留路由锁（Peek→Reserve→Pop 原子链：预留成功才出队）
-    //    time_space 模式：预约**带时间窗**的路权（多车可错峰并行），
-    //    整条路径全有或全无；static 模式：静态排他锁（现网行为）。
-    std::vector<std::string> route_locks;
     if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
-      route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
+      candidate.route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
           catalog_reloader_->catalog(), candidate_mission.pickup_station,
           candidate_mission.dropoff_station);
     }
-    if (UseTimeSpaceMode()) {
-      // 时空窗模式：不占静态排他锁，改为预约时间窗。
-      std::vector<std::string> path_node_ids;
-      if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() &&
-          !candidate_mission.pickup_station.empty()) {
-        const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
-            catalog_reloader_->catalog(), candidate_mission.pickup_station,
-            candidate_mission.dropoff_station);
-        if (route_path.has_value()) {
-          path_node_ids = *route_path;
+    missions_by_id.emplace(candidate_mission.id, candidate_mission);
+    tick_request.candidates.push_back(std::move(candidate));
+  }
+
+  // ---- 预留回调（唯一有副作用的一段，由 plan 按顺序驱动）----
+  //    time_space 模式：预约**带时间窗**的路权（多车可错峰并行），
+  //    整条路径全有或全无；static 模式：静态排他锁（现网行为）。
+  tick_request.try_reserve =
+      [this, &missions_by_id](const std::string& mission_id,
+                              const std::vector<std::string>& route_locks) {
+        amr_dispatcher_core::workflow::ReservationAttempt attempt;
+        if (UseTimeSpaceMode()) {
+          // 时空窗模式：不占静态排他锁，改为预约时间窗。
+          const auto mission_it = missions_by_id.find(mission_id);
+          std::vector<std::string> path_node_ids;
+          if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() &&
+              mission_it != missions_by_id.end() &&
+              !mission_it->second.pickup_station.empty()) {
+            const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
+                catalog_reloader_->catalog(), mission_it->second.pickup_station,
+                mission_it->second.dropoff_station);
+            if (route_path.has_value()) {
+              path_node_ids = *route_path;
+            }
+          }
+          std::string ts_message;
+          if (!ReserveTimeSpaceForMission(mission_id, path_node_ids, &ts_message)) {
+            attempt.success = false;
+            attempt.denial_kind =
+                amr_dispatcher_core::workflow::ReservationAttempt::DenialKind::kTimeSpace;
+            attempt.message = ts_message;
+            return attempt;
+          }
+          attempt.success = true;
+          return attempt;
         }
+        if (route_locks.empty() || !reservation_table_) {
+          attempt.success = true;
+          return attempt;
+        }
+        auto reserve = reservation_table_->Reserve(mission_id, route_locks);
+        if (!reserve.success) {
+          // 锁被占 -> 该单等锁（留队）；**不占用启动请求**，等锁释放时重试。
+          attempt.success = false;
+          attempt.denial_kind =
+              amr_dispatcher_core::workflow::ReservationAttempt::DenialKind::kStatic;
+          attempt.message = reserve.message;
+          return attempt;
+        }
+        mission_reserved_at_[mission_id] = std::chrono::steady_clock::now();
+        attempt.success = true;
+        return attempt;
+      };
+
+  const auto tick_plan = amr_dispatcher_core::workflow::PlanDispatchTick(tick_request);
+
+  // ---- 按序落地 step ----
+  std::optional<ReadyCandidate> ready;
+  for (const auto& step : tick_plan.steps) {
+    switch (step.kind) {
+      case amr_dispatcher_core::workflow::DispatchStep::Kind::kRejectCandidate: {
+        // 永久不满足 -> 该单判负（不静默改派）
+        RCLCPP_WARN(get_logger(), "Queued mission %s rejected by vehicle selection: %s",
+                    step.mission_id.c_str(), step.reason.c_str());
+        const auto mission_it = missions_by_id.find(step.mission_id);
+        if (mission_it != missions_by_id.end() && queue_->Cancel(step.mission_id)) {
+          RejectedQueuedMission(mission_it->second, step.reason);
+        }
+        break;
       }
-      std::string ts_message;
-      if (!ReserveTimeSpaceForMission(candidate_mission.id, path_node_ids, &ts_message)) {
-        RCLCPP_WARN(get_logger(),
-                    "Time-space reservation denied for queued mission %s: %s",
-                    candidate_mission.id.c_str(), ts_message.c_str());
-        pending_wait_[candidate_mission.id] = route_locks;
-        continue;  // 留队等待（换下一个候选）
-      }
-      // 时空模式下不占静态排他锁：route_locks 仅作记账用途
-      route_locks.clear();
-    }
-    if (!UseTimeSpaceMode() && !route_locks.empty() && reservation_table_) {
-      auto reserve = reservation_table_->Reserve(candidate_mission.id, route_locks);
-      if (!reserve.success) {
-        // 锁被占 -> 该单等锁（留队）；**不占用启动请求**，等锁释放时重试。
-        pending_wait_[candidate_mission.id] = route_locks;
+      case amr_dispatcher_core::workflow::DispatchStep::Kind::kRecordWait:
+        // 时空窗被拒是"先告警后记账"，静态锁被拒是"先记账后告警"（保持原顺序）。
+        if (step.denial_kind ==
+            amr_dispatcher_core::workflow::ReservationAttempt::DenialKind::kTimeSpace) {
+          RCLCPP_WARN(get_logger(),
+                      "Time-space reservation denied for queued mission %s: %s",
+                      step.mission_id.c_str(), step.reason.c_str());
+          pending_wait_[step.mission_id] = step.route_locks;
+          break;
+        }
+        pending_wait_[step.mission_id] = step.route_locks;
         RCLCPP_WARN(get_logger(), "Reservation denied for queued mission %s: %s",
-                    candidate_mission.id.c_str(), reserve.message.c_str());
+                    step.mission_id.c_str(), step.reason.c_str());
+        break;
+      case amr_dispatcher_core::workflow::DispatchStep::Kind::kEmitReservationDenied: {
+        const auto mission_it = missions_by_id.find(step.mission_id);
+        const std::string order_id =
+            mission_it != missions_by_id.end() ? mission_it->second.order_id : std::string();
         if (event_pub_ && event_pub_->is_activated()) {
           amr_dispatcher_interfaces::msg::MissionEvent msg;
           msg.stamp = now();
-          msg.mission_id = candidate_mission.id;
-          msg.order_id = candidate_mission.order_id;
+          msg.mission_id = step.mission_id;
+          msg.order_id = order_id;
           msg.event = "reservation_denied";
           msg.from_state = "PENDING";
           msg.to_state = "PENDING";  // 任务留在队列，状态不变
-          msg.reason = reserve.message;
+          msg.reason = step.reason;
           event_pub_->publish(msg);
         }
         if (event_log_) {
           amr_dispatcher_core::dispatcher::MissionEvent evt;
           evt.stamp = "now";
-          evt.mission_id = candidate_mission.id;
+          evt.mission_id = step.mission_id;
           evt.event = "reservation_denied";
-          evt.message = reserve.message;
+          evt.message = step.reason;
           event_log_->Append(evt);
         }
-        continue;  // 换下一个候选（队首阻塞规避）
+        break;
       }
-      mission_reserved_at_[candidate_mission.id] = std::chrono::steady_clock::now();
+      case amr_dispatcher_core::workflow::DispatchStep::Kind::kDispatch: {
+        pending_wait_.erase(step.mission_id);
+        ReadyCandidate ready_candidate;
+        const auto mission_it = missions_by_id.find(step.mission_id);
+        if (mission_it != missions_by_id.end()) {
+          ready_candidate.mission = mission_it->second;
+        }
+        ready_candidate.vehicle_id = step.vehicle_id;
+        // 时空模式下不占静态排他锁：route_locks 仅作记账用途
+        if (!UseTimeSpaceMode()) {
+          ready_candidate.route_locks = step.route_locks;
+        }
+        ready = std::move(ready_candidate);
+        break;  // 本 tick 只派一个（保持"一次一个"的节奏与可观测性）
+      }
     }
-    pending_wait_.erase(candidate_mission.id);
-    ReadyCandidate ready_candidate;
-    ready_candidate.mission = candidate_mission;
-    ready_candidate.vehicle_id = decision.vehicle_id;
-    ready_candidate.route_locks = std::move(route_locks);
-    ready = std::move(ready_candidate);
-    break;  // 本 tick 只派一个（保持"一次一个"的节奏与可观测性）
   }
 
   if (!ready.has_value()) {
-    if (saw_indeterminate) {
+    if (tick_plan.saw_indeterminate) {
       // 状态不确定 -> 暂停自动分配（不消费启动请求，等状态恢复自动继续）
       auto_assignment_paused_ = true;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                           "Auto vehicle assignment paused: %s", indeterminate_reason.c_str());
+                           "Auto vehicle assignment paused: %s",
+                           tick_plan.indeterminate_reason.c_str());
       ReArmQueueStartRequest();
-    } else if (saw_deferred) {
+    } else if (tick_plan.saw_deferred) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                            "Vehicle assignment deferred, mission stays queued: %s",
-                           deferred_reason.c_str());
+                           tick_plan.deferred_reason.c_str());
       ReArmQueueStartRequest();  // 留队等待，下个 tick 重试
     }
     return std::nullopt;
@@ -1981,7 +2022,6 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
   auto_assignment_paused_ = false;
   return ready;
 }
-
 void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
   const std::string candidate_id = candidate.mission.id;
   std::vector<std::string> route_locks = std::move(candidate.route_locks);
