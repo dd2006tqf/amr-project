@@ -186,6 +186,7 @@ if(BUILD_TESTING)
     test_force_clear_link
     test_vehicle_assignment
     test_vehicle_assignment_request_builder
+    test_assignment_dispatch_action
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow
