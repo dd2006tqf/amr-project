@@ -189,6 +189,7 @@ if(BUILD_TESTING)
     test_assignment_dispatch_action
     test_vda5050_vehicle_binding
     test_dispatch_gate_planning
+    test_dispatch_endpoint_resolution
     test_facility_catalog
     test_facility_reservation
     test_facility_workflow

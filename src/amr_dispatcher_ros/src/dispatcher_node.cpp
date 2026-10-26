@@ -16,6 +16,7 @@
 #include "amr_dispatcher_core/fleet/vda5050_order_builder.hpp"
 #include "amr_dispatcher_core/fleet/vda5050_serializer.hpp"
 #include "amr_dispatcher_core/workflow/dynamic_unlocking.hpp"
+#include "amr_dispatcher_core/workflow/dispatch_endpoint_resolution.hpp"
 #include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
 #include "amr_dispatcher_core/workflow/fleet_link_guard.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
@@ -2005,21 +2006,21 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
   m.assigned_vehicle_id = dispatch_vehicle_id;  // 落定承接车辆（审计用）
   MarkStateDirty();  // 出队派发：排队集与在途集都变了
 
-  // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负
-  const amr_dispatcher_core::catalog::Station* from_st = nullptr;
-  const amr_dispatcher_core::catalog::Station* to_st = nullptr;
+  // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负。
+  // 判定下沉 core 纯函数（DispatchEndpointResolutionTest 覆盖各处边界）。
   const bool catalog_loaded =
       catalog_reloader_ != nullptr && catalog_reloader_->loaded();
-  if (catalog_loaded) {
-    const auto& catalog = catalog_reloader_->catalog();
-    if (!m.pickup_station.empty()) {
-      from_st = amr_dispatcher_core::catalog::FindStation(catalog, m.pickup_station);
-    }
-    if (!m.dropoff_station.empty()) {
-      to_st = amr_dispatcher_core::catalog::FindStation(catalog, m.dropoff_station);
-    }
-  }
-  if (m.dropoff_station.empty() || !to_st) {
+  amr_dispatcher_core::workflow::DispatchEndpointRequest endpoint_req;
+  endpoint_req.pickup_station = m.pickup_station;
+  endpoint_req.dropoff_station = m.dropoff_station;
+  endpoint_req.catalog_loaded = catalog_loaded;
+  endpoint_req.catalog = catalog_loaded ? &catalog_reloader_->catalog() : nullptr;
+  endpoint_req.has_odom = has_odom_;
+  endpoint_req.current_pose = current_pose_;
+  const auto endpoints =
+      amr_dispatcher_core::workflow::ResolveDispatchEndpoints(endpoint_req);
+  if (endpoints.kind ==
+      amr_dispatcher_core::workflow::DispatchEndpointResolution::Kind::kUnknownDropoff) {
     RCLCPP_WARN(get_logger(), "Mission %s has no resolvable dropoff station (%s, catalog_loaded=%d), failing",
                 m.id.c_str(), m.dropoff_station.c_str(), catalog_loaded);
     if (event_pub_ && event_pub_->is_activated()) {
@@ -2029,7 +2030,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
       msg.order_id = m.order_id;
       msg.event = "plan_failed";
       msg.to_state = "FAILED";
-      msg.reason = "unknown dropoff station: " + m.dropoff_station;
+      msg.reason = endpoints.reason;
       event_pub_->publish(msg);
     }
     // 本单已出队但被判负丢弃：Peek 阶段预留的路由锁须就地释放
@@ -2041,8 +2042,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
     // ExecuteMission goal 须就地 abort：该分支不经 Complete/Fail，不收口则
     // action 客户端永久悬挂、handle 残留在 execute_goal_handles_（终审 F8）
     //（mission_dispatch_time_ 此刻尚未写入，无需额外遗忘）
-    FinishExecuteGoal(m.id, ExecuteFinish::kAbort,
-                      "unknown dropoff station: " + m.dropoff_station, 1);
+    FinishExecuteGoal(m.id, ExecuteFinish::kAbort, endpoints.reason, 1);
     ReArmQueueStartRequest();  // 本单丢弃后，队列中其余任务仍需能被派发
     return;
   }
@@ -2084,13 +2084,11 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
   PublishVda5050Order(m.id, dispatch_vehicle_id);
 
   // 生成并发布路径：path_tracker 订阅 /plan 后开始输出 /cmd_vel_raw
-  amr_dispatcher_core::Pose2D start;
-  if (from_st) {
-    start = {from_st->x, from_st->y, from_st->yaw};
-  } else if (has_odom_) {
-    start = {current_pose_.x, current_pose_.y, current_pose_.yaw};
-  }
-  const amr_dispatcher_core::Pose2D goal{to_st->x, to_st->y, to_st->yaw};
+  // 起点：有 pickup 站点用该站位姿，否则用车辆当前位姿（由纯函数判定）。
+  const amr_dispatcher_core::Pose2D start{endpoints.start.x, endpoints.start.y,
+                                         endpoints.start.yaw};
+  const amr_dispatcher_core::Pose2D goal{endpoints.goal.x, endpoints.goal.y,
+                                         endpoints.goal.yaw};
 
   const auto waypoints = planner_ ? planner_->Plan(start, goal) : std::vector<amr_dispatcher_core::Pose2D>{};
   const auto plan_pub = PlanPublisherForVehicle(dispatch_vehicle_id);
