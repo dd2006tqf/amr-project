@@ -13,6 +13,8 @@ struct ResourceReservation {
   std::string mission_id;
   std::string status = "reserved";
   bool hold_after_completion = true;
+  // 租约超时时间点 (steady_clock)，默认 0 表示永不过期
+  int64_t lease_expires_at_ms = 0;
 };
 
 using FacilityReservationMap = std::unordered_map<std::string, ResourceReservation>;
@@ -72,6 +74,13 @@ FacilityReservationResult ReserveFacilityResource(
     FacilityReservationMap& reservations, const FacilityResource& resource,
     const std::string& holder_id, const std::string& mission_id,
     bool release_existing_for_holder);
+FacilityReservationResult ReserveFacilityResourceWithLease(
+    FacilityReservationMap& reservations, const FacilityResource& resource,
+    const std::string& holder_id, const std::string& mission_id,
+    bool release_existing_for_holder, int64_t lease_ttl_ms, int64_t now_ms);
+std::vector<std::string> PruneExpiredFacilityReservations(
+    FacilityReservationMap& reservations, MissionResourceMap& resource_by_mission,
+    int64_t now_ms);
 FacilityReservationResult ReleaseFacilityResource(
     FacilityReservationMap& reservations, const std::string& resource_id,
     const std::string& holder_id);

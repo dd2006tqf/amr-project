@@ -24,6 +24,11 @@
 #include "amr_dispatcher_core/workflow/dispatch_gate_planning.hpp"
 #include "amr_dispatcher_core/workflow/fleet_link_guard.hpp"
 #include "amr_dispatcher_core/workflow/traffic_planning.hpp"
+#include "amr_dispatcher_core/facility/facility_catalog.hpp"
+#include "amr_dispatcher_core/facility/facility_reservation.hpp"
+#include "amr_dispatcher_core/facility/facility_adapter_interface.hpp"
+#include "amr_dispatcher_core/facility/modbus_facility_adapter.hpp"
+#include "amr_dispatcher_core/facility/facility_interlocking_planning.hpp"
 #include "amr_dispatcher_ros/assignment_dispatch_decision.hpp"
 #include "amr_dispatcher_ros/mission_identity.hpp"
 #include "amr_dispatcher_ros/vehicle_topic_names.hpp"
@@ -73,6 +78,8 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("state_snapshot_file", "");
   declare_parameter("state_snapshot_debounce_sec", 2.0);
   declare_parameter("audit_log_file", "");
+  // Phase 8: 工业物理设施目录文件路径
+  declare_parameter("facility_catalog_file", "");
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -273,6 +280,38 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   }
   vehicle_state_max_age_ms_ = get_parameter("vehicle_state_max_age_ms").as_int();
   LoadFleetCatalog();
+
+  // Phase 8: 物理设施目录加载与适配器初始化
+  const std::string facility_file = get_parameter("facility_catalog_file").as_string();
+  if (!facility_file.empty()) {
+    facility_reloader_ =
+        std::make_unique<amr_dispatcher_core::facility::FacilityCatalogReloader>(facility_file);
+    if (facility_reloader_->loaded()) {
+      RCLCPP_INFO(get_logger(), "Loaded %zu facility resources from %s",
+                  facility_reloader_->catalog().resources.size(), facility_file.c_str());
+      // 根据配置生成适配器
+      for (const auto& res : facility_reloader_->catalog().resources) {
+        if (res.protocol == "modbus_tcp") {
+          amr_dispatcher_core::facility::ModbusFacilityConfig cfg;
+          cfg.facility_id = res.id;
+          cfg.type = (res.type == "door")
+                         ? amr_dispatcher_core::facility::FacilityType::kDoor
+                         : amr_dispatcher_core::facility::FacilityType::kElevator;
+          cfg.ip = res.ip;
+          cfg.port = res.port;
+          cfg.unit_id = res.unit_id;
+          facility_adapters_[res.id] =
+              std::make_shared<amr_dispatcher_core::facility::ModbusFacilityAdapter>(cfg);
+        } else {
+          facility_adapters_[res.id] =
+              std::make_shared<amr_dispatcher_core::facility::MockFacilityAdapter>(
+                  res.id, (res.type == "door")
+                              ? amr_dispatcher_core::facility::FacilityType::kDoor
+                              : amr_dispatcher_core::facility::FacilityType::kElevator);
+        }
+      }
+    }
+  }
 
   submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
       "/dispatcher/submit_order",
@@ -1279,6 +1318,26 @@ void DispatcherNode::ListTrafficReservationsCb(
 void DispatcherNode::ReserveFacilityResourceCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Request> req,
     std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Response> resp) {
+  // Phase 8: 真实设施资源预约检查
+  if (facility_reloader_ && facility_reloader_->loaded()) {
+    const auto* res = amr_dispatcher_core::facility::FindFacilityResource(
+        facility_reloader_->catalog(), req->resource_id);
+    if (res) {
+      auto result = amr_dispatcher_core::facility::ReserveFacilityResourceWithLease(
+          facility_reservations_, *res, req->holder_id, req->mission_id,
+          req->release_existing_for_holder, 30000,
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+      resp->success = result.success;
+      resp->resource_id = req->resource_id;
+      resp->holder_id = req->holder_id;
+      resp->status = result.success ? "RESERVED" : "OCCUPIED";
+      resp->message = result.message;
+      return;
+    }
+  }
+
+  // 回退：若无对应设施资源，回退到交通表
   if (!reservation_table_) {
     resp->success = false;
     resp->message = "Reservation table uninitialized";
@@ -1340,6 +1399,12 @@ void DispatcherNode::GetOperatorSnapshotCb(
     }
   }
   snap_req.event_limit = req->event_limit;
+
+  // Phase 8: 填充真实设施目录与预约状态
+  if (facility_reloader_ && facility_reloader_->loaded()) {
+    snap_req.facilities = &facility_reloader_->catalog();
+    snap_req.facility_reservations = &facility_reservations_;
+  }
 
   const auto proj = amr_dispatcher_core::workflow::BuildOperatorSnapshotProjection(snap_req);
   resp->success = proj.success;
@@ -3656,6 +3721,39 @@ void DispatcherNode::Vda5050StateCb(const std::string& vehicle_id,
   // 更新该车最近一次确认到达的安全节点（供 Phase 7 交通协调与在途重规划锚定起点）
   if (!report->last_node_id.empty()) {
     vehicle_safe_nodes_[vehicle_id] = report->last_node_id;
+
+    // Phase 8: 物理设施联锁判定（接近自动门自动触发开门指令）
+    if (facility_reloader_ && facility_reloader_->loaded()) {
+      for (const auto& res : facility_reloader_->catalog().resources) {
+        if (res.station_id == report->last_node_id) {
+          auto adapter_it = facility_adapters_.find(res.id);
+          if (adapter_it != facility_adapters_.end() && adapter_it->second) {
+            amr_dispatcher_core::facility::FacilityApproachRequest app_req;
+            app_req.mission_id = mission_it->first;
+            app_req.vehicle_id = vehicle_id;
+            app_req.current_station_id = report->last_node_id;
+            app_req.resource = &res;
+            auto r_it = facility_reservations_.find(res.id);
+            if (r_it != facility_reservations_.end()) {
+              app_req.current_reservation = &r_it->second;
+            }
+            app_req.facility_state = adapter_it->second->QueryState();
+            auto app_dec = amr_dispatcher_core::facility::PlanFacilityApproach(app_req);
+            if (app_dec.action == amr_dispatcher_core::facility::FacilityApproachDecision::Action::kAcquireAndOpen) {
+              amr_dispatcher_core::facility::ReserveFacilityResourceWithLease(
+                  facility_reservations_, res, vehicle_id, mission_it->first, false, 30000,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch()).count());
+              adapter_it->second->ExecuteAction(app_dec.command);
+              RCLCPP_INFO(get_logger(),
+                          "Phase 8: Facility %s triggered command '%s' for approaching vehicle %s at %s",
+                          res.id.c_str(), app_dec.command.c_str(), vehicle_id.c_str(),
+                          report->last_node_id.c_str());
+            }
+          }
+        }
+      }
+    }
   }
   if (!decision.lock_ids_to_release.empty()) {
     const auto released = reservation_table_->ReleaseResources(mission_it->first,

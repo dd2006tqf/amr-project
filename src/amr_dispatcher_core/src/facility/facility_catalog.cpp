@@ -101,6 +101,26 @@ std::optional<FacilityCatalog> LoadFacilityCatalog(const std::filesystem::path& 
       current.exclusive = ParseBool(*value);
       continue;
     }
+    if (auto value = ValueAfterColon(line, "protocol")) {
+      current.protocol = *value;
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "ip")) {
+      current.ip = *value;
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "port")) {
+      try {
+        current.port = static_cast<uint16_t>(std::stoi(*value));
+      } catch (...) {}
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "unit_id")) {
+      try {
+        current.unit_id = static_cast<uint8_t>(std::stoi(*value));
+      } catch (...) {}
+      continue;
+    }
   }
   flush_resource();
   if (incomplete) {
@@ -171,6 +191,56 @@ bool ValidateFacilityCatalog(const FacilityCatalog& catalog, std::string* messag
     *message = "facility catalog ok";
   }
   return true;
+}
+
+FacilityCatalogReloader::FacilityCatalogReloader(std::filesystem::path path)
+    : path_(std::move(path)),
+      watcher_(path_.string(), [this](const YAML::Node&) {
+        // HotReloadWatcher 经 mtime 检测到变动后回调
+        TryLoad(/*count_as_reload=*/true);
+      }) {
+  TryLoad(/*count_as_reload=*/false);
+}
+
+bool FacilityCatalogReloader::Tick() {
+  const std::size_t before = reload_count_;
+  watcher_.Tick();
+  if (!loaded_) {
+    // 启动时缺失的文件可能在运行期间生成，补尝试加载
+    TryLoad(/*count_as_reload=*/false);
+  }
+  return reload_count_ > before;
+}
+
+std::string FacilityCatalogReloader::last_error() const {
+  if (!last_error_.empty()) {
+    return last_error_;
+  }
+  return watcher_.last_error();
+}
+
+void FacilityCatalogReloader::TryLoad(bool count_as_reload) {
+  if (path_.empty()) {
+    return;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(path_, ec)) {
+    last_error_ = "facility catalog file does not exist: " + path_.string();
+    return;
+  }
+
+  const auto loaded = LoadFacilityCatalog(path_);
+  if (!loaded.has_value()) {
+    last_error_ = "failed to load/validate facility catalog from: " + path_.string();
+    return;
+  }
+
+  catalog_ = *loaded;
+  loaded_ = true;
+  last_error_.clear();
+  if (count_as_reload) {
+    ++reload_count_;
+  }
 }
 
 }  // namespace amr_dispatcher_core::facility

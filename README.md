@@ -90,6 +90,13 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **In-flight missions are re-queued, not faked**: a restart has no vehicle running them, so they go back into the queue instead of being reported as active.
    - **Audit trail on disk**: force-clear / restore / state-restore decisions are appended as one-line JSON (`operator_id`, `reason`, released resources), so "who quarantined this vehicle and why" is answerable after the process that handled it is gone.
 
+13. **Industrial Facility Integration & Protocol Adapters (Phase 8)**:
+   - **Pure C++ POSIX Modbus-TCP Client**: zero external heavy dependencies (`modbus_tcp_client.hpp`), supporting Function Codes `0x01` (Read Coils), `0x03` (Read Holding Registers), `0x05` (Write Single Coil), and `0x06` (Write Single Register) with socket timeout protections.
+   - **Physical Facility Interlocking**: `IFacilityAdapter` mapped to real factory PLC hardware (automatic roll-up doors, cargo elevators, air-lock cabins).
+   - **Facility Lease Guard**: automatic pruning of expired facility reservations (`PruneExpiredFacilityReservations`) prevents zombie locks when vehicles disconnect or fault mid-transit.
+   - **Closed-Loop Workflow & Fault Degradation**: `PlanFacilityApproach` and `PlanFacilityDeparture` handle vehicle approach lock acquisition, trigger commands, in-place waiting, and safe degradation if doors fail to open within timeout.
+   - **Verified End-to-End**: `scripts/check_facility_integration_e2e.sh` and Python Modbus-TCP PLC simulator (`scripts/mock_plc_facility.py`).
+
 ---
 
 ## 🗺️ Custom Map Ingestion & Topology Engine

@@ -75,7 +75,9 @@
 #include "amr_dispatcher_core/catalog/scenario_catalog.hpp"
 #include "amr_dispatcher_core/catalog/business_order_catalog.hpp"
 #include "amr_dispatcher_core/catalog/zone_catalog.hpp"
+#include "amr_dispatcher_core/facility/facility_adapter_interface.hpp"
 #include "amr_dispatcher_core/facility/facility_catalog.hpp"
+#include "amr_dispatcher_core/facility/facility_interlocking_planning.hpp"
 #include "amr_dispatcher_core/facility/facility_reservation.hpp"
 #include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
 #include "amr_dispatcher_core/fleet/fleet_runtime_state.hpp"
@@ -552,6 +554,12 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   std::unordered_map<std::string, std::vector<std::string>> in_flight_pending_wait_;
   // vehicle_id -> 最近一次确认到达的安全停靠节点 ID
   std::unordered_map<std::string, std::string> vehicle_safe_nodes_;
+
+  // ---- Phase 8: 工业物理设施适配器集成与预约管理 ----
+  std::unique_ptr<amr_dispatcher_core::facility::FacilityCatalogReloader> facility_reloader_;
+  amr_dispatcher_core::facility::FacilityReservationMap facility_reservations_;
+  amr_dispatcher_core::facility::MissionResourceMap mission_facility_resources_;
+  std::unordered_map<std::string, std::shared_ptr<amr_dispatcher_core::facility::IFacilityAdapter>> facility_adapters_;
 
   rclcpp::TimerBase::SharedPtr schedule_timer_;
   rclcpp::TimerBase::SharedPtr deadlock_timer_;

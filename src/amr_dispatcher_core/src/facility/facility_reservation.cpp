@@ -119,6 +119,42 @@ FacilityReservationResult ReserveFacilityResource(
   return result;
 }
 
+FacilityReservationResult ReserveFacilityResourceWithLease(
+    FacilityReservationMap& reservations, const FacilityResource& resource,
+    const std::string& holder_id, const std::string& mission_id,
+    const bool release_existing_for_holder, const int64_t lease_ttl_ms,
+    const int64_t now_ms) {
+  auto result = ReserveFacilityResource(
+      reservations, resource, holder_id, mission_id, release_existing_for_holder);
+  if (result.success && lease_ttl_ms > 0) {
+    reservations[resource.id].lease_expires_at_ms = now_ms + lease_ttl_ms;
+  }
+  return result;
+}
+
+std::vector<std::string> PruneExpiredFacilityReservations(
+    FacilityReservationMap& reservations, MissionResourceMap& resource_by_mission,
+    const int64_t now_ms) {
+  std::vector<std::string> pruned;
+  for (auto it = reservations.begin(); it != reservations.end(); ) {
+    if (it->second.lease_expires_at_ms > 0 && it->second.lease_expires_at_ms <= now_ms) {
+      pruned.push_back(it->first);
+      // 同时清理反向映射
+      for (auto m_it = resource_by_mission.begin(); m_it != resource_by_mission.end(); ) {
+        if (m_it->second == it->first) {
+          m_it = resource_by_mission.erase(m_it);
+        } else {
+          ++m_it;
+        }
+      }
+      it = reservations.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return pruned;
+}
+
 FacilityReservationResult ReleaseFacilityResource(
     FacilityReservationMap& reservations, const std::string& resource_id,
     const std::string& holder_id) {

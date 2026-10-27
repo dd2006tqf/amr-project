@@ -74,6 +74,9 @@ add_library(${PROJECT_NAME}
   src/facility/facility_reservation.cpp
   src/facility/facility_workflow.cpp
   src/facility/facility_adapter_interface.cpp
+  src/facility/modbus_tcp_client.cpp
+  src/facility/modbus_facility_adapter.cpp
+  src/facility/facility_interlocking_planning.cpp
   src/workflow/mission_profile.cpp
   src/workflow/order_payload.cpp
   src/workflow/payload_schema.cpp
@@ -209,8 +212,11 @@ if(BUILD_TESTING)
     test_find_route_path_avoiding
     test_facility_catalog
     test_facility_reservation
+    test_facility_lease
     test_facility_workflow
     test_facility_adapter_interface
+    test_modbus_tcp_client
+    test_facility_interlocking_planning
     test_submit_order_router
     test_topology_projection
     test_end_to_end_pipeline
