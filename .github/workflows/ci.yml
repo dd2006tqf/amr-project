@@ -187,6 +187,8 @@ jobs:
             mosquitto \
             python3-paho-mqtt \
             python3-yaml \
+            curl \
+            procps \
             build-essential \
             libyaml-cpp-dev \
             libgtest-dev
@@ -224,6 +226,46 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           ./scripts/check_vda5050_e2e.sh
+
+      - name: REST Gateway Hardening E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_rest_gateway_hardening.sh
+
+      - name: State Persistence & Crash Recovery E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_state_persistence_e2e.sh
+
+      - name: Prometheus Metrics Exposition E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_metrics_e2e.sh
+
+      - name: Traffic Coordination & Deadlock Recovery E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_traffic_coordination_e2e.sh
 
       # 失败时把 e2e 现场日志带出来（脚本把 TMP_DIR 打在输出里，
       # 这里按前缀兜底收集），否则只能看 GitHub 的日志行数上限。
