@@ -1,0 +1,101 @@
+// 低层带约束时空 A* 寻路引擎 (Low-Level Time-Space A*)。
+//
+// 对应 Phase 9 (P0)：
+// 在 StationCatalog 混合拓扑图上，针对指定智能体在给定时空约束（Vertex/Edge Constraints）
+// 与起始时刻下，搜索无冲突且总耗时最小的时空轨迹。
+//
+// 核心能力：
+// 1. 时空动作空间：
+//    - Move: 沿合法拓扑边移动至邻接站点，耗时基于距离与运动参数
+//    - Wait: 在当前站点停留等待若干时间片 (Wait In Place)，用于主动错峰避让
+// 2. 强时空约束过滤：
+//    - VertexConstraint: 指定时刻不得出现在特定站点
+//    - EdgeConstraint: 指定时刻不得穿越特定路段（支持双向对向阻断）
+// 3. 启发式可采纳性：
+//    - 使用拓扑图静态最短距离作为 h(n)，保证搜索最优性与完备性
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+
+namespace amr_dispatcher_core::planning {
+
+// 顶点约束：某智能体在特定离散时间步不得位于某站点
+struct VertexConstraint {
+  std::string agent_id;
+  std::string station_id;
+  int time_step = 0;
+
+  bool operator==(const VertexConstraint& other) const {
+    return agent_id == other.agent_id && station_id == other.station_id &&
+           time_step == other.time_step;
+  }
+};
+
+// 边约束：某智能体在特定时步区间 [t_start, t_end] 内不得占用从 from 至 to 的路段
+struct EdgeConstraint {
+  std::string agent_id;
+  std::string from_station;
+  std::string to_station;
+  int t_start = 0;
+  int t_end = 0;
+
+  bool operator==(const EdgeConstraint& other) const {
+    return agent_id == other.agent_id && from_station == other.from_station &&
+           to_station == other.to_station && t_start == other.t_start && t_end == other.t_end;
+  }
+};
+
+// 时空路径中的单步状态点
+struct TimedPathPoint {
+  std::string station_id;
+  int time_step = 0;
+  double arrival_time_sec = 0.0;
+  bool is_wait = false;  // 是否为原地等待动作
+};
+
+using TimedPath = std::vector<TimedPathPoint>;
+
+// 低层时空 A* 输入参数
+struct SpaceTimeAStarRequest {
+  std::string agent_id;
+  std::string start_station;
+  std::string goal_station;
+  int start_time_step = 0;
+  double start_time_sec = 0.0;
+
+  // 离散时步参数
+  double time_step_duration_sec = 1.0;  // 每个时步的物理时间粒度（默认 1.0 秒）
+  double travel_speed_mps = 1.0;         // 巡航车速
+
+  // 约束集合
+  std::vector<VertexConstraint> vertex_constraints;
+  std::vector<EdgeConstraint> edge_constraints;
+
+  // 搜索保护上限（防止无解时死循环）
+  int max_time_steps = 128;
+  int max_expanded_nodes = 4096;
+};
+
+// 低层时空 A* 规划结果
+struct SpaceTimeAStarResult {
+  bool success = false;
+  TimedPath path;
+  double total_cost = 0.0;
+  std::string message;
+  int expanded_nodes = 0;
+};
+
+// 纯函数：低层带约束时空 A* 寻路
+SpaceTimeAStarResult PlanSpaceTimeAStar(
+    const SpaceTimeAStarRequest& request,
+    const amr_dispatcher_core::catalog::StationCatalog& catalog);
+
+}  // namespace amr_dispatcher_core::planning

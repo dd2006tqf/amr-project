@@ -79,6 +79,7 @@
 #include "amr_dispatcher_core/facility/facility_catalog.hpp"
 #include "amr_dispatcher_core/facility/facility_interlocking_planning.hpp"
 #include "amr_dispatcher_core/facility/facility_reservation.hpp"
+#include "amr_dispatcher_core/workflow/cbs_traffic_coordinator.hpp"
 #include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
 #include "amr_dispatcher_core/fleet/fleet_runtime_state.hpp"
 #include "amr_dispatcher_core/workflow/mission_profile.hpp"
@@ -280,12 +281,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // mission_id -> 该单已预约的时间窗（延期/释放时用）
   std::unordered_map<std::string, amr_dispatcher_core::workflow::ResourceTimeWindowSet>
       time_space_windows_;
-  // 是否启用时空窗模式
+  // 是否启用带时间窗模式 (包含 time_space 与 cbs)
+  bool UsesTimeWindows() const { return traffic_mode_ == "time_space" || traffic_mode_ == "cbs"; }
   bool UseTimeSpaceMode() const { return traffic_mode_ == "time_space"; }
+  bool UseCBSMode() const { return traffic_mode_ == "cbs"; }
   // 为一单规划并【整条路径原子提交】时空窗预约；失败则整体回滚。
   bool ReserveTimeSpaceForMission(const std::string& mission_id,
                                   const std::vector<std::string>& path_node_ids,
                                   std::string* message);
+  // Phase 9: 为一单执行 CBS 协同规划并提交时空窗
+  bool ReserveCBSForMission(const std::string& mission_id,
+                            const std::string& pickup_station,
+                            const std::string& dropoff_station,
+                            std::string* message);
   // 车辆确认驶离某资源后释放其时间窗（窗口到期 != 资源已释放）。
   void ReleaseTimeSpaceForResources(const std::string& mission_id,
                                     const std::vector<std::string>& resource_ids);

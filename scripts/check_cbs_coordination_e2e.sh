@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# check_cbs_coordination_e2e.sh - Phase 9 (P3) CBS 高层多车协同寻路集成验证脚本
+#
+# 验收目标 (Phase 9 P3):
+#   Stage 1: 验证低层带时空约束 A* 寻路引擎 (Space-Time A*)
+#            - 验证起点/终点可达性
+#            - 验证顶点约束规避 (强制停留让行 Wait In Place)
+#            - 验证路段边约束阻断下的动态绕行
+#   Stage 2: 验证高层基于冲突的搜索树引擎 (Conflict-Based Search, CBS)
+#            - 验证无冲突场景的最优路径直接直达
+#            - 验证双通道对向冲突下的协同动态分流
+#            - 验证十字路口交叉相撞时的自动时空等待错峰消解
+#   Stage 3: 验证 CBS 多车交通协调器与时空预约表 (TimeSpaceOccupancy) 转换
+#            - 验证 TimedPath 到 ResourceTimeWindowSet 的保序精确映射
+#            - 验证在途固定交通约束对新规划智能体的硬隔离
+#   Stage 4: 容器内全包 ROS 2 契约回归检验 (Core / Interfaces / BT / ROS / Tools)
+#
+# 环境隔离:
+#   ROS_DOMAIN_ID=86
+# ==============================================================================
+
+set -eo pipefail
+set -E
+trap 'echo "[CBS-E2E-FATAL] line=${LINENO} status=$? cmd=${BASH_COMMAND}" >&2' ERR
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+echo "======================================================================"
+echo " Phase 9: Multi-Agent Conflict-Based Search (CBS) Coordination E2E"
+echo " Workspace: ${REPO_ROOT}"
+echo "======================================================================"
+
+echo ">>> [Stage 1/4] 执行低层时空 A* 算法单测 (Space-Time A* with Wait-In-Place)..."
+if [ -f "${REPO_ROOT}/build/core/test_space_time_astar" ]; then
+    "${REPO_ROOT}/build/core/test_space_time_astar"
+else
+    ctest --test-dir "${REPO_ROOT}/build/core" -R "test_space_time_astar" --output-on-failure
+fi
+echo "[OK] 低层时空 A* 节点/边时空约束与原地等待动作检验通过。"
+
+echo ">>> [Stage 2/4] 执行高层约束树搜索 CBS 算法单测 (Conflict-Based Search)..."
+if [ -f "${REPO_ROOT}/build/core/test_conflict_based_search" ]; then
+    "${REPO_ROOT}/build/core/test_conflict_based_search"
+else
+    ctest --test-dir "${REPO_ROOT}/build/core" -R "test_conflict_based_search" --output-on-failure
+fi
+echo "[OK] 高层约束树分支、顶点/互换/追尾冲突消解与分流通行检验通过。"
+
+echo ">>> [Stage 3/4] 执行 CBS 交通协调器与时空窗转换单测..."
+if [ -f "${REPO_ROOT}/build/core/test_cbs_traffic_coordinator" ]; then
+    "${REPO_ROOT}/build/core/test_cbs_traffic_coordinator"
+else
+    ctest --test-dir "${REPO_ROOT}/build/core" -R "test_cbs_traffic_coordinator" --output-on-failure
+fi
+echo "[OK] CBS 协同方案与 ResourceTimeWindowSet 映射检验通过。"
+
+echo ">>> [Stage 4/4] 执行 Docker 容器内全包 ROS 2 测试回归 (1031+ tests)..."
+docker exec amr_dispatcher /bin/bash -c "source /opt/ros/jazzy/setup.bash && colcon test --base-paths src --packages-select amr_dispatcher_core amr_dispatcher_ros && colcon test-result --all"
+
+echo "======================================================================"
+echo " Phase 9 CBS Multi-Agent Coordination E2E: ALL 4 STAGES PASSED"
+echo "======================================================================"

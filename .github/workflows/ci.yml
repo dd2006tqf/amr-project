@@ -277,6 +277,16 @@ jobs:
           source install/setup.bash
           ./scripts/check_facility_integration_e2e.sh
 
+      - name: CBS Multi-Agent Coordination E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_cbs_coordination_e2e.sh
+
       # 失败时把 e2e 现场日志带出来（脚本把 TMP_DIR 打在输出里，
       # 这里按前缀兜底收集），否则只能看 GitHub 的日志行数上限。
       - name: Upload E2E Artifacts

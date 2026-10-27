@@ -243,9 +243,9 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   // P0.6 / A4：per-vehicle 计划发布端与位姿/到达订阅（空清单 = 单车兼容，零行为变化）
   SetupVehicleTopics(get_parameter("vehicle_ids").as_string());
 
-  // B3：交通协调模式（static = 现网行为；time_space = 时空窗预约）
+  // B3：交通协调模式（static = 现网行为；time_space = 时空窗预约；cbs = 高层冲突树协同）
   traffic_mode_ = get_parameter("traffic_mode").as_string();
-  if (traffic_mode_ != "static" && traffic_mode_ != "time_space") {
+  if (traffic_mode_ != "static" && traffic_mode_ != "time_space" && traffic_mode_ != "cbs") {
     RCLCPP_ERROR(get_logger(),
                  "Invalid traffic_mode '%s' — falling back to 'static' (unknown mode is not "
                  "guessed)",
@@ -1676,7 +1676,7 @@ void DispatcherNode::CleanupMissionCancel(const std::string& mission_id,
 }
 
 void DispatcherNode::ReleaseAllTimeSpaceForMission(const std::string& mission_id) {
-  if (!UseTimeSpaceMode()) {
+  if (!UsesTimeWindows()) {
     return;
   }
   const auto it = time_space_windows_.find(mission_id);
@@ -1976,6 +1976,22 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
       [this, &missions_by_id](const std::string& mission_id,
                               const std::vector<std::string>& route_locks) {
         amr_dispatcher_core::workflow::ReservationAttempt attempt;
+        if (UseCBSMode()) {
+          // Phase 9: 高层 CBS 冲突树协同寻路模式
+          const auto mission_it = missions_by_id.find(mission_id);
+          std::string cbs_msg;
+          std::string pickup = (mission_it != missions_by_id.end()) ? mission_it->second.pickup_station : "";
+          std::string dropoff = (mission_it != missions_by_id.end()) ? mission_it->second.dropoff_station : "";
+          if (!ReserveCBSForMission(mission_id, pickup, dropoff, &cbs_msg)) {
+            attempt.success = false;
+            attempt.denial_kind =
+                amr_dispatcher_core::workflow::ReservationAttempt::DenialKind::kTimeSpace;
+            attempt.message = cbs_msg;
+            return attempt;
+          }
+          attempt.success = true;
+          return attempt;
+        }
         if (UseTimeSpaceMode()) {
           // 时空窗模式：不占静态排他锁，改为预约时间窗。
           const auto mission_it = missions_by_id.find(mission_id);
@@ -2084,8 +2100,8 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
           ready_candidate.mission = mission_it->second;
         }
         ready_candidate.vehicle_id = step.vehicle_id;
-        // 时空模式下不占静态排他锁：route_locks 仅作记账用途
-        if (!UseTimeSpaceMode()) {
+        // 时空模式与CBS模式下不占静态排他锁：route_locks 仅作记账用途
+        if (!UsesTimeWindows()) {
           ready_candidate.route_locks = step.route_locks;
         }
         ready = std::move(ready_candidate);
@@ -3207,7 +3223,7 @@ bool DispatcherNode::ReserveTimeSpaceForMission(
 
 void DispatcherNode::ReleaseTimeSpaceForResources(
     const std::string& mission_id, const std::vector<std::string>& resource_ids) {
-  if (!UseTimeSpaceMode() || resource_ids.empty()) {
+  if (!UsesTimeWindows() || resource_ids.empty()) {
     return;
   }
   // 1) 释放预约表里的时空区间（owner 校验）
@@ -3222,6 +3238,72 @@ void DispatcherNode::ReleaseTimeSpaceForResources(
     RCLCPP_INFO(get_logger(), "Time-space windows released for mission %s: %zu resource(s)",
                 mission_id.c_str(), released.size());
   }
+}
+
+bool DispatcherNode::ReserveCBSForMission(
+    const std::string& mission_id, const std::string& pickup_station,
+    const std::string& dropoff_station, std::string* message) {
+  if (!UseCBSMode()) {
+    if (message != nullptr) *message = "traffic_mode is not cbs";
+    return false;
+  }
+  if (pickup_station.empty() || dropoff_station.empty()) {
+    if (message != nullptr) *message = "pickup or dropoff station is empty";
+    return false;
+  }
+  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+    if (message != nullptr) *message = "station catalog not loaded";
+    return false;
+  }
+
+  std::vector<amr_dispatcher_core::workflow::CBSMissionRequest> cbs_requests;
+  amr_dispatcher_core::workflow::CBSMissionRequest req;
+  req.mission_id = mission_id;
+  req.start_station = pickup_station;
+  req.goal_station = dropoff_station;
+  req.earliest_start = std::chrono::steady_clock::now();
+  cbs_requests.push_back(req);
+
+  auto res = amr_dispatcher_core::workflow::PlanCBSMultiMissionCoordination(
+      cbs_requests, catalog_reloader_->catalog(), time_space_occupancy_,
+      time_space_timing_, std::chrono::steady_clock::now());
+
+  if (!res.all_solved || res.mission_plans.find(mission_id) == res.mission_plans.end()) {
+    if (message != nullptr) *message = "CBS coordination failed: " + res.message;
+    return false;
+  }
+
+  const auto& plan = res.mission_plans.at(mission_id);
+  if (!plan.success || plan.time_windows.empty()) {
+    if (message != nullptr) *message = "CBS failed to produce time windows";
+    return false;
+  }
+
+  // 转换为 ResourceTable 所需区间
+  std::vector<std::pair<std::string, amr_dispatcher_core::dispatcher::TimeInterval>> intervals;
+  intervals.reserve(plan.time_windows.size());
+  for (const auto& w : plan.time_windows) {
+    intervals.emplace_back(w.resource_id,
+                           amr_dispatcher_core::dispatcher::TimeInterval{w.enter, w.exit});
+  }
+
+  std::string reserve_message;
+  if (!reservation_table_ ||
+      !reservation_table_->ReserveTimeSpaceBatch(mission_id, intervals, &reserve_message)) {
+    if (message != nullptr) {
+      *message = reservation_table_ ? reserve_message : "reservation table unavailable";
+    }
+    return false;
+  }
+
+  amr_dispatcher_core::workflow::CommitTimeSpaceOccupancy(&time_space_occupancy_, mission_id,
+                                                         plan.time_windows);
+  time_space_windows_[mission_id] = plan.time_windows;
+  RCLCPP_INFO(get_logger(),
+              "CBS reservation committed for mission %s: %zu resource window(s)",
+              mission_id.c_str(), plan.time_windows.size());
+  if (message != nullptr) *message = reserve_message;
+  return true;
 }
 
 // ---- P0.6 / A6：车辆目录 + 选车上下文 ----

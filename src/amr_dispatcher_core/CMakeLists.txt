@@ -42,6 +42,8 @@ add_library(${PROJECT_NAME}
   src/planning/skeleton_extractor.cpp
   src/planning/topology_graph_builder.cpp
   src/planning/skeleton_planner.cpp
+  src/planning/space_time_astar.cpp
+  src/planning/conflict_based_search.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
   src/dispatcher/dispatch_state_snapshot.cpp
@@ -91,6 +93,7 @@ add_library(${PROJECT_NAME}
   src/workflow/dynamic_unlocking.cpp
   src/workflow/fleet_link_guard.cpp
   src/workflow/time_space_planning.cpp
+  src/workflow/cbs_traffic_coordinator.cpp
   src/workflow/auto_charging_planning.cpp
   src/workflow/workflow_control.cpp
   src/workflow/mission_estimator.cpp
@@ -217,6 +220,9 @@ if(BUILD_TESTING)
     test_facility_adapter_interface
     test_modbus_tcp_client
     test_facility_interlocking_planning
+    test_space_time_astar
+    test_conflict_based_search
+    test_cbs_traffic_coordinator
     test_submit_order_router
     test_topology_projection
     test_end_to_end_pipeline
