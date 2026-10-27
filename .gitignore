@@ -30,3 +30,6 @@ runtime/
 # e2e 在容器内工作区留下的临时运行目录
 .pers_stamp/
 .hard_stamp/
+.metrics_stamp/
+*.tmp
+.tmp
