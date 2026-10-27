@@ -48,17 +48,30 @@ else
 fi
 echo "[OK] 高层约束树分支、顶点/互换/追尾冲突消解与分流通行检验通过。"
 
-echo ">>> [Stage 3/4] 执行 CBS 交通协调器与时空窗转换单测..."
+echo ">>> [Stage 3/5] 执行优先级时空规划 PBS 算法单测 (Prioritized Planning & Goal-Hold)..."
+if [ -f "${REPO_ROOT}/build/core/test_prioritized_planning" ]; then
+    "${REPO_ROOT}/build/core/test_prioritized_planning"
+else
+    ctest --test-dir "${REPO_ROOT}/build/core" -R "test_prioritized_planning" --output-on-failure
+fi
+echo "[OK] 优先级时空搜索、终点驻留保护与无冲突门禁检验通过。"
+
+echo ">>> [Stage 4/5] 执行统一 MAPF 求解器门面与 CBS 自适应降级单测 (MAPF Solver Facade)..."
+if [ -f "${REPO_ROOT}/build/core/test_mapf_solver" ]; then
+    "${REPO_ROOT}/build/core/test_mapf_solver"
+else
+    ctest --test-dir "${REPO_ROOT}/build/core" -R "test_mapf_solver" --output-on-failure
+fi
+echo "[OK] CBS 搜索超限自动降级至 Prioritized Planning 闭环检验通过。"
+
+echo ">>> [Stage 5/5] 执行 CBS 交通协调器与时空窗转换单测及全包 ROS 2 回归 (1036+ tests)..."
 if [ -f "${REPO_ROOT}/build/core/test_cbs_traffic_coordinator" ]; then
     "${REPO_ROOT}/build/core/test_cbs_traffic_coordinator"
 else
     ctest --test-dir "${REPO_ROOT}/build/core" -R "test_cbs_traffic_coordinator" --output-on-failure
 fi
-echo "[OK] CBS 协同方案与 ResourceTimeWindowSet 映射检验通过。"
-
-echo ">>> [Stage 4/4] 执行 Docker 容器内全包 ROS 2 测试回归 (1031+ tests)..."
 docker exec amr_dispatcher /bin/bash -c "source /opt/ros/jazzy/setup.bash && colcon test --base-paths src --packages-select amr_dispatcher_core amr_dispatcher_ros && colcon test-result --all"
 
 echo "======================================================================"
-echo " Phase 9 CBS Multi-Agent Coordination E2E: ALL 4 STAGES PASSED"
+echo " Phase 9/10 CBS & Prioritized MAPF Coordination E2E: ALL 5 STAGES PASSED"
 echo "======================================================================"

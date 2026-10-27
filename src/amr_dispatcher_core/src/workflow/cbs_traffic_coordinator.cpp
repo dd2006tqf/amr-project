@@ -67,7 +67,8 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
     const amr_dispatcher_core::catalog::StationCatalog& catalog,
     const TimeSpaceOccupancy& existing_occupancy,
     const MotionTimingConfig& timing_config,
-    std::chrono::steady_clock::time_point now_time) {
+    std::chrono::steady_clock::time_point now_time,
+    const amr_dispatcher_core::planning::MAPFPolicy& policy) {
   CBSCoordinationResult result;
   if (requests.empty()) {
     result.all_solved = true;
@@ -75,13 +76,14 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
     return result;
   }
 
-  amr_dispatcher_core::planning::CBSRequest cbs_req;
-  cbs_req.travel_speed_mps = timing_config.cruise_speed_mps;
-  cbs_req.time_step_duration_sec = 1.0;
+  amr_dispatcher_core::planning::MAPFUnifiedRequest mapf_req;
+  mapf_req.travel_speed_mps = timing_config.cruise_speed_mps;
+  mapf_req.time_step_duration_sec = 1.0;
+  mapf_req.policy = policy;
 
-  const double dt = cbs_req.time_step_duration_sec;
+  const double dt = mapf_req.time_step_duration_sec;
 
-  // 1. 将现存在途占用转换为 CBS 初始时空约束 (Fixed Traffic Constraints)
+  // 1. 将现存在途占用转换为初始时空约束 (Fixed Traffic Constraints)
   for (const auto& [res_id, entries] : existing_occupancy.by_resource) {
     for (const auto& entry : entries) {
       if (entry.exit <= now_time) continue; // 已过去的占用忽略
@@ -101,7 +103,7 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
           vc.agent_id = ""; // 对所有新规划 agent 生效
           vc.station_id = node;
           vc.time_step = t;
-          cbs_req.initial_vertex_constraints.push_back(vc);
+          mapf_req.initial_vertex_constraints.push_back(vc);
         }
       } else if (res_id.rfind("route_edge:", 0) == 0) {
         const std::string edge_nodes = res_id.substr(11);
@@ -113,7 +115,7 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
           ec.to_station = edge_nodes.substr(pos + 2);
           ec.t_start = t_start;
           ec.t_end = t_end;
-          cbs_req.initial_edge_constraints.push_back(ec);
+          mapf_req.initial_edge_constraints.push_back(ec);
         }
       }
     }
@@ -131,27 +133,27 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
     spec.start_time_step = static_cast<int>(start_delay_ms / (dt * 1000));
     spec.start_time_sec = start_delay_ms / 1000.0;
 
-    cbs_req.agents.push_back(spec);
+    mapf_req.agents.push_back(spec);
   }
 
-  // 3. 执行 CBS 搜索
-  auto cbs_res = amr_dispatcher_core::planning::PlanConflictBasedSearch(cbs_req, catalog);
-  if (!cbs_res.success) {
+  // 3. 执行统一多智能体求解 (支持 CBS 及超限自动降级至 Prioritized Planning)
+  auto mapf_res = amr_dispatcher_core::planning::SolveMAPF(mapf_req, catalog);
+  if (!mapf_res.success) {
     result.all_solved = false;
-    result.message = "CBS failed: " + cbs_res.message;
+    result.message = "MAPF failed (" + mapf_res.solver_used + "): " + mapf_res.message;
     return result;
   }
 
-  // 4. 将 CBS 规划解回填并转换为 ResourceTimeWindowSet
+  // 4. 将规划解回填并转换为 ResourceTimeWindowSet
   result.all_solved = true;
-  result.message = "all missions coordinated by CBS";
+  result.message = "coordinated by " + mapf_res.solver_used;
 
   for (const auto& req : requests) {
     CBSMissionPlan mplan;
     mplan.mission_id = req.mission_id;
 
-    auto it = cbs_res.solution.find(req.mission_id);
-    if (it != cbs_res.solution.end() && !it->second.empty()) {
+    auto it = mapf_res.solution.find(req.mission_id);
+    if (it != mapf_res.solution.end() && !it->second.empty()) {
       mplan.success = true;
       // 提取拓扑节点路径
       for (const auto& pt : it->second) {
@@ -164,7 +166,7 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
           it->second, now_time, dt, DefaultEdgeIdBuilder, DefaultNodeIdBuilder);
     } else {
       mplan.success = false;
-      mplan.message = "no solution in CBS result";
+      mplan.message = "no solution in MAPF result";
       result.all_solved = false;
     }
 

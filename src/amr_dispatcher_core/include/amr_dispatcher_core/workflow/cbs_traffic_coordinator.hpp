@@ -14,6 +14,7 @@
 
 #include "amr_dispatcher_core/catalog/station_catalog.hpp"
 #include "amr_dispatcher_core/planning/conflict_based_search.hpp"
+#include "amr_dispatcher_core/planning/mapf_solver.hpp"
 #include "amr_dispatcher_core/workflow/time_space_planning.hpp"
 
 namespace amr_dispatcher_core::workflow {
@@ -50,12 +51,13 @@ ResourceTimeWindowSet ConvertTimedPathToTimeWindows(
     const std::function<std::string(const std::string&, const std::string&)>& edge_id_builder,
     const std::function<std::string(const std::string&)>& node_id_builder);
 
-// 纯函数：执行 CBS 多车协同规划并输出各任务时空窗方案
+// 纯函数：执行 CBS 多车协同规划并输出各任务时空窗方案 (默认使用 Auto 自适应策略)
 CBSCoordinationResult PlanCBSMultiMissionCoordination(
     const std::vector<CBSMissionRequest>& requests,
     const amr_dispatcher_core::catalog::StationCatalog& catalog,
     const TimeSpaceOccupancy& existing_occupancy,
     const MotionTimingConfig& timing_config,
-    std::chrono::steady_clock::time_point now_time);
+    std::chrono::steady_clock::time_point now_time,
+    const amr_dispatcher_core::planning::MAPFPolicy& policy = amr_dispatcher_core::planning::MAPFPolicy{});
 
 }  // namespace amr_dispatcher_core::workflow

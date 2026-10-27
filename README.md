@@ -97,11 +97,12 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Closed-Loop Workflow & Fault Degradation**: `PlanFacilityApproach` and `PlanFacilityDeparture` handle vehicle approach lock acquisition, trigger commands, in-place waiting, and safe degradation if doors fail to open within timeout.
    - **Verified End-to-End**: `scripts/check_facility_integration_e2e.sh` and Python Modbus-TCP PLC simulator (`scripts/mock_plc_facility.py`).
 
-14. **High-Level Multi-Agent Path Finding via Conflict-Based Search (Phase 9 - CBS)**:
+14. **High-Level Multi-Agent Path Finding via Conflict-Based Search (Phase 9 & 10 - CBS & PBS)**:
    - **Two-Level MAPF Architecture**: Low-Level Space-Time A* with `Wait In Place` station dwell actions + High-Level Constraint Tree (CT) search for globally optimal zero-collision trajectories.
-   - **Vertex & Edge Swap Conflict Resolution**: resolves multi-AMR head-on encounters and cross-intersection bottlenecks by branching on mutually exclusive space-time constraints.
-   - **Seamless Dispatcher Wiring (`traffic_mode: cbs`)**: maps CBS `TimedPath` into standard `ResourceTimeWindowSet` and commits atomically to `ResourceTable` while honoring existing in-flight traffic.
-   - **Verified End-to-End**: `scripts/check_cbs_coordination_e2e.sh` and 100% CTest unit coverage (`SpaceTimeAStarTest`, `ConflictBasedSearchTest`, `CBSTrafficCoordinatorTest`).
+   - **Prioritized Planning (PBS) & Goal-Hold Safety**: deterministic priority ordering (Shortest/Longest/Given) with goal-hold constraints that keep arrived vehicles safely occupying their destination stations until the horizon, preventing collisions from trailing vehicles.
+   - **Adaptive Solver Facade (`SolveMAPF`)**: small fleets (<= 6 agents) run CBS for global optimality; large fleets or CBS budget exhaustion automatically degrade to Prioritized Planning for instant, conflict-free resolution.
+   - **Seamless Dispatcher Wiring (`traffic_mode: cbs`)**: maps MAPF `TimedPath` into standard `ResourceTimeWindowSet` and commits atomically to `ResourceTable` while honoring existing in-flight traffic.
+   - **Verified End-to-End**: `scripts/check_cbs_coordination_e2e.sh` and 100% CTest unit coverage (`SpaceTimeAStarTest`, `ConflictBasedSearchTest`, `PrioritizedPlanningTest`, `MAPFSolverTest`, `CBSTrafficCoordinatorTest`).
 
 ---
 

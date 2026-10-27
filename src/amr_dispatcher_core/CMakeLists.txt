@@ -44,6 +44,8 @@ add_library(${PROJECT_NAME}
   src/planning/skeleton_planner.cpp
   src/planning/space_time_astar.cpp
   src/planning/conflict_based_search.cpp
+  src/planning/prioritized_planning.cpp
+  src/planning/mapf_solver.cpp
   src/dispatcher/mission_queue.cpp
   src/dispatcher/mission_state.cpp
   src/dispatcher/dispatch_state_snapshot.cpp
@@ -222,6 +224,8 @@ if(BUILD_TESTING)
     test_facility_interlocking_planning
     test_space_time_astar
     test_conflict_based_search
+    test_prioritized_planning
+    test_mapf_solver
     test_cbs_traffic_coordinator
     test_submit_order_router
     test_topology_projection
