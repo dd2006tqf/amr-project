@@ -80,6 +80,13 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("audit_log_file", "");
   // Phase 8: 工业物理设施目录文件路径
   declare_parameter("facility_catalog_file", "");
+  // 批次 6.2：低电量自动插充电单（默认关闭 = 现网行为不变）
+  declare_parameter("auto_charging_enabled", false);
+  declare_parameter("auto_charging_station", "");
+  declare_parameter("auto_charging_opportunity_threshold_percent", 30.0);
+  declare_parameter("auto_charging_critical_threshold_percent", 15.0);
+  declare_parameter("auto_charging_opportunity_priority", 0);
+  declare_parameter("auto_charging_critical_priority", 5);
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
@@ -310,6 +317,45 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
                               : amr_dispatcher_core::facility::FacilityType::kElevator);
         }
       }
+    }
+  }
+
+  // 批次 6.2：低电量自动插充电单上下文。
+  // 默认 auto_charging_enabled=false 且 station 为空 -> PlanAutoChargingTick 首行即
+  // 直接返回，legacy 单车与未配置部署的行为与改动前逐字一致。
+  auto_charging_enabled_ = get_parameter("auto_charging_enabled").as_bool();
+  auto_charging_station_ = get_parameter("auto_charging_station").as_string();
+  auto_charging_opportunity_threshold_percent_ =
+      get_parameter("auto_charging_opportunity_threshold_percent").as_double();
+  auto_charging_critical_threshold_percent_ =
+      get_parameter("auto_charging_critical_threshold_percent").as_double();
+  auto_charging_opportunity_priority_ =
+      static_cast<int>(get_parameter("auto_charging_opportunity_priority").as_int());
+  auto_charging_critical_priority_ =
+      static_cast<int>(get_parameter("auto_charging_critical_priority").as_int());
+  if (auto_charging_enabled_) {
+    if (auto_charging_station_.empty()) {
+      // 开了开关却没给充电站 = 配置错误。明确报错并关闭，避免"以为开了其实从不触发"。
+      RCLCPP_ERROR(get_logger(),
+                   "auto_charging_enabled=true but auto_charging_station is empty — "
+                   "auto charging stays DISABLED (never guess a charger station)");
+      auto_charging_enabled_ = false;
+    } else if (auto_charging_critical_threshold_percent_ >
+               auto_charging_opportunity_threshold_percent_) {
+      RCLCPP_ERROR(get_logger(),
+                   "auto charging critical threshold (%.1f) exceeds opportunity threshold "
+                   "(%.1f) — auto charging stays DISABLED",
+                   auto_charging_critical_threshold_percent_,
+                   auto_charging_opportunity_threshold_percent_);
+      auto_charging_enabled_ = false;
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "Auto charging enabled: station=%s, opportunity<=%.1f%% (priority %d), "
+                  "critical<=%.1f%% (priority %d)",
+                  auto_charging_station_.c_str(), auto_charging_opportunity_threshold_percent_,
+                  auto_charging_opportunity_priority_,
+                  auto_charging_critical_threshold_percent_,
+                  auto_charging_critical_priority_);
     }
   }
 

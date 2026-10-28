@@ -218,6 +218,12 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 | `assignment_scan_depth` | `8` | 一次 tick 最多考察前 N 个排队任务（队首阻塞规避：队首不可派时继续找后面可派的）。 |
 | `traffic_mode` | `"static"` | 交通协调模式：`static` = 静态排他锁（现网行为）；`time_space` = 时空窗预约（多车可错峰并行）；`cbs` = 高层多智能体协同寻路（CBS 冲突树搜索 + 自动降级至 Prioritized Planning）。未知值回落 `static`。 |
 | `facility_catalog_file` | `""` | 现场物理设施目录路径（`config/facilities.yaml`）。空 = 不启用物理设施控制。支持 Modbus-TCP / 现场 PLC 协议接入与自动卷帘门/跨楼层电梯联锁。 |
+| `auto_charging_enabled` | `false` | 是否开启低电量自动机动插充电单（批次 6.2）。默认 false。开启时必须同时指定 `auto_charging_station`。 |
+| `auto_charging_station` | `""` | 充电站站点 ID（需存在于 `stations.yaml`）。若开启且未配站则节点报错并自动回退关闭。 |
+| `auto_charging_opportunity_threshold_percent` | `30.0` | 机会充电阈值：车辆空闲且电量低于该值时插入低优先级充电单。 |
+| `auto_charging_critical_threshold_percent` | `15.0` | 紧急充电阈值：低于该值插入高优先级抢占式充电单。 |
+| `auto_charging_opportunity_priority` | `0` | 机会充电单优先级（默认 0 = 普通 FIFO）。 |
+| `auto_charging_critical_priority` | `5` | 紧急充电单优先级（默认 5 = 优先出队）。 |
 | `time_space_cruise_speed_mps` | `1.0` | 时空窗模式把几何长度换算成时间占用区间用的巡航速度。 |
 | `time_space_accel_overhead_sec` | `1.0` | 每次进入资源额外支付的起步/刹停时间。 |
 | `time_space_turn_overhead_sec` | `0.5` | 按路径拐点数计的转弯附加时间。 |
