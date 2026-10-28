@@ -21,7 +21,9 @@ dispatcher_node:
     vehicle_state_max_age_ms: 5000
     # 队首阻塞规避：一次 tick 最多考察前 N 个排队任务
     assignment_scan_depth: 8
-    # B3：交通协调模式 static（静态排他锁）/ time_space（时空窗预约，多车错峰并行）
+    # 物理设施目录（Phase 8）：空 = 关闭物理设施控制；配置路径则加载并在靠近设施站点时联锁
+    facility_catalog_file: ""
+    # B3：交通协调模式 static（静态排他锁）/ time_space（时空窗预约）/ cbs（高层冲突树协同与PBS降级）
     traffic_mode: "static"
     # 时空窗运动时序参数（把几何长度换算成时间占用区间）
     time_space_cruise_speed_mps: 1.0

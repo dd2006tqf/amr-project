@@ -10,6 +10,7 @@ using amr_dispatcher_core::planning::CBSAgentSpec;
 using amr_dispatcher_core::planning::CBSRequest;
 using amr_dispatcher_core::planning::DetectFirstConflict;
 using amr_dispatcher_core::planning::PlanConflictBasedSearch;
+using amr_dispatcher_core::planning::TimedPath;
 
 namespace {
 
@@ -48,19 +49,50 @@ StationCatalog BuildParallelCorridorCatalog() {
 }  // namespace
 
 TEST(ConflictBasedSearchTest, NonConflictingAgentsSolveDirectly) {
-  auto cat = BuildNarrowCorridorCatalog();
+  // 完全不相交的两条支路：amr1 走 A->B1，amr2 走 C->B2。
+  // （注意不能用窄通道里的 A->B / B->C：先到 B 的车会驻留在 B，
+  //  后车再碰 B 就是真实的 Goal-Hold 冲突，见下一个用例。）
+  auto cat = BuildParallelCorridorCatalog();
   CBSRequest req;
   req.travel_speed_mps = 1.0;
   req.time_step_duration_sec = 1.0;
 
-  // amr1 从 A 走到 B，amr2 从 B 走到 C (时空错峰)
-  req.agents.push_back(CBSAgentSpec{"amr1", "A", "B", 0, 0.0});
-  req.agents.push_back(CBSAgentSpec{"amr2", "B", "C", 20, 20.0});
+  req.agents.push_back(CBSAgentSpec{"amr1", "A", "B1", 0, 0.0});
+  req.agents.push_back(CBSAgentSpec{"amr2", "C", "B2", 20, 20.0});
 
   auto res = PlanConflictBasedSearch(req, cat);
   EXPECT_TRUE(res.success);
   EXPECT_EQ(res.solution.size(), 2);
   EXPECT_FALSE(DetectFirstConflict(res.solution).has_value());
+}
+
+TEST(ConflictBasedSearchTest, GoalHoldDetectsParkedVehicleOccupancy) {
+  // 回归：先到的车停在终点后，物理上仍占用该站点。
+  // amr1 在 t=10 抵达 B 并驻留；amr2 计划在 t=20 从 B 出发。
+  // 若不建模 Goal-Hold，检测器会认为 amr1 "已消失"，漏判真实碰撞。
+  auto cat = BuildNarrowCorridorCatalog();
+  CBSRequest req;
+  req.travel_speed_mps = 1.0;
+  req.time_step_duration_sec = 1.0;
+
+  req.agents.push_back(CBSAgentSpec{"amr1", "A", "B", 0, 0.0});
+  req.agents.push_back(CBSAgentSpec{"amr2", "B", "C", 20, 20.0});
+
+  auto res = PlanConflictBasedSearch(req, cat);
+  // 求解器必须识别该冲突并给出不碰撞的替代方案（amr2 等 amr1 让开或
+  // amr1 规划到别处）；无论如何，最终解必须零冲突。
+  if (res.success) {
+    EXPECT_FALSE(DetectFirstConflict(res.solution).has_value());
+  }
+
+  // 直接注入一对违反 Goal-Hold 的轨迹，检测器必须报告冲突
+  TimedPath parked{{"B", 0, 0.0, false}, {"B", 10, 10.0, false}};
+  TimedPath passer{{"B", 20, 20.0, false}, {"C", 30, 30.0, false}};
+  std::unordered_map<std::string, TimedPath> paths{{"parked", parked}, {"passer", passer}};
+  auto conflict = DetectFirstConflict(paths);
+  ASSERT_TRUE(conflict.has_value());
+  EXPECT_EQ(conflict->station_u, "B");
+  EXPECT_FALSE(conflict->agent_a.empty());
 }
 
 TEST(ConflictBasedSearchTest, DualLaneBypassResolvesOppositeTraffic) {

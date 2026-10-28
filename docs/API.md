@@ -216,7 +216,8 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 | `min_battery_percent` | `0.0` | 选车电量下限，低于该值的车不合格。 |
 | `vehicle_state_max_age_ms` | `5000` | 车辆状态新鲜度上限；超时视为状态不确定（暂停自动分配，等状态恢复），**不**盲派。 |
 | `assignment_scan_depth` | `8` | 一次 tick 最多考察前 N 个排队任务（队首阻塞规避：队首不可派时继续找后面可派的）。 |
-| `traffic_mode` | `"static"` | 交通协调模式：`static` = 静态排他锁（现网行为）；`time_space` = 时空窗预约（多车可错峰并行）。 |
+| `traffic_mode` | `"static"` | 交通协调模式：`static` = 静态排他锁（现网行为）；`time_space` = 时空窗预约（多车可错峰并行）；`cbs` = 高层多智能体协同寻路（CBS 冲突树搜索 + 自动降级至 Prioritized Planning）。未知值回落 `static`。 |
+| `facility_catalog_file` | `""` | 现场物理设施目录路径（`config/facilities.yaml`）。空 = 不启用物理设施控制。支持 Modbus-TCP / 现场 PLC 协议接入与自动卷帘门/跨楼层电梯联锁。 |
 | `time_space_cruise_speed_mps` | `1.0` | 时空窗模式把几何长度换算成时间占用区间用的巡航速度。 |
 | `time_space_accel_overhead_sec` | `1.0` | 每次进入资源额外支付的起步/刹停时间。 |
 | `time_space_turn_overhead_sec` | `0.5` | 按路径拐点数计的转弯附加时间。 |
@@ -237,7 +238,7 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 硬约束（`kAssigned` 必须全部满足，**显式指定车辆同样适用**）：
 `online ∧ enabled ∧ !busy ∧ !quarantined ∧ 具备能力 ∧ battery ≥ 阈值 ∧ position_valid ∧ 状态新鲜`。
 
-### 时空窗交通协调（`traffic_mode: time_space`）
+### 时空窗与高层协同寻路（`traffic_mode: time_space` / `cbs`）
 
 - **逐资源区间**：一条路径涉及多个资源（边=通道、节点=路口），每个资源单独
   计算进入/离开时刻；路口窗口 = 进入路口到驶出路口的完整区间。
@@ -245,7 +246,13 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
   不留半套预约。
 - **窗口到期 ≠ 资源已释放**：物理资源仍需车辆**确认驶离**（`lastNodeId` 推进，
   Spec §5.3 逐段解锁）才可让后车进入；执行偏离靠 `ExtendTimeSpace` 延期扩窗。
-- **默认仍为 `static`** —— 时空窗模式在多车并发与单测全绿后才显式启用。
+- **CBS / MAPF 协同（`traffic_mode: cbs`）**：
+  - 低层时空 $A^*$ 引入站点原地等待（`Wait In Place`）动作；
+  - 高层约束树（Constraint Tree）检测并分支消解顶点重叠与通道对撞；
+  - 终点驻留保护（Goal-Hold）：车辆抵达终点后持续占据站点，杜绝后续车穿身冲撞；
+  - 自适应降级门面（`SolveMAPF`）：任务规模 $> 6$ 或 CBS 搜索超预算时，平滑降级至优先级时空规划（Prioritized Planning / PBS），保证毫秒级无冲突收敛；
+  - 窗口转换统一注入 `MotionTimingConfig`（起步刹停/转弯/尺寸余量/最小安全间隔 `min_headway_sec`），与时空窗模式口径严格一致。
+- **默认仍为 `static`** —— 高级模式在多车并发与集成验收全绿后按需显式启用。
 
 ### 调度状态持久化与审计落盘（`state_snapshot_file` / `audit_log_file`）
 

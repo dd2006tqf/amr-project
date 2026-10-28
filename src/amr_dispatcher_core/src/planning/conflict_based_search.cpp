@@ -14,23 +14,42 @@ struct AgentStepState {
   std::string next_station;
   bool is_moving = false;
   bool is_active = false;
+  // 若正在行驶，该航段的到达时刻（用于推导冲突约束的真实区间，
+  // 取代原先与几何无关的 t+10 / t+5 魔法数字）
+  int segment_end_tick = 0;
 };
 
 // 获取智能体在给定时间步所在的位置
 // 若 tick 正好命中路径中某个离散到达点，则返回该点的 station_id (is_moving=false)
 // 若 tick 处于两点之间行驶，则 is_moving=true
-AgentStepState GetAgentStateAtTick(const TimedPath& path, int tick) {
+//
+// 目标驻留（Goal-Hold）：智能体到达终点后停在原地，物理上仍占据该站点。
+// 因此 tick > 轨迹末端时刻时不算"消失"，而是继续占用终点站，直至调用方给定的
+// horizon。否则后车会被规划成直接从停驻车辆身上穿过去。
+AgentStepState GetAgentStateAtTick(const TimedPath& path, int tick, int horizon) {
   AgentStepState state;
   if (path.empty()) return state;
 
-  if (tick < path.front().time_step || tick > path.back().time_step) {
+  if (tick < path.front().time_step) {
     state.is_active = false;
+    return state;
+  }
+
+  // 1. 到达终点之后：继续占用终点站（Goal-Hold）
+  if (tick > path.back().time_step) {
+    if (tick <= horizon) {
+      state.is_active = true;
+      state.curr_station = path.back().station_id;
+      state.next_station = state.curr_station;
+      state.is_moving = false;
+      state.segment_end_tick = horizon;
+    }
     return state;
   }
 
   state.is_active = true;
 
-  // 1. 先检查是否精确处于某个航路点或等待点
+  // 2. 精确处于某个航路点或等待点
   for (const auto& pt : path) {
     if (pt.time_step == tick) {
       state.curr_station = pt.station_id;
@@ -40,7 +59,7 @@ AgentStepState GetAgentStateAtTick(const TimedPath& path, int tick) {
     }
   }
 
-  // 2. 处于航段行驶过程中
+  // 3. 处于航段行驶过程中
   for (std::size_t i = 0; i + 1 < path.size(); ++i) {
     const auto& p1 = path[i];
     const auto& p2 = path[i + 1];
@@ -48,6 +67,7 @@ AgentStepState GetAgentStateAtTick(const TimedPath& path, int tick) {
       state.curr_station = p1.station_id;
       state.next_station = p2.station_id;
       state.is_moving = true;
+      state.segment_end_tick = p2.time_step;
       return state;
     }
   }
@@ -85,13 +105,15 @@ std::optional<AgentConflict> DetectFirstConflict(
     return std::nullopt;
   }
 
-  // 计算全局最大时间步
+  // 计算全局最大时间步，并以此作为 Goal-Hold 的校验地平线：
+  // 先到的车停在终点后仍然占据站点，直到所有车都完成行程。
   int max_t = 0;
   for (const auto& [agent, path] : paths) {
     if (!path.empty()) {
       max_t = std::max(max_t, path.back().time_step);
     }
   }
+  const int horizon = max_t;
 
   // 转换为稳定顺序的向量
   std::vector<std::string> agent_ids;
@@ -105,12 +127,12 @@ std::optional<AgentConflict> DetectFirstConflict(
     for (std::size_t i = 0; i < agent_ids.size(); ++i) {
       const auto& a1 = agent_ids[i];
       const auto& path1 = paths.at(a1);
-      const auto state1 = GetAgentStateAtTick(path1, t);
+      const auto state1 = GetAgentStateAtTick(path1, t, horizon);
 
       for (std::size_t j = i + 1; j < agent_ids.size(); ++j) {
         const auto& a2 = agent_ids[j];
         const auto& path2 = paths.at(a2);
-        const auto state2 = GetAgentStateAtTick(path2, t);
+        const auto state2 = GetAgentStateAtTick(path2, t, horizon);
 
         // 仅当两个智能体在时刻 t 均处于各自运行生命周期内时才触发时空冲突
         if (!state1.is_active || !state2.is_active) {
@@ -143,7 +165,9 @@ std::optional<AgentConflict> DetectFirstConflict(
             c.station_u = state1.curr_station;
             c.station_v = state1.next_station;
             c.time_step = t;
-            c.time_step_end = t + 10; // 保守阻断对撞区间
+            // 阻断区间取两方该航段中较晚的到达时刻，而非与几何无关的魔法常数
+            c.time_step_end =
+                std::max(state1.segment_end_tick, state2.segment_end_tick);
             return c;
           }
 
@@ -157,7 +181,8 @@ std::optional<AgentConflict> DetectFirstConflict(
             c.station_u = state1.curr_station;
             c.station_v = state1.next_station;
             c.time_step = t;
-            c.time_step_end = t + 5;
+            c.time_step_end =
+                std::max(state1.segment_end_tick, state2.segment_end_tick);
             return c;
           }
         }

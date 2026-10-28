@@ -125,8 +125,12 @@
     接入 `DeadlockTick`，实现 local_sim 与 VDA 5050 航线/订单更新发布；单测 2 例。
   - [x] **全流程矩阵化验证 (P3)**：新增 `scripts/check_traffic_coordination_e2e.sh`
     端到端集成测试，测试矩阵扩充至 1012 例，全部通过。
-  - [ ] **高层规划器插件 (CBS / 冲突搜索)**：当高密度多车通道频繁出现拓扑绕道瓶颈时，
-    可作为高级多车联合规划插件接入当前已打通的在途事务置换链路。
+  - [x] **高层规划器插件 (CBS / 冲突搜索与 PBS 降级，Phase 9 & 10 Complete)**：
+    低层带原地等待（`Wait In Place`）时空 $A^*$ + 高层冲突树（CBS）搜索，
+    消除顶点重叠与通道对向冲突；引入优先级规划（PBS）、终点驻留保护（Goal-Hold）
+    与自适应门面（`SolveMAPF`，小规模求最优，超限或大规模自动降级至 PBS）；
+    `CBSTrafficCoordinator` 统一注入 `MotionTimingConfig` 膨胀量（起停/转弯/安全余量/min_headway），
+    使时空窗口与 `time_space` 口径严格对齐；`check_cbs_coordination_e2e.sh` 5 阶段验收通过。
 
 - [x] **CI 门禁 + L2 契约真断言 + `/metrics` (Complete)**：
   - CI 新增 `e2e-fleet` job：`check_map_ingest_e2e.sh` 与 `check_vda5050_e2e.sh`

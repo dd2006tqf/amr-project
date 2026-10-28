@@ -43,13 +43,21 @@ struct CBSCoordinationResult {
   std::string message;
 };
 
-// 纯函数：将 CBS 规划结果转为 ResourceTimeWindowSet
+// 纯函数：将 MAPF 规划结果转为 ResourceTimeWindowSet
+//
+// `timing` 为空时窗口严格等于离散时步区间（历史行为，供单测精确断言）；
+// 传入 `MotionTimingConfig` 时，对每个窗口的 **exit** 做安全膨胀：
+//   起步/刹停附加 (accel_overhead_sec) + 尺寸安全余量 (safety_margin_m / 巡航速度)
+//   + 最小安全间隔 (min_headway_sec)
+// 这样 `traffic_mode: cbs` 提交的窗口与 `time_space` 模式使用同一套时间预算，
+// 不会因为只按整数 tick 记时而对后车偏乐观（ResourceTable 只查区间重叠、不查 headway）。
 ResourceTimeWindowSet ConvertTimedPathToTimeWindows(
     const amr_dispatcher_core::planning::TimedPath& timed_path,
     std::chrono::steady_clock::time_point base_time,
     double time_step_duration_sec,
     const std::function<std::string(const std::string&, const std::string&)>& edge_id_builder,
-    const std::function<std::string(const std::string&)>& node_id_builder);
+    const std::function<std::string(const std::string&)>& node_id_builder,
+    const MotionTimingConfig* timing = nullptr);
 
 // 纯函数：执行 CBS 多车协同规划并输出各任务时空窗方案 (默认使用 Auto 自适应策略)
 CBSCoordinationResult PlanCBSMultiMissionCoordination(

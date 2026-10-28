@@ -24,13 +24,27 @@ ResourceTimeWindowSet ConvertTimedPathToTimeWindows(
     std::chrono::steady_clock::time_point base_time,
     double time_step_duration_sec,
     const std::function<std::string(const std::string&, const std::string&)>& edge_id_builder,
-    const std::function<std::string(const std::string&)>& node_id_builder) {
+    const std::function<std::string(const std::string&)>& node_id_builder,
+    const MotionTimingConfig* timing) {
   ResourceTimeWindowSet windows;
   if (timed_path.empty()) return windows;
 
   const auto edge_builder = edge_id_builder ? edge_id_builder : DefaultEdgeIdBuilder;
   const auto node_builder = node_id_builder ? node_id_builder : DefaultNodeIdBuilder;
   const double dt = (time_step_duration_sec > 0.05) ? time_step_duration_sec : 1.0;
+
+  // 时间膨胀量（秒）：只在调用方显式给出 MotionTimingConfig 时生效。
+  //   accel_overhead_sec —— 起步/刹停
+  //   safety_margin_m / cruise_speed —— 车辆尺寸占用的行前时间
+  //   min_headway_sec —— 后车进入同一资源前必须拉开的间隔
+  double inflate_sec = 0.0;
+  if (timing != nullptr) {
+    const double speed = (timing->cruise_speed_mps > 0.05) ? timing->cruise_speed_mps : 1.0;
+    inflate_sec = timing->accel_overhead_sec + timing->safety_margin_m / speed +
+                  timing->min_headway_sec;
+  }
+  const auto inflate = std::chrono::milliseconds(
+      static_cast<int64_t>(inflate_sec * 1000.0));
 
   for (std::size_t i = 0; i < timed_path.size(); ++i) {
     const auto& pt = timed_path[i];
@@ -44,7 +58,8 @@ ResourceTimeWindowSet ConvertTimedPathToTimeWindows(
     if (i + 1 < timed_path.size() && timed_path[i + 1].station_id == pt.station_id) {
       next_step = timed_path[i + 1].time_step;
     }
-    nw.exit = base_time + std::chrono::milliseconds(static_cast<int64_t>(next_step * dt * 1000));
+    nw.exit = base_time + std::chrono::milliseconds(static_cast<int64_t>(next_step * dt * 1000)) +
+              inflate;
     windows.push_back(nw);
 
     // 边窗口 (若前往下一不同站点)
@@ -54,7 +69,9 @@ ResourceTimeWindowSet ConvertTimedPathToTimeWindows(
       ew.resource_id = edge_builder(pt.station_id, next_pt.station_id);
       ew.is_intersection = false;
       ew.enter = base_time + std::chrono::milliseconds(static_cast<int64_t>(pt.time_step * dt * 1000));
-      ew.exit = base_time + std::chrono::milliseconds(static_cast<int64_t>(next_pt.time_step * dt * 1000));
+      ew.exit = base_time +
+                std::chrono::milliseconds(static_cast<int64_t>(next_pt.time_step * dt * 1000)) +
+                inflate;
       windows.push_back(ew);
     }
   }
@@ -161,9 +178,11 @@ CBSCoordinationResult PlanCBSMultiMissionCoordination(
           mplan.path_nodes.push_back(pt.station_id);
         }
       }
-      // 转换时空窗口
+      // 转换时空窗口（注入 timing_config，使起停附加/安全余量/min_headway
+      // 生效到最终提交给 ResourceTable 的窗口中，与 time_space 模式口径一致）
       mplan.time_windows = ConvertTimedPathToTimeWindows(
-          it->second, now_time, dt, DefaultEdgeIdBuilder, DefaultNodeIdBuilder);
+          it->second, now_time, dt, DefaultEdgeIdBuilder, DefaultNodeIdBuilder,
+          &timing_config);
     } else {
       mplan.success = false;
       mplan.message = "no solution in MAPF result";
