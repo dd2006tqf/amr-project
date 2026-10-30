@@ -29,9 +29,20 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
       : rclcpp::Node("lifecycle_coordinator_node", options) {
     declare_parameter("auto_bringup", true);
     declare_parameter("check_period_ms", 500);
+    // 安全状态新鲜度（秒）：safety_gate 停发后 "motion_allowed" 会永远停在最后一次
+    // 的值上 —— 只看值不看时间，等于安全门死了以后就绪还是 true。
+    declare_parameter("safety_stale_sec", 2.0);
+    // dispatcher 存活判据（秒）。这是"容器 Up 8 days、dispatcher 已死 8 天、
+    // 网关照样回 200"那次的直接病根：CoordinatorTick 在 get_state 服务不可用时
+    // 直接 return，current_dispatcher_state_ 永远停在最后一次读到的 "active"，
+    // 于是 /system/ready 一直报 READY。宽限期比 check_period 略大，
+    // 让服务端短暂抖动不至于误判。
+    declare_parameter("dispatcher_stale_sec", 3.0);
 
     auto_bringup_ = get_parameter("auto_bringup").as_bool();
     int period_ms = get_parameter("check_period_ms").as_int();
+    safety_stale_sec_ = get_parameter("safety_stale_sec").as_double();
+    dispatcher_stale_sec_ = get_parameter("dispatcher_stale_sec").as_double();
 
     dispatcher_get_state_cli_ =
         create_client<lifecycle_msgs::srv::GetState>("/dispatcher_node/get_state");
@@ -43,6 +54,7 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
         [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
           safety_healthy_ = msg->motion_allowed;
           safety_seen_ = true;
+          safety_last_seen_ = std::chrono::steady_clock::now();
         });
 
     readiness_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
@@ -72,6 +84,11 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
  private:
   void CoordinatorTick() {
     if (!dispatcher_get_state_cli_->service_is_ready()) {
+      // 服务不可用 = dispatcher 已死（或还没起来）。**不能**直接 return：
+      // 那样 current_dispatcher_state_ 会一直停在最后的 "active"，
+      // 就绪判定与 ready_flag 都会撒谎。这里显式把状态标为不可用，
+      // 交给 EvaluateReadiness / ready_flag 报告未就绪。
+      MarkDispatcherUnavailable("get_state service unavailable");
       return;
     }
 
@@ -89,10 +106,15 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
       if (++get_state_wait_ticks_ > 10) {
         pending_get_state_ = {};
         get_state_wait_ticks_ = 0;
+        // 连续多拍拿不到应答 = DDS 卡死或进程假死。与会话丢失同样处理：
+        // 不标记就绪，等下一轮真正拿到状态再恢复。
+        MarkDispatcherUnavailable("get_state request timed out");
       }
       return;
     }
     current_dispatcher_state_ = pending_get_state_.get()->current_state.label;
+    dispatcher_last_ok_ = std::chrono::steady_clock::now();
+    dispatcher_seen_ = true;
     pending_get_state_ = {};
     get_state_wait_ticks_ = 0;
 
@@ -120,19 +142,73 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
     dispatcher_change_state_cli_->async_send_request(req);
   }
 
+  /// dispatcher 状态不可用（进程死掉 / DDS 卡死 / 尚未启动）。
+  ///
+  /// 语义上"不可用"和"未激活"必须区分：
+  ///   * 未激活（inactive/unconfigured）= 正常的启动中间态，等提拉即可；
+  ///   * 不可用 = 进程根本不在，提拉也无从谈起，需要人工介入（respawn 兜底）。
+  /// 但它俩对上层门禁的结论一致：**不放行**。所以对 /system/ready 用
+  /// INITIALIZING（与 lifecycle 契约测试锁定的词汇一致：未就绪 = 等），
+  /// 对 /system/healthy 明确报 unhealthy —— 后者才是给"存活探针/告警"看的。
+  void MarkDispatcherUnavailable(const std::string& detail) {
+    const bool was_available = current_dispatcher_state_ != "unavailable";
+    current_dispatcher_state_ = "unavailable";
+    dispatcher_unavailable_detail_ = detail;
+    if (was_available) {
+      RCLCPP_ERROR(get_logger(), "dispatcher_node unavailable (%s); readiness will report NOT READY",
+                   detail.c_str());
+    }
+    // 发布 false：否则 rest_gateway 的 /readyz 会一直读到上一次的 true，
+    // 直到它自己的 stale 阈值超时 —— 那是"网关侧再补一道"而非"上游说真话"。
+    std_msgs::msg::Bool ready_msg;
+    ready_msg.data = false;
+    ready_pub_->publish(ready_msg);
+  }
+
   void EvaluateReadiness(std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
-    bool is_ready = (current_dispatcher_state_ == "active") && safety_seen_ && safety_healthy_;
+    // 安全状态新鲜度：safety_gate 停发（崩溃/被 SIGKILL）后 motion_allowed 会永远停在
+    // 最后一次的值上。只看值不看时间，安全门死了以后就绪判定仍然为 true —— 这正是
+    // "容器 Up 8 days、dispatcher 已死 8 天"那次事故在协调器侧的第二个真实缺陷。
+    const bool safety_fresh =
+        safety_seen_ &&
+        (std::chrono::steady_clock::now() - safety_last_seen_) <=
+            std::chrono::duration<double>(safety_stale_sec_);
+    // dispatcher 可用性：state 读到 "unavailable" 或最后一次成功读取已超过
+    // dispatcher_stale_sec_（例如本节点自己卡住过一阵，状态可信度存疑）。
+    const bool dispatcher_fresh =
+        dispatcher_seen_ && current_dispatcher_state_ != "unavailable" &&
+        (std::chrono::steady_clock::now() - dispatcher_last_ok_) <=
+            std::chrono::duration<double>(dispatcher_stale_sec_);
+    const bool is_ready =
+        dispatcher_fresh && (current_dispatcher_state_ == "active") && safety_fresh &&
+        safety_healthy_;
     resp->ready = is_ready;
-    resp->healthy = safety_healthy_;
+    // healthy 是"系统活着"的判据，供存活探针/告警用：dispatcher 不可用即不健康。
+    // 但 dispatcher 只是"未激活"（还在提拉）时，系统本身仍健康，那由 ready 表达。
+    resp->healthy = dispatcher_fresh && safety_fresh && safety_healthy_;
 
     if (is_ready) {
       resp->state = "READY";
       resp->message = "All critical nodes (Chassis, Safety, Dispatcher) are ACTIVE and HEALTHY";
       resp->active_nodes = {"chassis_driver", "safety_gate", "path_tracker", "dispatcher_node"};
+    } else if (!dispatcher_fresh) {
+      // 进程不在或状态读不到：门禁结论同样是"不放行"，但 message 必须说清
+      // 是哪一种 —— 运维看到 "in state: unavailable" 才知道不是启动慢。
+      resp->state = "INITIALIZING";
+      resp->message = "DispatcherNode unavailable: " +
+                      (dispatcher_seen_ ? dispatcher_unavailable_detail_
+                                        : std::string("no state response yet"));
+      resp->pending_nodes = {"dispatcher_node"};
     } else if (current_dispatcher_state_ != "active") {
       resp->state = "INITIALIZING";
       resp->message = "DispatcherNode is in state: " + current_dispatcher_state_;
       resp->pending_nodes = {"dispatcher_node"};
+    } else if (!safety_fresh) {
+      resp->state = "DEGRADED";
+      resp->message = safety_seen_
+                          ? "Safety Gate state is stale (no /safety/state within " +
+                                std::to_string(safety_stale_sec_) + "s); treating as unhealthy"
+                          : "Safety Gate has never reported /safety/state";
     } else {
       resp->state = "DEGRADED";
       resp->message = "Safety Gate or Chassis reporting fault/standstill";
@@ -141,8 +217,17 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
 
   bool auto_bringup_{true};
   std::string current_dispatcher_state_{"unknown"};
+  // dispatcher 存活/新鲜度：曾经读到过状态、最近一次成功读取的时刻。
+  // 与 safety_* 同一套判据，避免"只记值不记时间"的同一类缺陷。
+  bool dispatcher_seen_{false};
+  std::chrono::steady_clock::time_point dispatcher_last_ok_{};
+  std::string dispatcher_unavailable_detail_;
+  double dispatcher_stale_sec_{3.0};
   bool safety_seen_{false};
   bool safety_healthy_{true};
+  // 最近一次收到 /safety/state 的时刻（配合 safety_stale_sec_ 判新鲜度）
+  std::chrono::steady_clock::time_point safety_last_seen_{};
+  double safety_stale_sec_{2.0};
   std::shared_future<lifecycle_msgs::srv::GetState::Response::SharedPtr> pending_get_state_;
   int get_state_wait_ticks_ = 0;
 
