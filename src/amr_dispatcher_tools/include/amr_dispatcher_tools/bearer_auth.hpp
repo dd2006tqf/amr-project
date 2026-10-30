@@ -85,8 +85,12 @@ inline bool IsAuthorized(const std::string& authorization_header,
 
 // 免鉴权的只读静态资源（操作台页面本身）：不需要 token 才能打开页面，
 // 页面里的每个 API 调用仍各自带 token。空 = 没有端点免鉴权。
+//
+// /healthz 与 /readyz 也免鉴权：它们只暴露布尔量与秒数（不含业务数据），
+// 且容器 HEALTHCHECK 与编排平台的探针无法携带 token。若要求鉴权，
+// 探针会恒 401，把"进程死了"变成"探针永远报不健康"，等于没有探针。
 inline bool IsAuthExemptPath(const std::string& path) {
-  return path == "/" || path == "/index.html";
+  return path == "/" || path == "/index.html" || path == "/healthz" || path == "/readyz";
 }
 
 }  // namespace amr_dispatcher_tools

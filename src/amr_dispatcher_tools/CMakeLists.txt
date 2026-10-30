@@ -67,6 +67,9 @@ if(BUILD_TESTING)
     test_idempotency_store
     test_json_escape
     test_metrics_format
+    test_health_probe
+    test_alerting
+    test_alert_webhook_client
   )
   foreach(test_name IN LISTS TOOLS_UNIT_TESTS)
     set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")

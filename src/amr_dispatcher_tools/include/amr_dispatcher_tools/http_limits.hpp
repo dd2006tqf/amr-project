@@ -19,6 +19,13 @@ inline constexpr std::size_t kMaxRequestBytes = 1024U * 1024U;
 inline constexpr std::size_t kMaxHeaderBytes = 8U * 1024U;
 // 单连接收发超时（秒）：静默连接不能永久占住工作线程。
 inline constexpr int kSocketTimeoutSec = 5;
+// accept 线程在"读请求头"上允许占用的预算（毫秒）。
+//
+// 探针快车道必须在 accept 线程里读头才能绕开工作线程池，但 accept 线程本身
+// 是单点：一旦它为一个慢客户端等满 kSocketTimeoutSec，所有新连接（包括
+// 探针自己）都得排队。所以这里只给 50ms —— 足够本机环回一次 read，
+// 又远小于任何客户端的容忍度。超预算的连接立刻入队，由 worker 去等。
+inline constexpr int kAcceptReadBudgetMs = 50;
 
 // Content-Length 的解析结果：
 //   kMissing  —— 没有该头部（GET 等无体请求，合法）

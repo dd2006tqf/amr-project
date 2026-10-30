@@ -146,6 +146,11 @@ TEST(HttpLimitsTest, Limits_AreSane) {
   EXPECT_GT(kMaxRequestBytes, 64U * 1024U);   // 地图上传要放得下
   EXPECT_LT(kMaxHeaderBytes, kMaxRequestBytes);
   EXPECT_GT(kSocketTimeoutSec, 0);
+  // accept 线程的读头预算必须远小于连接超时：它是单点，为慢客户端等满
+  // kSocketTimeoutSec 会让所有新连接（包括探针）一起排队。
+  // 反过来也不能太短：本机环回一次 read 通常在 1ms 量级。
+  EXPECT_GT(kAcceptReadBudgetMs, 0);
+  EXPECT_LT(kAcceptReadBudgetMs, kSocketTimeoutSec * 1000 / 10);
 }
 
 // ---------------------------------------------------------------------------
