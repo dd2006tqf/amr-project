@@ -13,6 +13,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(tf2 REQUIRED)
@@ -52,6 +53,7 @@ ament_target_dependencies(chassis_driver_node
   rclcpp
   geometry_msgs
   nav_msgs
+  sensor_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

@@ -117,7 +117,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [ "${AMR_USE_MOCK_CHASSIS:-1}" = "1" ] && [ ! -e "$SERIAL_DEVICE" ]; then
+if [ "${AMR_USE_MOCK_CHASSIS:-1}" != "1" ]; then
+  # 显式关闭模拟器 = 声明这台车接了真底盘。此时设备不存在必须立刻失败：
+  # 静默回落到 PTY 会让"接线没通"表现成"系统一切正常"，白烧一晚上。
+  if [ ! -e "$SERIAL_DEVICE" ]; then
+    log "ERROR AMR_USE_MOCK_CHASSIS=0 但串口 $SERIAL_DEVICE 不存在；"
+    log "      请确认 --device 已透传、A7A 上 UART4 overlay 已开启（/dev/ttyAS4），"
+    log "      或把 AMR_SERIAL_DEVICE 指到正确的设备路径。"
+    exit 1
+  fi
+  log "使用物理串口设备 $SERIAL_DEVICE（模拟器已显式关闭）"
+elif [ ! -e "$SERIAL_DEVICE" ]; then
   log "$SERIAL_DEVICE 不存在，启动 PTY 物理底盘模拟器"
 
   if [ ! -f scripts/mock_physical_chassis.py ]; then

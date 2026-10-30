@@ -11,6 +11,17 @@ chassis_driver_node:
     base_frame_id: "base_link"
     publish_tf: true
     poll_rate_hz: 50.0
+    # 链路协议：text（ODOM/STATE 文本行）| mick_binary（0xAE 0xEA ... 0xEF 0xFE 帧）。
+    # 接真实底盘 MCU 时改成 mick_binary；两侧协议必须一致，
+    # 否则下行用二进制发、上行按文本切，odom 会全部丢弃。
+    protocol: "text"
+    # 电压 -> 电量百分比端点（下游只认 percent：min_battery_percent / auto_charging_*）。
+    # 12V 台架：12.6 / 11.0；换成 24V 整车改成 25.2 / 21.0。
+    battery_full_voltage: 12.6
+    battery_empty_voltage: 11.0
+    # 上行里程计超时：超过该时长无有效帧即判定链路假活，健康上报与心跳随之下沉，
+    # 由 safety_gate 的 500ms 看门狗接管零速。必须小于 heartbeat_timeout_ms。
+    odom_timeout_ms: 300
     # B1：健康/心跳上报 5Hz——500ms 心跳超时阈值下必须留足余量（2Hz 边界会误报失联）
     health_rate_hz: 5.0
     # B1：指令龄超时阈值；超时后 ReadPollLoop 每拍主动写零速帧兜底

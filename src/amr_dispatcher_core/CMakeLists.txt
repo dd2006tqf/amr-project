@@ -141,6 +141,7 @@ if(BUILD_TESTING)
     test_chassis_packet
     test_chassis_packet_stream
     test_chassis_kinematics
+    test_battery_voltage
     test_pure_pursuit
     test_stanley
     test_mission_queue

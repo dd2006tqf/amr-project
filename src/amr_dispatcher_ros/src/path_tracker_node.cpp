@@ -26,8 +26,16 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   declare_parameter("cmd_vel_topic", "");
   declare_parameter("tracking_error_topic", "");
   declare_parameter("heartbeat_topic", "");
+  // odom 原点在 map 帧下的静态位姿。真机台架必须配置（车摆在哪个 map 坐标上上电），
+  // 仿真保持 0 即可（PTY 模拟器直接给出 map 坐标）。
+  declare_parameter("odom_origin_x", 0.0);
+  declare_parameter("odom_origin_y", 0.0);
+  declare_parameter("odom_origin_yaw", 0.0);
 
   controller_type_ = get_parameter("controller_type").as_string();
+  odom_origin_x_ = get_parameter("odom_origin_x").as_double();
+  odom_origin_y_ = get_parameter("odom_origin_y").as_double();
+  odom_origin_yaw_ = get_parameter("odom_origin_yaw").as_double();
 
   amr_dispatcher_core::path_tracking::PurePursuitController::Config pp_cfg;
   pp_cfg.lookahead_distance = get_parameter("lookahead_distance").as_double();
@@ -89,6 +97,18 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
 PathTrackerNode::~PathTrackerNode() = default;
 
 void PathTrackerNode::PathCallback(const nav_msgs::msg::Path::SharedPtr msg) {
+  // /plan 由 dispatcher 在 map 帧发布；本节点没有 tf 依赖，若对端换成了别的帧
+  // （例如未配置 odom_origin_* 却收到 odom 帧的路径），这里只告警不猜测转换，
+  // 避免静默算错方向。空 frame_id 视为未约定，与旧行为一致。
+  if (!msg->header.frame_id.empty() && msg->header.frame_id != "map" &&
+      !warned_frame_mismatch_) {
+    warned_frame_mismatch_ = true;
+    RCLCPP_WARN(get_logger(),
+                "Path frame_id is '%s' but positions are applied on the map frame "
+                "(odom_origin_x=%.3f y=%.3f yaw=%.3f). Check odom_origin_* parameters.",
+                msg->header.frame_id.c_str(), odom_origin_x_, odom_origin_y_,
+                odom_origin_yaw_);
+  }
   waypoints_.clear();
   for (const auto& pose_stamped : msg->poses) {
     amr_dispatcher_core::path_tracking::Pose2D wp;
@@ -105,10 +125,18 @@ void PathTrackerNode::PathCallback(const nav_msgs::msg::Path::SharedPtr msg) {
 }
 
 void PathTrackerNode::OdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-  current_pose_.x = msg->pose.pose.position.x;
-  current_pose_.y = msg->pose.pose.position.y;
-  current_pose_.yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
+  // 把 odom 帧下的位姿搬进 map 帧：先按 odom_origin_yaw 旋转，再平移。
+  // 偏移全 0 时结果与旧实现逐位相同（单车仿真兼容）。
+  const double raw_x = msg->pose.pose.position.x;
+  const double raw_y = msg->pose.pose.position.y;
+  const double raw_yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
       msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+  const double c = std::cos(odom_origin_yaw_);
+  const double s = std::sin(odom_origin_yaw_);
+  current_pose_.x = odom_origin_x_ + raw_x * c - raw_y * s;
+  current_pose_.y = odom_origin_y_ + raw_x * s + raw_y * c;
+  current_pose_.yaw = std::atan2(std::sin(raw_yaw + odom_origin_yaw_),
+                                 std::cos(raw_yaw + odom_origin_yaw_));
   current_linear_speed_ = msg->twist.twist.linear.x;
   has_odom_ = true;
 }
