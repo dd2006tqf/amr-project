@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -43,8 +45,14 @@
 #include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/get_system_readiness.hpp"
 #include "amr_dispatcher_interfaces/srv/submit_order.hpp"
+#include "amr_dispatcher_interfaces/srv/block_edge.hpp"
+#include "amr_dispatcher_interfaces/srv/topology_hot_update.hpp"
+#include "amr_dispatcher_interfaces/srv/get_topology_overlay.hpp"
 
+#include "amr_dispatcher_tools/alert_webhook_client.hpp"
+#include "amr_dispatcher_tools/alerting.hpp"
 #include "amr_dispatcher_tools/bearer_auth.hpp"
+#include "amr_dispatcher_tools/health_probe.hpp"
 #include "amr_dispatcher_tools/http_limits.hpp"
 #include "amr_dispatcher_tools/idempotency_store.hpp"
 #include "amr_dispatcher_tools/json_escape.hpp"
@@ -69,6 +77,45 @@ struct HttpRequest {
 struct HttpResponse {
   std::string status = "200 OK";
   std::string content_type = "application/json";
+  std::string body;
+};
+
+// 读请求头/体的结果。放在文件作用域是因为 QueuedConn 要携带它
+// （accept 线程读头失败时，worker 必须知道"为什么失败"才能给出正确状态码）。
+//
+// kTimeout 与 kClosed 必须分开：读超时说明对端"还活着但没发完"，
+// accept 线程应把已读字节转交 worker 继续等；而 kClosed 是对端真的断了。
+// 修复前两者都返回 kClosed，accept 线程只能把半截请求丢掉——
+// 于是"探针快车道"在慢客户端上会静默丢请求。
+enum class ReadStatus { kOk, kClosed, kBadRequest, kTooLarge, kTimeout };
+
+// 排队中的连接。accept 线程已经把请求头读掉（探针快车道需要它做路由判断），
+// 因此这里带着已解析的头与前缀字节入队，worker 只续读请求体。
+//
+// `head_complete` 与 `head_ok` 是两个不同的东西，必须分开：
+//   * head_complete = accept 线程**已经读完请求头**（无论结论是 Ok/400/413）。
+//     此时 socket 已被 consume 掉这些字节，worker 绝不能再去读头，
+//     否则它会阻塞在"下一个请求"上（本网关一连接一请求，没有下一个），
+//     最终变成 5s 超时 → 对端收到连接重置而不是 400/413。
+//   * head_ok = 头合法且可以继续读体。
+// 修复前这里只有一个布尔量，未覆盖的错误路径（畸形 Content-Length、
+// 超限、分块传输）落进了"worker 重新读头"分支，于是加固验收里
+// 4 条 400/413 断言全变成连接重置。慢路径上的另一处同类缺陷是
+// `raw.size() > kMaxHeaderBytes` 的判断放在 read 之前：一次 read 最多读
+// 4096 字节，只有累计超过 8 KiB 才会在下一次循环被发现，而那时又先
+// read 了一次——静默连接因此能多拖一个 5s 超时。
+struct QueuedConn {
+  int fd = -1;
+  std::string prebuffered;
+  bool head_complete = false;
+  bool head_ok = false;
+  HttpRequest req;
+  std::size_t content_length = 0;
+  ReadStatus head_status = ReadStatus::kOk;
+};
+
+// 待发送的一条告警（body 已渲染成 JSON，发送线程只负责投递）。
+struct AlertJob {
   std::string body;
 };
 
@@ -200,6 +247,30 @@ class RestGatewayNode : public rclcpp::Node {
     declare_parameter("idempotency_capacity", 4096);
     declare_parameter("idempotency_ttl_sec", 3600);
 
+    // ---- 相位 11：就绪探针阈值（秒）----
+    // 取值依据实际发布频率：/dispatcher/state 2Hz、/safety/state 空闲 10Hz（有指令时
+    // 最高 50Hz）、/chassis/link_health 5Hz、/system/ready_flag 2Hz。阈值都给到
+    // 数拍以上，避免一次调度抖动就翻红。
+    declare_parameter("readyz_dispatcher_state_stale_sec", 3.0);
+    declare_parameter("readyz_safety_stale_sec", 2.0);
+    declare_parameter("readyz_chassis_stale_sec", 5.0);
+    declare_parameter("readyz_coordinator_stale_sec", 3.0);
+    // 纯仿真/多车栈里网关订阅不到全局 /chassis/link_health，置 false 避免永远 503
+    declare_parameter("readyz_require_chassis", true);
+
+    // ---- 相位 11：主动告警（默认全关 = 现网行为逐字不变）----
+    declare_parameter("alert_webhook_url", "");
+    declare_parameter("alert_webhook_timeout_ms", 3000);
+    declare_parameter("alert_min_interval_sec", 300);
+    declare_parameter("alert_queue_capacity", 64);
+    declare_parameter("alert_probe_period_ms", 1000);
+    declare_parameter("alert_not_ready_threshold", 3);
+    declare_parameter("alert_safety_critical_sec", 30);
+
+    // ---- 相位 11：拓扑运维端点超时 ----
+    // N 台车重规划的耗时随在途任务数增长，因而远大于普通业务端点的 1~2s。
+    declare_parameter("topology_op_timeout_ms", 10000);
+
     port_ = get_parameter("port").as_int();
     html_path_ = get_parameter("html_path").as_string();
     auth_token_ = get_parameter("auth_token").as_string();
@@ -215,6 +286,50 @@ class RestGatewayNode : public rclcpp::Node {
     const int worker_threads = std::max(1, static_cast<int>(get_parameter("worker_threads").as_int()));
     max_pending_ = static_cast<std::size_t>(
         std::max(1, static_cast<int>(get_parameter("max_pending_connections").as_int())));
+
+    readyz_dispatcher_state_stale_sec_ =
+        get_parameter("readyz_dispatcher_state_stale_sec").as_double();
+    readyz_safety_stale_sec_ = get_parameter("readyz_safety_stale_sec").as_double();
+    readyz_chassis_stale_sec_ = get_parameter("readyz_chassis_stale_sec").as_double();
+    readyz_coordinator_stale_sec_ = get_parameter("readyz_coordinator_stale_sec").as_double();
+    readyz_require_chassis_ = get_parameter("readyz_require_chassis").as_bool();
+    // 告警载荷里带上域号：同一台机器上可能并存多套栈（e2e / 灰度），
+    // 接收端靠这个字段区分"哪一套在报警"。
+    {
+      const char* domain = std::getenv("ROS_DOMAIN_ID");
+      if (domain != nullptr) {
+        ros_domain_id_ = std::atoi(domain);
+      }
+    }
+
+    // 告警配置：URL 解析失败时明确禁用（而不是每拍都撞同一个解析错误刷日志）
+    const std::string alert_url = get_parameter("alert_webhook_url").as_string();
+    alert_timeout_ms_ = static_cast<int>(get_parameter("alert_webhook_timeout_ms").as_int());
+    alert_queue_capacity_ = static_cast<std::size_t>(
+        std::max(1, static_cast<int>(get_parameter("alert_queue_capacity").as_int())));
+    alert_probe_period_ms_ =
+        std::max(100, static_cast<int>(get_parameter("alert_probe_period_ms").as_int()));
+    topology_op_timeout_ms_ =
+        std::max(1000, static_cast<int>(get_parameter("topology_op_timeout_ms").as_int()));
+    AlertPolicy alert_policy;
+    alert_policy.fire_after_consecutive_failures = static_cast<std::uint32_t>(
+        std::max(1, static_cast<int>(get_parameter("alert_not_ready_threshold").as_int())));
+    alert_policy.min_interval_sec = get_parameter("alert_min_interval_sec").as_int();
+    alert_policy.safety_critical_sec = get_parameter("alert_safety_critical_sec").as_int();
+    alerts_ = AlertStateMachine(alert_policy);
+
+    if (!alert_url.empty()) {
+      std::string url_error;
+      const auto parsed = ParseHttpUrl(alert_url, &url_error);
+      if (parsed.has_value()) {
+        alert_url_ = *parsed;
+      } else {
+        // 不静默降级：告警通道配错的后果是"故障时没人知道"，必须在启动日志里喊出来
+        RCLCPP_ERROR(get_logger(),
+                     "alert_webhook_url is invalid (%s) — alerting stays DISABLED: %s",
+                     url_error.c_str(), alert_url.c_str());
+      }
+    }
 
     IdempotencyStore::Options idem;
     idem.capacity = static_cast<std::size_t>(
@@ -243,6 +358,15 @@ class RestGatewayNode : public rclcpp::Node {
         "/dispatcher/force_clear_vda5050_link");
     restore_cli_ = create_client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>(
         "/dispatcher/restore_vda5050_link");
+    // 相位 11：拓扑运维客户端（只在运维请求时调用；不参与探针/指标路径）
+    block_edge_cli_ = create_client<amr_dispatcher_interfaces::srv::BlockEdge>(
+        "/v2/block_edge");
+    topology_hot_update_cli_ =
+        create_client<amr_dispatcher_interfaces::srv::TopologyHotUpdate>(
+            "/v2/topology_hot_update");
+    get_topology_overlay_cli_ =
+        create_client<amr_dispatcher_interfaces::srv::GetTopologyOverlay>(
+            "/v2/get_topology_overlay");
 
     estop_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/estop", 10);
 
@@ -251,6 +375,15 @@ class RestGatewayNode : public rclcpp::Node {
         [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_state_ = *msg;
+          state_seen_ = true;
+          last_state_arrival_ = std::chrono::steady_clock::now();
+          // 拓扑叠加层状态随 DispatcherState 一起下发，指标与 /readyz 都不用再打服务
+          // 字段名以 DispatcherState.msg 为准（overlay_active / overlay_revision /
+          // blocked_edges / one_way_edges），本地成员名才带 topology_ 前缀。
+          topology_overlay_active_ = msg->overlay_active;
+          topology_overlay_revision_ = msg->overlay_revision;
+          topology_blocked_edges_ = msg->blocked_edges;
+          topology_one_way_edges_ = msg->one_way_edges;
         });
 
     safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
@@ -259,6 +392,15 @@ class RestGatewayNode : public rclcpp::Node {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_safety_ = *msg;
           safety_seen_ = true;
+          last_safety_arrival_ = std::chrono::steady_clock::now();
+          safety_critical_ = (msg->severity == "CRITICAL");
+          if (safety_critical_) {
+            if (safety_critical_since_.time_since_epoch().count() == 0) {
+              safety_critical_since_ = std::chrono::steady_clock::now();
+            }
+          } else {
+            safety_critical_since_ = {};
+          }
         });
 
     link_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
@@ -266,6 +408,19 @@ class RestGatewayNode : public rclcpp::Node {
         [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_link_ = *msg;
+          link_seen_ = true;
+          last_link_arrival_ = std::chrono::steady_clock::now();
+        });
+
+    // 协调器的整体就绪布尔量（transient_local）：晚加入的网关也能立刻拿到当前值，
+    // 于是"协调器还在但没提拉调度器"与"协调器根本没起来"能被区分开。
+    ready_flag_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/system/ready_flag", rclcpp::QoS(1).transient_local(),
+        [this](const std_msgs::msg::Bool::SharedPtr msg) {
+          std::lock_guard<std::mutex> lock(data_mutex_);
+          ready_flag_ = msg->data;
+          ready_flag_seen_ = true;
+          last_ready_flag_arrival_ = std::chrono::steady_clock::now();
         });
 
     event_sub_ = create_subscription<amr_dispatcher_interfaces::msg::MissionEvent>(
@@ -282,6 +437,22 @@ class RestGatewayNode : public rclcpp::Node {
     for (int i = 0; i < worker_threads; ++i) {
       workers_.emplace_back(&RestGatewayNode::WorkerLoop, this);
     }
+
+    // 告警发送线程与巡检定时器只在配置了 webhook 时才存在：
+    // 未配置时进程的线程数/定时器/话题与改动前完全一致。
+    if (!alert_url_.host.empty()) {
+      alert_thread_ = std::thread(&RestGatewayNode::AlertSenderLoop, this);
+      alert_timer_ = create_wall_timer(std::chrono::milliseconds(alert_probe_period_ms_),
+                                       std::bind(&RestGatewayNode::AlertProbeTick, this));
+      RCLCPP_INFO(get_logger(),
+                  "Alerting ENABLED: webhook http://%s:%d%s (probe %dms, threshold %u, "
+                  "safety sustain %llds)",
+                  alert_url_.host.c_str(), alert_url_.port, alert_url_.path.c_str(),
+                  alert_probe_period_ms_,
+                  alerts_.policy().fire_after_consecutive_failures,
+                  static_cast<long long>(alerts_.policy().safety_critical_sec));
+    }
+
     RCLCPP_INFO(get_logger(), "REST Gateway started on port %d", port_);
     if (!auth_token_.empty()) {
       RCLCPP_INFO(get_logger(), "REST Gateway: Bearer token authentication ENABLED");
@@ -298,8 +469,8 @@ class RestGatewayNode : public rclcpp::Node {
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       stopping_ = true;
-      for (const int fd : pending_) {
-        close(fd);  // 未处理的连接直接断开
+      for (const auto& conn : pending_) {
+        close(conn.fd);  // 未处理的连接直接断开
       }
       pending_.clear();
     }
@@ -311,6 +482,17 @@ class RestGatewayNode : public rclcpp::Node {
       if (worker.joinable()) {
         worker.join();
       }
+    }
+    // 告警线程最后收：先停巡检定时器（它在 executor 上，spin 结束后自然不再触发），
+    // 再唤醒发送线程退出。队列里未发出的告警直接丢弃——进程都要关了。
+    {
+      std::lock_guard<std::mutex> lock(alert_mutex_);
+      alert_stopping_ = true;
+      alert_queue_.clear();
+    }
+    alert_cv_.notify_all();
+    if (alert_thread_.joinable()) {
+      alert_thread_.join();
     }
   }
 
@@ -359,11 +541,64 @@ class RestGatewayNode : public rclcpp::Node {
       setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
       setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
+      // 探针快车道：在主线程读请求头，命中 /healthz 与 /readyz 就地应答。
+      // 这样即使 4 个 worker 全部卡在某个慢服务调用里（DDS 卡死就是这样），
+      // 编排系统的探针依然拿得到答案 —— 否则探针会和它要检测的故障一起失效。
+      //
+      // **主线程绝不能被一个慢客户端占住**（旧检查里"静默连接存在期间
+      // 另一连接正常响应 < 3s"就是这么挂的：主线程在 read 上等了 5s 超时）。
+      // 所以先 poll 一个很短的预算：
+      //   * 有数据 -> 立刻读头（本地探针请求头只有几百字节，一次 read 就够）
+      //   * 无数据 -> 立刻入队，让 worker 去等那 5s。主线程马上回到 accept。
+      std::string prebuffered;
+      HttpRequest probe_req;
+      std::size_t probe_content_length = 0;
+      ReadStatus probe_head = ReadStatus::kTimeout;
+      {
+        struct pollfd pfd{};
+        pfd.fd = client_fd;
+        pfd.events = POLLIN;
+        const int ready = ::poll(&pfd, 1, kAcceptReadBudgetMs);
+        if (ready > 0 && (pfd.revents & POLLIN) != 0) {
+          // 只读"已到达的字节"：把 rcvtimeo 临时调成 0，read 立刻返回 EAGAIN
+          // 而不是在这里等满 5s。头部已完整时才可能得到 kOk。
+          timeval zero{};
+          setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
+          probe_head = ReadRequestHead(client_fd, &probe_req, &probe_content_length,
+                                       &prebuffered);
+          timeval tv{};
+          tv.tv_sec = kSocketTimeoutSec;
+          setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        }
+      }
+      if (probe_head == ReadStatus::kOk && probe_req.method == "GET" &&
+          (probe_req.path == "/healthz" || probe_req.path == "/readyz")) {
+        HandleProbeInline(client_fd, probe_req);
+        close(client_fd);
+        continue;
+      }
+      if (probe_head == ReadStatus::kClosed) {
+        // 对端已断开；若已经读到半截请求，交给 worker 也无意义（socket 已 EOF）
+        close(client_fd);
+        continue;
+      }
+
       bool queued = false;
       {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (pending_.size() < max_pending_) {
-          pending_.push_back(client_fd);
+          // head_complete 的含义是"头字节已经从 socket 上消费掉"：
+          //   * kOk / kBadRequest / kTooLarge —— accept 线程读到了完整头部，
+          //     worker 只能按状态处置，绝不能再读头；
+          //   * kTimeout —— 只读到半截（或一个字节都没读），头**没有**消费完，
+          //     worker 必须带着 prebuffered 前缀继续读。
+          const bool head_complete = probe_head != ReadStatus::kTimeout;
+          pending_.push_back(QueuedConn{client_fd, std::move(prebuffered),
+                                        head_complete,
+                                        /*head_ok=*/probe_head == ReadStatus::kOk,
+                                        std::move(probe_req),
+                                        probe_content_length,
+                                        probe_head});
           queued = true;
         }
       }
@@ -383,51 +618,303 @@ class RestGatewayNode : public rclcpp::Node {
 
   void WorkerLoop() {
     while (true) {
-      int client_fd = -1;
+      QueuedConn conn;
       {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         queue_cv_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
         if (stopping_ && pending_.empty()) {
           return;
         }
-        client_fd = pending_.front();
+        conn = std::move(pending_.front());
         pending_.pop_front();
       }
-      HandleClientSafely(client_fd);
-      close(client_fd);
+      HandleClientSafely(conn);
+      close(conn.fd);
     }
   }
 
   // 任何异常都必须收敛成 400：旧实现里一个 stoi 抛异常就把整个进程 terminate。
-  void HandleClientSafely(int client_fd) {
+  void HandleClientSafely(const QueuedConn& conn) {
     try {
-      HandleClient(client_fd);
+      if (conn.head_complete) {
+        // accept 线程已经把请求头读完（成功的与失败的都算）。这里**只能**
+        // 按 head_status 处置，绝不能再读头：socket 上的头字节已经消费掉了，
+        // 再读会阻塞到超时，对端拿到的是连接重置而不是应有的 400/413。
+        switch (conn.head_status) {
+          case ReadStatus::kOk: {
+            // 只续读请求体
+            HttpRequest req = conn.req;
+            const ReadStatus body_status =
+                ReadRequestBody(conn.fd, &req, conn.content_length, conn.prebuffered);
+            FinishAfterBody(conn.fd, req, body_status);
+            return;
+          }
+          case ReadStatus::kBadRequest:
+            // 与 HandleClient / FinishAfterBody 的错误响应逐字一致
+            FinishAfterBody(conn.fd, conn.req, ReadStatus::kBadRequest);
+            return;
+          case ReadStatus::kTooLarge:
+            FinishAfterBody(conn.fd, conn.req, ReadStatus::kTooLarge);
+            return;
+          case ReadStatus::kClosed:
+            return;  // 对端没发完整请求就断了：静默关闭
+        }
+        return;
+      }
+      // accept 线程没有读完头（读超时，或一个字节都没到）：worker 带着已读
+      // 前缀继续读。前缀必须原样传回去 —— 丢掉就会把半截请求当"对端断开"。
+      HandleClient(conn.fd, conn.prebuffered);
     } catch (const std::exception& e) {
       RCLCPP_WARN(get_logger(), "请求处理异常（已兜底为 400）: %s", e.what());
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
       RecordRequestStatus(resp.status);
-      WriteAll(client_fd, SerializeResponse(resp, false));
+      WriteAll(conn.fd, SerializeResponse(resp, false));
     } catch (...) {
       RCLCPP_WARN(get_logger(), "请求处理未知异常（已兜底为 400）");
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
       RecordRequestStatus(resp.status);
-      WriteAll(client_fd, SerializeResponse(resp, false));
+      WriteAll(conn.fd, SerializeResponse(resp, false));
     }
   }
 
   // ---------------------------------------------------------------------------
-  // 请求读取：头部上限、请求体上限、Content-Length 严格解析、分块传输拒绝
+  // 健康探针：在 accept 线程内就地应答，绝不调用任何 ROS 服务
+  //
+  // 这里只读本地缓存的消息与到达时刻 + 一个 std::mutex 的短临界区。
+  // 不调 /system/ready 是刻意的：那个调用会阻塞 300ms~1s，一旦 DDS 卡死
+  // 探针就会跟着一起卡住——而"DDS 卡死"正是探针要发现的东西。
   // ---------------------------------------------------------------------------
-  enum class ReadStatus { kOk, kClosed, kBadRequest, kTooLarge };
+  void HandleProbeInline(int client_fd, const HttpRequest& req) {
+    HttpResponse resp;
+    if (req.path == "/healthz") {
+      // liveness：只回答"这个进程还能处理 HTTP"。不含任何心跳/业务状态，
+      // 所以 DDS 全挂时它依然是 200 —— 这正是 liveness 的定义。
+      const double uptime =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at_)
+              .count();
+      resp.body = RenderLivenessJson(uptime);
+      RecordRequestStatus(resp.status);
+      WriteAll(client_fd, SerializeResponse(resp, false));
+      return;
+    }
 
-  ReadStatus ReadRequest(int client_fd, HttpRequest* out) {
-    std::string raw;
-    raw.reserve(1024);
+    // readiness：逐组件聚合
+    const auto probes = CollectComponentProbes();
+    const auto verdict = EvaluateReadiness(probes);
+    resp.body = RenderReadinessJson(verdict);
+    if (!verdict.ready) {
+      resp.status = "503 Service Unavailable";
+    }
+    RecordRequestStatus(resp.status);
+    WriteAll(client_fd, SerializeResponse(resp, false));
+  }
+
+  // 从本地缓存组装逐组件探针。时间在这里读（纯逻辑层不碰时钟）。
+  // 加锁版：调用方自己持 data_mutex_（RenderMetrics 已在锁内，再锁一次就是死锁）。
+  std::vector<ComponentProbe> CollectComponentProbesLocked() const {
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+
+    const auto age_of = [&now](const steady_clock::time_point& stamp) -> double {
+      return duration<double>(now - stamp).count();
+    };
+
+    std::vector<ComponentProbe> probes;
+
+    ComponentProbe dispatcher;
+    dispatcher.name = "dispatcher";
+    dispatcher.seen = state_seen_;
+    dispatcher.age_seconds = state_seen_ ? age_of(last_state_arrival_) : -1.0;
+    dispatcher.stale_after_seconds = readyz_dispatcher_state_stale_sec_;
+    // 能收到 /dispatcher/state 就说明节点在 active 并且定时器在跑；
+    // 消息本身不带 lifecycle 状态，所以判据就是"新鲜"。
+    dispatcher.semantic_ok = true;
+    dispatcher.detail = "state_age_ms=" +
+                        std::to_string(static_cast<long long>(dispatcher.age_seconds * 1000.0));
+    probes.push_back(dispatcher);
+
+    ComponentProbe safety;
+    safety.name = "safety";
+    safety.seen = safety_seen_;
+    safety.age_seconds = safety_seen_ ? age_of(last_safety_arrival_) : -1.0;
+    safety.stale_after_seconds = readyz_safety_stale_sec_;
+    safety.semantic_ok = safety_seen_ && latest_safety_.motion_allowed &&
+                         latest_safety_.severity != "CRITICAL";
+    safety.detail = latest_safety_.severity.empty() ? "no_state" : latest_safety_.severity;
+    if (safety_seen_ && !latest_safety_.reason.empty()) {
+      safety.detail += ":" + latest_safety_.reason;
+    }
+    probes.push_back(safety);
+
+    ComponentProbe chassis;
+    chassis.name = "chassis";
+    chassis.seen = link_seen_;
+    chassis.age_seconds = link_seen_ ? age_of(last_link_arrival_) : -1.0;
+    chassis.stale_after_seconds = readyz_chassis_stale_sec_;
+    chassis.semantic_ok = link_seen_ && latest_link_.is_healthy;
+    chassis.detail = link_seen_ ? latest_link_.tier : "no_link_health";
+    // 多车模式下 /chassis/link_health 是 per-vehicle 话题，网关订阅不到：
+    // 如实标"未监控"，而不是用一个恒为 false 的组件把整个就绪探针拖成 503。
+    chassis.monitored = readyz_require_chassis_;
+    probes.push_back(chassis);
+
+    ComponentProbe coordinator;
+    coordinator.name = "coordinator";
+    coordinator.seen = ready_flag_seen_;
+    coordinator.age_seconds = ready_flag_seen_ ? age_of(last_ready_flag_arrival_) : -1.0;
+    coordinator.stale_after_seconds = readyz_coordinator_stale_sec_;
+    coordinator.semantic_ok = ready_flag_seen_ && ready_flag_;
+    coordinator.detail = ready_flag_seen_ ? (ready_flag_ ? "ready" : "not_ready") : "no_flag";
+    probes.push_back(coordinator);
+
+    return probes;
+  }
+
+  // 加锁版：供探针与告警巡检使用
+  std::vector<ComponentProbe> CollectComponentProbes() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return CollectComponentProbesLocked();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 主动告警：巡检（ROS executor 上，只读缓存）+ 发送（独立线程，唯一做阻塞 IO 的地方）
+  //
+  // 分工的理由：巡检要读探针状态，必须和订阅回调在同一 executor 上；而 HTTP POST
+  // 会阻塞到超时。把 POST 留在 executor 上会拖慢所有 ROS 回调（包括 /healthz 路径
+  // 之外的业务），所以拆成"executor 组装 → 有界队列 → 独立线程发送"。
+  // ---------------------------------------------------------------------------
+  void AlertProbeTick() {
+    const auto probes = CollectComponentProbes();
+    const auto verdict = EvaluateReadiness(probes);
+
+    AlertObservation observation;
+    observation.now_unix = NowEpochSec();
+    observation.ready = verdict.ready;
+    for (const auto& probe : probes) {
+      switch (EvaluateComponent(probe)) {
+        case ComponentStatus::kStale:
+        case ComponentStatus::kNeverSeen:
+        case ComponentStatus::kUnhealthy:
+          observation.missing_components.push_back(probe.name);
+          break;
+        case ComponentStatus::kOk:
+        case ComponentStatus::kNotMonitored:
+          break;
+      }
+    }
+
+    // 安全门 CRITICAL 持续时长 + 关键计数，供接收端一眼判断严重程度
+    double critical_seconds = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      if (safety_critical_since_.time_since_epoch().count() != 0) {
+        critical_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          safety_critical_since_)
+                .count();
+      }
+      observation.safety_critical = safety_critical_;
+    }    char buffer[256];
+    std::snprintf(buffer, sizeof(buffer),
+                  "{\"state\":\"%s\",\"safety_critical_seconds\":%.1f,"
+                  "\"topology_overlay_revision\":%u,\"blocked_edges\":%u",
+                  verdict.state.c_str(), critical_seconds,
+                  static_cast<unsigned>(topology_overlay_revision_),
+                  static_cast<unsigned>(topology_blocked_edges_));
+    observation.details_json = buffer;
+    // 每台受监控组件的时延都带上，接收端不必再回查 /readyz
+    for (const auto& probe : probes) {
+      char part[160];
+      std::snprintf(part, sizeof(part), ",\"%s_age_seconds\":%.1f", probe.name.c_str(),
+                    probe.age_seconds);
+      observation.details_json += part;
+    }
+    observation.details_json += "}";
+
+    for (auto& event : alerts_.Observe(observation)) {
+      EnqueueAlert(std::move(event));
+    }
+  }
+
+  void EnqueueAlert(AlertEvent event) {
+    const std::string body =
+        RenderAlertPayload(event, HostName(), port_, ros_domain_id_, static_cast<long>(::getpid()));
+    {
+      std::lock_guard<std::mutex> lock(alert_mutex_);
+      if (alert_queue_.size() >= alert_queue_capacity_) {
+        // 队满丢最旧：一条 5 分钟前的 "not ready" 不如刚刚这条有用。
+        alert_queue_.pop_front();
+        ++alert_dropped_;
+      }
+      alert_queue_.push_back(AlertJob{body});
+    }
+    alert_cv_.notify_one();
+  }
+
+  void AlertSenderLoop() {
+    while (true) {
+      AlertJob job;
+      {
+        std::unique_lock<std::mutex> lock(alert_mutex_);
+        alert_cv_.wait(lock, [this] { return alert_stopping_ || !alert_queue_.empty(); });
+        if (alert_stopping_) {
+          return;
+        }
+        job = std::move(alert_queue_.front());
+        alert_queue_.pop_front();
+      }
+      const auto outcome = PostWebhook(alert_url_, job.body, alert_timeout_ms_);
+      if (outcome.result == WebhookResult::kOk) {
+        ++alert_sent_;
+      } else {
+        // 不重试：告警是"当下状态快照"，重发一条过时的告警不如让下一拍发新的。
+        // 失败计数进 /metrics，抓取侧可以据此对"告警通道本身"告警。
+        ++alert_failures_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 60000,
+                             "Alert webhook delivery failed (%s): %s",
+                             WebhookResultName(outcome.result), outcome.detail.c_str());
+      }
+    }
+  }
+
+  static std::string HostName() {
+    char name[256] = {0};
+    if (::gethostname(name, sizeof(name) - 1) != 0) {
+      return "unknown";
+    }
+    return std::string(name);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 请求读取：头部上限、请求体上限、Content-Length 严格解析、分块传输拒绝
+  //
+  // 拆成"读头"与"读体"两步，是为了让健康探针能绕过工作线程池：
+  // accept 线程读完头就知道路径，探针直接就地应答；其余请求带着已读到的
+  // 前缀字节入队，由 worker 继续读体。旧实现把两件事绑在一起，一旦 DDS 卡死
+  // 占满 worker，探针就永远得不到应答——而那正是探针要发现的失效模式。
+  // ---------------------------------------------------------------------------
+
+
+  ReadStatus ReadRequestHead(int client_fd, HttpRequest* out, std::size_t* content_length,
+                             std::string* prebuffered) {
+    // prebuffered 既是入参也是出参：
+    //   入参 = 此前已经读到的字节（accept 线程探针快车道读超时后转交 worker 续读）。
+    //          修复前这里直接 `std::string raw;` 把入参丢掉，所谓"带前缀入队"
+    //          从来只是假象。
+    //   出参 = 头部之后剩下的字节，交给 ReadRequestBody。
+    std::string raw = std::move(*prebuffered);
+    prebuffered->clear();
+    raw.reserve(raw.size() + 1024);
     char buffer[4096];
+    // 失败时把已读字节写回，让上层可以继续读，而不是丢掉它们
+    const auto bail = [&](ReadStatus status) {
+      *prebuffered = std::move(raw);
+      return status;
+    };
 
     // 1) 读到头部结束标记
     std::size_t header_end = std::string::npos;
@@ -436,21 +923,31 @@ class RestGatewayNode : public rclcpp::Node {
       if (header_end != std::string::npos) {
         break;
       }
+      // 先判上限再 read：反过来的话，一次 read 就能把 raw 推过上限，
+      // 而循环体在下一次迭代才发现 —— 对静默连接等于白白多等一个超时。
       if (raw.size() > kMaxHeaderBytes) {
-        return ReadStatus::kBadRequest;
+        return bail(ReadStatus::kBadRequest);
       }
       const ssize_t n = ::read(client_fd, buffer, sizeof(buffer));
       if (n == 0) {
-        return ReadStatus::kClosed;
+        return bail(ReadStatus::kClosed);
       }
       if (n < 0) {
         if (errno == EINTR) continue;
-        return ReadStatus::kClosed;  // 超时(EAGAIN) 或对端重置
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          return bail(ReadStatus::kTimeout);  // 对端还活着但没发完
+        }
+        return bail(ReadStatus::kClosed);
       }
       raw.append(buffer, static_cast<std::size_t>(n));
+      // read 之后再判一次：超大头部必须在**本次**循环就拒绝，
+      // 不能等到下一轮（那时又会先 read 一次）。
+      if (raw.size() > kMaxHeaderBytes && raw.find("\r\n\r\n") == std::string::npos) {
+        return bail(ReadStatus::kBadRequest);
+      }
     }
     if (header_end > kMaxHeaderBytes) {
-      return ReadStatus::kBadRequest;  // 头部过大
+      return bail(ReadStatus::kBadRequest);  // 头部过大
     }
     const std::string head = raw.substr(0, header_end);
 
@@ -459,7 +956,7 @@ class RestGatewayNode : public rclcpp::Node {
     std::string version;
     first_line >> out->method >> out->target >> version;
     if (out->method.empty() || out->target.empty()) {
-      return ReadStatus::kBadRequest;
+      return bail(ReadStatus::kBadRequest);
     }
     out->path = RequestPathOnly(out->target);
     out->query = RequestQueryOnly(out->target);
@@ -467,31 +964,48 @@ class RestGatewayNode : public rclcpp::Node {
 
     // 3) 请求体长度：分块传输不支持（猜长度 = 读到连接耗尽，直接拒绝）
     if (HasChunkedTransferEncoding(head)) {
-      return ReadStatus::kBadRequest;
+      return bail(ReadStatus::kBadRequest);
     }
-    std::size_t content_length = 0;
+    *content_length = 0;
     std::string cl_value;
     if (FindHeaderValue(head, "Content-Length", &cl_value)) {
-      switch (ParseContentLength(cl_value, &content_length)) {
+      switch (ParseContentLength(cl_value, content_length)) {
         case ContentLengthStatus::kOk:
           break;
         case ContentLengthStatus::kMissing:
-          content_length = 0;
+          *content_length = 0;
           break;
         case ContentLengthStatus::kTooLarge:
-          return ReadStatus::kTooLarge;
+          return bail(ReadStatus::kTooLarge);
         case ContentLengthStatus::kInvalid:
-          return ReadStatus::kBadRequest;
+          return bail(ReadStatus::kBadRequest);
       }
     }
 
-    // 4) 读满请求体（总字节数同样受上限约束）
-    const std::size_t body_begin = header_end + 4;
-    std::size_t body_size = raw.size() - body_begin;
-    if (body_size > content_length) {
-      body_size = content_length;  // 多读的属于下一个请求（本网关一连接一请求，丢弃）
+    // 4) 把已读到的字节（可能已含部分/全部请求体）交给调用方，
+    //    由 ReadRequestBody 续读。探针路径在这里就返回，不需要读体。
+    *prebuffered = raw.substr(header_end + 4);
+    if (prebuffered->size() > kMaxRequestBytes) {
+      return ReadStatus::kTooLarge;
     }
-    while (body_size < content_length) {
+    return ReadStatus::kOk;
+  }
+
+  // 续读请求体：先用 ReadRequestHead 留下的前缀字节，再按 Content-Length 补足。
+  ReadStatus ReadRequestBody(int client_fd, HttpRequest* out, std::size_t content_length,
+                             std::string prebuffered) {
+    std::string body;
+    body.reserve(content_length);
+    if (prebuffered.size() > content_length) {
+      prebuffered.resize(content_length);  // 多读的属于下一个请求（本网关一连接一请求，丢弃）
+    }
+    body = std::move(prebuffered);
+
+    char buffer[4096];
+    while (body.size() < content_length) {
+      if (body.size() > kMaxRequestBytes) {
+        return ReadStatus::kTooLarge;
+      }
       const ssize_t n = ::read(client_fd, buffer, sizeof(buffer));
       if (n == 0) {
         return ReadStatus::kBadRequest;  // 声明了长度却提前断开
@@ -500,26 +1014,27 @@ class RestGatewayNode : public rclcpp::Node {
         if (errno == EINTR) continue;
         return ReadStatus::kClosed;
       }
-      body_size += static_cast<std::size_t>(n);
-      raw.append(buffer, static_cast<std::size_t>(n));
-      if (body_size > kMaxRequestBytes) {
-        return ReadStatus::kTooLarge;
-      }
+      body.append(buffer, static_cast<std::size_t>(n));
     }
-    out->body = raw.substr(body_begin, content_length);
+    if (body.size() > kMaxRequestBytes) {
+      return ReadStatus::kTooLarge;
+    }
+    out->body = std::move(body);
     return ReadStatus::kOk;
   }
 
   // ---------------------------------------------------------------------------
   // 请求分发
   // ---------------------------------------------------------------------------
-  void HandleClient(int client_fd) {
+  void HandleClient(int client_fd, std::string prebuffered = std::string()) {
     HttpRequest req;
-    const ReadStatus status = ReadRequest(client_fd, &req);
-    if (status == ReadStatus::kClosed) {
+    std::size_t content_length = 0;
+    const ReadStatus head_status =
+        ReadRequestHead(client_fd, &req, &content_length, &prebuffered);
+    if (head_status == ReadStatus::kClosed) {
       return;  // 对端没发完整请求就断了：静默关闭
     }
-    if (status == ReadStatus::kBadRequest) {
+    if (head_status == ReadStatus::kBadRequest) {
       HttpResponse resp;
       resp.status = "400 Bad Request";
       resp.body = JsonErrorBody("bad_request");
@@ -528,7 +1043,7 @@ class RestGatewayNode : public rclcpp::Node {
       DrainForClose(client_fd, 64U * 1024U);
       return;
     }
-    if (status == ReadStatus::kTooLarge) {
+    if (head_status == ReadStatus::kTooLarge) {
       HttpResponse resp;
       resp.status = "413 Payload Too Large";
       resp.body = JsonErrorBody("payload_too_large");
@@ -537,7 +1052,42 @@ class RestGatewayNode : public rclcpp::Node {
       DrainForClose(client_fd);
       return;
     }
+    const ReadStatus body_status =
+        ReadRequestBody(client_fd, &req, content_length, std::move(prebuffered));
+    FinishAfterBody(client_fd, req, body_status);
+  }
 
+  // 请求体读取结果的统一收口：400 / 413 / 放行。
+  // HandleClient（worker 自读头）与 HandleClientSafely（accept 线程预读头）共用，
+  // 保证两条路径的错误码与响应体逐字一致。
+  void FinishAfterBody(int client_fd, const HttpRequest& req, ReadStatus body_status) {
+    if (body_status == ReadStatus::kClosed) {
+      return;
+    }
+    if (body_status == ReadStatus::kBadRequest) {
+      HttpResponse resp;
+      resp.status = "400 Bad Request";
+      resp.body = JsonErrorBody("bad_request");
+      RecordRequestStatus(resp.status);
+      WriteAll(client_fd, SerializeResponse(resp, false));
+      DrainForClose(client_fd, 64U * 1024U);
+      return;
+    }
+    if (body_status == ReadStatus::kTooLarge) {
+      HttpResponse resp;
+      resp.status = "413 Payload Too Large";
+      resp.body = JsonErrorBody("payload_too_large");
+      RecordRequestStatus(resp.status);
+      WriteAll(client_fd, SerializeResponse(resp, false));
+      DrainForClose(client_fd);
+      return;
+    }
+    DispatchAfterRead(client_fd, req);
+  }
+
+  // 请求已完整读取（头 + 体）后的公共路径：OPTIONS / 鉴权 / 路由。
+  // 探针快车道与 worker 路径共用这一段，保证两边的 OPTIONS 与鉴权语义不分叉。
+  void DispatchAfterRead(int client_fd, const HttpRequest& req) {
     if (req.method == "OPTIONS") {
       HttpResponse resp;
       resp.status = "204 No Content";
@@ -643,6 +1193,29 @@ class RestGatewayNode : public rclcpp::Node {
     if (method == "POST" && PathMatches(path, "/api/v1/map/upload")) {
       return HandleMapUpload(req);
     }
+    // 相位 11：拓扑运维（施工区 / 单向 / 临时站点）
+    if (method == "GET" && PathMatches(path, "/api/v1/topology/overlay")) {
+      return HandleGetTopologyOverlay(req);
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/block_edge")) {
+      return HandleBlockEdge(req, "block");
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/unblock_edge")) {
+      return HandleBlockEdge(req, "unblock");
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/one_way_edge")) {
+      return HandleBlockEdge(req, "one_way");
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/two_way_edge")) {
+      return HandleBlockEdge(req, "two_way");
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/hot_update")) {
+      return HandleTopologyHotUpdate(req, false);
+    }
+    if (method == "POST" && PathMatches(path, "/api/v1/topology/preview")) {
+      // 预演恒为 dry_run：客户端即使写 dry_run:false 也不能借此落盘
+      return HandleTopologyHotUpdate(req, true);
+    }
 
     resp.status = "404 Not Found";
     resp.body = JsonErrorBody("not_found");
@@ -730,6 +1303,210 @@ class RestGatewayNode : public rclcpp::Node {
     if (!res->success) {
       resp.status = "409 Conflict";
     }
+    return resp;
+  }
+
+  // ===========================================================================
+  // 相位 11：拓扑运维端点
+  //
+  // 全部状态码/错误码映射集中在 TopologyErrorStatus()，保证 REST 与 ROS 服务的
+  // error_code 词表只有一处真源。请求处理沿用 HandleForceClear 骨架：
+  // 必填字段 -> 400；服务不存在 -> 503；重规划超时 -> 504（N 车重规划确实慢）。
+  // ===========================================================================
+
+  // error_code -> HTTP 状态码（与 docs/API.md 的词表一一对应）。
+  // 未知错误码一律 500：绝不把"不认识的失败"伪装成 200/409。
+  static const char* TopologyErrorStatus(const std::string& error_code) {
+    if (error_code == "ok" || error_code == "no_change") return "200 OK";
+    if (error_code == "invalid_request" || error_code == "not_confirmed") {
+      return "400 Bad Request";
+    }
+    if (error_code == "unknown_edge") return "404 Not Found";
+    if (error_code == "map_hash_mismatch" || error_code == "would_disconnect_topology" ||
+        error_code == "edge_occupied_in_flight" || error_code == "would_strand_vehicles" ||
+        error_code == "lock_conflict" || error_code == "overlay_invalid") {
+      return "409 Conflict";
+    }
+    if (error_code == "catalog_unavailable") return "503 Service Unavailable";
+    // 功能未启用（topology_overlay_file 为空）。重试无意义，也不属于客户端写错，
+    // 501 是唯一精确的答复：服务端不支持该功能（因部署配置关闭）。
+    if (error_code == "overlay_disabled") return "501 Not Implemented";
+    return "500 Internal Server Error";
+  }
+
+  // 幂等成功的 status 字面量必须是 "noop"（不是 "ok"）：
+  // 控制台靠它区分"已生效"与"本来就是这样"，e2e 也据此断言重放不递增 revision。
+  static std::string TopologyStatusLiteral(bool success, const std::string& error_code) {
+    if (!success) return "rejected";
+    return error_code == "no_change" ? "noop" : "ok";
+  }
+
+  static std::string JsonStringArray(const std::vector<std::string>& values) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i) out += ",";
+      out += "\"" + JsonEscape(values[i]) + "\"";
+    }
+    out += "]";
+    return out;
+  }
+
+  // GET /api/v1/topology/overlay[?yaml=1]
+  HttpResponse HandleGetTopologyOverlay(const HttpRequest& req) {
+    HttpResponse resp;
+    auto request =
+        std::make_shared<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request>();
+    // 控制台默认只要计数；?yaml=1 才要可编辑文本（YAML 可能很长）
+    request->include_yaml = GetQueryParam(req.query, "yaml") == "1";
+    if (!get_topology_overlay_cli_->wait_for_service(1s)) {
+      resp.status = "503 Service Unavailable";
+      resp.body = JsonErrorBody("service_unavailable");
+      return resp;
+    }
+    auto fut = get_topology_overlay_cli_->async_send_request(request);
+    if (fut.wait_for(std::chrono::milliseconds(topology_op_timeout_ms_)) !=
+        std::future_status::ready) {
+      resp.status = "504 Gateway Timeout";
+      resp.body = JsonErrorBody("timeout");
+      return resp;
+    }
+    auto res = fut.get();
+    std::string body = "{" + JsonStringPair("status", res->success ? "ok" : "rejected") + ",";
+    body += "\"overlay_active\":" + std::string(res->overlay_active ? "true" : "false") + ",";
+    body += "\"revision\":" + std::to_string(res->revision) + ",";
+    body += "\"blocked_edges\":" + std::to_string(res->blocked_edge_count) + ",";
+    body += "\"one_way_edges\":" + std::to_string(res->one_way_edge_count) + ",";
+    body += "\"markers\":" + std::to_string(res->marker_count) + ",";
+    body += JsonStringPair("base_map_hash", res->base_map_hash) + ",";
+    body += JsonStringPair("effective_map_hash", res->effective_map_hash) + ",";
+    body += JsonStringPair("message", res->message);
+    if (request->include_yaml) {
+      body += "," + JsonStringPair("overlay_yaml", res->overlay_yaml);
+    }
+    body += "}";
+    resp.body = body;
+    if (!res->success) {
+      resp.status = "409 Conflict";
+    }
+    return resp;
+  }
+
+  // POST /api/v1/topology/block_edge 与 /unblock_edge
+  // action 由路径决定（客户端不用重复填，也不会填错）
+  HttpResponse HandleBlockEdge(const HttpRequest& req, const std::string& action) {
+    HttpResponse resp;
+    const std::string from_station = JsonStringField(req.body, "from_station");
+    const std::string to_station = JsonStringField(req.body, "to_station");
+    const std::string operator_id = JsonStringField(req.body, "operator_id");
+    const std::string reason = JsonStringField(req.body, "reason");
+    const std::string direction = JsonStringField(req.body, "direction");
+    if (from_station.empty() || to_station.empty() || operator_id.empty() ||
+        reason.empty()) {
+      resp.status = "400 Bad Request";
+      resp.body = "{\"error\":\"missing_fields\",\"detail\":\"from_station, to_station, "
+                  "operator_id, reason are all required\"}";
+      return resp;
+    }
+    if (!JsonBoolField(req.body, "confirm")) {
+      resp.status = "400 Bad Request";
+      resp.body = "{\"error\":\"not_confirmed\",\"detail\":\"confirm must be true\"}";
+      return resp;
+    }
+    auto request = std::make_shared<amr_dispatcher_interfaces::srv::BlockEdge::Request>();
+    request->from_station = from_station;
+    request->to_station = to_station;
+    request->action = action;
+    request->direction = direction.empty() ? "both" : direction;
+    request->operator_id = operator_id;
+    request->reason = reason;
+    request->expected_map_hash = JsonStringField(req.body, "expected_map_hash");
+    request->allow_edge_under_vehicle =
+        JsonBoolField(req.body, "allow_edge_under_vehicle");
+    request->confirm = true;
+    if (!block_edge_cli_->wait_for_service(1s)) {
+      resp.status = "503 Service Unavailable";
+      resp.body = JsonErrorBody("service_unavailable");
+      return resp;
+    }
+    auto fut = block_edge_cli_->async_send_request(request);
+    if (fut.wait_for(std::chrono::milliseconds(topology_op_timeout_ms_)) !=
+        std::future_status::ready) {
+      resp.status = "504 Gateway Timeout";
+      resp.body = JsonErrorBody("timeout");
+      return resp;
+    }
+    auto res = fut.get();
+    std::string body =
+        "{" + JsonStringPair("status", TopologyStatusLiteral(res->success, res->error_code)) + ",";
+    body += JsonStringPair("error_code", res->error_code) + ",";
+    body += JsonStringPair("message", res->message) + ",";
+    body += JsonStringPair("resource_id", res->resource_id) + ",";
+    body += "\"impacted_vehicles\":" + JsonStringArray(res->impacted_vehicles) + ",";
+    body += "\"impacted_missions\":" + JsonStringArray(res->impacted_missions) + ",";
+    body += "\"rerouted\":" + std::string(res->rerouted ? "true" : "false") + ",";
+    body += "\"overlay_revision\":" + std::to_string(res->overlay_revision) + "}";
+    resp.status = TopologyErrorStatus(res->error_code);
+    resp.body = body;
+    return resp;
+  }
+
+  // POST /api/v1/topology/hot_update 与 /preview
+  // dry_run 由路径决定：preview 恒为真，即使请求体里写了 dry_run:false
+  HttpResponse HandleTopologyHotUpdate(const HttpRequest& req, bool force_dry_run) {
+    HttpResponse resp;
+    const std::string operator_id = JsonStringField(req.body, "operator_id");
+    const std::string reason = JsonStringField(req.body, "reason");
+    const bool dry_run = force_dry_run || JsonBoolField(req.body, "dry_run");
+    const bool clear = JsonBoolField(req.body, "clear");
+    if (!dry_run && (operator_id.empty() || reason.empty())) {
+      resp.status = "400 Bad Request";
+      resp.body = "{\"error\":\"missing_fields\",\"detail\":\"operator_id and reason are "
+                  "required unless dry_run=true\"}";
+      return resp;
+    }
+    if (!dry_run && !JsonBoolField(req.body, "confirm")) {
+      resp.status = "400 Bad Request";
+      resp.body = "{\"error\":\"not_confirmed\",\"detail\":\"confirm must be true when "
+                  "dry_run=false\"}";
+      return resp;
+    }
+    auto request =
+        std::make_shared<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request>();
+    request->overlay_yaml = JsonStringField(req.body, "overlay_yaml");
+    request->expected_map_hash = JsonStringField(req.body, "expected_map_hash");
+    request->operator_id = operator_id;
+    request->reason = reason;
+    request->dry_run = dry_run;
+    request->clear = clear;
+    request->allow_edge_under_vehicle = JsonBoolField(req.body, "allow_edge_under_vehicle");
+    request->confirm = JsonBoolField(req.body, "confirm");
+    if (!topology_hot_update_cli_->wait_for_service(1s)) {
+      resp.status = "503 Service Unavailable";
+      resp.body = JsonErrorBody("service_unavailable");
+      return resp;
+    }
+    auto fut = topology_hot_update_cli_->async_send_request(request);
+    if (fut.wait_for(std::chrono::milliseconds(topology_op_timeout_ms_)) !=
+        std::future_status::ready) {
+      resp.status = "504 Gateway Timeout";
+      resp.body = JsonErrorBody("timeout");
+      return resp;
+    }
+    auto res = fut.get();
+    std::string body =
+        "{" + JsonStringPair("status", TopologyStatusLiteral(res->success, res->error_code)) + ",";
+    body += JsonStringPair("error_code", res->error_code) + ",";
+    body += JsonStringPair("message", res->message) + ",";
+    body += "\"dry_run\":" + std::string(dry_run ? "true" : "false") + ",";
+    body += "\"unreachable_nodes\":" + JsonStringArray(res->unreachable_nodes) + ",";
+    body += "\"impacted_vehicles\":" + JsonStringArray(res->impacted_vehicles) + ",";
+    body += "\"impacted_missions\":" + JsonStringArray(res->impacted_missions) + ",";
+    body += "\"reroute_failures\":" + JsonStringArray(res->reroute_failures) + ",";
+    body += JsonStringPair("catalog_map_hash", res->catalog_map_hash) + ",";
+    body += "\"overlay_revision\":" + std::to_string(res->overlay_revision) + ",";
+    body += "\"file_written\":" + std::string(res->file_written ? "true" : "false") + "}";
+    resp.status = TopologyErrorStatus(res->error_code);
+    resp.body = body;
     return resp;
   }
 
@@ -1245,6 +2022,125 @@ class RestGatewayNode : public rclcpp::Node {
     std::lock_guard<std::mutex> lock(data_mutex_);
     std::vector<MetricFamily> families;
 
+    // ---- 健康面（相位 11）----
+    // 这些族**无条件**产生样本（0 而不是省略）：check_metrics_e2e.sh 断言"无空指标族"，
+    // 而抓取端也依赖"指标存在且为 0"来区分"没告警"与"没有这条指标"。
+    MetricFamily ready;
+    ready.name = "amr_ready";
+    ready.help = "1 when every monitored component is fresh and healthy (same verdict as /readyz)";
+    ready.type = MetricType::kGauge;
+    MetricFamily component_ok;
+    component_ok.name = "amr_ready_component";
+    component_ok.help = "Per-component readiness (1 = fresh and healthy, 0 = not)";
+    component_ok.type = MetricType::kGauge;
+    for (const auto& probe : CollectComponentProbesLocked()) {
+      component_ok.samples.push_back(MetricSample{
+          {{"component", probe.name}},
+          EvaluateComponent(probe) == ComponentStatus::kOk ? 1.0 : 0.0});
+    }
+    ready.samples.push_back(
+        MetricSample{{}, EvaluateReadiness(CollectComponentProbesLocked()).ready ? 1.0 : 0.0});
+    families.push_back(std::move(ready));
+    families.push_back(std::move(component_ok));
+
+    MetricFamily dispatcher_age;
+    dispatcher_age.name = "amr_dispatcher_state_age_seconds";
+    dispatcher_age.help = "Seconds since the last /dispatcher/state message (-1 = never seen)";
+    dispatcher_age.type = MetricType::kGauge;
+    {
+      const double age = state_seen_
+                             ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                             last_state_arrival_)
+                                   .count()
+                             : -1.0;
+      dispatcher_age.samples.push_back(MetricSample{{}, age});
+    }
+    families.push_back(std::move(dispatcher_age));
+
+    MetricFamily severity_level;
+    severity_level.name = "amr_safety_severity_level";
+    severity_level.help =
+        "Safety severity level (0=INFO, 1=WARN, 2=CRITICAL, -1=no safety state seen)";
+    severity_level.type = MetricType::kGauge;
+    {
+      double level = -1.0;
+      if (safety_seen_) {
+        if (latest_safety_.severity == "CRITICAL") {
+          level = 2.0;
+        } else if (latest_safety_.severity == "WARN") {
+          level = 1.0;
+        } else {
+          level = 0.0;
+        }
+      }
+      severity_level.samples.push_back(MetricSample{{}, level});
+    }
+    families.push_back(std::move(severity_level));
+
+    MetricFamily safety_critical;
+    safety_critical.name = "amr_safety_critical";
+    safety_critical.help = "1 when the safety gate reports CRITICAL, else 0";
+    safety_critical.type = MetricType::kGauge;
+    safety_critical.samples.push_back(
+        MetricSample{{}, (safety_seen_ && latest_safety_.severity == "CRITICAL") ? 1.0 : 0.0});
+    families.push_back(std::move(safety_critical));
+
+    // ---- 拓扑叠加层（相位 11）：标签绝不带边名，否则基数与地图规模成正比 ----
+    MetricFamily overlay_active;
+    overlay_active.name = "amr_topology_overlay_active";
+    overlay_active.help = "1 when a runtime topology overlay (temporary blocks / one-way) is applied";
+    overlay_active.type = MetricType::kGauge;
+    overlay_active.samples.push_back(MetricSample{{}, topology_overlay_active_ ? 1.0 : 0.0});
+    families.push_back(std::move(overlay_active));
+
+    MetricFamily overlay_revision;
+    overlay_revision.name = "amr_topology_overlay_revision";
+    overlay_revision.help = "Revision counter of the applied topology overlay (0 = none)";
+    overlay_revision.type = MetricType::kGauge;
+    overlay_revision.samples.push_back(
+        MetricSample{{}, static_cast<double>(topology_overlay_revision_)});
+    families.push_back(std::move(overlay_revision));
+
+    MetricFamily blocked_edges;
+    blocked_edges.name = "amr_topology_blocked_edges";
+    blocked_edges.help = "Number of edges disabled by the runtime topology overlay";
+    blocked_edges.type = MetricType::kGauge;
+    blocked_edges.samples.push_back(
+        MetricSample{{}, static_cast<double>(topology_blocked_edges_)});
+    families.push_back(std::move(blocked_edges));
+
+    MetricFamily one_way_edges;
+    one_way_edges.name = "amr_topology_one_way_edges";
+    one_way_edges.help = "Number of edges restricted to one direction by the overlay";
+    one_way_edges.type = MetricType::kGauge;
+    one_way_edges.samples.push_back(
+        MetricSample{{}, static_cast<double>(topology_one_way_edges_)});
+    families.push_back(std::move(one_way_edges));
+
+    // ---- 告警通道自身的健康：告警发不出去必须能被抓取侧发现 ----
+    MetricFamily alert_sent;
+    alert_sent.name = "amr_alert_sent_total";
+    alert_sent.help = "Alert webhook deliveries that returned 2xx";
+    alert_sent.type = MetricType::kCounter;
+    alert_sent.samples.push_back(MetricSample{{}, static_cast<double>(alert_sent_.load())});
+    families.push_back(std::move(alert_sent));
+
+    MetricFamily alert_failures;
+    alert_failures.name = "amr_alert_webhook_failures_total";
+    alert_failures.help = "Alert webhook deliveries that failed (non-2xx, timeout, connect error)";
+    alert_failures.type = MetricType::kCounter;
+    alert_failures.samples.push_back(
+        MetricSample{{}, static_cast<double>(alert_failures_.load())});
+    families.push_back(std::move(alert_failures));
+
+    MetricFamily alert_dropped;
+    alert_dropped.name = "amr_alert_dropped_total";
+    alert_dropped.help = "Alerts dropped because the send queue was full (oldest dropped first)";
+    alert_dropped.type = MetricType::kCounter;
+    alert_dropped.samples.push_back(
+        MetricSample{{}, static_cast<double>(alert_dropped_.load())});
+    families.push_back(std::move(alert_dropped));
+
     MetricFamily queue;
     queue.name = "amr_queue_size";
     queue.help = "Missions currently waiting in the dispatch queue";
@@ -1493,7 +2389,7 @@ class RestGatewayNode : public rclcpp::Node {
   // 连接队列（主线程 accept / 工作线程消费）
   std::thread server_thread_;
   std::vector<std::thread> workers_;
-  std::deque<int> pending_;
+  std::deque<QueuedConn> pending_;
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
   std::size_t max_pending_ = 32;
@@ -1513,18 +2409,70 @@ class RestGatewayNode : public rclcpp::Node {
   rclcpp::Client<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
       force_clear_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr restore_cli_;
+  // 相位 11：拓扑运维（GET 状态 / 单边管制 / 全量叠加层）
+  rclcpp::Client<amr_dispatcher_interfaces::srv::BlockEdge>::SharedPtr block_edge_cli_;
+  rclcpp::Client<amr_dispatcher_interfaces::srv::TopologyHotUpdate>::SharedPtr
+      topology_hot_update_cli_;
+  rclcpp::Client<amr_dispatcher_interfaces::srv::GetTopologyOverlay>::SharedPtr
+      get_topology_overlay_cli_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
 
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_sub_;
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr ready_flag_sub_;
+  rclcpp::TimerBase::SharedPtr alert_timer_;
 
   amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
   amr_dispatcher_interfaces::msg::SafetyState latest_safety_;
   amr_dispatcher_interfaces::msg::ChassisLinkHealth latest_link_;
   std::vector<amr_dispatcher_interfaces::msg::MissionEvent> recent_events_;
   bool safety_seen_ = false;
+
+  // ---- 相位 11：探针与告警 ----
+  const std::chrono::steady_clock::time_point started_at_ = std::chrono::steady_clock::now();
+  // 各组件消息的到达时刻与"是否见过"。全部在 data_mutex_ 下读写。
+  bool state_seen_ = false;
+  bool link_seen_ = false;
+  bool ready_flag_seen_ = false;
+  bool ready_flag_ = false;
+  bool safety_critical_ = false;
+  std::chrono::steady_clock::time_point last_state_arrival_{};
+  std::chrono::steady_clock::time_point last_safety_arrival_{};
+  std::chrono::steady_clock::time_point last_link_arrival_{};
+  std::chrono::steady_clock::time_point last_ready_flag_arrival_{};
+  // CRITICAL 起始时刻：0 = 当前不是 CRITICAL（判"持续多久"的计时起点）
+  std::chrono::steady_clock::time_point safety_critical_since_{};
+
+  double readyz_dispatcher_state_stale_sec_ = 3.0;
+  double readyz_safety_stale_sec_ = 2.0;
+  double readyz_chassis_stale_sec_ = 5.0;
+  double readyz_coordinator_stale_sec_ = 3.0;
+  bool readyz_require_chassis_ = true;
+
+  // 拓扑叠加层状态（由 DispatcherState 带下来，供 /metrics 与告警详情）
+  bool topology_overlay_active_ = false;
+  std::uint32_t topology_overlay_revision_ = 0;
+  std::uint32_t topology_blocked_edges_ = 0;
+  std::uint32_t topology_one_way_edges_ = 0;
+
+  // 告警：URL 为空 = 整条链路不存在（不起线程、不建定时器）
+  ParsedUrl alert_url_;
+  int alert_timeout_ms_ = 3000;
+  int alert_probe_period_ms_ = 1000;
+  int topology_op_timeout_ms_ = 10000;
+  int ros_domain_id_ = 0;
+  std::size_t alert_queue_capacity_ = 64;
+  AlertStateMachine alerts_;
+  std::deque<AlertJob> alert_queue_;
+  std::mutex alert_mutex_;
+  std::condition_variable alert_cv_;
+  std::thread alert_thread_;
+  bool alert_stopping_ = false;
+  std::atomic<std::uint64_t> alert_sent_{0};
+  std::atomic<std::uint64_t> alert_failures_{0};
+  std::atomic<std::uint64_t> alert_dropped_{0};
 };
 
 }  // namespace amr_dispatcher_tools
