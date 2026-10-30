@@ -24,6 +24,11 @@ BT_STATUS="SKIPPED"
 CHAOS_DEADLOCK_STATUS="SKIPPED"
 CHAOS_WATCHDOG_STATUS="SKIPPED"
 CHAOS_FAILOVER_STATUS="SKIPPED"
+# L2 契约 / 运维验收：需要容器内的 ROS 运行时（Docker + colcon 构建产物）。
+# 宿主机没有则如实记 SKIPPED，绝不写成 PASSED。
+L2_CONTRACTS_STATUS="SKIPPED"
+OPS_SUPERVISION_STATUS="SKIPPED"
+OPS_TOPOLOGY_STATUS="SKIPPED"
 FAILED_STAGES=0
 
 # record_status <目标变量名> <PASSED|FAILED>
@@ -181,6 +186,72 @@ else
   CHAOS_FAILOVER_STATUS="SKIPPED (依赖 L1)"
 fi
 
+# ---------------------------------------------------------------------------
+# L2 契约层：launch_testing（respawn + 协调器重新提拉 + 服务重建）
+#   需要容器内的 ROS 运行时与 colcon 构建产物；宿主机没有则 SKIPPED。
+#   为什么单独判"容器内"：宿主机上的 build/ 目录若来自容器，CTestTestfile
+#   里的 /workspace 路径不存在，直接跑 ctest 必然报错（与 BT 层同一处理）。
+# ---------------------------------------------------------------------------
+RUNNER_CONTAINER="${AMR_RUNNER_CONTAINER:-amr_dispatcher}"
+# run_in_container <cmd> [args...]：在容器工作区里、source 过 ROS 环境后执行命令。
+#
+# `bash -lc '...' bash "$@"` 里那个 `bash` 占的是 $0，所以 $1 已经是第一个参数——
+# 不能再 shift，否则会把命令本身（如 ctest）当成 $0 丢掉，最后去执行 `--test-dir`。
+run_in_container() {
+  docker exec "${RUNNER_CONTAINER}" bash -lc \
+      'cd /workspace && source /opt/ros/jazzy/setup.bash && source install/setup.bash && "$@"' \
+      bash "$@"
+}
+
+CONTAINER_OK=0
+if command -v docker >/dev/null 2>&1 &&
+   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${RUNNER_CONTAINER}"; then
+  CONTAINER_OK=1
+fi
+
+echo ""
+echo "[L2 契约层] 生命周期与进程守护契约测试 (launch_testing, 域 91/94)..."
+if [ "${CONTAINER_OK}" -eq 1 ]; then
+  if run_in_container ctest --test-dir build/amr_dispatcher_ros \
+        -R "test_lifecycle_contracts|test_supervision_contracts" --output-on-failure; then
+    record_status L2_CONTRACTS_STATUS PASSED
+  else
+    echo "[L2 契约层] FAILED：生命周期/守护契约未通过" >&2
+    record_status L2_CONTRACTS_STATUS FAILED
+  fi
+else
+  echo "[L2 契约层] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}（契约测试需要容器内 ROS 运行时）"
+  L2_CONTRACTS_STATUS="SKIPPED (无容器运行时)"
+fi
+
+echo ""
+echo "[运维验收: 探针与守护] /healthz,/readyz + respawn + webhook 告警 (域 92 / REST 18100)..."
+if [ "${CONTAINER_OK}" -eq 1 ]; then
+  if "${WORKSPACE_DIR}/scripts/check_health_supervision_e2e.sh"; then
+    record_status OPS_SUPERVISION_STATUS PASSED
+  else
+    echo "[运维验收: 探针与守护] FAILED" >&2
+    record_status OPS_SUPERVISION_STATUS FAILED
+  fi
+else
+  echo "[运维验收: 探针与守护] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}"
+  OPS_SUPERVISION_STATUS="SKIPPED (无容器运行时)"
+fi
+
+echo ""
+echo "[运维验收: 拓扑热更新] 叠加层原子提交/持久化/失效归档 (域 93 / REST 18101)..."
+if [ "${CONTAINER_OK}" -eq 1 ]; then
+  if "${WORKSPACE_DIR}/scripts/check_topology_hot_update_e2e.sh"; then
+    record_status OPS_TOPOLOGY_STATUS PASSED
+  else
+    echo "[运维验收: 拓扑热更新] FAILED" >&2
+    record_status OPS_TOPOLOGY_STATUS FAILED
+  fi
+else
+  echo "[运维验收: 拓扑热更新] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}"
+  OPS_TOPOLOGY_STATUS="SKIPPED (无容器运行时)"
+fi
+
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 
@@ -192,7 +263,8 @@ DURATION=$((END_TIME - START_TIME))
 # ---------------------------------------------------------------------------
 ANY_SKIPPED=0
 for _s in "$CORE_STATUS" "$BENCH_STATUS" "$BT_STATUS" \
-          "$CHAOS_DEADLOCK_STATUS" "$CHAOS_WATCHDOG_STATUS" "$CHAOS_FAILOVER_STATUS"; do
+          "$CHAOS_DEADLOCK_STATUS" "$CHAOS_WATCHDOG_STATUS" "$CHAOS_FAILOVER_STATUS" \
+          "$L2_CONTRACTS_STATUS" "$OPS_SUPERVISION_STATUS" "$OPS_TOPOLOGY_STATUS"; do
   case "$_s" in
     SKIPPED*) ANY_SKIPPED=1 ;;
   esac
@@ -234,15 +306,17 @@ cat <<EOF > "${REPORT_FILE}"
       "async_logger_throughput": "${BENCH_LOGGER_NOTE}"
     },
     "L2_node_contracts": {
-      "status": "SKIPPED",
-      "reason": "无自动化执行框架: test/l2_launch_contracts 仅为脚本样例, 未接入 ctest/launch_testing",
-      "framework": "ROS 2 launch_testing & Lifecycle Coordinator Probes (规划中)",
+      "status": "${L2_CONTRACTS_STATUS}",
+      "framework": "ROS 2 launch_testing (test/l2_launch_contracts/, 已接入 ctest)",
       "contracts": [
-        "/system/ready",
-        "/system/healthy",
-        "ExecuteMission.action",
-        "12 Core Dispatcher Services (/v2/*)"
+        "test_lifecycle_contracts: /system/ready,/system/healthy 可调用; 未提拉时报 INITIALIZING; ready_flag=false",
+        "test_supervision_contracts: respawn 起新 PID; 协调器重新提拉到 active; on_configure 服务重建"
       ]
+    },
+    "L3_ops_acceptance": {
+      "probes_and_supervision": "${OPS_SUPERVISION_STATUS}",
+      "topology_hot_update": "${OPS_TOPOLOGY_STATUS}",
+      "note": "域 92/93 与 REST 18100/18101 隔离运行; 生产 42/8080/1883 从不触碰"
     },
     "L3_chaos_scenarios": {
       "deadlock_wfg_cycle_resolution": "${CHAOS_DEADLOCK_STATUS}",

@@ -288,6 +288,14 @@ if(BUILD_TESTING)
       TARGET test_lifecycle_contracts
       TIMEOUT 120
     )
+    # 守护契约：respawn 起新进程 + 协调器重新提拉 + on_configure 服务重建。
+    # 域 94（与上面 91 域分开）：两套夹具的节点互相看见会让断言不可信。
+    # 预算 60s + 重生延迟/提拉/重建服务，给慢 CI 留余量。
+    add_launch_test(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../test/l2_launch_contracts/test_supervision_contracts.py"
+      TARGET test_supervision_contracts
+      TIMEOUT 240
+    )
   endif()
 endif()
 

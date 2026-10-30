@@ -154,11 +154,14 @@ jobs:
             fi
           done
 
-  # 三套 e2e 的门禁 job。
+  # e2e 门禁 job（10 套脚本串行）。
   #
   # 直接在 ros:jazzy-ros-base 容器 job 内以 AMR_E2E_INNER=1 运行：
   # 这些脚本都带"内层执行守卫"（检测到未设置 AMR_E2E_INNER 才尝试 docker exec
   # 穿透），因此在容器里直接跑不会去找 amr_dispatcher 容器，也不需要 DinD。
+  # 相位 11 的两套新脚本本身是 "docker exec 驱动" 的写法，它们复用
+  # scripts/lib/inner_docker_shim.sh 把 docker exec/cp/ps 顶成本地执行——
+  # 因此断言序列与在宿主机穿透容器时逐字相同，只有"在哪里执行"不同。
   #
   # web 控制台 e2e 不在这里：它需要宿主机 Chrome + 独立容器，放进手动/nightly
   # job（见 README 的"验证"一节），常规 CI 不把它当成门禁。
@@ -166,7 +169,10 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ros:jazzy-ros-base
-    timeout-minutes: 20
+    # 10 套 e2e 串行执行（其中拓扑热更新与探针守护各约 2 分钟，含各自的
+    # 栈拉起/冷启动），20 分钟余量不足；40 分钟仍能在一个 runner 上跑完，
+    # 且超时时会明确失败而不是被"还没跑完"静默截断。
+    timeout-minutes: 40
     needs: build-ros2-jazzy
     steps:
       - uses: actions/checkout@v4
@@ -286,6 +292,30 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           ./scripts/check_cbs_coordination_e2e.sh
+
+      # 相位 11：探针/守护与拓扑热生效。
+      # 两个脚本都支持 AMR_E2E_INNER：内层模式下 docker 子命令由
+      # scripts/lib/inner_docker_shim.sh 顶成本地执行，因此不需要 DinD，
+      # 断言序列与在宿主机穿透容器时逐字相同（只有"在哪里执行"不同）。
+      - name: Probes, Respawn & Webhook Alerting E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_health_supervision_e2e.sh
+
+      - name: Topology Hot-Update E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_topology_hot_update_e2e.sh
 
       # 失败时把 e2e 现场日志带出来（脚本把 TMP_DIR 打在输出里，
       # 这里按前缀兜底收集），否则只能看 GitHub 的日志行数上限。
