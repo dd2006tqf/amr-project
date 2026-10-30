@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -112,6 +113,10 @@ struct QueuedConn {
   HttpRequest req;
   std::size_t content_length = 0;
   ReadStatus head_status = ReadStatus::kOk;
+  // 连接被 accept 的时刻。超时预算从这一刻起算，而不是从 worker 拿到它
+  // 起算 —— 否则请求在队列里排队的时间会被重复计算，高负载下队列越深
+  // 每个请求等得越久，恶化成雪崩。
+  std::chrono::steady_clock::time_point accepted_at = std::chrono::steady_clock::now();
 };
 
 // 待发送的一条告警（body 已渲染成 JSON，发送线程只负责投递）。
@@ -529,6 +534,7 @@ class RestGatewayNode : public rclcpp::Node {
       sockaddr_in client_addr{};
       socklen_t client_len = sizeof(client_addr);
       const int client_fd = accept(server_fd_, (struct sockaddr*)&client_addr, &client_len);
+      const auto accepted_at = std::chrono::steady_clock::now();
       if (client_fd < 0) {
         if (!running_) break;
         if (errno == EINTR) continue;
@@ -560,15 +566,23 @@ class RestGatewayNode : public rclcpp::Node {
         pfd.events = POLLIN;
         const int ready = ::poll(&pfd, 1, kAcceptReadBudgetMs);
         if (ready > 0 && (pfd.revents & POLLIN) != 0) {
-          // 只读"已到达的字节"：把 rcvtimeo 临时调成 0，read 立刻返回 EAGAIN
+          // 只读"已到达的字节"：把 socket 切成非阻塞，read 立刻返回 EAGAIN
           // 而不是在这里等满 5s。头部已完整时才可能得到 kOk。
-          timeval zero{};
-          setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
+          //
+          // 为什么用 O_NONBLOCK 而不是 SO_RCVTIMEO=0：按 Linux 语义，接收超时
+          // 置零表示"禁用超时"（= 永远阻塞）。写这行时把它当成"不等待"，
+          // 于是 accept 线程在任何一个只发了半截头的连接上永久卡死 ——
+          // 全站请求排队，重启进程后又在同一个客户端上卡死，表现成
+          // "重启也没用"。O_NONBLOCK 是唯一能真正表达"不等待"的手段。
+          const int old_flags = ::fcntl(client_fd, F_GETFL, 0);
+          if (old_flags >= 0) {
+            ::fcntl(client_fd, F_SETFL, old_flags | O_NONBLOCK);
+          }
           probe_head = ReadRequestHead(client_fd, &probe_req, &probe_content_length,
                                        &prebuffered);
-          timeval tv{};
-          tv.tv_sec = kSocketTimeoutSec;
-          setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+          if (old_flags >= 0) {
+            ::fcntl(client_fd, F_SETFL, old_flags);
+          }
         }
       }
       if (probe_head == ReadStatus::kOk && probe_req.method == "GET" &&
@@ -598,7 +612,8 @@ class RestGatewayNode : public rclcpp::Node {
                                         /*head_ok=*/probe_head == ReadStatus::kOk,
                                         std::move(probe_req),
                                         probe_content_length,
-                                        probe_head});
+                                        probe_head,
+                                        accepted_at});
           queued = true;
         }
       }
@@ -634,6 +649,11 @@ class RestGatewayNode : public rclcpp::Node {
   }
 
   // 任何异常都必须收敛成 400：旧实现里一个 stoi 抛异常就把整个进程 terminate。
+  //
+  // `accepted_at` 是连接被 accept 的时刻。慢路径（worker 自己读头）按它算
+  // **剩余预算**再设读写超时：请求在队列里排了多久，就该少等多久。
+  // 否则"accept 时已经耗掉半个超时"的连接在 worker 这里又能重新等满一个
+  // 完整超时，高负载下队列越深、每个请求被拖得越久 —— 雪崩就是这样长出来的。
   void HandleClientSafely(const QueuedConn& conn) {
     try {
       if (conn.head_complete) {
@@ -663,6 +683,18 @@ class RestGatewayNode : public rclcpp::Node {
       }
       // accept 线程没有读完头（读超时，或一个字节都没到）：worker 带着已读
       // 前缀继续读。前缀必须原样传回去 —— 丢掉就会把半截请求当"对端断开"。
+      //
+      // 超时按"从 accept 起算的剩余预算"重设：accept 线程已经花掉的
+      // kAcceptReadBudgetMs 不该在 worker 这里被重新送一遍。
+      const auto spent = std::chrono::steady_clock::now() - conn.accepted_at;
+      const auto budget = std::chrono::seconds(kSocketTimeoutSec) - spent;
+      const int remaining_sec =
+          budget.count() > 0 ? static_cast<int>(budget.count()) : 1;
+      timeval tv{};
+      tv.tv_sec = remaining_sec;
+      tv.tv_usec = 0;
+      setsockopt(conn.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      setsockopt(conn.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
       HandleClient(conn.fd, conn.prebuffered);
     } catch (const std::exception& e) {
       RCLCPP_WARN(get_logger(), "请求处理异常（已兜底为 400）: %s", e.what());
@@ -1031,8 +1063,20 @@ class RestGatewayNode : public rclcpp::Node {
     std::size_t content_length = 0;
     const ReadStatus head_status =
         ReadRequestHead(client_fd, &req, &content_length, &prebuffered);
-    if (head_status == ReadStatus::kClosed) {
-      return;  // 对端没发完整请求就断了：静默关闭
+    // kTimeout 必须与 kClosed 一样静默关闭。
+    //
+    // 引出这一行的真实事故：accept 快车道把"半截请求"以 kTimeout 入队，worker
+    // 接了却只等满自己的 5s（对端一个字都没再发），拿回 kTimeout —— 而下面
+    // 三个 if 都不匹配它，于是带着一个**全空**的 HttpRequest 一路走到
+    // DispatchAfterRead，最后落到路由兜底返回 404 {"error":"not_found"}。
+    // 表现就是：浏览器偶尔打开控制台得到一页 not_found，而且这种"空请求"
+    // 完全不影响其它连接，只在压测/冷启动的时序里冒出来。
+    //
+    // 语义上 kTimeout 就是"对端在超时内没交出请求"，等价于本该发生的
+    // kClosed —— 相位 11 之前 ReadRequestHead 把 EAGAIN 直接当 kClosed，
+    // 这里保持那条老路径的行为：不派发、不应答、静默关闭。
+    if (head_status == ReadStatus::kClosed || head_status == ReadStatus::kTimeout) {
+      return;  // 对端没发完整请求就断了 / 迟迟不发：静默关闭
     }
     if (head_status == ReadStatus::kBadRequest) {
       HttpResponse resp;

@@ -245,6 +245,34 @@ try:
 finally:
     silent.close()
 
+print("[7b] 迟迟不发完整请求的连接：超时后静默关闭，不得凭空变成 404")
+# 真实事故：accept 快车道把"半截请求"以 kTimeout 交给 worker，worker 只等满
+# 自己的 5s 后拿回 kTimeout，而 HandleClient 只识别 kClosed
+# -> 一个**全空**的请求一路走到路由兜底，返回 404 {"error":"not_found"}。
+# 浏览器侧看起来就是"控制台偶发变成一页 not_found"。
+# 正确语义：超时 = 对端没交出请求，等同于 kClosed，静默关闭。
+late = socket.create_connection((HOST, PORT), timeout=10)
+try:
+    late.settimeout(20)
+    started = time.time()
+    late.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n")  # 故意不发结尾的空行
+    received = b""
+    try:
+        while True:
+            data = late.recv(65536)
+            if not data:
+                break
+            received += data
+    except socket.timeout:
+        pass
+    elapsed = time.time() - started
+finally:
+    late.close()
+check("半截请求在连接超时后被静默关闭（无任何响应字节）", received == b"",
+      "%d bytes, %.1fs" % (len(received), elapsed))
+check("半截请求不得返回 404 not_found", b"not_found" not in received,
+      received[:80].decode("utf-8", "replace"))
+
 print("[8] 鉴权（默认关闭 -> 独立实例配置 auth_token）")
 status, _ = raw("GET /api/v1/state HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n",
                 port=AUTH_PORT)
