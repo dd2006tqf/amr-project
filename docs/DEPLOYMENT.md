@@ -186,7 +186,7 @@ C="docker exec -it amr_dispatcher bash -lc"
 | 2 | 5 个包 | `$C 'ros2 pkg list \| grep -c amr_dispatcher'` | `5` |
 | 3 | L1 核心链路 | `$C 'cd /workspace && ./scripts/check_all.sh'` | `🎉 [ALL CHECKS PASSED]` |
 | 4 | 节点清单 | `$C 'source install/setup.bash && ros2 node list'` | 7 个节点(见下)。**首次查询可能少 1–2 个,是 DDS 发现抖动,重查一次即可** |
-| 5 | 12 个 v2 服务 | `$C 'source install/setup.bash && ros2 service list \| grep -c /v2/'` | `12` |
+| 5 | 15 个 v2 服务 | `$C 'source install/setup.bash && ros2 service list \| grep -c /v2/'` | `15` |
 | 6 | 就绪探针 | `$C 'source install/setup.bash && ros2 service list \| grep -E "system/(ready\|healthy)"'` | 2 个 |
 | 7 | 生命周期 | `$C 'source install/setup.bash && ros2 lifecycle get /dispatcher_node'` | `active [3]` |
 | 8 | 底盘链路 | `$C 'source install/setup.bash && ros2 topic echo /chassis/link_health --once'` | `backend_name: "serial"`。`tier` 见下方说明 |
@@ -196,6 +196,9 @@ C="docker exec -it amr_dispatcher bash -lc"
 | 12 | 快照 API | `curl -s http://127.0.0.1:8080/api/operator/snapshot` | 返回 JSON,含 `"chassis_backend":"serial"` |
 | 13 | 端口未泄露 | 在服务器上 `curl -m 8 http://<公网IP>:8080/` | `000`(连接失败) |
 | 14 | 重启自恢复 | `docker compose -f docker/docker-compose.server.yml restart` 后重跑 4–7 | 全部通过 |
+| 15 | 容器健康态 | `docker ps --format '{{.Status}}' \| grep amr_dispatcher` | 含 `(healthy)`（首个 180s 为 `starting`，属正常） |
+| 16 | 探针免鉴权 | `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz` | `200`（配了 `auth_token` 也一样） |
+| 17 | 节点守护 | 容器内 `kill -9 <dispatcher_node pid>`，等 10s 再看 `ros2 lifecycle get /dispatcher_node` | `active [3]`，且 `docker exec ... pgrep -f dispatcher_node` 是**新** PID |
 
 #### 端到端功能验证（可选但推荐）
 
@@ -288,6 +291,149 @@ echo "--- 安全 ---";    timeout 5 ros2 topic echo /safety/state --once
 '
 ```
 
+### 6.1 探针与自愈：HEALTHCHECK 的真实边界
+
+先说结论，因为它决定了一切：**HEALTHCHECK 只提供可见性，不触发自动重启。**
+
+| 机制 | 它做什么 | 它**不**做什么 |
+|---|---|---|
+| `docker healthcheck`（`docker/healthcheck.py` → `GET /readyz`） | `docker ps` 显示 `healthy/unhealthy`；`compose up --wait` 等待就绪 | 不重启容器；不替代应用自愈 |
+| launch 的节点级 `respawn`（`respawn_enabled`） | 子进程崩溃后自动拉起（延迟 `respawn_delay` 秒） | 不做健康判定（只对"进程死了"起作用） |
+| `lifecycle_coordinator_node`（`auto_bringup=true`） | 把重生后回到 `unconfigured` 的 dispatcher 重新提到 `active` | 不负责拉起进程 |
+
+**为什么禁止接 autoheal**：`/readyz` 为 503 可能是"健康但安全锁存"（比如急停还没解除）。
+因 503 重启容器会拆掉整套栈、丢掉调度队列与在途任务的路权状态，把一个
+"需要人来按急停复位"的场景变成一个"反复重启 + 反复丢单"的场景。
+probe 的作用是**让人知道**，不是**替人决策**。
+
+**自愈链的依赖关系（必须记住）**：`dispatcher_node` 的 respawn 依赖
+`lifecycle_coordinator_node` 存活（它负责 unconfigured→active）。
+协调器自己也在 respawn 名单里，但如果**整个容器**死了，就只剩 compose 的
+`restart: unless-stopped`——那是容器级恢复，代价是一次冷启动。
+
+**冷启动的副作用（如实告知）**：respawn 是冷重启。`on_configure` 会从
+`state_snapshot_file` 恢复队列并把在途任务重新入队，车辆可能收到第二份
+`/plan` / VDA order。这是既有的重启语义（`check_state_persistence_e2e.sh` 锁定），
+只是现在无需人工触发。
+
+**探针分两条线**（`docs/API.md` §5.1.1）：
+
+```bash
+# liveness：只回答"网关还能处理 HTTP"，DDS 全挂时仍然是 200
+docker exec amr_dispatcher curl -s localhost:8080/healthz
+
+# readiness：逐组件聚合，任一不就绪回 503，body 里有每个组件的 reason
+docker exec amr_dispatcher curl -s localhost:8080/readyz | python3 -m json.tool
+```
+
+`/readyz` 的 `reason` 就是排障入口：
+
+| `reason` | 含义 | 先查什么 |
+|---|---|---|
+| `ok` | 新鲜且语义健康 | — |
+| `never_seen` | 从未收到该组件的数据 | 节点起来了吗？话题名/域 ID 对吗？`state` 字段同时会是 `INITIALIZING` |
+| `stale` | 收到过，但已超过 `stale_after_seconds` | 该组件进程还活着吗（`ps` / `ros2 node list`）？DDS 卡死？`detail` 里带实测时延 |
+| `unhealthy` | 新鲜但语义不健康 | 看具体组件：`motion_allowed` / `is_healthy` / `ready_flag`；安全门再看 `/safety/state` |
+| `not_monitored` | 该部署形态下无法观测 | 多车模式下的 `chassis`，属正常 |
+
+`chassis` 组件在**多车模式**下会显示 `monitored: false`、`reason: not_monitored` 且
+**不**计入失败——那时 `/chassis/link_health` 是 per-vehicle 话题，网关订阅不到全局话题。
+这是诚实的"我在关注但拿不到数据"，不是"假装健康"。
+
+> 字段名以 `health_probe.hpp::RenderReadinessJson` 为准，别凭印象写脚本：
+> 数组键是 `components`，每项组件名键是 `component`（不是 `name`），
+> liveness 里是 `uptime_seconds`（不是 `uptime_sec`）。
+
+### 6.2 主动告警（Webhook）
+
+默认**关闭**：`alert_webhook_url` 为空时不起巡检定时器、不起发送线程，
+进程/线程/话题与关闭前完全一致（`check_health_supervision_e2e.sh` T8 断言）。
+
+启用方式（`config/rest_gateway.yaml` 或 launch 参数）：
+
+```yaml
+rest_gateway_node:
+  ros__parameters:
+    alert_webhook_url: "http://alertmanager.internal:9093/api/v2/alerts"
+    alert_not_ready_threshold: 3      # 连续 3 次不就绪才升级
+    alert_min_interval_sec: 300       # firing 期间 5 分钟提醒一次
+    alert_safety_critical_sec: 30     # CRITICAL 持续 30s 才告警
+    alert_queue_capacity: 64          # 满时丢最旧
+```
+
+- **只支持 `http://`**。`https://` 启动时 `ERROR` 并保持禁用（本构建不含 TLS）。
+  需要加密请在前面挂一个本地 http 中继。
+- payload schema 为 `amr.alert.v1`，字段见 `include/amr_dispatcher_tools/alerting.hpp`。
+- 恢复通知**不受节流限制**，且每次故障只发**恰好一条** `*_recovered`。
+- 发送失败不重试，只累加 `amr_alert_webhook_failures_total` —— 让抓取侧可以对
+  "告警通道本身"告警。这是刻意的：重发一条过时的告警不如让下一拍发新的。
+
+告警规则样例见 `deploy/alerts/amr_dispatcher.rules.yml`。
+
+### 6.3 施工区 runbook：临时封路 / 单向 / 临时标石
+
+**不要**再进容器 `vim stations.yaml`：那既无连通性校验，也无在途车仲裁，
+而且 `map_ingest` / Web 地图上传会整份覆盖该文件，手改的管制会被静默抹掉。
+
+标准流程（单条边）：
+
+```bash
+# 0) 先看现状
+curl -s localhost:8080/api/v1/topology/overlay?yaml=1 | python3 -m json.tool
+
+# 1) 预演（可选但强烈建议）：dry_run 下绝不写盘
+curl -s -X POST localhost:8080/api/v1/topology/preview -d '{
+  "overlay_yaml": "blocked_edges:\n  - from: \"B3\"\n    to: \"B4\"\n    reason: \"water main\"\n",
+  "operator_id": "op_zhang", "reason": "water main repair"
+}'
+
+# 2) 提交
+curl -s -X POST localhost:8080/api/v1/topology/block_edge -d '{
+  "from_station": "B3", "to_station": "B4", "direction": "both",
+  "operator_id": "op_zhang", "reason": "water main repair",
+  "expected_map_hash": "<从 GET /api/v1/topology/overlay 取>", "confirm": true
+}'
+
+# 3) 收工清空
+curl -s -X POST localhost:8080/api/v1/topology/unblock_edge -d '{
+  "from_station": "B3", "to_station": "B4",
+  "operator_id": "op_zhang", "reason": "work complete", "confirm": true
+}'
+```
+
+**409 的含义与处置**（详见 `docs/API.md` §5.5 的 `error_code` 表）：
+
+| `error_code` | 现场怎么处理 |
+|---|---|
+| `would_disconnect_topology` | 这条边是桥边，封了会让某些站点互相到不了。换一条，或先加临时绕行边。 |
+| `edge_occupied_in_flight` | 有车可能正压在这条边上。**等它驶离**再提交；确需立即生效且能保证车辆驶离，用 `allow_edge_under_vehicle=true`（该边锁留给在途车）。 |
+| `would_strand_vehicles` | 有在途任务找不到替代路线。先让那些任务完成/取消，或先开绕行。 |
+| `map_hash_mismatch` | 客户端手里的地图版本过期了。重新 `GET /api/v1/topology/overlay` 取新 hash。 |
+| `lock_conflict` | 新路线要用的路权被别的任务占着，稍后重试。 |
+
+**文件生命周期**（都在 `topology_overlay_file` 同目录）：
+
+| 文件 | 来源 | 处置 |
+|---|---|---|
+| `overlay.yaml` | 提交成功时原子写入（tmp → fsync → 回读校验 → rename） | 正常生效中。**不要手改**：手改后等下一个热重载周期，但少了校验与在途仲裁。 |
+| `overlay.yaml.bak` | 每次提交前把旧文件改名 | 上一版。手工回滚 = `mv overlay.yaml.bak overlay.yaml` 后重启 dispatcher。 |
+| `overlay.yaml.stale.<epoch>` | 基础地图 `map_hash` 变化时自动归档 | 叠加层已失效，文件留作审计。确认无用后可删。 |
+| （无 `corrupt` 后缀） | 文件损坏时**不**改名、**不**动原文件 | 进程会 `ERROR` + 审计 `topology_overlay_rejected`，并**按基线目录运行**。看日志查原因，修好或删掉文件再重启。 |
+
+**功能开关与默认值**：容器入口脚本默认注入
+`/workspace/config/generated/topology_overlay.yaml`（可用
+`AMR_TOPOLOGY_OVERLAY_FILE` 覆盖，设为空串 = 关闭）。它与 `stations.yaml`
+**同目录但不同文件**——地图上传会整份覆盖 `stations.yaml`，叠加层必须独立
+持久化才不会被抹掉。直接 `ros2 run` 时 `topology_overlay_file` 默认为空 =
+功能关闭，此时写操作返回 `501 overlay_disabled`（读接口仍可用，`message`
+会写明 disabled）。**这是刻意的**：没有持久化就没有原子性，绝不能让施工区
+"内存里生效、重启就没了"。
+
+**提交顺序即安全铁律**（`CommitTopologyPlan`）：落盘 → 预约新锁 → 释放废弃锁 →
+为被封边加 `traffic_block:` 锁 → 解封已移除的边 → 换内存叠加层 → 同步规划器 → 下发改道。
+进程在落盘之后任意时刻死掉，重启从冷启动回放就是目标态；死在落盘之前，
+哪里都没变。因此**磁盘写失败时内存零改动**，不需要"回滚内存锁"这种最容易写错的分支。
+
 ---
 
 ## 7. 代码更新流程
@@ -346,7 +492,7 @@ AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
 
 | 能力 | 状态 |
 |---|---|
-| 完整运行项目 | ✅ 7 个业务节点 / 12 个 `/v2/` 服务 / `dispatcher_node` active |
+| 完整运行项目 | ✅ 7 个业务节点 / 15 个 `/v2/` 服务 / `dispatcher_node` active |
 | 改代码并增量重建 | ✅ 单包约 29 秒；重启约 1 秒 |
 | `git commit` | ✅ 身份 `dd2006tqf <dd2006tqf@users.noreply.github.com>` |
 | `git clone` / `pull` | ✅ |

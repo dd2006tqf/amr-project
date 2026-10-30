@@ -11,7 +11,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:
    - Strictly decoupled domain algorithms: zero ROS dependencies.
    - Built and tested with pure standard CMake & GoogleTest.
-   - **830+ unit and integration tests passing in ~4 seconds** with 100% test pass rate across 10 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning). The exact count is reported by `ctest`, not hard-coded here.
+   - **970+ unit and integration tests passing in a few seconds** with 100% test pass rate across 12 subdomains (chassis, path tracking, dispatcher, safety, config, logging, catalog, facility, fleet, workflow, planning, topology). The exact count is reported by `ctest`, not hard-coded here.
    - Standard IoC interfaces (`IPathPlanner`, `IPathTracker`) with `SkeletonPlanner` for dense equal-arc-length polyline expansion and baseline mock implementations.
 
 2. **Decoupled Behavior Tree Orchestration Subsystem (`amr_dispatcher_bt`)**:
@@ -19,8 +19,8 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - 10 behavior tree models (queue scheduling, mission recovery, order routing, runtime lifecycle, station sequence, facility & docking management) covered by **36/36 unit tests**.
    - Pluggable decision-making engine eliminating legacy hardcoded if-else dispatching.
 
-3. **12 Enterprise Dispatcher Services (`/v2/*`)**:
-   - Complete operational toolset across Mission lifecycle, Traffic control & Deadlock diagnosis, Physical facility reservation, and Site topology verification.
+3. **15 Enterprise Dispatcher Services (`/v2/*`)**:
+   - Complete operational toolset across Mission lifecycle, Traffic control & Deadlock diagnosis, Physical facility reservation, Site topology verification, and **runtime topology hot-apply** (`block_edge` / `topology_hot_update` / `get_topology_overlay`).
    - Full ROS 2 interfaces generated with zero duplicate schemas.
 
 4. **Graph Theory Wait-For-Graph (WFG) & 0ms Deadlock Detection**:
@@ -56,7 +56,7 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - Hierarchical prioritization: **E-Stop (Hard) > Manual Takeover > Watchdog Timeout (200ms) > Degraded Speed Clamping > Normal Pass-through**.
 
 8. **Interactive Operations & 3D Observability**:
-   - **Single-file zero-dependency Web Console (`tools/operator_console.html`)**: browser dashboard for live metrics, task dispatch, strategy switching, and emergency stop.
+   - **Single-file zero-dependency Web Console (`tools/operator_console.html`)**: browser dashboard for live metrics, task dispatch, strategy switching, emergency stop, and a **readiness red-light table + temporary-topology panel** (preview → apply with the apply button locked until the same text previews successfully).
    - **RViz2 3D Semantic Markers**: real-time visualization of topological routes, dynamic green reservation locks, and red cylindrical deadlock beacon alerts with 1.2s auto-aging.
    - **ROS 2 Action (`ExecuteMission.action`)**: asynchronous long-duration mission streaming and client cancellation/preemption.
 
@@ -103,6 +103,16 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
    - **Adaptive Solver Facade (`SolveMAPF`)**: small fleets (<= 6 agents) run CBS for global optimality; large fleets or CBS budget exhaustion automatically degrade to Prioritized Planning for instant, conflict-free resolution.
    - **Seamless Dispatcher Wiring (`traffic_mode: cbs`)**: maps MAPF `TimedPath` into standard `ResourceTimeWindowSet` and commits atomically to `ResourceTable` while honoring existing in-flight traffic.
    - **Verified End-to-End**: `scripts/check_cbs_coordination_e2e.sh` and 100% CTest unit coverage (`SpaceTimeAStarTest`, `ConflictBasedSearchTest`, `PrioritizedPlanningTest`, `MAPFSolverTest`, `CBSTrafficCoordinatorTest`).
+
+15. **Production Observability & Online Topology Hot-Apply (Phase 11)**:
+   - **The gap this closes**: the live container showed `Up 8 days` while `dispatcher_node` had been dead for 8 days, the safety gate was latched at `CRITICAL`, and `rest_gateway` still answered `200` to everything. No process supervision, no HTTP probe anyone actually polled, no active alerting.
+   - **Node-level `respawn`** for every process, with the honest caveat documented: a respawned `LifecycleNode` comes back `unconfigured`, and launch's configure/activate events only fire once — so self-healing **depends on `lifecycle_coordinator_node`** re-promoting it. That causal chain (new PID -> re-promoted -> `on_configure` services really come back) is locked by `test/l2_launch_contracts/test_supervision_contracts.py`.
+   - **`/healthz` (liveness) and `/readyz` (per-component readiness)** are served on an **accept-thread fast lane**: if the probe shared the worker pool with DDS-blocking handlers, it would fail exactly when it is needed most. `/readyz` reports per-component `seen` / `age_seconds` / `reason`, and `chassis` honestly says `monitored: false` in multi-vehicle mode instead of faking health.
+   - **Webhook alerting** with a real state machine: consecutive-N before firing, throttling while firing, and exactly one recovery notification per fault; delivery happens on a dedicated thread so a slow webhook can never stall the ROS executor. Empty `alert_webhook_url` means *no timer, no thread* — byte-identical to before.
+   - **The coordinator bug behind the incident**: `CoordinatorTick` returned early when the dispatcher's `get_state` service was unavailable, so its cached state stayed `active` forever. Now unavailable is an explicit state that publishes `ready_flag=false` and makes `/system/ready` answer `INITIALIZING` with `DispatcherNode unavailable: ...`.
+   - **Online topology hot-apply** (the ops problem): temporary no-go zones, one-way toggles and temporary markers used to require `vim stations.yaml` inside the container — no connectivity validation, no in-flight arbitration, and silently overwritten by any map upload. Now a runtime **overlay** (`enabled=false` / `bidirectional=false`, *not* a new map version) is validated, previewed, atomically committed, persisted, and replayed on restart; a base-map change invalidates and archives it. Write-ahead persistence makes the disk failure path trivially safe: nothing in memory changed.
+   - **Refusal is a first-class answer**: a disconnecting edge, a stale `expected_map_hash`, or a vehicle that may be physically traversing the edge is a `409` with the affected vehicles/missions listed — never a partial apply.
+   - **Verified End-to-End**: `scripts/check_health_supervision_e2e.sh` (T1–T8, incl. `kill -9` -> `503` -> respawn -> `200` and webhook payload checks) and `scripts/check_topology_hot_update_e2e.sh` (T1–T12, incl. the dispatched VDA order actually taking the bypass, restart replay, and base-map-change invalidation). Both run inside the CI container via `AMR_E2E_INNER=1`.
 
 ---
 
@@ -190,13 +200,18 @@ The platform natively supports importing official ROS 2 OccupancyGrid maps (`nav
 ```bash
 ./scripts/check_all.sh
 ```
-Executes all 6 stages in one go, recording every stage honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
+Executes every stage in one go, recording each one honestly into `test_report_matrix.json` (stages that cannot run on this machine are marked SKIPPED, never faked):
 - [Step 1] Build pure C++ core and run the full GTest unit & integration suite via ctest (~4s, 100% green; the count evolves with the test suite — your run's exact numbers land in the matrix).
 - [Step 2] Benchmark mission queue and async logger throughput (measured live on your machine).
 - [Step 3] Run amr_dispatcher_bt behavior-tree tests via ctest (SKIPPED on hosts without a colcon build of the BT package).
 - [Step 4] WFG deadlock detection and dynamic detour chaos drill.
 - [Step 5] Software watchdog 200ms timeout shutdown drill.
 - [Step 6] Hardware loss rate failover drill.
+- [Step 7] L2 launch_testing contracts: lifecycle bring-up **and** process supervision
+  (`respawn` really starts a new PID; the coordinator re-promotes it to `active`;
+  the services registered in `on_configure` really come back). Needs the container.
+- [Step 8] Probes & supervision E2E (`check_health_supervision_e2e.sh`).
+- [Step 9] Topology hot-update E2E (`check_topology_hot_update_e2e.sh`).
 
 ### 2. Run Map Ingestion & Topology Dispatch E2E Verification
 ```bash
@@ -218,16 +233,69 @@ Self-contained, idempotent (self-cleaning) acceptance harness for the MQTT fleet
 - Stage 8: **dual local simulated vehicle concurrency** (isolated `ROS_DOMAIN_ID=80`) — two `local_sim` vehicles, each with its own `path_tracker` / `safety_gate` / `chassis` on two **disjoint** corridors of the demo map; asserts simultaneous dispatch, that each vehicle really moved (odometry travel) with non-crossed starting poses, both missions completed, and zero residual locks.
 On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
 
+### 3b. Run Probes, Supervision & Alerting E2E Verification
+```bash
+./scripts/check_health_supervision_e2e.sh
+```
+Isolated stack on `ROS_DOMAIN_ID=92` / REST `:18100` / webhook sink `:18111`. Locks the
+chain that the production incident was missing (container `Up 8 days` while
+`dispatcher_node` had been dead for 8 days and the gateway still answered `200`):
+- `/healthz` and `/readyz` are **unauthenticated** (a container `HEALTHCHECK` cannot carry a token) and `/readyz` lists all four components.
+- `kill -9 dispatcher_node` → `/readyz` returns `503` with `reason: stale` within 3 s
+  (not `never_seen`: it genuinely saw the node before).
+- The webhook sink receives `readiness_not_ready` with a valid `amr.alert.v1` payload.
+- launch `respawn` starts a **new** PID and the coordinator re-promotes it to `active`.
+- The recovery alert sequence satisfies the state-machine invariants (every
+  `*_recovered` is preceded by an unpaired firing; never two recoveries in a row).
+- `POST /api/operator/estop` → `/readyz` 503, `amr_safety_critical 1`,
+  `amr_safety_severity_level 2`, then `safety_critical` / `safety_recovered` webhooks.
+- All 12 new metric families present, label cardinality bounded, **no edge names** as labels.
+- With `alert_webhook_url` empty, **no** extra sender thread exists (thread count identical).
+
+### 3c. Run Online Topology Hot-Update E2E Verification
+```bash
+./scripts/check_topology_hot_update_e2e.sh
+```
+Isolated stack on `ROS_DOMAIN_ID=93` / REST `:18101` / MQTT `:18102` with a fixture
+network whose bypasses are deliberately **longer** than the main chain (otherwise
+"did the route change?" is unobservable) and includes a **second** bypass (otherwise
+blocking the first one trips `would_disconnect_topology` before the in-flight
+arbitration ever runs). Twelve assertions, T1–T12:
+- Disconnected overlay preview → `409 would_disconnect_topology` **and no file on disk**.
+- Missing `reason` → `400` **and still no file** (refusal is always zero-write).
+- Legitimate block → `200`, overlay file persisted, `revision 1`, `/metrics` agrees.
+- Replaying the same request → `200 "noop"`, revision unchanged (idempotent, zero writes).
+- Stale `expected_map_hash` → `409 map_hash_mismatch`.
+- After blocking `b-c`, submitting `a→e` produces a VDA order whose node list
+  (`a n1 d e`, read from the **vehicle's** received `raw_order`, not from a log line)
+  skips `b`/`c` — the overlay really reached the dispatch path.
+- Blocking the edge the vehicle is currently traversing → `409 edge_occupied_in_flight`
+  with the vehicle id **and no new order pushed to that vehicle**.
+- `kill -9` + restart → the overlay is replayed from disk and `list_traffic_reservations`
+  still shows `traffic_block:topology_overlay:*`.
+- Changing `stations.yaml`'s `map_hash` → the overlay is invalidated, archived as
+  `.stale.*`, and audited as `topology_overlay_invalidated`.
+- `unblock_edge` → counts, metrics and the reservation table all drain to zero.
+- Legacy red line: with no overlay, `/v2/list_stations` is byte-identical to the baseline.
+
+Both scripts above support `AMR_E2E_INNER=1` (CI runs them *inside* the ROS container):
+`scripts/lib/inner_docker_shim.sh` replaces `docker exec/cp/ps` with local execution,
+so the assertion sequence is identical whether the script drives a container or runs in one.
+
 ### 4. Run Web Operator Console Browser-Level Acceptance
 ```bash
 ./scripts/check_web_console_e2e.sh
 ```
-Headless-Chrome + CDP harness that **really clicks the console buttons** (no more eyeballing the UI). The ROS stack runs inside the Docker container on an isolated domain (`ROS_DOMAIN_ID=82`, MQTT :18890, REST :18092); the browser runs on the host and talks to the gateway over the container IP. Asserts across 5 phases:
+Headless-Chrome + CDP harness that **really clicks the console buttons** (no more eyeballing the UI). The ROS stack runs inside the Docker container on an isolated domain (`ROS_DOMAIN_ID=82`, MQTT :18890, REST :18092); the browser runs on the host and talks to the gateway over the container IP. Asserts across 9 phases:
 - Panel: the managed-vehicle table renders with id / backend / online state / position / battery / state age.
 - Force-clear of an **online** vehicle is refused **by the server** (proving that hiding the button in the UI is *not* a security boundary).
 - Missing audit fields (`vehicle_id` / `operator_id` / `reason`) are blocked in the browser — **no REST request is issued at all**.
 - Force-clear of an **offline** vehicle is accepted: the vehicle moves into **quarantine** and the panel shows it.
 - Restore without ticking "physical position verified" is blocked in the browser; with the tick, quarantine is lifted and the vehicle rejoins the dispatch pool.
+- (Phase 11) `topology_panel`: the readiness component table and the overlay counts / revision render.
+- (Phase 11) `topology_preview_reject`: a disconnecting overlay is rejected in preview, `unreachable_nodes` is surfaced, the **apply button stays disabled**, and nothing is written to disk.
+- (Phase 11) `topology_block`: blocking one edge succeeds, the counts change and the YAML textarea reads the edge back.
+- (Phase 11) `readiness_degraded`: killing the dispatcher turns that row red while the page keeps polling — proving the `503` **body** is rendered, not just the status code.
 
 ### 5. Run REST Gateway Hardening Acceptance
 ```bash
@@ -281,8 +349,12 @@ Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging te
 ### 9. CI Gates
 GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
 `build-ros2-jazzy` (colcon build of all five packages + **every** package's ctest suite,
-including the gateway helpers and the L2 launch contract test), and `e2e-fleet`
-(`check_map_ingest_e2e.sh` + `check_vda5050_e2e.sh` inside the ROS container).
+including the gateway helpers and **both** L2 launch contract tests — lifecycle and
+process supervision), and `e2e-fleet` (`check_map_ingest_e2e.sh`,
+`check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,
+`check_metrics_e2e.sh`, `check_traffic_coordination_e2e.sh`,
+`check_facility_integration_e2e.sh`, `check_cbs_coordination_e2e.sh`,
+`check_health_supervision_e2e.sh`, `check_topology_hot_update_e2e.sh` inside the ROS container).
 Web-console acceptance stays a **manual/nightly** job: it needs a host-side Chrome plus
 an isolated container, which a standard runner does not provide — this is stated here
 rather than implied to be covered by CI.

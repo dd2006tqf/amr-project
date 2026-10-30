@@ -187,6 +187,44 @@ curl -s -X POST "http://127.0.0.1:8080/api/v1/orders?id=order_1001&from=station_
 ```
 *注：携带相同 `idempotency_key` 的重复请求会被自动识别并幂等忽略，返回 `{"status":"ignored","reason":"idempotent_duplicate"}`。*
 
+#### 3. 健康探针（免鉴权，供 HEALTHCHECK / 负载均衡使用）
+```bash
+# liveness：网关进程还能处理 HTTP 吗（DDS 全挂时仍是 200）
+curl -s http://127.0.0.1:8080/healthz | jq
+# readiness：逐组件聚合，任一不就绪回 503，body 里带每组的 reason
+curl -s -o /dev/stdout -w '\nHTTP %{http_code}\n' http://127.0.0.1:8080/readyz | jq -s .
+```
+`reason` 取值：`ok` / `never_seen`（从未收到，节点没起来）/ `stale`（收到过但过期，进程可能死了）/
+`unhealthy`（新鲜但语义不健康，如急停）。详见 `docs/DEPLOYMENT.md` §6.1。
+
+#### 4. 临时施工封路 / 单向 / 收工解封
+过去只能进容器 `vim stations.yaml`，现在有带校验、可预演、可回滚的接口：
+```bash
+# 看现状（?yaml=1 返回可编辑的叠加层文本）
+curl -s 'http://127.0.0.1:8080/api/v1/topology/overlay?yaml=1' | jq
+
+# 预演（dry_run：绝不写盘，只算影响面）
+curl -s -X POST http://127.0.0.1:8080/api/v1/topology/preview -d '{
+  "overlay_yaml": "blocked_edges:\n  - from: \"B3\"\n    to: \"B4\"\n    reason: \"water main\"\n",
+  "operator_id": "op_zhang", "reason": "water main repair"
+}' | jq
+
+# 提交封路（operator_id / reason / confirm 恒必填）
+curl -s -X POST http://127.0.0.1:8080/api/v1/topology/block_edge -d '{
+  "from_station": "B3", "to_station": "B4", "direction": "both",
+  "operator_id": "op_zhang", "reason": "water main repair", "confirm": true
+}' | jq
+
+# 收工解封
+curl -s -X POST http://127.0.0.1:8080/api/v1/topology/unblock_edge -d '{
+  "from_station": "B3", "to_station": "B4",
+  "operator_id": "op_zhang", "reason": "work complete", "confirm": true
+}' | jq
+```
+常见 409：`would_disconnect_topology`（桥边，封了会让站点到不了）、
+`edge_occupied_in_flight`（有车可能正压在上面，等它驶离）、
+`map_hash_mismatch`（客户端地图版本过期）。完整表见 `docs/API.md` §5.5。
+
 ---
 
 ### 4.3 原生 ROS 2 命令行交互

@@ -31,5 +31,7 @@ runtime/
 .pers_stamp/
 .hard_stamp/
 .metrics_stamp/
+.health_stamp/
+.topo_stamp/
 *.tmp
 .tmp

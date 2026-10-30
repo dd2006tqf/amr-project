@@ -142,3 +142,102 @@
 Watchdog 超时 ───┘     ├── 严重事件 (E-Stop / Bumper / Soft Timeout) ──► 立即全停 (速度清零, motion_allowed=false)
                        └── 预警事件 (低电量 / 心跳延迟 / 缓冲区满)   ──► 动态限速 (缩放为原速度 30%)
 ```
+
+---
+
+## 5. 可观测性与运行时拓扑（相位 11）
+
+### 5.1 探针分层：liveness / readiness / 组件语义
+
+三者回答的是**不同**的问题，混在一起就会得出错误结论：
+
+| 层 | 端点 | 只看什么 | 它**不**看什么 |
+|---|---|---|---|
+| liveness | `GET /healthz` | 网关进程还能处理 HTTP | 任何 ROS 状态（DDS 全挂时仍 200，这是定义） |
+| readiness | `GET /readyz` | 四个组件是否"新鲜且语义健康" | 业务数据 |
+| 组件语义 | 同上 `components[].reason` | 每个组件具体坏在哪 | — |
+
+**快车道**：`/healthz` 与 `/readyz` 由 `accept` 线程读完请求头后**同步**应答，
+不进工作线程队列。这不是优化而是正确性要求：4 个 worker 每个都可能
+`wait_for_service(1s)`，DDS 卡死时它们会被全部占住，探针将和它要检测的
+故障同时失效。反过来，accept 是单点，所以它读头有 **50ms 预算**
+（`kAcceptReadBudgetMs`）——超过就立刻入队交给 worker 去等，主线程马上回到 accept。
+
+### 5.2 自愈链：谁负责拉起、谁负责提拉
+
+```
+进程崩溃 ──► launch respawn 起新进程 ──► 新进程 unconfigured
+                                              │
+                                              ▼
+                         lifecycle_coordinator_node (auto_bringup, 500ms)
+                                              │
+                                              ▼
+                                  configure() ──► activate()
+                                              │
+                                              ▼
+                        on_configure 里注册的服务重新出现（网关不再 503）
+```
+
+三点必须记住：
+
+1. **respawn 只对"进程死了"起作用**，不做健康判定。一个活着但卡死的节点不会被重生。
+2. **重生后的提拉不是 launch 做的。** launch 的 `EmitEvent(CONFIGURE)` 与
+   `OnStateTransition(inactive→ACTIVATE)` 只在首次启动触发一次。
+   所以协调器死亡 = 自愈链断裂（协调器自己也在 respawn 名单里）。
+3. **冷重启会重派在途任务**：`on_configure` 从 `state_snapshot_file` 恢复队列并把
+   在途任务重新入队，车辆可能收到第二份订单。这是既有语义，不是相位 11 引入的。
+
+这条链由 `test/l2_launch_contracts/test_supervision_contracts.py` 在**不依赖 Docker**
+的前提下钉死（域 94）：kill -9 → 新 PID → 协调器重新提拉 → `on_configure`
+的服务重新可调用。
+
+### 5.3 告警状态机：为什么"多久发一次"是契约不是细节
+
+```
+Observe(sample) ──► 连续 N 次不就绪? ──是──► firing（受 min_interval 节流）
+                        │否                        │
+                        ▼                          ▼
+                     不动作              恢复 -> 恰好一条 *_recovered（不受节流）
+```
+
+- 连续 N 次才发：滤掉单拍抖动（DDS 重连、一次 GC 都会造成一拍延迟）。
+- 恢复通知**不受节流**且**每次故障恰好一条**：漏发恢复会让人以为事故还在；
+  重复发恢复会让人以为它来回抖动。
+- 发送在**独立线程**（唯一做阻塞 IO 的地方），executor 只负责组装与入队。
+- 队列满丢**最旧**：一条 5 分钟前的 "not ready" 不如刚刚这条有用。
+
+这三条语义（`test_alerting.cpp`）与现场行为（`check_health_supervision_e2e.sh` T5
+的状态机不变量断言）双重锁定。T5 断言的不是"收到几条"，而是
+"每条 recovered 之前都有一条未被配对的 firing、没有连续两条 recovered、
+最终 resolved" —— 因为 respawn 期间真实存在 flapping，数条数没有意义。
+
+### 5.4 运行时拓扑叠加层：为什么它不是"新地图版本"
+
+```
+stations.yaml (base)  ──┐
+                        ├──► ApplyTopologyOverlay ──► EffectiveCatalog()
+overlay.yaml (overlay) ─┘         （就地改 enabled/bidirectional）
+                                                    │
+                          ┌─────────────────────────┼─────────────────────────┐
+                          ▼                         ▼                         ▼
+                   FindRoutePath            ReserveLocks             EstimateDistance
+                   SkeletonPlanner          CBS / TimeSpace          ListStations
+```
+
+关键决策：**封路 = `enabled=false`，单向 = `bidirectional=false`**（就地改目录副本），
+而不是维护一份"禁用键"运行态。理由：`FindRoutePathImpl` 已经同时尊重这两个字段，
+而 `FindRoutePathAvoiding` 的键是**无序**的，用它表达单向会连合法方向一起封死。
+这样做之后，五个下游消费者（规划、折线展开、距离估算、时空窗、CBS）**自动一致**，
+不需要改任何一个调用点。
+
+`map_hash` 原样拷贝，所以叠加层**不是**新地图版本：状态快照的版本门禁
+（拒绝把昨天的队列套到今天的地图上）完全不受影响。这也是"施工区能被热生效"
+而"地图换版必须重启"这两件事能共存的原因——判据不同。
+
+**在途仲裁**：`lastNodeId` 只说明最后确认到达的节点，车辆可能正驶在下一段上。
+因此"剩余航段的第一段被封" = 可能正压在上面 → 默认 409。
+
+**写前持久化**：落盘是提交管线的**第一步**。进程在落盘之后任意时刻死掉，
+重启回放就是目标态；死在落盘之前，哪里都没变。这免掉了"磁盘失败要回滚内存锁"
+这个最难写对的分支——代价是一个微秒级的"文件新、内存旧"窗口，在单线程
+`rclcpp::spin` 下不可观测。

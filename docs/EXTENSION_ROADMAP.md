@@ -166,6 +166,46 @@
   - [x] **订单载荷 Schema 校验**：`PayloadSchema` 规则校验引擎，覆盖字段类型约束、必填约束、
     枚举范围与数值极值限制；单测 5 例。
 
+- [x] **Phase 11：生产可观测性补洞 + 在线拓扑热生效 (Complete)**：
+  - 背景：现网容器 `Up 8 days`，但 `dispatcher_node` 已死 8 天、安全门锁存 `CRITICAL`、
+    `rest_gateway` 对任何请求仍回 200。根因不是某个 bug，而是三个结构性缺口：
+    没有进程守护、没有 HTTP 层探针（且没人定期去问）、没有主动告警。
+  - **A. 进程守护 + 探针**：
+    - 全节点 `respawn`（`respawn_enabled` / `respawn_delay`，默认开启）。
+      重生后 `LifecycleNode` 回到 `unconfigured`，由协调器 500ms tick 重新提拉
+      —— 这条因果链由 `test_supervision_contracts.py`（域 94）钉死，
+      含"on_configure 里注册的服务会重新出现"。
+    - `/healthz`（liveness，恒定 200）与 `/readyz`（逐组件 200/503）走
+      **accept 线程快车道**：否则 DDS 卡死时 4 个 worker 全被 `wait_for_service`
+      占住，探针会和它要检测的故障一起失效。
+    - 容器 `HEALTHCHECK` 只是可见性，**不触发自动重启**；自愈靠 respawn。
+      明确禁止 autoheal（503 可能是"健康但安全锁存"）。
+    - 修协调器两处"只记值不记时间"：`safety_stale_sec`（安全门停发后仍报 READY）
+      与 `dispatcher_stale_sec`（`get_state` 不可用时直接 return，状态永远停在
+      `active`）。后者正是本次事故在协调器侧的直接病根。
+  - **B. 主动告警 + 新指标**：`AlertStateMachine`（连续 N 次才发、节流、
+    每次故障恰好一条恢复通知）+ 独立发送线程（有界队列，满时丢最旧）+
+    9 个新指标族（`amr_ready*` / `amr_dispatcher_state_age_seconds` /
+    `amr_safety_*` / `amr_topology_*` / `amr_alert_*`）。`alert_webhook_url`
+    为空时**不起线程、不建定时器**，与关闭前逐字节一致。
+  - **C. 核心库拓扑叠加层（零 ROS）**：`TopologyOverlay` + `ApplyTopologyOverlay`
+    （封路 = `enabled=false`，单向 = `bidirectional=false` + **必要时交换端点**）、
+    Tarjan 强连通分析、在途影响分析（两阶段锁置换）。空叠加层时与基线
+    逐字节一致（用例锁定）。
+  - **D. dispatcher 两阶段生效**：`BuildTopologyCommitPlan`（零副作用）→
+    `CommitTopologyPlan`（唯一变更函数）。**写前持久化**：落盘是第一步，
+    失败即内存零改动，免掉"回滚内存锁"这个最难写对的分支。
+    在途车可能正压在被封边上时默认 409（`lastNodeId` 只说明最后确认到达的节点）。
+  - **E/F. 网关端点 + 控制台面板**：7 个 REST 端点（含 `preview` 强制 dry_run）、
+    统一 `error_code` → HTTP 映射、就绪红灯表 + 叠加层状态 + 封路表单 +
+    "同一份文本预演成功前应用按钮保持 disabled"。
+  - **G. 验收**：core 971 例、tools 114 例、ros 27 例全绿；
+    `check_health_supervision_e2e.sh` T1–T8、`check_topology_hot_update_e2e.sh` T1–T12
+    全部 PASS；两套脚本支持 `AMR_E2E_INNER=1` 内层执行（`scripts/lib/inner_docker_shim.sh`
+    把 `docker exec/cp/ps` 顶成本地执行），已接入 CI `e2e-fleet` 与
+    `scripts/check_all.sh` 的测试矩阵。
+  - 域隔离：92 / 93 / 94 与 REST 18100/18101/18111；生产 42 / 8080 / 1883 从不触碰。
+
 ## Phase 3: 多机集群与智能化协同 (Fleet Coordination & AI - 2027 Q1)
 - [ ] **分布式对等协商 (Peer-to-Peer Conflict Resolution)**：
   - 当中心调度离线或网络分区时，机器人之间通过局域网广播进行右侧让行或优先级协商

@@ -7,7 +7,7 @@
 |---|---|---|---|
 | `/odom` | `nav_msgs/msg/Odometry` | 50 Hz | 底盘里程计反馈（位置、姿态四元数、线速度、角速度） |
 | `/chassis/link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 底盘硬件通信链路健康指标（丢包率、CRC错、RTT时延） |
-| `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态、`vehicle_links[]` 受管车辆状态） |
+| `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态、`vehicle_links[]` 受管车辆状态；相位 11 追加 `overlay_active` / `overlay_revision` / `blocked_edges` / `one_way_edges` 供控制台免服务调用展示 —— rosidl 末尾追加，旧订阅方不受影响） |
 | `/dispatcher/events` | `amr_dispatcher_interfaces/msg/MissionEvent` | 事件触发 | 任务生命周期状态跃迁审计事件 |
 | `/dispatcher/topology_state` | `amr_dispatcher_interfaces/msg/TopologyState` | 2 Hz | 动态路网拓扑状态（任务活跃边、预约锁边及持有者、死锁站点、死锁标志），供 safety_gate 与 RViz 可视化消费 |
 | `/cmd_vel_safe` | `geometry_msgs/msg/Twist` | 50 Hz | 经过安全门控仲裁后的最终安全控制速度（下发至底盘驱动） |
@@ -138,7 +138,7 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
     `string operator_id`（必填）, `string reason`（必填）, `bool position_verified`
 - **响应参数**: `bool success`, `string message`
 
-### `/v2/*` 核心调度服务（12 个）
+### `/v2/*` 核心调度服务（15 个）
 
 与上方 legacy 服务并存，均由 `dispatcher_node` 提供；字段以 `src/amr_dispatcher_interfaces/srv/*.srv` 定义为准。
 实现状态：「完整实现」= 字段全部来自真实计算；「基础实现」= 服务可正常调通、字段已生成，但部分输出当前为占位/最小实现，正在完善中。
@@ -157,6 +157,12 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 | `/v2/reserve_facility_resource` | `ReserveFacilityResource` | `resource_id`, `holder_id`, `mission_id`, `release_existing_for_holder` | `success`, `message`, `resource_id`, `holder_id`, `status`（`RESERVED`/`OCCUPIED`） | 完整实现 |
 | `/v2/get_operator_snapshot` | `GetOperatorSnapshot` | `event_limit` | `success`, `message`, `mission_state`, `active_mission_id`, `mission_active`, `paused`, `queue_size`, `queued_*`, `paused_workflow_order_ids[]`, `fleet_*`, `remote_task_*`, `facility_*`, `business_*`, `recent_event_*`（完整字段见 `.srv`） | 基础实现 |
 | `/v2/validate_site_config` | `ValidateSiteConfig` | `bundle_dir`, `version_id` | `success`, `message`, `version_id`, `checked_files[]`, `errors[]`, `diff_report` | 基础实现 |
+| `/v2/block_edge` | `BlockEdge` | `from_station`, `to_station`, `action`, `direction`, `reason`, `operator_id`, `expected_map_hash`, `confirm`, `allow_edge_under_vehicle` | `success`, `error_code`, `message`, `resource_id`, `impacted_vehicles[]`, `impacted_missions[]`, `rerouted`, `overlay_revision` | 完整实现 |
+| `/v2/topology_hot_update` | `TopologyHotUpdate` | `overlay_yaml`, `expected_map_hash`, `operator_id`, `reason`, `dry_run`, `clear`, `allow_edge_under_vehicle`, `confirm` | `success`, `error_code`, `message`, `unreachable_nodes[]`, `impacted_vehicles[]`, `impacted_missions[]`, `reroute_failures[]`, `catalog_map_hash`, `overlay_revision`, `file_written` | 完整实现 |
+| `/v2/get_topology_overlay` | `GetTopologyOverlay` | `include_yaml` | `success`, `message`, `overlay_yaml`, `revision`, `blocked_edge_count`, `one_way_edge_count`, `marker_count`, `base_map_hash`, `effective_map_hash`, `overlay_active` | 完整实现 |
+
+> 后三个是相位 11 新增的"目录感知"拓扑热生效接口，见 §5.5。
+> 旧的 `/v2/block_station_route` **逐字节保持不变**（仅预约表，不改规划），两者并存。
 
 ---
 
@@ -229,6 +235,15 @@ TF frame 同步隔离：`{vid}/odom`、`{vid}/base_link`（**禁止**多车抢�
 | `time_space_turn_overhead_sec` | `0.5` | 按路径拐点数计的转弯附加时间。 |
 | `time_space_safety_margin_m` | `0.2` | 车辆尺寸安全余量（沿路径方向额外占用长度）。 |
 | `time_space_min_headway_sec` | `2.0` | 最小安全间隔：后车进入同一资源前必须与前车拉开该间隔。 |
+
+#### 相位 11 新增：运行时拓扑叠加层
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `topology_overlay_file` | `""` | 运行时拓扑叠加层的持久化路径。**空 = 功能关闭**（不读、不写、`/v2/*` 拓扑服务返回 `catalog_unavailable` 语义的拒绝），现网行为逐字不变。生产由 launch 注入**绝对路径**——`HandleMapUpload` 写的是相对 `config/generated/stations.yaml`，沿用相对路径会踩同一个 cwd 陷阱。 |
+| `topology_allow_edge_under_vehicle` | `false` | 允许"车可能正压在被封边上"时仍提交（该边的锁留给在途车，等它自己释放）。默认 `false` = 严格拒绝。**单向反转不受此参数影响**，恒 409。 |
+| `safety_stale_sec`（协调器） | `2.0` | 协调器判"安全状态新鲜"的阈值。安全门停发后 `motion_allowed` 会永远停在最后一次的值上，只看值不看时间等于安全门死了以后就绪仍是 `true`。 |
+| `dispatcher_stale_sec`（协调器） | `3.0` | 协调器判"dispatcher 可用"的阈值。**这是"容器 Up 8 天、dispatcher 已死 8 天、网关照样 200"的直接病根**：旧实现里 `get_state` 服务不可用时直接 return，状态永远停在最后一次读到的 `active`。修复后不可用会显式标记，`/system/ready` 报 `INITIALIZING` + `DispatcherNode unavailable: ...`，`/system/healthy` 报 `false`。 |
 
 ### 选车结果三态语义
 
@@ -317,6 +332,73 @@ MQTT 18891）——3 单（含 1 单暂停）+ 隔离车辆 → `kill -9` → �
 | `cors_allow_origin` | `""` | 允许的跨域来源。**空 = 不下发任何 CORS 头**（操作台与网关同源时不需要）；旧实现无条件下发 `Access-Control-Allow-Origin: *`。 |
 | `worker_threads` | `4` | 连接处理线程数。主线程只 `accept`，静默/慢连接只占住一个工作线程。 |
 | `max_pending_connections` | `32` | 待处理连接上限；超限立即回 `503 gateway_overloaded` 并关闭，避免无界积压。 |
+| `readyz_dispatcher_state_stale_sec` | `3.0` | `/readyz` 判 `dispatcher` 组件新鲜的阈值（`/dispatcher/state` 2Hz）。 |
+| `readyz_safety_stale_sec` | `2.0` | 同上，`/safety/state`（空闲 10Hz / 有指令时最高 50Hz）。 |
+| `readyz_chassis_stale_sec` | `5.0` | 同上，`/chassis/link_health`（5Hz）。 |
+| `readyz_coordinator_stale_sec` | `3.0` | 同上，`/system/ready_flag`（2Hz）。 |
+| `readyz_require_chassis` | `true` | 是否把 `chassis` 计入就绪判据。**多车模式必须置 `false`**：那时 `/chassis/link_health` 是 per-vehicle 话题，网关订阅不到全局话题，否则 `/readyz` 永久 503。置 `false` 时该组件在响应与指标里标 `monitored: false`，**不**假装在监控。 |
+| `alert_webhook_url` | `""` | 主动告警的 webhook 地址。**空 = 功能关闭**：不起巡检定时器、不起发送线程、进程/线程/话题与关闭前逐字节一致。只支持 `http://`（`https://` 启动时 `ERROR` 并保持禁用——本构建不含 TLS，需要加密请在前面挂本地 http 中继）。 |
+| `alert_webhook_timeout_ms` | `3000` | 单次 POST 超时。 |
+| `alert_min_interval_sec` | `300` | `firing` 期间的重复提醒间隔；`0` = 只提醒一次（恢复通知不受此限制）。 |
+| `alert_queue_capacity` | `64` | 发送队列上限，满时丢**最旧**（过时的 "not ready" 不如刚发生的新故障有用）。 |
+| `alert_probe_period_ms` | `1000` | 告警判据的采样周期。 |
+| `alert_not_ready_threshold` | `3` | 连续多少次不就绪才升级为告警（滤掉单拍抖动）。 |
+| `alert_safety_critical_sec` | `30` | 安全门 `CRITICAL` 需持续多久才告警。 |
+| `topology_op_timeout_ms` | `10000` | 拓扑运维端点的下游服务超时。N 车重规划耗时随在途任务数线性增长，故远大于普通业务端点。 |
+
+### 5.1.1 探针：`GET /healthz` 与 `GET /readyz`
+
+两个探针**免鉴权**（`IsAuthExemptPath`），因为容器 `HEALTHCHECK` 无法携带 Bearer Token。
+两者都只暴露布尔量与秒数、不含业务数据。
+
+| 端点 | 语义 | 响应 |
+|---|---|---|
+| `GET /healthz` | **liveness**：网关进程还能处理 HTTP 吗。不调用任何 ROS 服务、不读缓存状态。 | 恒定 `200 {"status":"ok","uptime_seconds":N}` |
+| `GET /readyz` | **readiness**：各组件是否新鲜且语义健康。 | `200`（全就绪）或 `503`（任一不就绪） |
+
+`/readyz` 响应结构：
+
+```json
+{
+  "ready": false,
+  "state": "INITIALIZING",
+  "message": "waiting for: dispatcher,safety,chassis,coordinator",
+  "components": [
+    {"component": "dispatcher", "monitored": true, "ok": false, "seen": true,
+     "age_seconds": 4.2, "stale_after_seconds": 3.0,
+     "reason": "stale", "detail": "state_age_ms=4200"},
+    {"component": "safety", "monitored": true, "ok": true, "seen": true,
+     "age_seconds": 0.1, "stale_after_seconds": 2.0,
+     "reason": "ok", "detail": ""},
+    {"component": "chassis", "monitored": false, "ok": true, "seen": false,
+     "age_seconds": -1.0, "stale_after_seconds": 5.0,
+     "reason": "not_monitored", "detail": "multi_vehicle_mode"},
+    {"component": "coordinator", "monitored": true, "ok": false, "seen": false,
+     "age_seconds": -1.0, "stale_after_seconds": 3.0,
+     "reason": "never_seen", "detail": "no_flag"}
+  ]
+}
+```
+
+字段名以 `health_probe.hpp` 的 `RenderReadinessJson` 为准（这是给编排系统的契约，
+不要凭印象改）：数组键是 **`components`**，每项的组件名键是 **`component`**
+（不是 `name`）；`reason` 取值 `ok|never_seen|stale|unhealthy|not_monitored`。
+
+判据：`ok = seen && age <= stale_after_seconds && semantic_ok`。语义健康分别是
+`dispatcher` = 在发状态、`safety` = `motion_allowed` 且 severity ≠ `CRITICAL`、
+`chassis` = `is_healthy`、`coordinator` = `ready_flag == true`。
+`!seen` **判为不就绪**（fail closed）——从未收到的组件不能算健康。
+`state` 取值：全新鲜且 ok → `READY`；任一组件的 `reason` 是 `never_seen` →
+`INITIALIZING`；否则 `DEGRADED`。`monitored=false` 的组件（多车模式下的 `chassis`）
+`reason` 恒为 `not_monitored`，**不**计入失败。
+
+**探针快车道**：`/healthz` 与 `/readyz` 由 `accept` 线程读头后**同步**应答，
+不进 `pending_` 工作队列。否则 DDS 卡死时 4 个 worker 全被 `wait_for_service` 占住，
+探针永远得不到应答——而那正是我们要检测的失效模式本身。
+
+> **HEALTHCHECK 的真实边界**：容器 `healthcheck` 只是可见性与 `docker compose up --wait`
+> 的判定依据，**不触发自动重启**。自愈靠 launch 的节点级 `respawn`。禁止接 autoheal：
+> 因 `503` 重启会拆掉"健康但安全锁存"的整套栈并丢失调度状态。
 
 **健壮性契约**（`scripts/check_rest_gateway_hardening.sh` 逐条断言）：
 
@@ -392,6 +474,21 @@ Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-
 | `amr_vehicle_quarantined{vehicle_id}` | gauge | 同上 |
 | `amr_vehicle_battery_percent{vehicle_id}` | gauge | 同上 |
 | `amr_gateway_requests_total{code}` | counter | 网关自身按状态码计数 |
+| `amr_ready` | gauge | 0/1，与 `/readyz` **同判据**（同一份缓存快照） |
+| `amr_ready_component{component}` | gauge | 0/1，最多 4 条（`dispatcher` / `safety` / `chassis` / `coordinator`） |
+| `amr_dispatcher_state_age_seconds` | gauge | 距最近一次 `/dispatcher/state` 的秒数，从未收到 = `-1` |
+| `amr_safety_severity_level` | gauge | `0`=INFO `1`=WARN `2`=CRITICAL，`-1`=从未收到 |
+| `amr_safety_critical` | gauge | 0/1，severity 为 CRITICAL 时置 1 |
+| `amr_topology_overlay_active` | gauge | 0/1，是否存在生效的运行时拓扑叠加层 |
+| `amr_topology_blocked_edges` / `amr_topology_one_way_edges` | gauge | 叠加层里的封边 / 单向计数 |
+| `amr_topology_overlay_revision` | gauge | 叠加层 revision（无叠加层 = 0） |
+| `amr_alert_sent_total` | counter | webhook 发送成功数 |
+| `amr_alert_webhook_failures_total` | counter | webhook 发送失败数（**告警通道本身可被抓取侧告警**） |
+| `amr_alert_dropped_total` | counter | 队列满时丢弃的告警数 |
+
+**标签基数有界**：拓扑相关指标**绝不用边名打标签**（只给总量），
+`amr_vehicle_*` 的标签集来自受管车辆清单（有限）。`/readyz` 与 `/metrics`
+读同一份告警定时器维护的缓存快照，保证控制台、指标、探针三处不会互相矛盾。
 
 格式约定（抓取端解析失败即视为缺陷，e2e 逐条断言）：
 - 每个指标都带 `# HELP` / `# TYPE`；**没有样本的族不输出**（避免空族）
@@ -506,7 +603,153 @@ Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-
 - **Not Ready** → `503 Service Unavailable`，如 `{"ready": false, "state": "INITIALIZING", "message": "Lifecycle Coordinator not ready"}`
 - **Probe Timeout** → `504 Gateway Timeout`，`{"error": "readiness_probe_timeout"}`
 
+### 5.5 在线拓扑热生效（临时交通管制）
+
+现场施工区、单向通行、临时标石过去只能进容器 `vim stations.yaml`，
+既没有连通性校验，也没有对在途车辆的安全仲裁；而 `map_ingest` / Web 地图上传
+会**整份覆盖**该文件，手改的管制会被静默抹掉。本节端点把这件事变成
+"带校验、可预演、可回滚、原子生效"的运维动作。
+
+**核心机制**：运行时**叠加层**（overlay）以 `enabled=false` / `bidirectional=false`
+就地改目录副本，**不是**新地图版本——`map_hash` 原样拷贝。因此规划、骨架折线、
+距离估算、时空窗/CBS 全部自动一致，而状态快照的版本门禁完全不受影响。
+
+| 方法 | 路径 | 动作 |
+|---|---|---|
+| `GET` | `/api/v1/topology/overlay` | 读当前叠加层（`?yaml=1` 才回可编辑的 YAML） |
+| `POST` | `/api/v1/topology/block_edge` | 封一条边（`action=block`） |
+| `POST` | `/api/v1/topology/unblock_edge` | 解封一条边 |
+| `POST` | `/api/v1/topology/one_way_edge` | 改成单向（`direction=forward|reverse`） |
+| `POST` | `/api/v1/topology/two_way_edge` | 恢复双向 |
+| `POST` | `/api/v1/topology/hot_update` | 全量替换叠加层（YAML 文本；`clear=true` 清空） |
+| `POST` | `/api/v1/topology/preview` | 同 `hot_update`，强制 `dry_run=true`（绝不写盘、绝不改内存） |
+
+#### 单条边请求体
+
+```json
+{
+  "from_station": "b",
+  "to_station": "c",
+  "direction": "both",
+  "operator_id": "op_zhang",
+  "reason": "water main repair 2026-10-29",
+  "expected_map_hash": "fnv1a64_...",
+  "confirm": true,
+  "allow_edge_under_vehicle": false
+}
+```
+
+`operator_id` / `reason` / `confirm=true` **恒必填**（`dry_run` 也不例外）：
+审计字段不能因为"只是预演"就不填，否则预演通过后真正提交时仍是同一份无主记录。
+`expected_map_hash` 为空 = 不校验；生产应填（见"乐观并发"）。
+
+#### 全量替换请求体
+
+```json
+{
+  "overlay_yaml": "blocked_edges:\n  - from: \"b\"\n    to: \"c\"\n    reason: \"...\"\n",
+  "operator_id": "op_zhang",
+  "reason": "site-wide detour",
+  "dry_run": false,
+  "clear": false,
+  "confirm": true
+}
+```
+
+`overlay_yaml` 里**只写管制清单**即可，不必写 `base_map_hash`/`revision`/`updated_at`
+——这三项由提交管线盖章。但未知字段仍然严格拒绝（两个位置：条目内部与顶层各报各的）。
+
+#### 响应
+
+```json
+{
+  "status": "ok",              // ok | noop | rejected
+  "error_code": "ok",
+  "message": "...",
+  "resource_id": "route_edge:b__c",
+  "impacted_vehicles": [],
+  "impacted_missions": [],
+  "unreachable_nodes": [],
+  "reroute_failures": [],
+  "rerouted": false,
+  "catalog_map_hash": "fnv1a64_...",
+  "overlay_revision": 2,
+  "file_written": true
+}
+```
+
+`status` 与 HTTP 码是**两个**字段：`noop`（幂等重放）也是 `200`，
+但控制台据此区分"已生效"与"本来就是这样"。
+
+#### `error_code` 词表与 HTTP 映射
+
+这是 REST 与 ROS 服务的唯一真源（`TopologyErrorStatus`）；未知错误码一律 `500`，
+绝不把"不认识的失败"伪装成 200/409。
+
+| `error_code` | HTTP | 含义 / 处置 |
+|---|---|---|
+| `ok` | 200 | 已生效 |
+| `no_change` | 200 | 规范化后与当前叠加层一致（**零写盘、零计数**，`revision` 不变） |
+| `invalid_request` | 400 | 字段缺失/非法、边不存在于目录（`unknown_edge` 除外） |
+| `not_confirmed` | 400 | `confirm` 不是 `true` |
+| `unknown_edge` | 404 | 端点不在目录里（站点与路网节点都查） |
+| `map_hash_mismatch` | 409 | `expected_map_hash` 与当前基础地图不符（乐观并发失败） |
+| `would_disconnect_topology` | 409 | 提交后存在站点互不可达；回 `unreachable_nodes` |
+| `edge_occupied_in_flight` | 409 | 在途车可能正压在该边上；回 `impacted_vehicles` |
+| `would_strand_vehicles` | 409 | 有在途任务找不到替代路线；回 `reroute_failures` |
+| `lock_conflict` | 409 | 需要的新路权被其它任务持有 |
+| `overlay_invalid` | 409 | YAML 校验失败（未知键、自环、重复条目、既封又单向…） |
+| `catalog_unavailable` | 503 | 目录尚未加载（地图还没进来） |
+| `overlay_disabled` | 501 | 功能未启用：`topology_overlay_file` 为空。这是**部署配置**问题，重试无意义；`GET /api/v1/topology/overlay` 仍可读，但 `message` 会写明"disabled" |
+| `overlay_persist_failed` | 500 | 叠加层落盘失败（内存**零改动**） |
+| `internal_error` | 500 | 其它 |
+
+#### 四条不可让渡的语义
+
+1. **拒绝时不写盘。** 校验、连通性、在途影响、锁预检全部在内存里完成；
+   磁盘写入是提交管线的**第一步**（见下），失败即整体不生效。
+   e2e 对 `preview` 与 `400` 两条路径都断言"叠加层文件不存在"。
+2. **写前持久化。** 提交顺序固定为：落盘 → 预约新锁 → 释放废弃锁 →
+   为被封边加 `traffic_block:` 锁 → 解封已移除的边 → 换内存叠加层 →
+   同步规划器 → 下发改道。进程在落盘之后任意时刻死掉，重启从冷启动回放
+   就是目标态；死在落盘之前，哪里都没变。这免掉了"磁盘失败要回滚内存锁"
+   这个最难写对的分支。
+3. **在途车压在边上 -> 默认拒绝。** `vehicle_safe_nodes_` 来自 VDA 5050
+   `lastNodeId`，只说明"最后确认到达的节点"——车可能正驶在下一段上。
+   若某车剩余航段的**第一段**被封，判 `kOnBlockedEdge` 并整单 409。
+   `allow_edge_under_vehicle=true` 时改为"对**新**规划立刻生效，物理通行等该车
+   自己驶离"，此时该边的锁留给在途车（跳过 `Block`，计入 `retained_edge_locks`）。
+   **单向反转不提供 force**：让在途车反向穿越没有安全解，一律 409。
+4. **基础地图换版即失效。** 叠加层记录的 `base_map_hash` 与当前目录不符时，
+   文件被改名归档为 `<path>.stale.<epoch>`、内存叠加层清空、审计记
+   `topology_overlay_invalidated` 并发事件（供告警 `AmrTopologyOverlayActive` 之外的
+   "临时改道被静默清掉"场景）。**绝不**把施工区套到重新出图后的新地图上。
+
+#### 已知语义缺口：单向在预约层没有表达形式
+
+`route_edge` 锁是**无序**互斥（`route_edge:A__B` 与 `B__A` 同键），它的职责是
+"两车不得同时占用该段"，与方向无关。**单一只由规划层保证**
+（`bidirectional=false`）。因此操作员在 `list_traffic_reservations` /
+`/api/v1/state` 里看不到"这条边现在是单向"——请看
+`/api/v1/topology/overlay` 的 `one_way_edges` 或 `DispatcherState.one_way_edge_count`。
+
+#### 与 `/v2/block_station_route` 的区别
+
+两者并存，语义不同，**不要互换**：
+
+| | `/v2/block_station_route`（旧） | `/api/v1/topology/*`（新） |
+|---|---|---|
+| 改规划 | 否（规划层仍认为路可走） | 是（`enabled`/`bidirectional`） |
+| 改预约表 | 是（加 `traffic_block:` 锁） | 是（第二道防线） |
+| 连通性校验 | 无 | 有（拒绝断连） |
+| 在途仲裁 | 无 | 有（改道或拒绝） |
+| 持久化 | 无（重启即失） | 有（叠加层文件 + 审计） |
+
+---
+
 ### `POST /api/workflows/cancel`
+
+
 按任务 ID 取消排队任务（别名 `POST /api/v1/cancel`；后端调用 `/dispatcher/cancel_order`）。
 - **Query Parameters**: `id` — 任务/订单 ID
 - **Response**: `{"status": "ok", "canceled": true}`（`canceled` 反映 CancelOrder 的 `success`）
@@ -526,6 +769,10 @@ Prometheus 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-
 | force_clear_offline | 缺 `operator_id` / `reason` 时**根本不发请求**；离线车强清受理 → 车辆转入**隔离态**（面板可见） |
 | restore_guard | 未勾选"已核实车辆物理位置"时**根本不发请求** |
 | restore | 勾选后显式恢复 → 解除隔离，车辆重回调度池 |
+| topology_panel（相位 11） | 就绪四组件表渲染 + 叠加层计数 / revision 显示 |
+| topology_preview_reject（相位 11） | 断连叠加层预演被拒（`unreachable_nodes` 非空）、**应用按钮保持 disabled**、且未写盘 |
+| topology_block（相位 11） | 单边封路成功 → 计数变化 + 文本框读回含该边 |
+| readiness_degraded（相位 11） | dispatcher 停止 → 该行转红且页面继续轮询（证明 503 的 body 被渲染，不是只看状态码） |
 
 环境隔离：ROS 栈在容器内跑独立域（`ROS_DOMAIN_ID=82` / MQTT :18890 / REST :18092），
 浏览器在宿主机通过容器 IP 直连网关。
