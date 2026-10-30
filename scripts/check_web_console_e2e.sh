@@ -164,6 +164,7 @@ ros2 run amr_dispatcher_ros dispatcher_node --ros-args \\
     -p vda5050_vehicles:="${WC_VEHICLE_ID}" \\
     -p vda5050_state_stale_sec:=5.0 \\
     -p traffic_mode:=time_space \\
+    -p topology_overlay_file:="\${STAMP}/topology_overlay.yaml" \\
     > "\${STAMP}/dispatcher.log" 2>&1 &
 
 for ((i = 0; i < 120; i++)); do
@@ -327,6 +328,158 @@ echo "[WC] 车辆已重新上线 (PASS)"
 
 run_phase restore
 
+# ---------------------------------------------------------------------------
+# 阶段 5（相位 11）：就绪红灯表 + 拓扑运维面板
+#
+# 这里选一条"封了也不会断连"的边：用例断言的是 UI 交互（计数刷新、读回
+# YAML、预演门禁），不是连通性算法 —— 后者由 check_topology_hot_update_e2e.sh
+# 用专门的夹具拓扑精确验证。
+# ---------------------------------------------------------------------------
+echo ""
+echo "[WC] ---- 相位 11：就绪分组与临时拓扑管制 ----"
+run_phase topology_panel
+
+# 断连预演：从生成的拓扑里挑一条桥边（封掉它就必然有站点不可达）。
+# 找不到桥边时退化成"封掉某站点唯一的入边"，仍然会触发 would_disconnect_topology。
+TOPO_DISCONNECT_PAIR="$(docker exec -i "${CONTAINER}" python3 - "${CONTAINER_STATIONS_YAML}" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding='utf-8').read().splitlines()
+stations, road = [], []
+edges = []
+sec = None
+cur = None
+for raw in text:
+    s = raw.strip()
+    if s in ('stations:', 'edges:', 'road_nodes:', 'version:'):
+        sec = s
+        continue
+    m = re.match(r'- id: "?([^"\s]+)"?', s)
+    if m and sec in ('stations:', 'road_nodes:'):
+        (stations if sec == 'stations:' else road).append(m.group(1))
+        continue
+    m = re.match(r'- from: "?([^"\s]+)"?', s)
+    if m and sec == 'edges:':
+        cur = m.group(1)
+        continue
+    m = re.match(r'to: "?([^"\s]+)"?', s)
+    if m and sec == 'edges:' and cur is not None:
+        edges.append((cur, m.group(1)))
+        cur = None
+
+adj = {}
+for a, b in edges:
+    adj.setdefault(a, set()).add(b)
+    adj.setdefault(b, set()).add(a)
+
+def reach(start):
+    seen = {start}
+    stack = [start]
+    while stack:
+        n = stack.pop()
+        for m in adj.get(n, ()):
+            if m not in seen:
+                seen.add(m)
+                stack.append(m)
+    return seen
+
+# 只考虑站点之间的可达性（与 AnalyzeTopologyConnectivity 的口径一致）
+for a, b in edges:
+    adj.setdefault(a, set()).discard(b)
+    adj.setdefault(b, set()).discard(a)
+    base = reach(stations[0]) if stations else set()
+    orphans = [s for s in stations if s not in base]
+    adj.setdefault(a, set()).add(b)
+    adj.setdefault(b, set()).add(a)
+    if orphans:
+        print(a, b)
+        break
+PY
+)"
+TOPO_BRIDGE_FROM="${TOPO_DISCONNECT_PAIR%% *}"
+TOPO_BRIDGE_TO="${TOPO_DISCONNECT_PAIR#* }"
+[ -n "${TOPO_BRIDGE_FROM}" ] && [ "${TOPO_BRIDGE_FROM}" != "${TOPO_BRIDGE_TO}" ] \
+    || fail "未能从 ${CONTAINER_STATIONS_YAML} 找到会断连的边（预览拒绝用例需要它）"
+echo "[WC] 断连预演用的桥边: ${TOPO_BRIDGE_FROM} <-> ${TOPO_BRIDGE_TO}"
+
+export TOPO_BRIDGE_FROM TOPO_BRIDGE_TO
+run_phase topology_preview_reject
+
+# "拒绝时不写盘"红线：预演被拒后叠加层文件必须仍不存在
+docker exec "${CONTAINER}" bash -c "test ! -f '${CONTAINER_WORKDIR}/.wc_stamp/topology_overlay.yaml'" \
+    || fail "预演被拒后仍写出了叠加层文件（拒绝时必须零写盘）"
+echo "[WC] 预演被拒后未写盘 (PASS)"
+
+# 正向封路：挑一条"不是桥"的边（双车拓扑里的普通边），封了不影响 UI 断言
+TOPO_NORMAL_PAIR="$(docker exec -i "${CONTAINER}" python3 - "${CONTAINER_STATIONS_YAML}" "${TOPO_BRIDGE_FROM}" "${TOPO_BRIDGE_TO}" <<'PY'
+import re
+import sys
+
+path, skip_a, skip_b = sys.argv[1:4]
+text = open(path, encoding='utf-8').read().splitlines()
+edges = []
+sec = None
+cur = None
+for raw in text:
+    s = raw.strip()
+    if s in ('stations:', 'edges:', 'road_nodes:', 'version:'):
+        sec = s
+        continue
+    m = re.match(r'- from: "?([^"\s]+)"?', s)
+    if m and sec == 'edges:':
+        cur = m.group(1)
+        continue
+    m = re.match(r'to: "?([^"\s]+)"?', s)
+    if m and sec == 'edges:' and cur is not None:
+        edges.append((cur, m.group(1)))
+        cur = None
+for a, b in edges:
+    if {a, b} != {skip_a, skip_b}:
+        print(a, b)
+        break
+PY
+)"
+TOPO_FROM="${TOPO_NORMAL_PAIR%% *}"
+TOPO_TO="${TOPO_NORMAL_PAIR#* }"
+[ -n "${TOPO_FROM}" ] && [ "${TOPO_FROM}" != "${TOPO_TO}" ] \
+    || fail "未能从 ${CONTAINER_STATIONS_YAML} 找到可用于封路的普通边"
+echo "[WC] 正向封路用例的边: ${TOPO_FROM} <-> ${TOPO_TO}"
+
+export TOPO_FROM TOPO_TO
+run_phase topology_block
+
+# 收工清空：叠加层留在这台机器上会让后续用例读到脏状态
+curl -s --max-time 10 -X POST "${CONSOLE_BASE}/api/v1/topology/hot_update" \
+    -H 'Content-Type: application/json' \
+    -d '{"clear":true,"operator_id":"operator_ui","reason":"UI 验收收工清空","confirm":true}' >/dev/null || true
+echo "[WC] 已清空临时叠加层"
+
+# ---------------------------------------------------------------------------
+# 阶段 6（相位 11）：杀掉 dispatcher -> 就绪转红但页面继续渲染 503 body
+# ---------------------------------------------------------------------------
+echo ""
+echo "[WC] ---- 相位 11：dispatcher 停止后就绪红灯 ----"
+DISPATCHER_PID="$(docker exec "${CONTAINER}" bash -c "pgrep -f 'amr_dispatcher_ros/dispatcher_node --ros-args' | head -1" | tr -d '\r')"
+[ -n "${DISPATCHER_PID}" ] || fail "未找到 dispatcher_node 进程"
+docker exec "${CONTAINER}" bash -c "kill -9 ${DISPATCHER_PID}" >/dev/null 2>&1 || true
+echo "[WC] 已 kill -9 dispatcher_node (pid=${DISPATCHER_PID})，等待 /readyz 翻红"
+
+# 先确认 REST 层确实翻红（页面断言只是它的表现）
+READYZ_RED=0
+for ((i = 0; i < 120; i++)); do
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${CONSOLE_BASE}/readyz" 2>/dev/null)" = "503" ]; then
+        READYZ_RED=1
+        break
+    fi
+    sleep 0.25
+done
+[ "${READYZ_RED}" -eq 1 ] || fail "/readyz 未在 dispatcher 停止后转为 503"
+echo "[WC] /readyz 已转为 503 (PASS)"
+
+run_phase readiness_degraded
+
 echo ""
 echo "======================================================================"
 echo " [PASS] Web 控制台浏览器端验收全部通过:"
@@ -336,6 +489,10 @@ echo "                 - 缺审计字段被前端拦下 (vehicle_id/operator_id/
 echo "                 - 离线车强清受理 -> 车辆转入隔离态 (面板可见)"
 echo "                 - 恢复未勾选已核实位置被前端拦下"
 echo "                 - 显式恢复 -> 解除隔离, 车辆重回调度池"
+echo "                 - (相位 11) 就绪四组件表 + 叠加层计数/revision 渲染"
+echo "                 - (相位 11) 断连叠加层预演被拒, 应用按钮保持禁用, 且未写盘"
+echo "                 - (相位 11) 单边封路 -> 计数变化 + 读回 YAML 含该边"
+echo "                 - (相位 11) dispatcher 停止 -> 就绪转红, 503 body 仍被渲染"
 echo "======================================================================"
 
 exit 0

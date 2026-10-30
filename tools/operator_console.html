@@ -424,6 +424,92 @@
         </div>
       </section>
 
+      <!-- 就绪探针 + 拓扑临时管制（施工区/单向/临时站点） -->
+      <section class="span-12">
+        <h2>
+          <span>🩺 就绪分组与临时拓扑管制 (Readiness &amp; Temporary Topology)</span>
+          <span id="overlayBadge" class="pill blue">无叠加层</span>
+        </h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <!-- 左：就绪分组 -->
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">组件就绪 (GET /readyz)</span>
+              <span id="readyzState" class="pill blue">-</span>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:26%">组件</th>
+                  <th style="width:22%">判据</th>
+                  <th style="width:26%">时延 / 阈值</th>
+                  <th style="width:26%">明细</th>
+                </tr>
+              </thead>
+              <tbody id="readyzTable">
+                <tr><td colspan="4" style="color:var(--muted);">等待探针数据...</td></tr>
+              </tbody>
+            </table>
+            <!-- 叠加层现状：全部用 textContent 填充（服务端字符串不拼 HTML） -->
+            <table style="margin-top:10px;">
+              <tr><th>叠加层 revision</th><td id="overlayRevision">-</td></tr>
+              <tr><th>封路 / 单向 / 临时站点</th><td id="overlayCounts">-</td></tr>
+              <tr><th>基线 map_hash</th><td id="overlayBaseHash" style="font-family:monospace;font-size:12px;">-</td></tr>
+            </table>
+          </div>
+
+          <!-- 右：单边管制 + 全量预演 -->
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">单边临时管制 (block / unblock / one_way)</span>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:4px;">
+                <input id="topoFrom" placeholder="from (站点/路网点)" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                <input id="topoTo" placeholder="to (站点/路网点)" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                <select id="topoAction" style="padding:6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                  <option value="block">封路 (block)</option>
+                  <option value="unblock">解封 (unblock)</option>
+                  <option value="one_way">改单向 (one_way)</option>
+                  <option value="two_way">恢复双向 (two_way)</option>
+                </select>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px;">
+                <select id="topoDirection" style="padding:6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                  <option value="both">方向: 双向都封</option>
+                  <option value="forward">方向: 仅 from → to</option>
+                  <option value="reverse">方向: 仅 to → from</option>
+                </select>
+                <input id="topoBaseHash" placeholder="expected_map_hash (可空)" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                <button id="topoBlockBtn" style="padding:6px 10px;font-size:12px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;">提交管制</button>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
+                <input id="topoOperator" placeholder="operator_id (审计必填)" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                <input id="topoReason" placeholder="reason (施工/维修原因)" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </div>
+              <label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:6px;">
+                <input type="checkbox" id="topoAllowUnderVehicle"> 允许车可能正压在该边上（锁留给在途车，仅对新规划生效）
+              </label>
+            </div>
+
+            <div>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">全量叠加层预演与提交 (YAML)</span>
+              <textarea id="topoYaml" spellcheck="false"
+                style="width:100%;min-height:120px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:8px;margin-top:4px;"
+                placeholder="blocked_edges:&#10;  - from: &quot;n1&quot;&#10;    to: &quot;d&quot;&#10;one_way_edges:&#10;  - from: &quot;b&quot;&#10;    to: &quot;c&quot;"></textarea>
+              <div style="display:flex;gap:6px;margin-top:6px;">
+                <button id="topoLoadBtn" class="secondary" style="flex:1;padding:6px;font-size:12px;">读取当前叠加层</button>
+                <button id="topoPreviewBtn" class="secondary" style="flex:1;padding:6px;font-size:12px;">预演 (dry-run)</button>
+                <button id="topoApplyBtn" style="flex:1;padding:6px;font-size:12px;background:var(--accent-2);color:#fff;border:none;border-radius:4px;cursor:pointer;" disabled>应用</button>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+                只有**同一份文本**预演成功后才解锁"应用"；改一个字就要重新预演。
+              </div>
+            </div>
+
+            <pre id="topoResult" style="max-height:150px;">等待操作...</pre>
+          </div>
+        </div>
+      </section>
+
       <!-- 原始快照 JSON -->
       <section class="span-12">
         <h2>
@@ -707,10 +793,256 @@
       }
     });
 
+    // ==========================================
+    // 就绪探针 + 临时拓扑管制
+    // ==========================================
+    // 安全约定：服务端返回的字符串一律用 textContent 赋值，绝不拼进 innerHTML。
+    // （页面上已有的 fetchVehicleLinks 用了 innerHTML 插值，那属于既有代码，
+    //   新面板不照抄这个扩大风险面的写法。）
+    const readyzTable = document.getElementById('readyzTable');
+    const readyzState = document.getElementById('readyzState');
+    const overlayBadge = document.getElementById('overlayBadge');
+    const topoResult = document.getElementById('topoResult');
+    const topoYaml = document.getElementById('topoYaml');
+    const topoApplyBtn = document.getElementById('topoApplyBtn');
+    // 预演成功时记录"哪一份文本"通过了，文本一变立即失效客户端防线
+    let previewedYaml = null;
+
+    function topoBase() {
+      return baseUrlInput.value.replace(/\/$/, '');
+    }
+
+    function setTopoPill(el, text, cls) {
+      el.textContent = text;
+      el.className = `pill ${cls}`;
+    }
+
+    function renderTopoResult(status, body) {
+      topoResult.textContent = `HTTP ${status}\n` + JSON.stringify(body, null, 2);
+    }
+
+    async function fetchReadiness() {
+      const pane = readyzTable;
+      try {
+        // 503 的 body 同样要渲染：res.ok 只决定颜色，不影响解析
+        const res = await fetch(`${topoBase()}/readyz`);
+        const data = await res.json();
+        setTopoPill(readyzState, data.state || (res.ok ? 'READY' : 'NOT READY'),
+                    res.ok ? 'green' : 'red');
+        const rows = (data.components || []).map(c => {
+          const tr = document.createElement('tr');
+
+          const tdName = document.createElement('td');
+          const pill = document.createElement('span');
+          const okCls = !c.monitored ? 'blue' : (c.ok ? 'green' : 'red');
+          const okText = !c.monitored ? '未监控' : (c.ok ? 'OK' : '异常');
+          pill.className = `pill ${okCls}`;
+          pill.textContent = okText;
+          tdName.appendChild(document.createTextNode(`${c.component} `));
+          tdName.appendChild(pill);
+
+          const tdReason = document.createElement('td');
+          tdReason.textContent = c.reason || '-';
+
+          const tdAge = document.createElement('td');
+          const age = typeof c.age_seconds === 'number'
+            ? (c.age_seconds < 0 ? '从未收到' : `${c.age_seconds.toFixed(1)}s`)
+            : '-';
+          tdAge.textContent = `${age} / ${c.stale_after_seconds}s`;
+
+          const tdDetail = document.createElement('td');
+          tdDetail.textContent = c.detail || '-';
+
+          tr.append(tdName, tdReason, tdAge, tdDetail);
+          return tr;
+        });
+        pane.replaceChildren(...(rows.length ? rows : [
+          Object.assign(document.createElement('tr'), {
+            textContent: '无组件数据（网关刚启动？）'
+          })
+        ]));
+      } catch (err) {
+        setTopoPill(readyzState, '探针不可达', 'red');
+        pane.replaceChildren(Object.assign(document.createElement('tr'), {
+          textContent: `读取 /readyz 失败: ${err.message}`
+        }));
+      }
+    }
+
+    function renderOverlayState(data) {
+      document.getElementById('overlayRevision').textContent =
+        `${data.revision} (${data.overlay_active ? '生效中' : '未生效'})`;
+      document.getElementById('overlayCounts').textContent =
+        `${data.blocked_edges} 封路 / ${data.one_way_edges} 单向 / ${data.markers} 临时站点`;
+      document.getElementById('overlayBaseHash').textContent =
+        data.base_map_hash || '(未记录，将随下次提交写入)';
+      setTopoPill(overlayBadge,
+                  data.overlay_active ? `叠加层生效 rev=${data.revision}` : '无叠加层',
+                  data.overlay_active ? 'yellow' : 'blue');
+      // 从状态预填 expected_map_hash，避免操作员抄错
+      const hashInput = document.getElementById('topoBaseHash');
+      if (!hashInput.value && data.effective_map_hash) {
+        hashInput.value = data.effective_map_hash;
+      }
+    }
+
+    async function fetchTopologyOverlay() {
+      try {
+        const res = await fetch(`${topoBase()}/api/v1/topology/overlay`);
+        const data = await res.json();
+        renderOverlayState(data);
+      } catch (err) {
+        setTopoPill(overlayBadge, '叠加层状态不可达', 'red');
+      }
+    }
+
+    async function postTopology(path, body) {
+      const res = await fetch(`${topoBase()}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) { data = { error: `HTTP ${res.status}` }; }
+      renderTopoResult(res.status, data);
+      return { res, data };
+    }
+
+    // 单边管制：必填 operator/reason，服务端独立复验
+    document.getElementById('topoBlockBtn').addEventListener('click', async () => {
+      const from = document.getElementById('topoFrom').value.trim();
+      const to = document.getElementById('topoTo').value.trim();
+      const action = document.getElementById('topoAction').value;
+      const operatorId = document.getElementById('topoOperator').value.trim();
+      const reason = document.getElementById('topoReason').value.trim();
+      if (!from || !to || !operatorId || !reason) {
+        setStatus('拓扑管制需要填写 from/to、操作员 id 与原因', false);
+        return;
+      }
+      if (!window.confirm(
+            `确认对 ${from} <-> ${to} 执行 ${action}？\n\n` +
+            `• 变更会立即影响新规划；在途车可能需要绕行\n` +
+            `• 若该边是唯一通路，提交会被拒绝（不会出现孤岛站点）\n\n` +
+            `操作员: ${operatorId}\n原因: ${reason}`)) {
+        return;
+      }
+      const pathMap = {
+        block: '/api/v1/topology/block_edge',
+        unblock: '/api/v1/topology/unblock_edge',
+        one_way: '/api/v1/topology/one_way_edge',
+        two_way: '/api/v1/topology/two_way_edge'
+      };
+      const { data } = await postTopology(pathMap[action] || pathMap.block, {
+        from_station: from,
+        to_station: to,
+        direction: document.getElementById('topoDirection').value,
+        operator_id: operatorId,
+        reason: reason,
+        expected_map_hash: document.getElementById('topoBaseHash').value.trim(),
+        allow_edge_under_vehicle: document.getElementById('topoAllowUnderVehicle').checked,
+        confirm: true
+      });
+      if (data.status === 'ok' || data.status === 'noop') {
+        setStatus(`✅ 拓扑管制已提交 (revision ${data.overlay_revision})`, true);
+      } else {
+        setStatus(`拓扑管制被拒绝: ${data.error_code || data.message || data.error}`, false);
+      }
+      fetchTopologyOverlay();
+    });
+
+    document.getElementById('topoLoadBtn').addEventListener('click', async () => {
+      try {
+        const res = await fetch(`${topoBase()}/api/v1/topology/overlay?yaml=1`);
+        const data = await res.json();
+        topoYaml.value = data.overlay_yaml || '';
+        previewedYaml = null;
+        topoApplyBtn.disabled = true;
+        renderTopoResult(res.status, data);
+        renderOverlayState(data);
+      } catch (err) {
+        setStatus(`读取叠加层失败: ${err.message}`, false);
+      }
+    });
+
+    document.getElementById('topoPreviewBtn').addEventListener('click', async () => {
+      const text = topoYaml.value;
+      const operatorId = document.getElementById('topoOperator').value.trim();
+      const reason = document.getElementById('topoReason').value.trim();
+      if (!text.trim()) {
+        setStatus('预演需要先填写叠加层 YAML（留空 = 清空全部临时管制）', false);
+        return;
+      }
+      // 预演也要带 operator/reason：服务端校验的是"这条管制有没有理由"，
+      // 与 dry_run（写不写盘）无关。不带的话会得到一条与拓扑无关的校验错误，
+      // 让人误以为边名写错了。
+      if (!operatorId || !reason) {
+        setStatus('预演需要填写操作员 id 与原因（它们会写进叠加层每一条管制）', false);
+        return;
+      }
+      const { data } = await postTopology('/api/v1/topology/preview', {
+        overlay_yaml: text,
+        operator_id: operatorId,
+        reason: reason,
+        expected_map_hash: document.getElementById('topoBaseHash').value.trim()
+      });
+      const ok = data.status === 'ok' || data.status === 'noop';
+      previewedYaml = ok ? text : null;
+      topoApplyBtn.disabled = !ok;
+      if (ok) {
+        setStatus('✅ 预演通过（连通性与在途影响均已校验），可以应用', true);
+      } else {
+        setStatus(`预演被拒绝: ${data.error_code || data.error || data.message}`, false);
+      }
+    });
+
+    // 文本一改就重新上锁：客户端防线，服务端仍独立复验
+    topoYaml.addEventListener('input', () => {
+      if (previewedYaml !== null && topoYaml.value !== previewedYaml) {
+        topoApplyBtn.disabled = true;
+        previewedYaml = null;
+      }
+    });
+
+    document.getElementById('topoApplyBtn').addEventListener('click', async () => {
+      const text = topoYaml.value;
+      const operatorId = document.getElementById('topoOperator').value.trim();
+      const reason = document.getElementById('topoReason').value.trim();
+      if (text !== previewedYaml) {
+        setStatus('文本已变更，必须重新预演后才能应用', false);
+        topoApplyBtn.disabled = true;
+        return;
+      }
+      if (!operatorId || !reason) {
+        setStatus('应用需要填写操作员 id 与原因（审计必填）', false);
+        return;
+      }
+      if (!window.confirm(`确认应用这份叠加层（会写盘并立即生效）？\n\n操作员: ${operatorId}\n原因: ${reason}`)) {
+        return;
+      }
+      const { data } = await postTopology('/api/v1/topology/hot_update', {
+        overlay_yaml: text,
+        operator_id: operatorId,
+        reason: reason,
+        expected_map_hash: document.getElementById('topoBaseHash').value.trim(),
+        allow_edge_under_vehicle: document.getElementById('topoAllowUnderVehicle').checked,
+        confirm: true
+      });
+      if (data.status === 'ok' || data.status === 'noop') {
+        setStatus(`✅ 叠加层已应用 (revision ${data.overlay_revision})`, true);
+        previewedYaml = null;
+        topoApplyBtn.disabled = true;
+      } else {
+        setStatus(`应用被拒绝: ${data.error_code || data.error || data.message}`, false);
+      }
+      fetchTopologyOverlay();
+    });
+
     // 轮询
     document.getElementById('refreshBtn').addEventListener('click', () => {
       fetchSnapshot();
       fetchVehicleLinks();
+      fetchReadiness();
+      fetchTopologyOverlay();
     });
     setInterval(() => {
       if (document.getElementById('autoPoll').checked) {
@@ -718,9 +1050,13 @@
         fetchVehicleLinks();
       }
     }, 1000);
+    // 探针独立 2s 轮询：它比调度快照重要，且 503 时也要继续刷（证明网关还活着）
+    setInterval(fetchReadiness, 2000);
 
     fetchSnapshot();
     fetchVehicleLinks();
+    fetchReadiness();
+    fetchTopologyOverlay();
 
     // ==========================================
     // 自定义地图可视化与热交互标注逻辑
