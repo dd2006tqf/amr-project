@@ -223,8 +223,12 @@ void SafetyGateNode::BumperCallback(const std_msgs::msg::Bool::SharedPtr msg) {
   }
 }
 
-void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr /*msg*/,
+void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr msg,
                                                const std::string& source) {
+  // 必须是有效心跳 (msg->data == true) 才视为有效喂狗信号
+  if (!msg || !msg->data) {
+    return;
+  }
   // I1：心跳到达即打点（真实数据到达点，而非巡检周期）
   last_data_arrival_["watchdog"] = std::chrono::steady_clock::now();
   // B1 分源喂狗：只 Feed 回调登记的来源，watched_nodes_ 里每个源独立计时。
