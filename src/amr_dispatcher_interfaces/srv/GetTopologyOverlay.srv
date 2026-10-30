@@ -1,0 +1,13 @@
+# 读取当前生效的运行时拓扑叠加层（供控制台展示与"预演前先看现状"）。
+bool include_yaml        # true 时返回可编辑的 overlay_yaml 文本
+---
+bool success
+string message
+string overlay_yaml
+uint32 revision
+uint32 blocked_edge_count
+uint32 one_way_edge_count
+uint32 marker_count
+string base_map_hash        # 叠加层记录的基线哈希（0 表示没有叠加层）
+string effective_map_hash   # 当前基础目录的 map_hash
+bool overlay_active

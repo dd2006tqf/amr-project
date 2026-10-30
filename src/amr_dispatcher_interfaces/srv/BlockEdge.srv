@@ -1,0 +1,31 @@
+# 单条边的临时交通管制（目录感知封路/解封/单向）。
+#
+# 与既有的 /v2/block_station_route 的区别（两者并存，语义不同）：
+#   * /v2/block_station_route  —— **仅**在预约表里置一把 traffic_block 锁，
+#     规划层仍然认为这条路存在（旧客户端行为，逐字保留）。
+#   * /v2/block_edge           —— 同时改**生效目录**（enabled/bidirectional），
+#     使规划、骨架折线、距离估算、时空窗/CBS 全部一致地绕开该边；
+#     并在预约表里补一把锁作为第二道防线。
+#
+# direction 的可选值：
+#   both     —— 双向都封（等价于封路；action=block 时使用）
+#   forward  —— 只许 from -> to（action=one_way 时使用）
+#   reverse  —— 只许 to -> from（action=one_way 时使用）
+string from_station
+string to_station
+string action            # block | unblock | one_way | two_way
+string direction         # both | forward | reverse（缺省 both）
+string reason
+string operator_id
+string expected_map_hash # 空 = 不校验；生产应填，防止把施工区套到重新出图后的新地图上
+bool confirm             # 必须 true，否则返回 not_confirmed
+bool allow_edge_under_vehicle  # 允许"车可能正压在该边上"时仍提交（锁留给在途车）
+---
+bool success
+string error_code        # 见 docs/API.md 的 error_code 词表
+string message
+string resource_id
+string[] impacted_vehicles
+string[] impacted_missions
+bool rerouted
+uint32 overlay_revision

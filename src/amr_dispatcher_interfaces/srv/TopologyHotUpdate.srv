@@ -1,0 +1,23 @@
+# 全量替换运行时拓扑叠加层（叠加层 YAML 文本）。
+#
+# 用途：一次提交多条临时管制（例如整个施工区封 5 条边），或做 dry_run 预演。
+# overlay_yaml 为空 + clear=true 表示"清空全部临时改道，恢复基线拓扑"。
+string overlay_yaml
+string expected_map_hash
+string operator_id
+string reason
+bool dry_run             # true = 只校验与算影响面，绝不写盘、绝不改内存
+bool clear               # true = 清空（此时 overlay_yaml 被忽略）
+bool allow_edge_under_vehicle
+bool confirm             # dry_run=false 时必须为 true
+---
+bool success
+string error_code
+string message
+string[] unreachable_nodes    # would_disconnect_topology 时给明细
+string[] impacted_vehicles
+string[] impacted_missions
+string[] reroute_failures     # 无法绕行的任务（与 impacted_missions 对齐）
+string catalog_map_hash       # 基础目录的 map_hash（乐观并发用）
+uint32 overlay_revision
+bool file_written             # dry_run / no_change 时为 false

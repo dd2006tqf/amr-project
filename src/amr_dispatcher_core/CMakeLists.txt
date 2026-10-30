@@ -61,6 +61,8 @@ add_library(${PROJECT_NAME}
   src/dispatcher/mission_cost_estimator.cpp
   src/dispatcher/dock_catalog.cpp
   src/catalog/station_catalog.cpp
+  src/catalog/topology_overlay.cpp
+  src/catalog/topology_connectivity.cpp
   src/catalog/scenario_catalog.cpp
   src/catalog/business_order_catalog.cpp
   src/catalog/zone_catalog.cpp
@@ -105,6 +107,7 @@ add_library(${PROJECT_NAME}
   src/workflow/order_batch_bundling.cpp
   src/workflow/traffic_coordination_model.cpp
   src/workflow/in_flight_reroute_planning.cpp
+  src/workflow/topology_change_impact.cpp
   src/workflow/traffic_recovery_coordinator.cpp
   src/workflow/docking_workflow.cpp
   src/workflow/mission_charging_workflow.cpp
@@ -215,6 +218,10 @@ if(BUILD_TESTING)
     test_dispatch_endpoint_resolution
     test_dispatch_tick_planning
     test_find_route_path_avoiding
+    test_topology_overlay
+    test_topology_connectivity
+    test_topology_change_impact
+    test_topology_overlay_file
     test_facility_catalog
     test_facility_reservation
     test_facility_lease

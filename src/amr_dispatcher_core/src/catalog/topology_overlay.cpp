@@ -1,0 +1,612 @@
+#include "amr_dispatcher_core/catalog/topology_overlay.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace amr_dispatcher_core::catalog {
+namespace {
+
+// 与 station_catalog.cpp 同一套行式约定（那里是匿名命名空间，不能复用，
+// 这里按同一语义实现一份：去引号、按 `key:` 取右值）。
+std::string Trim(const std::string& value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return "";
+  }
+  const auto last = value.find_last_not_of(" \t\r\n");
+  std::string s = value.substr(first, last - first + 1);
+  if (s.size() >= 2 &&
+      ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))) {
+    s = s.substr(1, s.size() - 2);
+  }
+  return s;
+}
+
+std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+  const std::string prefix = key + ":";
+  if (line.rfind(prefix, 0) != 0) {
+    return std::nullopt;
+  }
+  return Trim(line.substr(prefix.size()));
+}
+
+std::optional<double> ParseDouble(const std::string& value) {
+  std::istringstream parser(value);
+  double result = 0.0;
+  parser >> result;
+  if (parser.fail() || !std::isfinite(result)) {
+    return std::nullopt;
+  }
+  return result;
+}
+
+// 固定 6 位小数的浮点输出：让序列化 byte-stable（%.17g 在不同 libc 上会有差异，
+// 而 %g 对 0.1+0.2 这类值会输出不同的位数）。
+std::string FormatDouble(double value) {
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.6f", value);
+  std::string text(buffer);
+  // 去掉尾随 0，但至少保留一位小数：123.450000 -> 123.45，1.000000 -> 1.0
+  if (text.find('.') != std::string::npos) {
+    const auto last = text.find_last_not_of('0');
+    if (last == std::string::npos) {
+      return text;
+    }
+    text.erase(last + 1);
+    if (!text.empty() && text.back() == '.') {
+      text += "0";
+    }
+  }
+  return text;
+}
+
+bool ValidateEdgeEntry(const OverlayEdge& edge, const std::unordered_set<std::string>& node_ids,
+                       const std::string& kind, OverlayValidation* out) {
+  if (edge.from.empty() || edge.to.empty()) {
+    out->errors.push_back(kind + " edge has empty endpoint");
+    return false;
+  }
+  if (edge.from == edge.to) {
+    out->errors.push_back(kind + " edge is a self loop: " + edge.from);
+    return false;
+  }
+  if (node_ids.find(edge.from) == node_ids.end()) {
+    out->errors.push_back(kind + " edge has unknown endpoint: " + edge.from);
+    return false;
+  }
+  if (node_ids.find(edge.to) == node_ids.end()) {
+    out->errors.push_back(kind + " edge has unknown endpoint: " + edge.to);
+    return false;
+  }
+  return true;
+}
+
+std::string EdgeKey(const std::string& a, const std::string& b) {
+  return a <= b ? a + "\x1f" + b : b + "\x1f" + a;
+}
+
+}  // namespace
+
+OverlayValidation ValidateTopologyOverlay(const StationCatalog& base,
+                                          const TopologyOverlay& overlay) {
+  OverlayValidation out;
+
+  std::unordered_set<std::string> node_ids;
+  node_ids.reserve(base.stations.size() + base.road_nodes.size());
+  for (const auto& station : base.stations) {
+    node_ids.insert(station.id);
+  }
+  for (const auto& node : base.road_nodes) {
+    node_ids.insert(node.id);
+  }
+
+  // 基础地图版本不匹配：**不是**错误（dry-run 预览要能展示它对不上），
+  // 由调用方决定是"失效并归档"还是"拒绝提交"。
+  if (overlay.base_map_hash.empty()) {
+    out.errors.push_back("overlay is missing base_map_hash");
+  } else if (overlay.base_map_hash != base.map_hash) {
+    out.warnings.push_back("base_map_hash mismatch: overlay=" + overlay.base_map_hash +
+                           " base=" + base.map_hash);
+  }
+
+  // 同一对端点的无序键：用来检测"重复条目"与"既封又单向"的冲突。
+  std::unordered_set<std::string> blocked_keys;
+  for (const auto& edge : overlay.blocked_edges) {
+    if (!ValidateEdgeEntry(edge, node_ids, "blocked", &out)) {
+      continue;
+    }
+    if (edge.reason.empty()) {
+      out.errors.push_back("blocked edge missing reason: " + edge.from + "->" + edge.to);
+    }
+    if (edge.operator_id.empty()) {
+      out.errors.push_back("blocked edge missing operator_id: " + edge.from + "->" + edge.to);
+    }
+    if (!blocked_keys.insert(EdgeKey(edge.from, edge.to)).second) {
+      out.errors.push_back("duplicate blocked edge: " + edge.from + "->" + edge.to);
+    }
+  }
+
+  std::unordered_set<std::string> one_way_keys;
+  for (const auto& edge : overlay.one_way_edges) {
+    if (!ValidateEdgeEntry(edge, node_ids, "one-way", &out)) {
+      continue;
+    }
+    if (edge.reason.empty()) {
+      out.errors.push_back("one-way edge missing reason: " + edge.from + "->" + edge.to);
+    }
+    if (edge.operator_id.empty()) {
+      out.errors.push_back("one-way edge missing operator_id: " + edge.from + "->" + edge.to);
+    }
+    if (!one_way_keys.insert(EdgeKey(edge.from, edge.to)).second) {
+      out.errors.push_back("duplicate one-way edge: " + edge.from + "->" + edge.to);
+    }
+    // 同一条边既封又单向：语义自相矛盾，且提交顺序会决定结果 —— 直接拒绝。
+    if (blocked_keys.count(EdgeKey(edge.from, edge.to)) > 0) {
+      out.errors.push_back("edge is both blocked and one-way: " + edge.from + "->" + edge.to);
+    }
+  }
+
+  std::unordered_set<std::string> marker_ids;
+  for (const auto& marker : overlay.added_markers) {
+    if (marker.id.empty()) {
+      out.errors.push_back("added marker has empty id");
+      continue;
+    }
+    if (!std::isfinite(marker.x) || !std::isfinite(marker.y) || !std::isfinite(marker.yaw)) {
+      out.errors.push_back("added marker pose is not finite: " + marker.id);
+    }
+    if (node_ids.count(marker.id) > 0) {
+      out.errors.push_back("added marker id collides with existing node: " + marker.id);
+    }
+    if (!marker_ids.insert(marker.id).second) {
+      out.errors.push_back("duplicate added marker id: " + marker.id);
+    }
+    if (marker.operator_id.empty()) {
+      out.errors.push_back("added marker missing operator_id: " + marker.id);
+    }
+  }
+
+  out.ok = out.errors.empty();
+  if (out.ok) {
+    out.message = overlay.Empty() ? "ok (no temporary changes)" : "ok";
+  } else {
+    out.message = out.errors.front();
+  }
+  return out;
+}
+
+StationCatalog ApplyTopologyOverlay(const StationCatalog& base, const TopologyOverlay& overlay) {
+  StationCatalog result = base;
+  if (overlay.Empty()) {
+    return result;  // 空叠加层：逐字段等价于基础目录（兼容红线）
+  }
+
+  // 1. 封路：把两端匹配的边置 enabled=false。
+  //    保留在 vector 里（不 erase），让列表/控制台仍能看到"这条边被封了"。
+  for (const auto& blocked : overlay.blocked_edges) {
+    for (auto& edge : result.edges) {
+      const bool forward = edge.from == blocked.from && edge.to == blocked.to;
+      const bool reverse = edge.from == blocked.to && edge.to == blocked.from;
+      if (forward || reverse) {
+        edge.enabled = false;
+      }
+    }
+  }
+
+  // 2. 单向：把边的可行方向收敛为 from → to。
+  //    **关键**：若基础目录里存的是反向（from=B,to=A），必须交换端点，否则
+  //    FindRoutePathImpl 会沿着"被禁止"的那个方向松弛，单向被静默反过来。
+  for (const auto& one_way : overlay.one_way_edges) {
+    for (auto& edge : result.edges) {
+      const bool forward = edge.from == one_way.from && edge.to == one_way.to;
+      const bool reverse = edge.from == one_way.to && edge.to == one_way.from;
+      if (forward) {
+        edge.bidirectional = false;
+      } else if (reverse) {
+        std::swap(edge.from, edge.to);
+        edge.bidirectional = false;
+        // 折线是几何路径，不随方向反转；保持原样（SkeletonPlanner 从节点坐标出发插值）。
+      }
+    }
+  }
+
+  // 3. 临时站点：作为普通 Station 追加（带 type），不参与 map_hash。
+  for (const auto& marker : overlay.added_markers) {
+    Station station;
+    station.id = marker.id;
+    station.frame_id = base.stations.empty() ? "map" : base.stations.front().frame_id;
+    if (station.frame_id.empty()) {
+      station.frame_id = "map";
+    }
+    station.x = marker.x;
+    station.y = marker.y;
+    station.yaw = marker.yaw;
+    station.type = marker.type.empty() ? "normal" : marker.type;
+    result.stations.push_back(std::move(station));
+  }
+
+  return result;
+}
+
+std::string SerializeTopologyOverlay(const TopologyOverlay& overlay) {
+  std::ostringstream out;
+  out << "# AMR runtime topology overlay (temporary traffic control, NOT a map version)\n";
+  out << "# 由 dispatcher_node 原子写入；手改后等下一个热重载周期生效。\n";
+  out << "overlay_version: " << overlay.overlay_version << "\n";
+  out << "base_map_hash: \"" << overlay.base_map_hash << "\"\n";
+  out << "revision: " << overlay.revision << "\n";
+  out << "updated_at: \"" << overlay.updated_at << "\"\n";
+
+  out << "blocked_edges:\n";
+  for (const auto& edge : overlay.blocked_edges) {
+    out << "  - from: \"" << edge.from << "\"\n";
+    out << "    to: \"" << edge.to << "\"\n";
+    out << "    reason: \"" << edge.reason << "\"\n";
+    out << "    operator_id: \"" << edge.operator_id << "\"\n";
+    out << "    created_at: \"" << edge.created_at << "\"\n";
+  }
+
+  out << "one_way_edges:\n";
+  for (const auto& edge : overlay.one_way_edges) {
+    out << "  - from: \"" << edge.from << "\"\n";
+    out << "    to: \"" << edge.to << "\"\n";
+    out << "    reason: \"" << edge.reason << "\"\n";
+    out << "    operator_id: \"" << edge.operator_id << "\"\n";
+    out << "    created_at: \"" << edge.created_at << "\"\n";
+  }
+
+  out << "added_markers:\n";
+  for (const auto& marker : overlay.added_markers) {
+    out << "  - id: \"" << marker.id << "\"\n";
+    out << "    type: \"" << marker.type << "\"\n";
+    out << "    x: " << FormatDouble(marker.x) << "\n";
+    out << "    y: " << FormatDouble(marker.y) << "\n";
+    out << "    yaw: " << FormatDouble(marker.yaw) << "\n";
+    out << "    reason: \"" << marker.reason << "\"\n";
+    out << "    operator_id: \"" << marker.operator_id << "\"\n";
+    out << "    created_at: \"" << marker.created_at << "\"\n";
+  }
+  return out.str();
+}
+
+std::optional<TopologyOverlay> DeserializeTopologyOverlay(const std::string& text,
+                                                          std::string* message,
+                                                          const bool require_base_hash) {
+  TopologyOverlay overlay;
+  std::string section;
+  OverlayEdge current_edge;
+  OverlayMarker current_marker;
+  bool in_edge = false;
+  bool in_marker = false;
+  bool has_from = false;
+  bool has_to = false;
+  bool has_marker_id = false;
+  bool saw_base_hash = false;
+
+  const auto fail = [message](const std::string& reason) -> std::optional<TopologyOverlay> {
+    if (message != nullptr) {
+      *message = reason;
+    }
+    return std::nullopt;
+  };
+
+  const auto flush_edge = [&]() {
+    if (in_edge && has_from && has_to) {
+      if (section == "one_way_edges") {
+        overlay.one_way_edges.push_back(current_edge);
+      } else {
+        overlay.blocked_edges.push_back(current_edge);
+      }
+    }
+    current_edge = OverlayEdge{};
+    in_edge = false;
+    has_from = false;
+    has_to = false;
+  };
+  const auto flush_marker = [&]() {
+    if (in_marker && has_marker_id) {
+      overlay.added_markers.push_back(current_marker);
+    }
+    current_marker = OverlayMarker{};
+    in_marker = false;
+    has_marker_id = false;
+  };
+  const auto flush_all = [&]() {
+    flush_edge();
+    flush_marker();
+  };
+
+  std::istringstream input(text);
+  std::string raw_line;
+  int line_no = 0;
+  while (std::getline(input, raw_line)) {
+    ++line_no;
+    const std::string line = Trim(raw_line);
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+
+    // 章节标题
+    if (line == "blocked_edges:" || line == "one_way_edges:" || line == "added_markers:") {
+      flush_all();
+      section = line.substr(0, line.size() - 1);
+      continue;
+    }
+
+    // 列表项起点："- key: value"
+    if (line.rfind("- ", 0) == 0) {
+      flush_all();
+      if (section == "added_markers") {
+        in_marker = true;
+      } else if (section == "blocked_edges" || section == "one_way_edges") {
+        in_edge = true;
+      } else {
+        return fail("list item outside a known section at line " + std::to_string(line_no));
+      }
+      const std::string content = Trim(line.substr(2));
+      if (in_marker) {
+        if (auto value = ValueAfterColon(content, "id")) {
+          current_marker.id = *value;
+          has_marker_id = !current_marker.id.empty();
+        }
+      } else if (auto value = ValueAfterColon(content, "from")) {
+        current_edge.from = *value;
+        has_from = !current_edge.from.empty();
+      } else if (auto value = ValueAfterColon(content, "to")) {
+        current_edge.to = *value;
+        has_to = !current_edge.to.empty();
+      }
+      continue;
+    }
+
+    if (in_edge) {
+      if (auto value = ValueAfterColon(line, "from")) {
+        current_edge.from = *value;
+        has_from = !current_edge.from.empty();
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "to")) {
+        current_edge.to = *value;
+        has_to = !current_edge.to.empty();
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "reason")) {
+        current_edge.reason = *value;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "operator_id")) {
+        current_edge.operator_id = *value;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "created_at")) {
+        current_edge.created_at = *value;
+        continue;
+      }
+      return fail("unknown field inside edge entry at line " + std::to_string(line_no));
+    }
+
+    if (in_marker) {
+      if (auto value = ValueAfterColon(line, "id")) {
+        current_marker.id = *value;
+        has_marker_id = !current_marker.id.empty();
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "type")) {
+        current_marker.type = value->empty() ? "normal" : *value;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "x")) {
+        const auto parsed = ParseDouble(*value);
+        if (!parsed) return fail("bad marker x at line " + std::to_string(line_no));
+        current_marker.x = *parsed;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "y")) {
+        const auto parsed = ParseDouble(*value);
+        if (!parsed) return fail("bad marker y at line " + std::to_string(line_no));
+        current_marker.y = *parsed;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "yaw")) {
+        const auto parsed = ParseDouble(*value);
+        if (!parsed) return fail("bad marker yaw at line " + std::to_string(line_no));
+        current_marker.yaw = *parsed;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "reason")) {
+        current_marker.reason = *value;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "operator_id")) {
+        current_marker.operator_id = *value;
+        continue;
+      }
+      if (auto value = ValueAfterColon(line, "created_at")) {
+        current_marker.created_at = *value;
+        continue;
+      }
+      return fail("unknown field inside marker entry at line " + std::to_string(line_no));
+    }
+
+    // 顶层标量
+    if (auto value = ValueAfterColon(line, "overlay_version")) {
+      const auto parsed = ParseDouble(*value);
+      if (!parsed) return fail("bad overlay_version");
+      overlay.overlay_version = static_cast<int>(*parsed);
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "base_map_hash")) {
+      overlay.base_map_hash = *value;
+      saw_base_hash = !overlay.base_map_hash.empty();
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "revision")) {
+      const auto parsed = ParseDouble(*value);
+      if (!parsed || *parsed < 0.0) return fail("bad revision");
+      overlay.revision = static_cast<std::uint64_t>(*parsed);
+      continue;
+    }
+    if (auto value = ValueAfterColon(line, "updated_at")) {
+      overlay.updated_at = *value;
+      continue;
+    }
+    // 未知顶层键严格失败：静默忽略会让"写错的字段"看起来生效了。
+    return fail("unknown top-level key at line " + std::to_string(line_no) + ": " + line);
+  }
+  flush_all();
+
+  if (!saw_base_hash && require_base_hash) {
+    return fail("overlay is missing base_map_hash");
+  }
+  if (message != nullptr) {
+    message->clear();
+  }
+  return overlay;
+}
+
+std::optional<TopologyOverlay> LoadTopologyOverlay(const std::filesystem::path& path,
+                                                   std::string* message) {
+  std::ifstream input(path);
+  if (!input) {
+    if (message != nullptr) {
+      *message = "cannot open " + path.string();
+    }
+    return std::nullopt;
+  }
+  const std::string text((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+  // 从磁盘读回永远是严格模式：缺 base_map_hash 的文件说明被手工截断或写坏，
+  // 不能当成"空基线"放行（那会让施工区套到任意地图上）。
+  return DeserializeTopologyOverlay(text, message, true);
+}
+
+bool PersistTopologyOverlay(const std::filesystem::path& path, const TopologyOverlay& overlay,
+                            std::string* message) {
+  std::error_code ec;
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+      if (message != nullptr) *message = "cannot create directory: " + ec.message();
+      return false;
+    }
+  }
+  const std::filesystem::path tmp_path = path.string() + ".tmp";
+  const std::string text = SerializeTopologyOverlay(overlay);
+  {
+    std::ofstream out(tmp_path, std::ios::trunc);
+    if (!out) {
+      if (message != nullptr) *message = "cannot open temp file " + tmp_path.string();
+      return false;
+    }
+    out << text;
+    out.flush();
+    if (!out) {
+      out.close();
+      std::filesystem::remove(tmp_path, ec);
+      if (message != nullptr) *message = "failed writing temp file " + tmp_path.string();
+      return false;
+    }
+  }
+  // 回读校验：磁盘字节必须能被同一套解析器读回来（防半截写入/编码问题）
+  {
+    std::string verify_message;
+    if (!LoadTopologyOverlay(tmp_path, &verify_message).has_value()) {
+      std::filesystem::remove(tmp_path, ec);
+      if (message != nullptr) {
+        *message = "temp overlay failed round-trip validation: " + verify_message;
+      }
+      return false;
+    }
+  }
+  // 旧文件留一份 .bak：现场"昨天封了哪条路"要靠它追溯
+  if (std::filesystem::exists(path, ec)) {
+    std::filesystem::path backup = path;
+    backup += ".bak";
+    std::filesystem::remove(backup, ec);
+    std::filesystem::rename(path, backup, ec);
+    if (ec) {
+      std::filesystem::remove(tmp_path, ec);
+      if (message != nullptr) *message = "cannot rotate backup: " + ec.message();
+      return false;
+    }
+  }
+  std::filesystem::rename(tmp_path, path, ec);
+  if (ec) {
+    std::filesystem::remove(tmp_path, ec);
+    if (message != nullptr) *message = "cannot replace overlay file: " + ec.message();
+    return false;
+  }
+  if (message != nullptr) message->clear();
+  return true;
+}
+
+bool InvalidateOverlayFile(const std::filesystem::path& path, const std::string& suffix,
+                           std::string* relocated_path, std::string* message) {
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    if (relocated_path != nullptr) relocated_path->clear();
+    if (message != nullptr) *message = "overlay file does not exist";
+    return false;
+  }
+  const auto now = std::chrono::system_clock::now();
+  const auto epoch = std::chrono::duration_cast<std::chrono::seconds>(
+                         now.time_since_epoch())
+                         .count();
+  std::filesystem::path target = path;
+  target += "." + suffix + "." + std::to_string(epoch);
+  std::filesystem::rename(path, target, ec);
+  if (ec) {
+    if (message != nullptr) *message = "cannot relocate overlay: " + ec.message();
+    return false;
+  }
+  if (relocated_path != nullptr) *relocated_path = target.string();
+  if (message != nullptr) message->clear();
+  return true;
+}
+
+std::string TopologyOverlaySignature(const TopologyOverlay& overlay) {
+  // 语义签名：只取"哪些边被怎样限制 + 加了哪些站点"，忽略 revision/时间/审计字段。
+  // 排序保证条目顺序不同但集合相同时签名一致（提交幂等判定依赖这一点）。
+  std::vector<std::string> blocked;
+  blocked.reserve(overlay.blocked_edges.size());
+  for (const auto& edge : overlay.blocked_edges) {
+    blocked.push_back(EdgeKey(edge.from, edge.to));
+  }
+  std::sort(blocked.begin(), blocked.end());
+
+  std::vector<std::string> one_way;
+  one_way.reserve(overlay.one_way_edges.size());
+  for (const auto& edge : overlay.one_way_edges) {
+    // 单向是有方向的：这里不能用无序键
+    one_way.push_back(edge.from + "\x1f" + edge.to);
+  }
+  std::sort(one_way.begin(), one_way.end());
+
+  std::vector<std::string> markers;
+  markers.reserve(overlay.added_markers.size());
+  for (const auto& marker : overlay.added_markers) {
+    markers.push_back(marker.id + "\x1f" + marker.type + "\x1f" + FormatDouble(marker.x) +
+                      "\x1f" + FormatDouble(marker.y) + "\x1f" + FormatDouble(marker.yaw));
+  }
+  std::sort(markers.begin(), markers.end());
+
+  std::string signature;
+  for (const auto& key : blocked) {
+    signature += "B:" + key + "\n";
+  }
+  for (const auto& key : one_way) {
+    signature += "O:" + key + "\n";
+  }
+  for (const auto& key : markers) {
+    signature += "M:" + key + "\n";
+  }
+  return signature;
+}
+
+}  // namespace amr_dispatcher_core::catalog

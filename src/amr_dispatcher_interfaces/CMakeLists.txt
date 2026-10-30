@@ -39,6 +39,10 @@ set(srv_files
   "srv/ValidateSiteConfig.srv"
   "srv/ForceClearVda5050Link.srv"
   "srv/RestoreVda5050Link.srv"
+  # 相位 11：在线拓扑热生效
+  "srv/BlockEdge.srv"
+  "srv/TopologyHotUpdate.srv"
+  "srv/GetTopologyOverlay.srv"
 )
 
 set(action_files
