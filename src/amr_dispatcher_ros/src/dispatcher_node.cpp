@@ -51,6 +51,9 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   // 路径规划器类型（skeleton|mock）与地图版本门禁期望哈希（空 = 关闭门禁）
   declare_parameter("planner_type", "skeleton");
   declare_parameter("expected_map_hash", "");
+  // 相位 11：在线拓扑热生效（独立叠加层持久化文件；空 = 功能关闭，生产由 launch 注入绝对路径）
+  declare_parameter("topology_overlay_file", "");
+  declare_parameter("topology_allow_edge_under_vehicle", false);
   // Task 5：受管 VDA 5050 小车清单（逗号分隔 vehicle_id；空 = 关闭逐段解锁/断链守卫）
   // 与 state 陈旧告警阈值（秒，在线但超时未上报 -> 仅告警不释放）
   declare_parameter("vda5050_vehicles", "");
@@ -122,6 +125,15 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
                 "Failed to load stations file %s; planning disabled until hot reload succeeds",
                 stations_file.c_str());
   }
+
+  // 相位 11：在线拓扑热生效（参数读取 + 叠加层加载）
+  // 叠加层必须在 RebuildPlanner 与状态恢复之前加载，使初始规划器与重新入队的路径计算
+  // 基于有效目录；状态恢复门禁仍比对 base_map_hash。
+  topology_overlay_file_ = get_parameter("topology_overlay_file").as_string();
+  topology_allow_edge_under_vehicle_ =
+      get_parameter("topology_allow_edge_under_vehicle").as_bool();
+  LoadTopologyOverlayFromDisk();
+
   // 依 planner_type 选规划器：skeleton -> 混合图折线循迹，mock -> 直线基线。
   // catalog_reloader_ 已就位（即使初始加载失败也持有空目录，热重载后由 reload_timer_ 同步）。
   RebuildPlanner();
@@ -407,6 +419,16 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   block_route_srv_ = create_service<amr_dispatcher_interfaces::srv::BlockStationRoute>(
       "/v2/block_station_route",
       std::bind(&DispatcherNode::BlockStationRouteCb, this, std::placeholders::_1, std::placeholders::_2));
+  // 相位 11：在线拓扑热生效（目录感知封路 / 全量叠加层 / 叠加层状态读取）
+  block_edge_srv_ = create_service<amr_dispatcher_interfaces::srv::BlockEdge>(
+      "/v2/block_edge",
+      std::bind(&DispatcherNode::BlockEdgeCb, this, std::placeholders::_1, std::placeholders::_2));
+  topology_hot_update_srv_ = create_service<amr_dispatcher_interfaces::srv::TopologyHotUpdate>(
+      "/v2/topology_hot_update",
+      std::bind(&DispatcherNode::TopologyHotUpdateCb, this, std::placeholders::_1, std::placeholders::_2));
+  get_topology_overlay_srv_ = create_service<amr_dispatcher_interfaces::srv::GetTopologyOverlay>(
+      "/v2/get_topology_overlay",
+      std::bind(&DispatcherNode::GetTopologyOverlayCb, this, std::placeholders::_1, std::placeholders::_2));
   detect_deadlock_srv_ = create_service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>(
       "/v2/detect_traffic_deadlock",
       std::bind(&DispatcherNode::DetectTrafficDeadlockCb, this, std::placeholders::_1, std::placeholders::_2));
@@ -561,16 +583,23 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
   // 1Hz 驱动站点目录 mtime 热重载（HotReloadWatcher 由调用方驱动）
   reload_timer_ = create_wall_timer(1s, [this]() {
     if (!catalog_reloader_) return;
+    if (overlay_deferred_ && catalog_reloader_->loaded()) {
+      // 启动时 map_ingest 尚未写出 stations.yaml，现在已就位：补加载叠加层
+      overlay_deferred_ = false;
+      LoadTopologyOverlayFromDisk();
+    }
     if (catalog_reloader_->Tick()) {
       RCLCPP_INFO(get_logger(), "Station catalog hot-reloaded: %zu stations",
                   catalog_reloader_->catalog().stations.size());
+      // 相位 11：基础目录变更后叠加层对齐（重应用或失效，绝不静默丢失）
+      ReconcileOverlayAfterBaseReload();
       // SkeletonPlanner 持有目录副本：热重载后必须同步，否则仍按旧折线规划
       auto* skeleton_planner =
           dynamic_cast<amr_dispatcher_core::planning::SkeletonPlanner*>(planner_.get());
       if (skeleton_planner != nullptr) {
-        skeleton_planner->UpdateCatalog(catalog_reloader_->catalog());
-        RCLCPP_INFO(get_logger(), "SkeletonPlanner catalog synchronized (%zu stations)",
-                    catalog_reloader_->catalog().stations.size());
+        skeleton_planner->UpdateCatalog(EffectiveCatalog());
+        RCLCPP_INFO(get_logger(), "SkeletonPlanner catalog synchronized (%zu stations, overlay=%s)",
+                    EffectiveCatalog().stations.size(), overlay_active_ ? "active" : "inactive");
       }
     } else if (!catalog_reloader_->last_error().empty()) {
       // 重载失败（YAML 解析或校验不过）：旧目录继续生效，节流告警提示修复文件
@@ -588,8 +617,7 @@ void DispatcherNode::RebuildPlanner() {
   const double step_size = get_parameter("path_step_size_m").as_double();
   if (planner_type_ == "skeleton") {
     planner_ = std::make_unique<amr_dispatcher_core::planning::SkeletonPlanner>(
-        catalog_reloader_ ? catalog_reloader_->catalog()
-                          : amr_dispatcher_core::catalog::StationCatalog{},
+        EffectiveCatalog(),
         amr_dispatcher_core::planning::SkeletonPlanner::Config{step_size});
     RCLCPP_INFO(get_logger(),
                 "Path planner: SkeletonPlanner (mixed-graph polyline, step %.2f m)",
@@ -641,6 +669,9 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   reprioritize_srv_.reset();
   estimate_cost_srv_.reset();
   block_route_srv_.reset();
+  block_edge_srv_.reset();
+  topology_hot_update_srv_.reset();
+  get_topology_overlay_srv_.reset();
   detect_deadlock_srv_.reset();
   list_stations_srv_.reset();
   list_reservations_srv_.reset();
@@ -717,6 +748,15 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   planner_.reset();
   catalog_reloader_.reset();
   reload_timer_.reset();
+  // 相位 11：拓扑叠加层随生命周期收口
+  effective_catalog_ = amr_dispatcher_core::catalog::StationCatalog{};
+  overlay_ = amr_dispatcher_core::catalog::TopologyOverlay{};
+  overlay_active_ = false;
+  overlay_loaded_ = false;
+  overlay_deferred_ = false;
+  topology_overlay_file_.clear();
+  topology_allow_edge_under_vehicle_ = false;
+  last_overlay_error_.clear();
   // 批次 2：持久化开关随生命周期收口（配置在下一次 configure 重新读取）。
   // 手动生命周期切换（deactivate -> cleanup -> configure）不应把上一次的
   // 队列当成"重启恢复"再灌一遍。
@@ -1242,12 +1282,12 @@ void DispatcherNode::EstimateMissionCostCb(
     resp->message = "mission_file must encode a station pair as 'from->to' or 'from:to', got: " + spec;
     return;
   }
-  if (!catalog_reloader_ || !catalog_reloader_->loaded()) {
+  if (!CatalogLoaded()) {
     resp->success = false;
     resp->message = "station catalog not loaded";
     return;
   }
-  const auto& catalog = catalog_reloader_->catalog();
+  const auto& catalog = EffectiveCatalog();
   const auto* from_st = amr_dispatcher_core::catalog::FindStation(catalog, from);
   const auto* to_st = amr_dispatcher_core::catalog::FindStation(catalog, to);
   if (!from_st || !to_st) {
@@ -1326,14 +1366,14 @@ void DispatcherNode::DetectTrafficDeadlockCb(
 void DispatcherNode::ListStationsCb(
     const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> /*req*/,
     std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp) {
-  // B5：真实现——从 StationCatalogReloader 投影，目录未加载即报不可用
-  if (!catalog_reloader_ || !catalog_reloader_->loaded()) {
+  // B5：真实现——从生效目录投影，目录未加载即报不可用
+  if (!CatalogLoaded()) {
     resp->success = false;
     resp->message = "station catalog not loaded";
     return;
   }
   const auto projection = amr_dispatcher_core::catalog::BuildStationListProjection(
-      catalog_reloader_->catalog());
+      EffectiveCatalog());
   resp->success = true;
   resp->message = projection.message.empty() ? "OK" : projection.message;
   resp->station_ids = projection.station_ids;
@@ -2006,9 +2046,9 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
       candidate.assignment.outcome = amr_dispatcher_core::fleet::AssignmentOutcome::kAssigned;
       candidate.assignment.strategy = "legacy_single_vehicle";
     }
-    if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
+    if (CatalogLoaded()) {
       candidate.route_locks = amr_dispatcher_core::workflow::PlanMissionRouteLocks(
-          catalog_reloader_->catalog(), candidate_mission.pickup_station,
+          EffectiveCatalog(), candidate_mission.pickup_station,
           candidate_mission.dropoff_station);
     }
     missions_by_id.emplace(candidate_mission.id, candidate_mission);
@@ -2042,11 +2082,11 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
           // 时空窗模式：不占静态排他锁，改为预约时间窗。
           const auto mission_it = missions_by_id.find(mission_id);
           std::vector<std::string> path_node_ids;
-          if (catalog_reloader_ != nullptr && catalog_reloader_->loaded() &&
+          if (CatalogLoaded() &&
               mission_it != missions_by_id.end() &&
               !mission_it->second.pickup_station.empty()) {
             const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
-                catalog_reloader_->catalog(), mission_it->second.pickup_station,
+                EffectiveCatalog(), mission_it->second.pickup_station,
                 mission_it->second.dropoff_station);
             if (route_path.has_value()) {
               path_node_ids = *route_path;
@@ -2202,13 +2242,12 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
 
   // 解析起终点：无 pickup 时用车辆当前位姿作起点；站点缺失或目录未加载直接判负。
   // 判定下沉 core 纯函数（DispatchEndpointResolutionTest 覆盖各处边界）。
-  const bool catalog_loaded =
-      catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+  const bool catalog_loaded = CatalogLoaded();
   amr_dispatcher_core::workflow::DispatchEndpointRequest endpoint_req;
   endpoint_req.pickup_station = m.pickup_station;
   endpoint_req.dropoff_station = m.dropoff_station;
   endpoint_req.catalog_loaded = catalog_loaded;
-  endpoint_req.catalog = catalog_loaded ? &catalog_reloader_->catalog() : nullptr;
+  endpoint_req.catalog = catalog_loaded ? &EffectiveCatalog() : nullptr;
   endpoint_req.has_odom = has_odom_;
   endpoint_req.current_pose = current_pose_;
   const auto endpoints =
@@ -2261,7 +2300,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
   // 行驶序须在此按同一目录快照经 FindRoutePath 重算存档；无路径则该单不参与动态解锁。
   if (catalog_loaded && !m.pickup_station.empty()) {
     const auto route_path = amr_dispatcher_core::catalog::FindRoutePath(
-        catalog_reloader_->catalog(), m.pickup_station, m.dropoff_station);
+        EffectiveCatalog(), m.pickup_station, m.dropoff_station);
     if (route_path.has_value()) {
       mission_route_paths_[m.id] = *route_path;
     } else {
@@ -2603,8 +2642,7 @@ void DispatcherNode::FailMission(std::string mission_id_in, const std::string& r
       }
     } else if (rec_bt.success && rec_bt.decision.action == "dock") {
       // 回坞：入队一条到充电站点的 charge 任务；站点缺失则降级为仅记录
-      const auto& catalog = catalog_reloader_ ? catalog_reloader_->catalog()
-                                              : amr_dispatcher_core::catalog::StationCatalog{};
+      const auto& catalog = EffectiveCatalog();
       const auto* dock_st = amr_dispatcher_core::catalog::FindStation(catalog, recovery_dock_station_);
       if (dock_st) {
         amr_dispatcher_core::dispatcher::Mission dock_m;
@@ -2710,9 +2748,9 @@ void DispatcherNode::DeadlockTick() {
     bool cycle_resolved_by_reroute = false;
     for (const auto& finding : findings) {
       if (finding.kind == amr_dispatcher_core::dispatcher::DeadlockKind::kMutualBlock &&
-          !finding.cycle_path.empty() && catalog_reloader_) {
+          !finding.cycle_path.empty() && CatalogLoaded()) {
         amr_dispatcher_core::workflow::DeadlockRecoveryRequest recovery_req;
-        recovery_req.catalog = &catalog_reloader_->catalog();
+        recovery_req.catalog = &EffectiveCatalog();
         recovery_req.cycle_mission_ids = finding.mission_ids;
 
         // 提取死锁环中涉及的边锁 (奇数位资源为锁名)
@@ -2810,7 +2848,7 @@ void DispatcherNode::DeadlockTick() {
               amr_dispatcher_core::Pose2D goal_pose{0.0, 0.0, 0.0};
               const auto* dest_station =
                   amr_dispatcher_core::catalog::FindStation(
-                      catalog_reloader_->catalog(), active_missions_[mid].dropoff_station);
+                      EffectiveCatalog(), active_missions_[mid].dropoff_station);
               if (dest_station) {
                 goal_pose.x = dest_station->x;
                 goal_pose.y = dest_station->y;
@@ -2963,10 +3001,10 @@ void DispatcherNode::PlanAutoChargingTick() {
   if (!auto_charging_enabled_ || !queue_ || auto_charging_station_.empty()) {
     return;
   }
-  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+  if (!CatalogLoaded()) {
     return;  // 目录未加载：无法确认充电站存在，不猜
   }
-  const auto& catalog = catalog_reloader_->catalog();
+  const auto& catalog = EffectiveCatalog();
   const bool charger_known =
       amr_dispatcher_core::catalog::FindStation(catalog, auto_charging_station_) != nullptr;
 
@@ -3189,11 +3227,11 @@ bool DispatcherNode::ReserveTimeSpaceForMission(
     if (message != nullptr) *message = "path needs at least 2 nodes";
     return false;
   }
-  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+  if (!CatalogLoaded()) {
     if (message != nullptr) *message = "station catalog not loaded";
     return false;
   }
-  const auto& catalog = catalog_reloader_->catalog();
+  const auto& catalog = EffectiveCatalog();
 
   // 逐段长度（米）：取目录里该段边的 distance_m
   std::vector<double> segment_lengths;
@@ -3297,7 +3335,7 @@ bool DispatcherNode::ReserveCBSForMission(
     if (message != nullptr) *message = "pickup or dropoff station is empty";
     return false;
   }
-  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+  if (!CatalogLoaded()) {
     if (message != nullptr) *message = "station catalog not loaded";
     return false;
   }
@@ -3311,7 +3349,7 @@ bool DispatcherNode::ReserveCBSForMission(
   cbs_requests.push_back(req);
 
   auto res = amr_dispatcher_core::workflow::PlanCBSMultiMissionCoordination(
-      cbs_requests, catalog_reloader_->catalog(), time_space_occupancy_,
+      cbs_requests, EffectiveCatalog(), time_space_occupancy_,
       time_space_timing_, std::chrono::steady_clock::now());
 
   if (!res.all_solved || res.mission_plans.find(mission_id) == res.mission_plans.end()) {
@@ -3506,8 +3544,8 @@ amr_dispatcher_core::fleet::VehicleAssignmentRequest DispatcherNode::BuildAssign
   inputs.min_battery_percent = min_battery_percent_;
   inputs.state_max_age_ms = vehicle_state_max_age_ms_;
   inputs.strategy = vehicle_selection_strategy_;
-  if (catalog_reloader_ != nullptr && catalog_reloader_->loaded()) {
-    inputs.catalog = &catalog_reloader_->catalog();
+  if (CatalogLoaded()) {
+    inputs.catalog = &EffectiveCatalog();
     inputs.catalog_loaded = true;
   }
   return amr_dispatcher_core::fleet::BuildVehicleAssignmentRequest(inputs);
@@ -3686,7 +3724,7 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id,
   if (vda5050_vehicle_ids_.empty()) {
     return;  // 未配置受管 VDA 5050 车辆：无订单发布（现网行为不变）
   }
-  if (catalog_reloader_ == nullptr || !catalog_reloader_->loaded()) {
+  if (!CatalogLoaded()) {
     RCLCPP_WARN(get_logger(),
                 "Mission %s: station catalog not loaded, VDA 5050 order NOT published",
                 mission_id.c_str());
@@ -3729,7 +3767,7 @@ void DispatcherNode::PublishVda5050Order(const std::string& mission_id,
   const std::string vehicle_id =
       amr_dispatcher_core::fleet::BindVda5050Vehicle(binding_req).vehicle_id;
   const std::uint32_t update_id = vda5050_next_order_update_id_[vehicle_id]++;
-  const auto& catalog = catalog_reloader_->catalog();
+  const auto& catalog = EffectiveCatalog();
 
   const auto order = amr_dispatcher_core::fleet::BuildVda5050OrderFromPath(
       vehicle_id, mission_id, update_id, path_it->second, catalog, held_locks);
@@ -4083,6 +4121,931 @@ void DispatcherNode::FlushStateSnapshot() {
                        message.c_str());
 }
 
+// ---- 相位 11：在线拓扑叠加层实现 ----
+
+const amr_dispatcher_core::catalog::StationCatalog& DispatcherNode::EffectiveCatalog() const {
+  if (overlay_active_) {
+    return effective_catalog_;
+  }
+  static const amr_dispatcher_core::catalog::StationCatalog kEmptyCatalog{};
+  return catalog_reloader_ ? catalog_reloader_->catalog() : kEmptyCatalog;
+}
+
+bool DispatcherNode::CatalogLoaded() const {
+  return catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+}
+
+void DispatcherNode::LoadTopologyOverlayFromDisk() {
+  if (topology_overlay_file_.empty()) {
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    return;
+  }
+  if (!CatalogLoaded()) {
+    // 基础目录尚未就绪（如 map_ingest 还在写 stations.yaml）：延后加载
+    overlay_deferred_ = true;
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    RCLCPP_INFO(get_logger(),
+                "Base catalog not yet loaded; topology overlay load deferred to reload timer: %s",
+                topology_overlay_file_.c_str());
+    return;
+  }
+  overlay_deferred_ = false;
+  std::string message;
+  const auto loaded =
+      amr_dispatcher_core::catalog::LoadTopologyOverlay(topology_overlay_file_, &message);
+  if (!loaded.has_value()) {
+    if (message.find("cannot open") != std::string::npos ||
+        message.find("not found") != std::string::npos) {
+      // 文件不存在：属于正常首启状态，不是错误
+      overlay_active_ = false;
+      overlay_loaded_ = false;
+      overlay_ = amr_dispatcher_core::catalog::TopologyOverlay{};
+      effective_catalog_ = amr_dispatcher_core::catalog::StationCatalog{};
+      RCLCPP_INFO(get_logger(), "No topology overlay file at %s (running on base catalog)",
+                  topology_overlay_file_.c_str());
+      return;
+    }
+    // 损坏文件：拒绝并保留现场，绝不静默当作空叠加层（防误解为没封路）
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    last_overlay_error_ = message;
+    RCLCPP_ERROR(get_logger(),
+                 "Refusing corrupt topology overlay from %s: %s (running on base catalog; "
+                 "file left untouched for inspection)",
+                 topology_overlay_file_.c_str(), message.c_str());
+    AppendAudit("topology_overlay_rejected", "", "", "system",
+                "corrupt overlay file: " + message);
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent ev;
+      ev.stamp = now();
+      ev.event = "overlay_rejected";
+      ev.reason = message;
+      event_pub_->publish(ev);
+    }
+    return;
+  }
+
+  const auto& base = catalog_reloader_->catalog();
+  if (!loaded->base_map_hash.empty() && !base.map_hash.empty() &&
+      loaded->base_map_hash != base.map_hash) {
+    // 基础地图变更导致失效：改名归档，不删除
+    std::string relocated;
+    std::string inv_err;
+    if (amr_dispatcher_core::catalog::InvalidateOverlayFile(
+            topology_overlay_file_, "stale", &relocated, &inv_err)) {
+      RCLCPP_WARN(get_logger(),
+                  "Topology overlay invalidated (base map_hash changed: overlay=%s vs base=%s). "
+                  "Archived to %s",
+                  loaded->base_map_hash.c_str(), base.map_hash.c_str(), relocated.c_str());
+    } else {
+      RCLCPP_ERROR(get_logger(),
+                   "Failed to archive stale overlay file %s: %s",
+                   topology_overlay_file_.c_str(), inv_err.c_str());
+    }
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    overlay_ = amr_dispatcher_core::catalog::TopologyOverlay{};
+    effective_catalog_ = amr_dispatcher_core::catalog::StationCatalog{};
+    AppendAudit("topology_overlay_invalidated", "", "", "system",
+                "base map_hash changed: overlay=" + loaded->base_map_hash +
+                    " base=" + base.map_hash);
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent ev;
+      ev.stamp = now();
+      ev.event = "overlay_invalidated";
+      ev.reason = "base map_hash changed";
+      event_pub_->publish(ev);
+    }
+    return;
+  }
+
+  // 基础校验（端点存在性等）
+  const auto validation =
+      amr_dispatcher_core::catalog::ValidateTopologyOverlay(base, *loaded);
+  if (!validation.ok) {
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    last_overlay_error_ = validation.message;
+    RCLCPP_ERROR(get_logger(),
+                 "Topology overlay failed validation against base catalog: %s",
+                 validation.message.c_str());
+    AppendAudit("topology_overlay_rejected", "", "", "system",
+                "validation failed: " + validation.message);
+    return;
+  }
+
+  // 连通性分析：所有站点必须强连通
+  const auto new_catalog =
+      amr_dispatcher_core::catalog::ApplyTopologyOverlay(base, *loaded);
+  const auto connectivity =
+      amr_dispatcher_core::catalog::AnalyzeTopologyConnectivity(new_catalog);
+  if (!connectivity.all_stations_reachable) {
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    last_overlay_error_ = connectivity.message;
+    RCLCPP_ERROR(get_logger(),
+                 "Topology overlay would disconnect topology on load: %s",
+                 connectivity.message.c_str());
+    AppendAudit("topology_overlay_rejected", "", "", "system",
+                "connectivity check failed: " + connectivity.message);
+    return;
+  }
+
+  overlay_ = *loaded;
+  effective_catalog_ = new_catalog;
+  overlay_loaded_ = true;
+  overlay_active_ = !overlay_.Empty();
+  last_overlay_error_.clear();
+  ReconcileResourceBlocksWithOverlay();
+  RCLCPP_INFO(get_logger(),
+              "Loaded topology overlay (rev=%llu, blocked=%zu, one_way=%zu, markers=%zu, active=%s)",
+              static_cast<unsigned long long>(overlay_.revision), overlay_.blocked_edges.size(),
+              overlay_.one_way_edges.size(), overlay_.added_markers.size(),
+              overlay_active_ ? "true" : "false");
+}
+
+void DispatcherNode::ReconcileOverlayAfterBaseReload() {
+  if (!overlay_active_ && !overlay_loaded_) {
+    return;
+  }
+  if (!CatalogLoaded()) {
+    return;
+  }
+  const auto& base = catalog_reloader_->catalog();
+  if (!overlay_.base_map_hash.empty() && !base.map_hash.empty() &&
+      overlay_.base_map_hash != base.map_hash) {
+    // 热重载发现基础地图 hash 变了：失效归档
+    std::string relocated;
+    std::string inv_err;
+    if (amr_dispatcher_core::catalog::InvalidateOverlayFile(
+            topology_overlay_file_, "stale", &relocated, &inv_err)) {
+      RCLCPP_WARN(get_logger(),
+                  "Base catalog hash changed after reload (%s -> %s). Topology overlay archived: %s",
+                  overlay_.base_map_hash.c_str(), base.map_hash.c_str(), relocated.c_str());
+    }
+    overlay_active_ = false;
+    overlay_loaded_ = false;
+    overlay_ = amr_dispatcher_core::catalog::TopologyOverlay{};
+    effective_catalog_ = amr_dispatcher_core::catalog::StationCatalog{};
+    ReconcileResourceBlocksWithOverlay();
+    AppendAudit("topology_overlay_invalidated", "", "", "system",
+                "base map_hash changed after catalog reload");
+    if (event_pub_ && event_pub_->is_activated()) {
+      amr_dispatcher_interfaces::msg::MissionEvent ev;
+      ev.stamp = now();
+      ev.event = "overlay_invalidated";
+      ev.reason = "base map_hash changed after reload";
+      event_pub_->publish(ev);
+    }
+    return;
+  }
+
+  // 基础地图内容变了但 map_hash 没变（或叠加层与新基线兼容）：重新应用
+  const auto validation =
+      amr_dispatcher_core::catalog::ValidateTopologyOverlay(base, overlay_);
+  if (!validation.ok) {
+    RCLCPP_WARN(get_logger(),
+                "Topology overlay no longer valid after base reload: %s (keeping overlay inactive)",
+                validation.message.c_str());
+    overlay_active_ = false;
+    effective_catalog_ = amr_dispatcher_core::catalog::StationCatalog{};
+    ReconcileResourceBlocksWithOverlay();
+    return;
+  }
+  effective_catalog_ = amr_dispatcher_core::catalog::ApplyTopologyOverlay(base, overlay_);
+  overlay_active_ = !overlay_.Empty();
+  ReconcileResourceBlocksWithOverlay();
+}
+
+void DispatcherNode::ReconcileResourceBlocksWithOverlay() {
+  if (!reservation_table_) {
+    return;
+  }
+  // 找出当前所有的 traffic_block:topology_overlay: 锁
+  std::unordered_set<std::string> current_overlay_blocks;
+  for (const auto& [res_id, owner] : reservation_table_->Snapshot()) {
+    if (owner.rfind("traffic_block:topology_overlay:", 0) == 0) {
+      current_overlay_blocks.insert(res_id);
+    }
+  }
+
+  // 目标锁集合
+  std::unordered_set<std::string> desired_blocks;
+  if (overlay_active_) {
+    for (const auto& edge : overlay_.blocked_edges) {
+      desired_blocks.insert(
+          amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(edge.from, edge.to));
+    }
+  }
+
+  // 释放不再需要的锁
+  for (const auto& res_id : current_overlay_blocks) {
+    if (desired_blocks.find(res_id) == desired_blocks.end()) {
+      std::string msg;
+      reservation_table_->Unblock(res_id, &msg);
+    }
+  }
+
+  // 补齐新锁
+  if (overlay_active_) {
+    for (const auto& edge : overlay_.blocked_edges) {
+      const std::string res_id =
+          amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(edge.from, edge.to);
+      if (current_overlay_blocks.find(res_id) == current_overlay_blocks.end()) {
+        const std::string reason = "topology_overlay:" + (edge.reason.empty() ? "blocked" : edge.reason);
+        std::string msg;
+        reservation_table_->Block(res_id, reason, &msg);
+      }
+    }
+  }
+}
+
+void DispatcherNode::ApplyRerouteToVehicle(
+    const std::string& mission_id,
+    const amr_dispatcher_core::workflow::VehicleImpact& impact) {
+  auto track_it = mission_tracking_vehicle_.find(mission_id);
+  if (track_it != mission_tracking_vehicle_.end() && planner_) {
+    const std::string& vid = track_it->second;
+    auto pose_it = vehicle_poses_.find(vid);
+    amr_dispatcher_core::Pose2D start_pose{
+        (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+            ? pose_it->second.pose.x
+            : current_pose_.x,
+        (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+            ? pose_it->second.pose.y
+            : current_pose_.y,
+        (pose_it != vehicle_poses_.end() && pose_it->second.has_odom)
+            ? pose_it->second.pose.yaw
+            : current_pose_.yaw};
+    amr_dispatcher_core::Pose2D goal_pose{0.0, 0.0, 0.0};
+    auto ait = active_missions_.find(mission_id);
+    if (ait != active_missions_.end()) {
+      const auto* dest_station =
+          amr_dispatcher_core::catalog::FindStation(EffectiveCatalog(), ait->second.dropoff_station);
+      if (dest_station) {
+        goal_pose.x = dest_station->x;
+        goal_pose.y = dest_station->y;
+        goal_pose.theta = dest_station->yaw;
+      }
+    }
+    const auto waypoints = planner_->Plan(start_pose, goal_pose);
+    nav_msgs::msg::Path path_msg;
+    path_msg.header.stamp = now();
+    path_msg.header.frame_id = "map";
+    for (const auto& wp : waypoints) {
+      geometry_msgs::msg::PoseStamped ps;
+      ps.header = path_msg.header;
+      ps.pose.position.x = wp.x;
+      ps.pose.position.y = wp.y;
+      ps.pose.orientation.z = std::sin(wp.theta / 2.0);
+      ps.pose.orientation.w = std::cos(wp.theta / 2.0);
+      path_msg.poses.push_back(ps);
+    }
+    PublishPlanForVehicle(vid, path_msg);
+  } else {
+    auto vda_it = vda5050_mission_vehicle_.find(mission_id);
+    if (vda_it != vda5050_mission_vehicle_.end()) {
+      PublishVda5050Order(mission_id, vda_it->second);
+    }
+  }
+}
+
+DispatcherNode::TopologyCommitPlan DispatcherNode::BuildTopologyCommitPlan(
+    const amr_dispatcher_core::catalog::TopologyOverlay& requested,
+    const std::string& expected_map_hash, const std::string& operator_id,
+    const std::string& reason, bool allow_edge_under_vehicle) {
+  TopologyCommitPlan plan;
+
+  // 0. 功能开关：topology_overlay_file 为空时整个"目录感知封路"是关闭的。
+  //    必须显式拒绝，而不是"内存里生效但重启就没了"——那会让操作员以为
+  //    施工区已经提交（控制台显示 revision+1），而冷重启后路又通了。
+  //    持久化是这套语义的根基（写前提交点），没有它就没有原子性可言。
+  if (topology_overlay_file_.empty()) {
+    plan.error_code = "overlay_disabled";
+    plan.message =
+        "runtime topology overlay is disabled (topology_overlay_file is empty); "
+        "set it to an absolute path and restart dispatcher_node";
+    return plan;
+  }
+
+  // 1. 基础目录可用性
+  if (!CatalogLoaded()) {
+    plan.error_code = "catalog_unavailable";
+    plan.message = "station catalog not loaded";
+    return plan;
+  }
+  const auto& base = catalog_reloader_->catalog();
+
+  // 2. map_hash 乐观并发（客户端声明期望基线时校验）
+  if (!expected_map_hash.empty() && !base.map_hash.empty() &&
+      expected_map_hash != base.map_hash) {
+    plan.error_code = "map_hash_mismatch";
+    plan.message = "expected map_hash " + expected_map_hash +
+                   " does not match current base " + base.map_hash;
+    return plan;
+  }
+  // 2b. 请求体自带的 base_map_hash（例如从 GetTopologyOverlay 回读后原样提交）
+  //     同样按乐观并发处理：一份针对旧地图写的施工区绝不能套到新地图上。
+  //     （在线编辑时该字段可以为空 —— 那时基线就是服务器当前目录。）
+  if (!requested.base_map_hash.empty() && !base.map_hash.empty() &&
+      requested.base_map_hash != base.map_hash) {
+    plan.error_code = "map_hash_mismatch";
+    plan.message = "overlay base_map_hash " + requested.base_map_hash +
+                   " does not match current base " + base.map_hash;
+    return plan;
+  }
+
+  // 3. 规范化 candidate（盖戳基线哈希、版本号递增、时间戳）
+  plan.operator_id = operator_id;
+  plan.reason = reason;
+  plan.candidate = requested;
+  plan.candidate.base_map_hash = base.map_hash;
+  plan.candidate.revision = overlay_.revision + 1;
+  plan.candidate.updated_at = IsoTimestampNow();
+  for (auto& edge : plan.candidate.blocked_edges) {
+    if (edge.operator_id.empty()) edge.operator_id = operator_id;
+    if (edge.reason.empty()) edge.reason = reason;
+    if (edge.created_at.empty()) edge.created_at = plan.candidate.updated_at;
+  }
+  for (auto& edge : plan.candidate.one_way_edges) {
+    if (edge.operator_id.empty()) edge.operator_id = operator_id;
+    if (edge.reason.empty()) edge.reason = reason;
+    if (edge.created_at.empty()) edge.created_at = plan.candidate.updated_at;
+  }
+  for (auto& marker : plan.candidate.added_markers) {
+    if (marker.operator_id.empty()) marker.operator_id = operator_id;
+    if (marker.reason.empty()) marker.reason = reason;
+    if (marker.created_at.empty()) marker.created_at = plan.candidate.updated_at;
+  }
+
+  // 4. 幂等判定：若与当前叠加层的语义签名相同 -> no_change（200，零写盘零递增）
+  if (amr_dispatcher_core::catalog::TopologyOverlaySignature(plan.candidate) ==
+      amr_dispatcher_core::catalog::TopologyOverlaySignature(overlay_)) {
+    plan.error_code = "no_change";
+    plan.message = "requested topology overlay is identical to the active one";
+    plan.no_change = true;
+    plan.candidate.revision = overlay_.revision;  // 保持旧 revision
+    return plan;
+  }
+
+  // 5. 叠加层自洽性校验
+  const auto validation =
+      amr_dispatcher_core::catalog::ValidateTopologyOverlay(base, plan.candidate);
+  if (!validation.ok) {
+    plan.error_code = "overlay_invalid";
+    plan.message = validation.message;
+    return plan;
+  }
+
+  // 6. 应用并分析全局站点强连通性
+  plan.new_catalog =
+      amr_dispatcher_core::catalog::ApplyTopologyOverlay(base, plan.candidate);
+  plan.connectivity =
+      amr_dispatcher_core::catalog::AnalyzeTopologyConnectivity(plan.new_catalog);
+  if (!plan.connectivity.all_stations_reachable) {
+    plan.error_code = "would_disconnect_topology";
+    plan.message = plan.connectivity.message;
+    return plan;
+  }
+
+  // 7. 组装在途任务视图并分析对在途车辆的影响
+  amr_dispatcher_core::workflow::TopologyChangeImpactRequest impact_req;
+  impact_req.new_catalog = &plan.new_catalog;
+  impact_req.allow_edge_under_vehicle =
+      allow_edge_under_vehicle || topology_allow_edge_under_vehicle_;
+
+  for (const auto& [mid, mission] : active_missions_) {
+    amr_dispatcher_core::workflow::InFlightMissionView view;
+    view.mission_id = mid;
+    auto track_it = mission_tracking_vehicle_.find(mid);
+    if (track_it != mission_tracking_vehicle_.end()) {
+      view.vehicle_id = track_it->second;
+    } else {
+      auto vda_it = vda5050_mission_vehicle_.find(mid);
+      if (vda_it != vda5050_mission_vehicle_.end()) {
+        view.vehicle_id = vda_it->second;
+      }
+    }
+    auto safe_it = vehicle_safe_nodes_.find(view.vehicle_id);
+    if (safe_it != vehicle_safe_nodes_.end() && !safe_it->second.empty()) {
+      view.current_safe_node = safe_it->second;
+    } else {
+      view.current_safe_node = mission.pickup_station;
+    }
+    view.destination_node = mission.dropoff_station;
+    auto path_it = mission_route_paths_.find(mid);
+    if (path_it != mission_route_paths_.end()) {
+      view.full_original_path = path_it->second;
+    }
+    if (reservation_table_) {
+      for (const auto& [res_id, owner] : reservation_table_->Snapshot()) {
+        if (owner == mid) {
+          view.current_held_locks.push_back(res_id);
+        }
+      }
+    }
+    impact_req.missions.push_back(std::move(view));
+  }
+
+  plan.impact = amr_dispatcher_core::workflow::AnalyzeTopologyChangeImpact(impact_req);
+  if (!plan.impact.safe_to_apply) {
+    plan.error_code = plan.impact.error_code;
+    plan.message = plan.impact.message;
+    return plan;
+  }
+  // 操作员必须能看到"这次变更动了谁"。impacted_vehicles 为空时最容易被误读成
+  // "没人在跑"，所以把在途任务数与各类计数明确打进日志（不阻塞、不含边名）。
+  RCLCPP_INFO(get_logger(),
+              "Topology commit plan: in_flight=%zu reroute=%zu occupied=%zu stranded=%zu (%s)",
+              impact_req.missions.size(), plan.impact.reroute_count,
+              plan.impact.occupied_count, plan.impact.stranded_count,
+              plan.impact.message.c_str());
+
+  // 8. 预约表锁预检：
+  //    (a) 需要绕行的任务其 new_required_locks 是否被他人占用
+  //    (b) 新禁用的边在预约表里是否已被他人（或在途车）占用
+  std::unordered_set<std::string> old_overlay_blocked_ids;
+  for (const auto& edge : overlay_.blocked_edges) {
+    old_overlay_blocked_ids.insert(
+        amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(edge.from, edge.to));
+  }
+  std::unordered_set<std::string> new_overlay_blocked_ids;
+  for (const auto& edge : plan.candidate.blocked_edges) {
+    const std::string res_id =
+        amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(edge.from, edge.to);
+    new_overlay_blocked_ids.insert(res_id);
+    if (old_overlay_blocked_ids.find(res_id) == old_overlay_blocked_ids.end()) {
+      plan.edges_to_block.emplace_back(res_id, "topology_overlay:" + (edge.reason.empty() ? "blocked" : edge.reason));
+    }
+  }
+  for (const auto& old_id : old_overlay_blocked_ids) {
+    if (new_overlay_blocked_ids.find(old_id) == new_overlay_blocked_ids.end()) {
+      plan.edges_to_unblock.push_back(old_id);
+    }
+  }
+
+  if (reservation_table_) {
+    const auto snapshot = reservation_table_->Snapshot();
+    std::unordered_map<std::string, std::string> current_owners;
+    for (const auto& [res, owner] : snapshot) {
+      current_owners[res] = owner;
+    }
+
+    // 预检每个重规划任务所需的新锁
+    for (const auto& vimpact : plan.impact.vehicles) {
+      if (vimpact.kind != amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady) {
+        continue;
+      }
+      for (const auto& new_lock : vimpact.new_required_locks) {
+        auto oit = current_owners.find(new_lock);
+        if (oit != current_owners.end()) {
+          // 被自己持有：合法的预占重叠
+          if (oit->second == vimpact.mission_id) continue;
+          // 被"即将解除的旧叠加层锁"或"即将释放的旧锁"持有：在 Commit 里会按序释放
+          if (oit->second.rfind("traffic_block:topology_overlay:", 0) == 0 &&
+              std::find(plan.edges_to_unblock.begin(), plan.edges_to_unblock.end(), new_lock) !=
+                  plan.edges_to_unblock.end()) {
+            continue;
+          }
+          plan.error_code = "lock_conflict";
+          plan.message = "resource conflict on " + new_lock + " held by " + oit->second;
+          return plan;
+        }
+      }
+    }
+
+    // 预检新封的边：若已被在途任务占用
+    //
+    // 语义分层（顺序不能颠倒）：
+    //   * 该边出现在某个**需要绕行**任务的锁置换集合里（new_required_locks ∪
+    //     obsolete_locks）-> 不是问题。Commit 先 Reserve 新锁、再 Release 旧锁，
+    //     所以第 4 步 Block 时这条边已经不归它了。把这两种情况判成"压在边上"，
+    //     会把每一次正常的施工区改道都拒掉 —— 恰好废掉这个功能。
+    //   * 该边仍被某台车实际占用（它已驶过但仍持节点锁，或它正压在这条边上要
+    //     等它驶离）-> 才是 kOnBlockedEdge 语义，拒绝（或按操作员确认 retained）。
+    std::unordered_set<std::string> swapped_locks;
+    for (const auto& vimpact : plan.impact.vehicles) {
+      if (vimpact.kind != amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady) {
+        continue;
+      }
+      swapped_locks.insert(vimpact.new_required_locks.begin(),
+                           vimpact.new_required_locks.end());
+      swapped_locks.insert(vimpact.obsolete_locks.begin(), vimpact.obsolete_locks.end());
+    }
+    for (const auto& [edge_res, _] : plan.edges_to_block) {
+      auto oit = current_owners.find(edge_res);
+      if (oit == current_owners.end() || oit->second.rfind("traffic_block:", 0) == 0) {
+        continue;  // 没人持有，或已是一把人工封路锁：直接 Block 即可
+      }
+      if (swapped_locks.count(edge_res) > 0) {
+        continue;  // 会在本次两阶段置换里被新申请或释放
+      }
+      if (impact_req.allow_edge_under_vehicle) {
+        // 允许在途车占用：登记为 retained，Commit 时跳过 Block
+        plan.retained_edge_locks.push_back(edge_res);
+        continue;
+      }
+      plan.error_code = "edge_occupied_in_flight";
+      plan.message = "edge resource " + edge_res +
+                     " is currently held by in-flight mission " + oit->second;
+      return plan;
+    }
+  }
+
+  plan.error_code = "ok";
+  plan.message = "commit plan verified successfully";
+  return plan;
+}
+
+bool DispatcherNode::CommitTopologyPlan(
+    TopologyCommitPlan* plan, std::string* error_code, std::string* message) {
+  if (plan == nullptr) {
+    if (error_code) *error_code = "internal_error";
+    if (message) *message = "null commit plan";
+    return false;
+  }
+  if (plan->no_change) {
+    if (error_code) *error_code = "no_change";
+    if (message) *message = plan->message;
+    return true;  // 幂等成功
+  }
+
+  // 1. 写前持久化（原子落盘点）：失败则零内存变更
+  if (!topology_overlay_file_.empty()) {
+    std::string persist_err;
+    if (!amr_dispatcher_core::catalog::PersistTopologyOverlay(
+            topology_overlay_file_, plan->candidate, &persist_err)) {
+      if (error_code) *error_code = "overlay_persist_failed";
+      if (message) *message = "failed to persist overlay: " + persist_err;
+      last_overlay_error_ = persist_err;
+      RCLCPP_ERROR(get_logger(), "CommitTopologyPlan persist failed: %s", persist_err.c_str());
+      return false;
+    }
+  }
+
+  // 2. 为所有需要绕行的任务申请新锁
+  if (reservation_table_) {
+    for (const auto& vimpact : plan->impact.vehicles) {
+      if (vimpact.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady &&
+          !vimpact.new_required_locks.empty()) {
+        auto res = reservation_table_->Reserve(vimpact.mission_id, vimpact.new_required_locks);
+        if (!res.success) {
+          RCLCPP_WARN(get_logger(),
+                      "CommitTopologyPlan: lock reservation failed for mission %s on reroute (%s)",
+                      vimpact.mission_id.c_str(), res.message.c_str());
+        }
+      }
+    }
+
+    // 3. 释放被废弃的旧锁（静态锁 + 时空窗）
+    for (const auto& vimpact : plan->impact.vehicles) {
+      if (vimpact.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady) {
+        if (!vimpact.obsolete_locks.empty()) {
+          reservation_table_->ReleaseResources(vimpact.mission_id, vimpact.obsolete_locks);
+          if (UsesTimeWindows()) {
+            ReleaseTimeSpaceForResources(vimpact.mission_id, vimpact.obsolete_locks);
+          }
+        }
+      }
+    }
+
+    // 4. 置叠加层封路锁（已排除 retained_edge_locks）
+    for (const auto& [edge_res, reason] : plan->edges_to_block) {
+      if (std::find(plan->retained_edge_locks.begin(), plan->retained_edge_locks.end(), edge_res) !=
+          plan->retained_edge_locks.end()) {
+        RCLCPP_INFO(get_logger(),
+                    "CommitTopologyPlan: skipping Block on %s (retained by in-flight vehicle)",
+                    edge_res.c_str());
+        continue;
+      }
+      std::string block_msg;
+      reservation_table_->Block(edge_res, reason, &block_msg);
+    }
+
+    // 5. 解除不再需要的旧叠加层锁
+    for (const auto& edge_res : plan->edges_to_unblock) {
+      std::string unblock_msg;
+      reservation_table_->Unblock(edge_res, &unblock_msg);
+    }
+  }
+
+  // 6. 切换内存目录与叠加层
+  overlay_ = plan->candidate;
+  effective_catalog_ = plan->new_catalog;
+  overlay_active_ = !overlay_.Empty();
+  overlay_loaded_ = true;
+  last_overlay_error_.clear();
+
+  // 7. 同步规划器（SkeletonPlanner 持有目录副本，漏同步就会车照常开）
+  auto* skeleton_planner =
+      dynamic_cast<amr_dispatcher_core::planning::SkeletonPlanner*>(planner_.get());
+  if (skeleton_planner != nullptr) {
+    skeleton_planner->UpdateCatalog(EffectiveCatalog());
+  }
+
+  // 8. 下发绕行计划
+  for (const auto& vimpact : plan->impact.vehicles) {
+    if (vimpact.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady) {
+      mission_route_paths_[vimpact.mission_id] = vimpact.full_updated_path;
+      in_flight_pending_wait_.erase(vimpact.mission_id);
+      ApplyRerouteToVehicle(vimpact.mission_id, vimpact);
+      if (event_pub_ && event_pub_->is_activated()) {
+        amr_dispatcher_interfaces::msg::MissionEvent msg;
+        msg.stamp = now();
+        msg.mission_id = vimpact.mission_id;
+        auto ait = active_missions_.find(vimpact.mission_id);
+        if (ait != active_missions_.end()) {
+          msg.order_id = ait->second.order_id;
+        }
+        msg.event = "rerouted";
+        msg.to_state = "RUNNING";
+        msg.reason = "topology change reroute";
+        event_pub_->publish(msg);
+      }
+    }
+  }
+
+  // 9. 审计与全局变更事件
+  //    operator_id 必须是提交人（不是时间戳）：事后追责与"谁封的这条路"全靠它。
+  AppendAudit(plan->audit_action, "", "", plan->operator_id,
+              (plan->reason.empty() ? std::string("(no reason given)") : plan->reason) +
+                  " | revision=" + std::to_string(overlay_.revision) +
+                  " blocked=" + std::to_string(overlay_.blocked_edges.size()) +
+                  " one_way=" + std::to_string(overlay_.one_way_edges.size()),
+              plan->edges_to_unblock);
+  if (event_pub_ && event_pub_->is_activated()) {
+    amr_dispatcher_interfaces::msg::MissionEvent msg;
+    msg.stamp = now();
+    msg.event = "topology_changed";
+    msg.reason = "applied revision " + std::to_string(overlay_.revision);
+    event_pub_->publish(msg);
+  }
+
+  if (error_code) *error_code = "ok";
+  if (message) *message = "topology overlay revision " + std::to_string(overlay_.revision) + " applied";
+  return true;
+}
+
+// ---- 相位 11：在线拓扑三个新服务回调 ----
+
+void DispatcherNode::BlockEdgeCb(
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Request> req,
+    std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Response> resp) {
+  if (!req->confirm) {
+    resp->success = false;
+    resp->error_code = "not_confirmed";
+    resp->message = "action must be confirmed (confirm=true)";
+    return;
+  }
+  if (req->from_station.empty() || req->to_station.empty()) {
+    resp->success = false;
+    resp->error_code = "invalid_request";
+    resp->message = "from_station and to_station must be specified";
+    return;
+  }
+  if (req->action != "block" && req->action != "unblock" &&
+      req->action != "one_way" && req->action != "two_way") {
+    resp->success = false;
+    resp->error_code = "invalid_request";
+    resp->message = "unknown action: " + req->action + " (expected block|unblock|one_way|two_way)";
+    return;
+  }
+
+  const std::string dir = req->direction.empty() ? "both" : req->direction;
+  const std::string edge_res =
+      amr_dispatcher_core::dispatcher::ResourceTable::RouteEdgeId(req->from_station, req->to_station);
+  resp->resource_id = edge_res;
+
+  // 边存在性预检（404 unknown_edge）：操作员最常犯的错是站点 id 拼错或
+  // 把"两站之间没有直接通路"当成可封的边。笼统回 400 overlay_invalid 会让
+  // 人在控制台上反复猜，所以这一档单独成码。
+  // 注意：只封**无障碍**的管制动作需要边存在；解封一条已被删除的边应当幂等通过
+  // （地图重新出图后旧施工区就属于这种情况），所以仅 block / one_way 做此预检。
+  // 端点既可能是站点也可能是骨架路网节点（rn_*），两者都在同一 id 空间里。
+  if ((req->action == "block" || req->action == "one_way") && CatalogLoaded()) {
+    const auto& base = catalog_reloader_->catalog();
+    const auto node_known = [&base](const std::string& id) {
+      if (amr_dispatcher_core::catalog::FindStation(base, id) != nullptr) return true;
+      for (const auto& rn : base.road_nodes) {
+        if (rn.id == id) return true;
+      }
+      return false;
+    };
+    bool edge_found = false;
+    for (const auto& e : base.edges) {
+      if ((e.from == req->from_station && e.to == req->to_station) ||
+          (e.from == req->to_station && e.to == req->from_station)) {
+        edge_found = true;
+        break;
+      }
+    }
+    if (!node_known(req->from_station) || !node_known(req->to_station) || !edge_found) {
+      resp->success = false;
+      resp->error_code = "unknown_edge";
+      resp->message =
+          (!node_known(req->from_station) || !node_known(req->to_station))
+              ? "unknown station or road node in " + req->from_station + " -> " + req->to_station
+              : "no edge between " + req->from_station + " and " + req->to_station;
+      resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+      return;
+    }
+  }
+
+  // 基于当前叠加层拷贝一份候选
+  amr_dispatcher_core::catalog::TopologyOverlay candidate = overlay_;
+
+  const auto edge_matches = [&](const amr_dispatcher_core::catalog::OverlayEdge& e) {
+    return (e.from == req->from_station && e.to == req->to_station) ||
+           (e.from == req->to_station && e.to == req->from_station);
+  };
+
+  if (req->action == "block") {
+    // 移除已有的同边管制，再追加 blocked_edge
+    candidate.blocked_edges.erase(
+        std::remove_if(candidate.blocked_edges.begin(), candidate.blocked_edges.end(), edge_matches),
+        candidate.blocked_edges.end());
+    candidate.one_way_edges.erase(
+        std::remove_if(candidate.one_way_edges.begin(), candidate.one_way_edges.end(), edge_matches),
+        candidate.one_way_edges.end());
+
+    amr_dispatcher_core::catalog::OverlayEdge edge;
+    edge.from = req->from_station;
+    edge.to = req->to_station;
+    edge.reason = req->reason.empty() ? "blocked by operator" : req->reason;
+    edge.operator_id = req->operator_id.empty() ? "operator" : req->operator_id;
+    candidate.blocked_edges.push_back(edge);
+  } else if (req->action == "unblock" || req->action == "two_way") {
+    // 从 blocked_edges / one_way_edges 中彻底抹掉这条边
+    candidate.blocked_edges.erase(
+        std::remove_if(candidate.blocked_edges.begin(), candidate.blocked_edges.end(), edge_matches),
+        candidate.blocked_edges.end());
+    candidate.one_way_edges.erase(
+        std::remove_if(candidate.one_way_edges.begin(), candidate.one_way_edges.end(), edge_matches),
+        candidate.one_way_edges.end());
+  } else if (req->action == "one_way") {
+    candidate.blocked_edges.erase(
+        std::remove_if(candidate.blocked_edges.begin(), candidate.blocked_edges.end(), edge_matches),
+        candidate.blocked_edges.end());
+    candidate.one_way_edges.erase(
+        std::remove_if(candidate.one_way_edges.begin(), candidate.one_way_edges.end(), edge_matches),
+        candidate.one_way_edges.end());
+
+    amr_dispatcher_core::catalog::OverlayEdge edge;
+    if (dir == "reverse") {
+      edge.from = req->to_station;
+      edge.to = req->from_station;
+    } else {
+      // "forward" 或 "both"（one_way 下 both 回落为 forward）
+      edge.from = req->from_station;
+      edge.to = req->to_station;
+    }
+    edge.reason = req->reason.empty() ? "one_way set by operator" : req->reason;
+    edge.operator_id = req->operator_id.empty() ? "operator" : req->operator_id;
+    candidate.one_way_edges.push_back(edge);
+  }
+
+  auto plan = BuildTopologyCommitPlan(
+      candidate, req->expected_map_hash, req->operator_id, req->reason,
+      req->allow_edge_under_vehicle);
+  plan.audit_action = "topology_block_edge";
+
+  for (const auto& vi : plan.impact.vehicles) {
+    if (vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady ||
+        vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kOnBlockedEdge ||
+        vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kNoAlternative) {
+      resp->impacted_vehicles.push_back(vi.vehicle_id);
+      resp->impacted_missions.push_back(vi.mission_id);
+    }
+  }
+
+  if (plan.error_code != "ok" && plan.error_code != "no_change") {
+    resp->success = false;
+    resp->error_code = plan.error_code;
+    resp->message = plan.message;
+    resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+    return;
+  }
+
+  std::string commit_code;
+  std::string commit_msg;
+  const bool committed = CommitTopologyPlan(&plan, &commit_code, &commit_msg);
+  resp->success = committed;
+  resp->error_code = commit_code;
+  resp->message = commit_msg;
+  resp->rerouted = plan.impact.reroute_count > 0;
+  resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+}
+
+void DispatcherNode::TopologyHotUpdateCb(
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request> req,
+    std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Response> resp) {
+  if (!req->dry_run && !req->confirm) {
+    resp->success = false;
+    resp->error_code = "not_confirmed";
+    resp->message = "dry_run=false requires confirm=true";
+    return;
+  }
+
+  const auto& base = catalog_reloader_ ? catalog_reloader_->catalog()
+                                       : amr_dispatcher_core::catalog::StationCatalog{};
+  resp->catalog_map_hash = base.map_hash;
+
+  amr_dispatcher_core::catalog::TopologyOverlay candidate;
+  if (req->clear) {
+    // 清空全部叠加层，恢复纯基线
+    candidate.base_map_hash = base.map_hash;
+    candidate.revision = overlay_.revision + 1;
+    candidate.updated_at = IsoTimestampNow();
+  } else {
+    std::string parse_err;
+    // 在线提交不要求操作员填 base_map_hash：基线由 BuildTopologyCommitPlan 盖章
+    // （客户端拿不到服务器当前的地图指纹，逼它填只会逼出"抄旧值"这种更坏的用法）。
+    // 磁盘上的文件仍由序列化器写出完整字段，读回走严格模式。
+    const auto parsed = amr_dispatcher_core::catalog::DeserializeTopologyOverlay(
+        req->overlay_yaml, &parse_err, false);
+    if (!parsed.has_value()) {
+      resp->success = false;
+      resp->error_code = "overlay_invalid";
+      resp->message = "failed to parse overlay_yaml: " + parse_err;
+      resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+      return;
+    }
+    candidate = *parsed;
+  }
+
+  auto plan = BuildTopologyCommitPlan(
+      candidate, req->expected_map_hash, req->operator_id, req->reason,
+      req->allow_edge_under_vehicle);
+
+  resp->unreachable_nodes = plan.connectivity.unreachable_stations;
+  for (const auto& vi : plan.impact.vehicles) {
+    if (vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kRerouteReady ||
+        vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kOnBlockedEdge ||
+        vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kNoAlternative) {
+      resp->impacted_vehicles.push_back(vi.vehicle_id);
+      resp->impacted_missions.push_back(vi.mission_id);
+      if (vi.kind == amr_dispatcher_core::workflow::VehicleImpact::Kind::kNoAlternative) {
+        resp->reroute_failures.push_back(vi.mission_id);
+      }
+    }
+  }
+
+  if (plan.error_code != "ok" && plan.error_code != "no_change") {
+    resp->success = false;
+    resp->error_code = plan.error_code;
+    resp->message = plan.message;
+    resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+    resp->file_written = false;
+    return;
+  }
+
+  if (req->dry_run) {
+    resp->success = true;
+    resp->error_code = plan.no_change ? "no_change" : "ok";
+    resp->message = plan.no_change
+                        ? "dry run: overlay has no changes compared to active overlay"
+                        : "dry run passed: overlay is valid and safe to apply";
+    resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+    resp->file_written = false;
+    return;
+  }
+
+  std::string commit_code;
+  std::string commit_msg;
+  const bool committed = CommitTopologyPlan(&plan, &commit_code, &commit_msg);
+  resp->success = committed;
+  resp->error_code = commit_code;
+  resp->message = commit_msg;
+  resp->overlay_revision = static_cast<uint32_t>(overlay_.revision);
+  resp->file_written = committed && !plan.no_change && !topology_overlay_file_.empty();
+}
+
+void DispatcherNode::GetTopologyOverlayCb(
+    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request> req,
+    std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Response> resp) {
+  resp->success = true;
+  resp->message = overlay_active_ ? "topology overlay active" : "no topology overlay active";
+  resp->revision = static_cast<uint32_t>(overlay_.revision);
+  resp->blocked_edge_count = static_cast<uint32_t>(overlay_.blocked_edges.size());
+  resp->one_way_edge_count = static_cast<uint32_t>(overlay_.one_way_edges.size());
+  resp->marker_count = static_cast<uint32_t>(overlay_.added_markers.size());
+  resp->base_map_hash = overlay_.base_map_hash;
+  resp->effective_map_hash =
+      catalog_reloader_ ? catalog_reloader_->catalog().map_hash : std::string();
+  resp->overlay_active = overlay_active_;
+  if (req->include_yaml) {
+    resp->overlay_yaml = amr_dispatcher_core::catalog::SerializeTopologyOverlay(overlay_);
+  }
+  // 功能关闭时仍然成功返回（读是安全的），但把"没开"说清楚：
+  // 否则控制台会显示 "no topology overlay active"，操作员会以为
+  // "现在没有管制"，而真相是"这套功能根本没启用、提交会被 501 拒绝"。
+  if (topology_overlay_file_.empty()) {
+    resp->message = "runtime topology overlay is disabled (topology_overlay_file is empty)";
+  }
+}
+
 void DispatcherNode::AppendAudit(const std::string& action, const std::string& vehicle_id,
                                  const std::string& mission_id, const std::string& operator_id,
                                  const std::string& reason,
@@ -4127,6 +5090,12 @@ void DispatcherNode::PublishState() {
   msg.lock_contention_total = dispatch_counters_.lock_contention_total;
   // 事件总数直接取事件日志的累计计数（日志器自己维护，不另记一份）
   msg.event_total = event_log_ ? event_log_->total_appended() : 0;
+
+  // 相位 11：在线拓扑叠加层状态投影（免服务调用供网关指标与探针直读）
+  msg.overlay_active = overlay_active_;
+  msg.overlay_revision = static_cast<uint32_t>(overlay_.revision);
+  msg.blocked_edges = static_cast<uint32_t>(overlay_.blocked_edges.size());
+  msg.one_way_edges = static_cast<uint32_t>(overlay_.one_way_edges.size());
 
   for (const auto& [id, _] : active_missions_) {
     msg.active_mission_ids.push_back(id);
@@ -4197,11 +5166,11 @@ void DispatcherNode::PublishState() {
     }
     double percent = 0.0;
     auto sit = mission_dispatch_start_.find(id);
-    const bool catalog_loaded = catalog_reloader_ != nullptr && catalog_reloader_->loaded();
+    const bool catalog_loaded = CatalogLoaded();
     if (sit != mission_dispatch_start_.end() && has_odom_ && catalog_loaded &&
         !ait->second.dropoff_station.empty()) {
       const auto* to_st = amr_dispatcher_core::catalog::FindStation(
-          catalog_reloader_->catalog(), ait->second.dropoff_station);
+          EffectiveCatalog(), ait->second.dropoff_station);
       if (to_st) {
         const double total = std::hypot(to_st->x - sit->second.x, to_st->y - sit->second.y);
         const double covered =

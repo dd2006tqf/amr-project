@@ -63,6 +63,9 @@
 #include "amr_dispatcher_interfaces/srv/reserve_facility_resource.hpp"
 #include "amr_dispatcher_interfaces/srv/get_operator_snapshot.hpp"
 #include "amr_dispatcher_interfaces/srv/validate_site_config.hpp"
+#include "amr_dispatcher_interfaces/srv/block_edge.hpp"
+#include "amr_dispatcher_interfaces/srv/topology_hot_update.hpp"
+#include "amr_dispatcher_interfaces/srv/get_topology_overlay.hpp"
 
 // 行为树编排层：订单路由、出队派发门控、恢复与结果决策
 #include "amr_dispatcher_bt/mission_recovery_behavior_tree.hpp"
@@ -75,6 +78,9 @@
 #include "amr_dispatcher_core/catalog/scenario_catalog.hpp"
 #include "amr_dispatcher_core/catalog/business_order_catalog.hpp"
 #include "amr_dispatcher_core/catalog/zone_catalog.hpp"
+#include "amr_dispatcher_core/catalog/topology_connectivity.hpp"
+#include "amr_dispatcher_core/catalog/topology_overlay.hpp"
+#include "amr_dispatcher_core/workflow/topology_change_impact.hpp"
 #include "amr_dispatcher_core/facility/facility_adapter_interface.hpp"
 #include "amr_dispatcher_core/facility/facility_catalog.hpp"
 #include "amr_dispatcher_core/facility/facility_interlocking_planning.hpp"
@@ -153,6 +159,20 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void BlockStationRouteCb(
       const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Request> req,
       std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Response> resp);
+
+  // ---- 相位 11：在线拓扑热生效（目录感知封路 / 全量叠加层 / 现状查询）----
+  // 与 BlockStationRouteCb 的区别：老接口只在预约表置 traffic_block 锁，规划层
+  // 仍认为这条路存在；新接口同时改**生效目录**（enabled/bidirectional），
+  // 使规划、骨架折线、距离估算、时空窗/CBS 全部一致地绕开该边。
+  void BlockEdgeCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Response> resp);
+  void TopologyHotUpdateCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Response> resp);
+  void GetTopologyOverlayCb(
+      const std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request> req,
+      std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Response> resp);
   void DetectTrafficDeadlockCb(
       const std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Request> req,
       std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Response> resp);
@@ -227,6 +247,66 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void ExecuteDispatch(ReadyCandidate candidate);
   // 依 planner_type_ + 当前站点目录重建 planner_（on_configure 与参数热更共用）
   void RebuildPlanner();
+
+  // ---- 相位 11：生效目录与拓扑叠加层 ----
+  // 生效目录 = 基础目录（map_ingest 写的 stations.yaml）+ 运行时叠加层（施工区/单向/临时站点）。
+  // 无叠加层时直接返回 reloader 的目录引用（零拷贝，行为逐字不变）；
+  // 有叠加层时返回 effective_catalog_（ApplyTopologyOverlay 的产物）。
+  // 红线：比较地图版本 / 写状态快照时必须用 **基础** hash（catalog_reloader_->catalog()），
+  // 否则一次施工区变更就会让下次重启丢队列。
+  const amr_dispatcher_core::catalog::StationCatalog& EffectiveCatalog() const;
+  bool CatalogLoaded() const;
+  // on_configure 时从磁盘加载叠加层并按结论改 effective_catalog_ ：
+  //   * 文件不存在 -> no overlay（不是错误）
+  //   * 文件损坏 -> 拒绝加载（保留基线，不改名，与"坏快照不清理现场"同一姿态）
+  //   * base_map_hash 与新基线不一致 -> 失效（rename .stale.<epoch> + 审计 + 事件）
+  //   * 成功 -> ApplyTopologyOverlay + ReconcileResourceBlocksWithOverlay
+  // map_ingest 可能晚于 dispatcher 写完 stations.yaml：此时叠加层会
+  // 被标为 overlay_deferred_，由 reload_timer_ 在下次 Tick 补加载。
+  void LoadTopologyOverlayFromDisk();
+  // 基础目录变化时（reload_timer_）：叠加层要么按新基线重应用，要么整体失效 ——
+  // 绝不允许热重载静默丢掉施工区。
+  void ReconcileOverlayAfterBaseReload();
+  // 提交成功后把叠加层表达的封路同步进预约表（traffic_block:topology_overlay:* owner），
+  // 使 list_traffic_reservations / 死锁检测能看到这批临时管制。
+  void ReconcileResourceBlocksWithOverlay();
+  // 把 reroute 决策真正下发到执行该任务的车（plan 话题或 VDA 5050 订单）。
+  // 从 DeadlockTick 抽出：死锁日志文案留在 DeadlockTick 原位，本函数只负责发布段。
+  void ApplyRerouteToVehicle(
+      const std::string& mission_id,
+      const amr_dispatcher_core::workflow::VehicleImpact& impact);
+
+  // 叠加层提交计划（BuildTopologyCommitPlan 的产物；Build 零副作用，Commit 才变更）。
+  struct TopologyCommitPlan {
+    std::string error_code = "ok";        // ok | no_change | invalid_request | not_confirmed | ...
+    std::string message;
+    // 审计字段（操作员与原因必须原样进审计，不能拿时间戳顶替 —— 事后追责全靠它）
+    std::string operator_id;
+    std::string reason;
+    // 审计动作名：单边管制与全量提交分开记，现场才能一眼分辨"封了一条"与"整份替换"
+    std::string audit_action = "topology_hot_update";
+    amr_dispatcher_core::catalog::TopologyOverlay candidate;  // 已补 base_map_hash/revision/updated_at
+    amr_dispatcher_core::catalog::StationCatalog new_catalog;
+    amr_dispatcher_core::catalog::ReachabilityReport connectivity;
+    amr_dispatcher_core::workflow::TopologyChangeImpact impact;
+    // 要置为 traffic_block 的新边（含 reason），以及要解封的叠加层锁
+    std::vector<std::pair<std::string, std::string>> edges_to_block;
+    std::vector<std::string> edges_to_unblock;
+    // allow_edge_under_vehicle=true 时"车可能正压在上面"的边：跳过 Block，锁留给在途车
+    std::vector<std::string> retained_edge_locks;
+    bool no_change = false;
+  };
+  // 零副作用：功能开关 -> 目录可用性 -> map_hash 乐观并发 -> revision/时间戳 -> 幂等 ->
+  // 校验 -> 应用 + 连通性 -> 在途影响 -> 锁预检。任何一步失败立即返回，不碰内存/磁盘。
+  TopologyCommitPlan BuildTopologyCommitPlan(
+      const amr_dispatcher_core::catalog::TopologyOverlay& requested,
+      const std::string& expected_map_hash, const std::string& operator_id,
+      const std::string& reason, bool allow_edge_under_vehicle);
+  // 唯一变更函数。顺序即安全铁律：先持久化（写前提交点），再预留新锁，再释放旧锁，
+  // 再置叠加层锁（Block 在资源被持有时会失败，必须在 Release 之后），
+  // 最后换目录 + 同步规划器 + 下发绕行 + 审计 + 事件。
+  bool CommitTopologyPlan(TopologyCommitPlan* plan, std::string* error_code,
+                          std::string* message);
   void DeadlockTick();
   // 死锁快照组包（DeadlockTick 与 DetectTrafficDeadlockCb 共用，保证两处结论不分叉）：
   // 清点排队等待记录 + 活跃任务/进度 + 预约表 WFG 数据；不自带锁，调用方沿用各自约定
@@ -433,6 +513,18 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 任务执行闭环：站点目录（mtime 热重载） + 规划器 + 最新里程计位姿
   std::unique_ptr<amr_dispatcher_core::IPathPlanner> planner_;
   std::unique_ptr<amr_dispatcher_core::catalog::StationCatalogReloader> catalog_reloader_;
+
+  // ---- 相位 11：运行时拓扑叠加层状态 ----
+  // effective_catalog_ 由 base + overlay_ 合成；无叠加层时留空，EffectiveCatalog()
+  // 直接回落给 catalog_reloader_->catalog()。
+  amr_dispatcher_core::catalog::StationCatalog effective_catalog_;
+  amr_dispatcher_core::catalog::TopologyOverlay overlay_;
+  bool overlay_active_{false};
+  bool overlay_loaded_{false};
+  bool overlay_deferred_{false};  // map_ingest 晚写 stations.yaml，由 reload_timer_ 补加载
+  std::string topology_overlay_file_;  // 参数 topology_overlay_file（默认空 = 关闭）
+  bool topology_allow_edge_under_vehicle_{false};  // 参数 topology_allow_edge_under_vehicle
+  std::string last_overlay_error_;
   // 路径规划器类型（配置参数 planner_type：skeleton | mock）。
   // skeleton -> SkeletonPlanner（混合图折线循迹），mock -> MockLinearPlanner（直线基线）。
   std::string planner_type_{"skeleton"};
@@ -522,6 +614,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission>::SharedPtr reprioritize_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::EstimateMissionCost>::SharedPtr estimate_cost_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::BlockStationRoute>::SharedPtr block_route_srv_;
+  // 相位 11：在线拓扑热生效（目录感知封路 / 全量叠加层 / 叠加层状态读取）
+  rclcpp::Service<amr_dispatcher_interfaces::srv::BlockEdge>::SharedPtr block_edge_srv_;
+  rclcpp::Service<amr_dispatcher_interfaces::srv::TopologyHotUpdate>::SharedPtr topology_hot_update_srv_;
+  rclcpp::Service<amr_dispatcher_interfaces::srv::GetTopologyOverlay>::SharedPtr get_topology_overlay_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>::SharedPtr detect_deadlock_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ListStations>::SharedPtr list_stations_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ListTrafficReservations>::SharedPtr list_reservations_srv_;

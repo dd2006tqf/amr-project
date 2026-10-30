@@ -38,3 +38,11 @@ dispatcher_node:
     time_space_turn_overhead_sec: 0.5
     time_space_safety_margin_m: 0.2
     time_space_min_headway_sec: 2.0
+    # 相位 11：运行时拓扑叠加层（临时施工区/单向/临时站点）的持久化文件。
+    # 空 = 功能关闭（在线拓扑热生效不可用，/api/v1/topology/* 的写操作回 501）。
+    # 生产由 launch 注入**绝对路径**并指向 config/generated/ 下的独立文件；
+    # 绝不与 map_ingest 生成的 stations.yaml 同路径（那会被地图上传整份覆盖）。
+    topology_overlay_file: ""
+    # 允许"车辆可能正压在被封边上"时仍提交（该边的锁留给在途车，等它自行驶离）。
+    # 默认 false = 严格拒绝（409 edge_occupied_in_flight）。单向反转不受此参数影响。
+    topology_allow_edge_under_vehicle: false
