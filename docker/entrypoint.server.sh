@@ -32,6 +32,9 @@
 #   AMR_SERIAL_DEVICE        指定串口设备（默认 /dev/ttyUSB0）
 #   AMR_HEALTH_RATE_HZ       底盘健康/心跳发布频率（默认 5.0）
 #   AMR_COLCON_WORKERS       colcon 并发数（默认 nproc；低内存机器建议设 1 或 2）
+#   AMR_TOPOLOGY_OVERLAY_FILE 运行时拓扑叠加层文件绝对路径（默认
+#                            /workspace/config/generated/topology_overlay.yaml）。
+#                            显式设为空串 = 关闭在线拓扑热生效（写操作回 501）。
 
 set -eo pipefail
 
@@ -155,7 +158,20 @@ else
 fi
 
 # -------------------------------------------------------------- 启动
+# 相位 11：运行时拓扑叠加层（临时施工区/单向/临时站点）默认**开启**，
+# 文件与 map_ingest 生成的 stations.yaml 放在同一目录但**不同文件**——
+# 地图上传会整份覆盖 stations.yaml，叠加层必须独立持久化才不会被抹掉。
+# 未设置该变量时用默认路径；显式设为空串 = 关闭（写操作回 501 overlay_disabled）。
+TOPOLOGY_OVERLAY_FILE="${AMR_TOPOLOGY_OVERLAY_FILE-/workspace/config/generated/topology_overlay.yaml}"
+mkdir -p "$(dirname "$TOPOLOGY_OVERLAY_FILE")" 2>/dev/null || true
+if [ -n "$TOPOLOGY_OVERLAY_FILE" ]; then
+  log "运行时拓扑叠加层: $TOPOLOGY_OVERLAY_FILE（提交与验证走 /api/v1/topology/*）"
+else
+  log "运行时拓扑叠加层: 已关闭（AMR_TOPOLOGY_OVERLAY_FILE 为空）"
+fi
+
 log "启动完整系统（工作目录 $PWD，ROS_DOMAIN_ID=$ROS_DOMAIN_ID）"
 ros2 launch launch/full_system.launch.py \
   serial_device:="$SERIAL_DEVICE" \
-  health_rate_hz:="$HEALTH_RATE_HZ"
+  health_rate_hz:="$HEALTH_RATE_HZ" \
+  topology_overlay_file:="$TOPOLOGY_OVERLAY_FILE"

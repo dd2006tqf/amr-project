@@ -65,6 +65,23 @@ services:
     # Fast DDS 走共享内存，默认 64MB 偏小
     shm_size: 512m
 
+    # 健康检查：只提供可见性与 `up --wait` 判定，**不触发自动重启**。
+    #
+    # 判据是 /readyz（不是 /healthz）：/healthz 只证明网关的 HTTP 线程还在，
+    # 而 DDS 卡死时它照样应答——那正是我们要检测的失效模式。
+    #
+    # 严禁加 autoheal 之类的"unhealthy 就重启容器"守护：安全门锁存 CRITICAL 时
+    # /readyz 恒 503，重启会拆掉一个"健康但安全锁存"的栈，并丢掉内存里的调度状态
+    # （队列/路权/时空窗）。自愈靠 launch 里每个节点的 respawn（见 full_system.launch.py）。
+    #
+    # start_period 给 180s：首次启动要 colcon 构建，构建期间 8080 还没人听。
+    healthcheck:
+      test: ["CMD", "python3", "/workspace/docker/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
     # 限制容器日志增长，避免占满 17GB 可用磁盘
     logging:
       driver: json-file

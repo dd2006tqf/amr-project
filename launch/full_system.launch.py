@@ -41,6 +41,28 @@ def generate_launch_description():
     vehicle_ids = LaunchConfiguration('vehicle_ids')
     # 多车底盘串口清单（逗号分隔，与 vehicle_ids 一一对应；空 = 沿用 serial_device）
     serial_devices = LaunchConfiguration('serial_devices')
+    # 相位 11：进程守护（节点崩溃自动重启）。置 false 恢复改动前的"死了就一直死"。
+    respawn_enabled = LaunchConfiguration('respawn_enabled')
+    respawn_delay = LaunchConfiguration('respawn_delay')
+    # 相位 11：在线拓扑叠加层（施工区/单向/临时站点）的独立持久化文件。
+    # 必须是**绝对路径**：HandleMapUpload 写的是相对 config/generated/stations.yaml，
+    # 叠加层再走相对路径就会踩同一个 cwd 陷阱（容器 working_dir 变了就写丢）。
+    topology_overlay_file = LaunchConfiguration('topology_overlay_file')
+
+    def supervision():
+        """全节点共用的守护参数。
+
+        ExecuteProcess 接受 respawn / respawn_delay（LifecycleNode 经 **kwargs 透传，
+        已在 jazzy 镜像内实测）。respawn_max_retries 保持默认（无限重试）：崩溃循环
+        由日志与 /metrics 的 amr_ready 暴露，人工设上限只会让第三次崩溃变成永久停机。
+        """
+        return {
+            'respawn': ParameterValue(
+                PythonExpression(["'", respawn_enabled, "'.lower() "
+                                  "in ('true', '1', 'yes', 'on')"]),
+                value_type=bool),
+            'respawn_delay': ParameterValue(respawn_delay, value_type=float),
+        }
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -132,6 +154,25 @@ def generate_launch_description():
             default_value='5000',
             description='网关 connection 心跳（retained ONLINE）发布周期，毫秒。',
         ),
+        DeclareLaunchArgument(
+            'respawn_enabled',
+            default_value='true',
+            description='节点崩溃后自动重启（进程守护）。置 false 恢复相位 11 之前的'
+                        '行为（节点死了就一直是死的），仅用于对照实验与故障演练。',
+        ),
+        DeclareLaunchArgument(
+            'respawn_delay',
+            default_value='2.0',
+            description='重启前等待秒数。给 DDS 一点时间回收同名的旧参与者，'
+                        '也避免崩溃循环把日志刷爆。',
+        ),
+        DeclareLaunchArgument(
+            'topology_overlay_file',
+            default_value='',
+            description='运行时拓扑叠加层（临时施工区/单向/临时站点）的持久化文件绝对路径。'
+                        '空 = 功能关闭（现网行为）。生产建议放在 config/generated/ 下的'
+                        '独立文件，绝不与 map_ingest 生成的 stations.yaml 同路径。',
+        ),
     ]
 
     # B7：节点参数文件集中放 share/amr_dispatcher_ros/config/，launch 只负责注入；
@@ -141,6 +182,10 @@ def generate_launch_description():
     dispatcher_yaml = os.path.join(ros_share, 'config', 'dispatcher.yaml')
     chassis_yaml = os.path.join(ros_share, 'config', 'chassis.yaml')
     safety_yaml = os.path.join(ros_share, 'config', 'safety.yaml')
+    # 相位 11：网关参数集中到文件（探针阈值 / 告警 webhook / 拓扑操作超时）。
+    # 全部新参数默认关闭或取合理值，因此行为与改动前一致；
+    # port 仍由下方字典条目覆盖，保持 8080 这个对外契约不变。
+    rest_gateway_yaml = os.path.join(ros_share, 'config', 'rest_gateway.yaml')
     # Task 8：map_ingest_node 的生成产物目录（节点负责 create_directories，
     # tmp+rename 原子写出后由 StationCatalogReloader 按 mtime 热重载）。
     generated_stations_share = os.path.join(ros_share, 'config', 'generated', 'stations.yaml')
@@ -178,7 +223,14 @@ def generate_launch_description():
             {'vda5050_vehicles': ParameterValue(vda5050_vehicles, value_type=str)},
             # P0.6 / A4：local_sim 车辆清单（空 = 单车兼容模式，话题名逐字不变）
             {'vehicle_ids': ParameterValue(vehicle_ids, value_type=str)},
-        ]
+            # 相位 11：拓扑叠加层文件（空 = 在线拓扑热生效关闭，行为与改动前一致）
+            {'topology_overlay_file': ParameterValue(topology_overlay_file, value_type=str)},
+        ],
+        # 相位 11：重生后节点回到 unconfigured；launch 的 CONFIGURE/ACTIVATE
+        # 只发一次，二次提拉由 lifecycle_coordinator_node（auto_bringup，500ms
+        # 轮询 /dispatcher_node/get_state）完成——协调器自己也在 respawn 名单里，
+        # 所以"调度器自愈依赖协调器存活"这条依赖必须有守护兜底。
+        **supervision(),
     )
 
     # 声明自动触发 configure 事件
@@ -217,7 +269,8 @@ def generate_launch_description():
         name='safety_gate_node',
         output='screen',
         condition=single_vehicle_only,
-        parameters=[safety_yaml]
+        parameters=[safety_yaml],
+        **supervision(),
     )
 
     chassis_driver_node = Node(
@@ -234,7 +287,8 @@ def generate_launch_description():
                 'serial_device': serial_device,
                 'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
             },
-        ]
+        ],
+        **supervision(),
     )
 
     path_tracker_node = Node(
@@ -248,7 +302,8 @@ def generate_launch_description():
             'lookahead_distance': 0.6,
             'target_speed': 0.5,
             'control_rate_hz': 20.0,
-        }]
+        }],
+        **supervision(),
     )
 
     # B3：navigate_sequence_bridge_node 入 full_system——/navigate_sequence action
@@ -262,15 +317,22 @@ def generate_launch_description():
             'use_nav2': False,
             'nav2_action_name': '/navigate_to_pose',
             'plan_topic': '/plan',
-        }]
+        }],
+        **supervision(),
     )
+
+    rest_gateway_parameters = []
+    if os.path.exists(rest_gateway_yaml):
+        rest_gateway_parameters.append(rest_gateway_yaml)
+    rest_gateway_parameters.append({'port': 8080})
 
     rest_gateway_node = Node(
         package='amr_dispatcher_tools',
         executable='rest_gateway',
         name='rest_gateway_node',
         output='screen',
-        parameters=[{'port': 8080}]
+        parameters=rest_gateway_parameters,
+        **supervision(),
     )
 
     dispatcher_visualizer_node = Node(
@@ -284,7 +346,8 @@ def generate_launch_description():
             # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7），
             # 且 C1 下默认随 use_map_server 指向生成目录。
             'stations_file': stations_file,
-        }]
+        }],
+        **supervision(),
     )
 
     lifecycle_coordinator_node = Node(
@@ -295,7 +358,8 @@ def generate_launch_description():
         parameters=[{
             'auto_bringup': True,
             'check_period_ms': 500
-        }]
+        }],
+        **supervision(),
     )
 
     # ---- Task 8：可选地图导入链路（use_map_server:=true 时启用，默认关闭） ----
@@ -312,6 +376,10 @@ def generate_launch_description():
             'topic_name': 'map',
             'frame_id': 'map',
         }],
+        # 重生后的 map_server 同样回到 unconfigured；下方的 CONFIGURE/ACTIVATE
+        # 只在首启触发一次。地图链路属于可选功能，重生后不自动提拉（保持现状），
+        # 人工 `ros2 lifecycle set /map_server configure/activate` 即可，写在此处备查。
+        **supervision(),
     )
 
     map_server_configure_event = EmitEvent(
@@ -354,6 +422,7 @@ def generate_launch_description():
             'publish_markers': True,
             'marker_topic': '/dispatcher/topology_markers',
         }],
+        **supervision(),
     )
 
     # ---- Task 4：VDA 5050 MQTT 网关（use_vda5050:=true 时启用，默认关闭） ----
@@ -377,6 +446,7 @@ def generate_launch_description():
             'protocol_version': protocol_version,
             'heartbeat_ms': ParameterValue(heartbeat_ms, value_type=int),
         }],
+        **supervision(),
     )
 
 
@@ -413,6 +483,7 @@ def generate_launch_description():
                     'target_speed': 0.5,
                     'control_rate_hz': 20.0,
                 }],
+                **supervision(),
             ))
             nodes.append(Node(
                 package='amr_dispatcher_ros',
@@ -424,6 +495,7 @@ def generate_launch_description():
                     safety_yaml,
                     {'vehicle_id': vid},
                 ],
+                **supervision(),
             ))
             nodes.append(Node(
                 package='amr_dispatcher_ros',
@@ -439,6 +511,7 @@ def generate_launch_description():
                         'health_rate_hz': ParameterValue(health, value_type=float),
                     },
                 ],
+                **supervision(),
             ))
         return nodes
 
