@@ -43,11 +43,41 @@ def generate_launch_description():
     serial_devices = LaunchConfiguration('serial_devices')
     # 相位 11：进程守护（节点崩溃自动重启）。置 false 恢复改动前的"死了就一直死"。
     respawn_enabled = LaunchConfiguration('respawn_enabled')
-    respawn_delay = LaunchConfiguration('respawn_delay')
+    # 重启延迟**不能**做成 launch 参数（`respawn_delay:=5.0` 这种写法会静默失效）。
+    #
+    # 原因在 jazzy 的 launch 实现里：ExecuteLocal.__init__ 把 respawn_delay 原样存
+    # （execute_local.py:210，不像 respawn 那样过 normalize_typed_substitution），
+    # 而重启分支里直接拿它做数值比较（:611 `self.__respawn_delay > 0.0`）。
+    # 因此传 LaunchConfiguration / ParameterValue / PythonExpression 任何一种都会在
+    # **第一次真正需要重启时**抛
+    #     TypeError: '>' not supported between instances of 'LaunchConfiguration' and 'float'
+    # 启动阶段一切正常，等节点第一次崩溃才发现守护没生效——比启动即崩更难排查。
+    #
+    # 实测记录（五种写法，除了裸 float 全部 TypeError）：
+    #   float 1.0 ✅ / LaunchConfiguration ❌ / ParameterValue(float) ❌
+    #   normalize_typed_substitution(float) ❌ / PythonExpression ❌
+    #
+    # 所以这里固定成真实的 float。要改延迟就改这个常量。
+    respawn_delay_sec = 2.0
     # 相位 11：在线拓扑叠加层（施工区/单向/临时站点）的独立持久化文件。
     # 必须是**绝对路径**：HandleMapUpload 写的是相对 config/generated/stations.yaml，
     # 叠加层再走相对路径就会踩同一个 cwd 陷阱（容器 working_dir 变了就写丢）。
     topology_overlay_file = LaunchConfiguration('topology_overlay_file')
+
+    def as_bool(value):
+        """把 launch 的布尔参数折叠成真正的 bool。
+
+        respawn 是 ExecuteProcess 的 **kwargs（不是 ROS 参数），所以不能包成
+        ParameterValue —— 实测会抛
+            TypeError: value should be either a scalar, a substitutions, ...
+        也不能直接 str(value)：此时 value 是 LaunchConfiguration，还没解析，
+        str() 拿到的是对象 repr。正确做法是让 launch 在**执行期**解析：
+        ExecuteProcess 支持 substitution，给它一个返回 'true'/'false' 的
+        PythonExpression 即可（它内部会按字符串判真）。
+        """
+        return PythonExpression([
+            "'true' if '", value, "'.lower() in ('true','1','yes','on') else 'false'"
+        ])
 
     def supervision():
         """全节点共用的守护参数。
@@ -55,13 +85,13 @@ def generate_launch_description():
         ExecuteProcess 接受 respawn / respawn_delay（LifecycleNode 经 **kwargs 透传，
         已在 jazzy 镜像内实测）。respawn_max_retries 保持默认（无限重试）：崩溃循环
         由日志与 /metrics 的 amr_ready 暴露，人工设上限只会让第三次崩溃变成永久停机。
+
+        respawn 用执行期 substitution（可被 `respawn_enabled:=false` 关掉），
+        respawn_delay 用固定 float（原因见上方 respawn_delay_sec 的注释）。
         """
         return {
-            'respawn': ParameterValue(
-                PythonExpression(["'", respawn_enabled, "'.lower() "
-                                  "in ('true', '1', 'yes', 'on')"]),
-                value_type=bool),
-            'respawn_delay': ParameterValue(respawn_delay, value_type=float),
+            'respawn': as_bool(respawn_enabled),
+            'respawn_delay': respawn_delay_sec,
         }
 
     declared_arguments = [
@@ -160,12 +190,11 @@ def generate_launch_description():
             description='节点崩溃后自动重启（进程守护）。置 false 恢复相位 11 之前的'
                         '行为（节点死了就一直是死的），仅用于对照实验与故障演练。',
         ),
-        DeclareLaunchArgument(
-            'respawn_delay',
-            default_value='2.0',
-            description='重启前等待秒数。给 DDS 一点时间回收同名的旧参与者，'
-                        '也避免崩溃循环把日志刷爆。',
-        ),
+        # 注意：**没有** respawn_delay 这个 launch 参数，这不是遗漏。
+        # 延迟固定为 generate_launch_description 里的 respawn_delay_sec 常量——
+        # jazzy 的 ExecuteLocal 不对该字段做 substitution 求值，做成参数会在
+        # 第一次真正重启时抛 TypeError（详见 respawn_delay_sec 处的注释）。
+        # 与其提供一个"传了也不生效"的假参数，不如不提供。
         DeclareLaunchArgument(
             'topology_overlay_file',
             default_value='',

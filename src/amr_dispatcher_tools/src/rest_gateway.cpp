@@ -2344,6 +2344,21 @@ class RestGatewayNode : public rclcpp::Node {
                          latest_link_.backend_name.empty() ? "Serial/Mock" : latest_link_.backend_name) << ","
        << "\"chassis_healthy\":" << (latest_link_.is_healthy ? "true" : "false") << ","
        << "\"chassis_loss_rate\":" << latest_link_.loss_rate << ","
+       // T3：命令送达率。三种情况都渲染 null（不适用），绝不给 0：
+       //   1) 从未收到 link_health —— 此时 command_delivery_rate 还是消息默认值 0.0，
+       //      直接打印会显示成"0% 全丢"，这是最容易被误读的假象（和上面的
+       //      estop_active 同一个坑：默认值不能当现状）；
+       //   2) 文本协议，或固件尚未回显序号 —— chassis_driver 显式发 -1；
+       //   3) 负数（协议外的异常值）。
+       << "\"chassis_command_delivery_rate\":";
+    if (link_seen_ && latest_link_.command_delivery_rate >= 0.0) {
+      os << latest_link_.command_delivery_rate;
+    } else {
+      os << "null";
+    }
+    os << ",";
+    os << "\"chassis_commands_sent\":" << latest_link_.commands_sent << ","
+       << "\"chassis_commands_delivered\":" << latest_link_.commands_delivered << ","
        << "\"recent_events\":[";
 
     for (std::size_t i = 0; i < recent_events_.size(); ++i) {

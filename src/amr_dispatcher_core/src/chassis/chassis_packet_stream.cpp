@@ -74,7 +74,12 @@ std::vector<ChassisPacket> MickBinaryPacketStream::DrainPackets() {
     const std::array<uint8_t, 2> magic{0xae, 0xea};
     const auto header = std::search(buffer_.begin(), buffer_.end(), magic.begin(), magic.end());
     if (header == buffer_.end()) {
-      buffer_.clear();
+      // 丢弃噪声，但**保留末尾那个 0xAE**：它可能是下一帧的帧头首字节，
+      // 只因帧头第二字节（0xEA）还没到达才没被 search 命中。
+      // 全清会在半帧边界上稳定丢一帧；Python 侧的 FrameParser 特意保留了它，
+      // 两边行为必须一致，否则同一段字节抓下来两边诊断结论不同。
+      const bool keep_trailing_magic_byte = !buffer_.empty() && buffer_.back() == magic[0];
+      buffer_.erase(buffer_.begin(), buffer_.end() - (keep_trailing_magic_byte ? 1 : 0));
       return packets;
     }
     buffer_.erase(buffer_.begin(), header);

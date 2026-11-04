@@ -165,10 +165,13 @@ std::vector<uint8_t> EncodeMickBinaryFrame(
 
 std::vector<uint8_t> EncodeMickSpeedCommand(const ChassisCommand& command) {
   std::vector<uint8_t> payload;
-  payload.reserve(6);
+  payload.reserve(7);
   AppendInt16(&payload, ClampToInt16(command.linear_x_mps * 1000.0));
   AppendInt16(&payload, ClampToInt16(command.linear_y_mps * 1000.0));
   AppendInt16(&payload, ClampToInt16(command.angular_z_radps * 1000.0));
+  // T3：payload 6 -> 7 字节。固件必须按 len 字段判断，兼容旧主机的 6 字节帧；
+  // 主机侧不校验 seq 的回显，只把它当作"MCU 收到了第几帧"的证据。
+  payload.push_back(command.sequence);
   return EncodeMickBinaryFrame(0xf3, payload);
 }
 
@@ -185,6 +188,14 @@ std::optional<ChassisPacket> DecodeMickBinaryPacket(const MickBinaryFrame& frame
     odometry.linear_x_mps = ReadInt16(frame.payload, 6) / 1000.0;
     odometry.angular_z_radps = ReadInt16(frame.payload, 8) / 1000.0;
     odometry.battery_voltage = ReadUint16(frame.payload, 10) / 100.0;
+    // T2/T3：扩展字节可选。12 字节的旧固件帧保持完全兼容（两字段为 0），
+    // 14 字节起才带故障位与命令回显序号。
+    if (frame.payload.size() >= 13U) {
+      odometry.flags = frame.payload[12];
+    }
+    if (frame.payload.size() >= 14U) {
+      odometry.last_cmd_seq = frame.payload[13];
+    }
     ChassisPacket packet;
     packet.kind = ChassisPacketKind::kOdometry;
     packet.odometry = odometry;
@@ -193,7 +204,8 @@ std::optional<ChassisPacket> DecodeMickBinaryPacket(const MickBinaryFrame& frame
 
   if (frame.type == 0xa2) {
     ChassisStatePacket state;
-    state.status = frame.payload.empty() || frame.payload[0] == 0 ? "running" : "fault";
+    state.fault = !frame.payload.empty() && frame.payload[0] != 0;
+    state.status = state.fault ? "fault" : "running";
     if (frame.payload.size() >= 3U) {
       state.battery_voltage = ReadUint16(frame.payload, 1) / 100.0;
     }

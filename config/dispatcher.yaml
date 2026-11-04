@@ -19,6 +19,9 @@ dispatcher_node:
     required_capability: "transport"
     min_battery_percent: 0.0
     vehicle_state_max_age_ms: 5000
+    # T1：/battery_state/{vid} 样本保鲜期（毫秒）。超龄样本不参与选车与自动充电——
+    # 底盘掉线后不能拿掉线前的最后一帧电压当现状。必须小于 vehicle_state_max_age_ms。
+    battery_state_timeout_ms: 3000
     # 队首阻塞规避：一次 tick 最多考察前 N 个排队任务
     assignment_scan_depth: 8
     # 物理设施目录（Phase 8）：空 = 关闭物理设施控制；配置路径则加载并在靠近设施站点时联锁

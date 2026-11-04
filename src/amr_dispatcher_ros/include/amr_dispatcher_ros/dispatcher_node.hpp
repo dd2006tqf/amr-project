@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,6 +35,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <sensor_msgs/msg/battery_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
@@ -425,6 +427,28 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   void RefreshVehicleStates();
   // 把车辆目录（fleet.yaml）合并进 vehicle_states_ 的静态字段。
   void LoadFleetCatalog();
+
+  // ---- T1：电量链路（/battery_state -> vehicle_states_[].battery_percent）----
+  // 此前 /battery_state 没有任何订阅者，local_sim 车的 battery_percent 恒为 100，
+  // 于是 min_battery_percent 与 auto_charging_* 全部静默失效。
+  // 这里按 per-vehicle 话题订阅底盘电压，换算成百分比写回 vehicle_states_，
+  // 并保留"最后一次可信样本"的时间戳，供 RefreshVehicleStates 判新鲜度。
+  void BatteryStateCbForVehicle(const std::string& vehicle_id,
+                                const sensor_msgs::msg::BatteryState::SharedPtr msg);
+  // 电量样本的保鲜期（毫秒）：超龄样本不再参与选车与自动充电决策。
+  // 必须小于 vehicle_state_max_age_ms，否则会给调度一个"看起来很新"的陈旧电量。
+  std::int64_t battery_state_timeout_ms_{3000};
+  // vehicle_id -> /battery_state/{vid} 订阅
+  std::unordered_map<std::string,
+                     rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr>
+      vehicle_battery_subs_;
+  // vehicle_id -> 最近一帧可信电量样本
+  struct BatterySample {
+    double percent = 0.0;
+    std::chrono::steady_clock::time_point stamp{};
+    bool valid = false;
+  };
+  std::unordered_map<std::string, BatterySample> vehicle_battery_samples_;
 
   // ---- P0.6 / A5：per-vehicle 执行槽位 ----
   // 车辆 -> 正在执行的任务（key 为空串 = legacy 全局 /plan 槽位，单车兼容）。

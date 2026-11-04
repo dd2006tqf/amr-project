@@ -35,6 +35,7 @@ add_library(${PROJECT_NAME}
   src/chassis/link_quality.cpp
   src/chassis/link_recovery.cpp
   src/chassis/backend_degradation.cpp
+  src/chassis/battery_state_tracker.cpp
   src/path_tracking/pure_pursuit.cpp
   src/path_tracking/stanley.cpp
   src/planning/map_geometry_utils.cpp
@@ -141,7 +142,9 @@ if(BUILD_TESTING)
     test_chassis_packet
     test_chassis_packet_stream
     test_chassis_kinematics
+    test_command_delivery_tracker
     test_battery_voltage
+    test_battery_state_tracker
     test_pure_pursuit
     test_stanley
     test_mission_queue

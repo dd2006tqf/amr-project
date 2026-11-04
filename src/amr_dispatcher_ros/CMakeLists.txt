@@ -75,6 +75,7 @@ ament_target_dependencies(dispatcher_node
   rclcpp_action
   nav_msgs
   geometry_msgs
+  sensor_msgs
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
@@ -270,6 +271,7 @@ if(BUILD_TESTING)
     test_mission_identity
     test_report_freshness
     test_assignment_dispatch_decision
+    test_chassis_fault
   )
   foreach(test_name IN LISTS ROS_UNIT_TESTS)
     set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")

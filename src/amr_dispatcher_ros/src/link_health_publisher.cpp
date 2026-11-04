@@ -52,6 +52,11 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     double max_loss = 0.0;
     double max_lat = 0.0;
     double sum_avg_lat = 0.0;
+    // T3：命令送达率取**最差**的一路（任一台车的命令在丢，都该被看见），
+    // 只要有一路适用就适用；全部为 -1（文本协议/未回显）时保持 -1。
+    double worst_delivery = -1.0;
+    std::uint64_t sum_cmd_sent = 0;
+    std::uint64_t sum_cmd_delivered = 0;
 
     for (const auto& [name, h] : latest_health_) {
       agg.frames_total += h.frames_total;
@@ -62,7 +67,17 @@ class LinkHealthPublisherNode : public rclcpp::Node {
       if (h.max_latency_ms > max_lat) max_lat = h.max_latency_ms;
       sum_avg_lat += h.avg_latency_ms;
       if (!h.is_healthy) agg.is_healthy = false;
+      if (h.command_delivery_rate >= 0.0) {
+        if (worst_delivery < 0.0 || h.command_delivery_rate < worst_delivery) {
+          worst_delivery = h.command_delivery_rate;
+        }
+      }
+      sum_cmd_sent += h.commands_sent;
+      sum_cmd_delivered += h.commands_delivered;
     }
+    agg.command_delivery_rate = worst_delivery;
+    agg.commands_sent = sum_cmd_sent;
+    agg.commands_delivered = sum_cmd_delivered;
 
     agg.loss_rate = agg.frames_total > 0
                         ? static_cast<double>(agg.frames_lost) / static_cast<double>(agg.frames_total)

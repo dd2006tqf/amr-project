@@ -8,6 +8,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 
 #include "amr_dispatcher_core/chassis/battery_voltage.hpp"
+#include "amr_dispatcher_ros/chassis_fault.hpp"
 #include "amr_dispatcher_ros/vehicle_topic_names.hpp"
 
 using namespace std::chrono_literals;
@@ -179,6 +180,11 @@ void ChassisDriverNode::CmdVelCallback(const geometry_msgs::msg::Twist::SharedPt
   cmd.linear_x_mps = msg->linear.x;
   cmd.linear_y_mps = msg->linear.y;
   cmd.angular_z_radps = msg->angular.z;
+  // T3：只有二进制协议才推进 seq。文本协议的 MCU（PTY 模拟器）不回显，
+  // 推进序号只会让统计永远停在 0%，没有意义。
+  if (binary_protocol_) {
+    cmd.sequence = delivery_tracker_.NextSequence();
+  }
 
   std::string err;
   const auto t0 = std::chrono::steady_clock::now();
@@ -210,6 +216,11 @@ void ChassisDriverNode::ReadPollLoop() {
     const auto age = std::chrono::steady_clock::now() - last_cmd_stamp_;
     if (age > cmd_stale_timeout_) {
       amr_dispatcher_core::chassis::ChassisCommand zero_cmd;
+      // 零帧也是一帧下行命令，必须占用一个序号：否则送达率的分子分母
+      // 与串口上真实发出的帧数不符（统计会偏乐观）。
+      if (binary_protocol_) {
+        zero_cmd.sequence = delivery_tracker_.NextSequence();
+      }
       std::string zero_err;
       backend_ctrl_->current()->WriteCommand(zero_cmd, &zero_err);
       if (!stale_zero_active_) {
@@ -273,6 +284,9 @@ void ChassisDriverNode::ReadPollLoop() {
   // 周期性评估降级与回切
   std::string reason;
   if (backend_ctrl_->EvaluateAndMaybeSwitch(&reason)) {
+    // T3：切换后端 = 换了一条物理链路。旧链路的序号基准对新链路无意义，
+    // 不重置会让切换后的前若干帧被误判为"未送达"（回显基准落后整整一圈）。
+    delivery_tracker_.Reset();
     RCLCPP_WARN(get_logger(), "Chassis backend switched: %s", reason.c_str());
   }
 }
@@ -304,6 +318,17 @@ void ChassisDriverNode::HandleOdometry(
   last_odom_stamp_ = std::chrono::steady_clock::now();
   has_odom_packet_ = true;
   link_alive_ = true;
+
+  // T3：回显序号证明“刚才发出去的帧 MCU 收到了”。命令送达率因此变成可观测量，
+  // 而不是只看接收侧有没有读空。
+  if (binary_protocol_) {
+    delivery_tracker_.OnEcho(o.last_cmd_seq);
+  }
+
+  // T2：MCU 上报的故障位不能只打日志——置位后链路判为不可信，心跳随之下沉，
+  // 由 safety_gate 的 500ms 看门狗接管零速。这里只置锁存，不在这里主动写零帧：
+  // 零帧兜底是 ReadPollLoop 的 cmd-stale 职责，两处都写会让故障归因变模糊。
+  UpdateChassisFaultState(IsChassisFault(o.flags), "odometry flags");
 
   nav_msgs::msg::Odometry odom_msg;
   odom_msg.header.stamp = stamp;
@@ -347,12 +372,38 @@ void ChassisDriverNode::HandleState(
   has_odom_packet_ = true;
   link_alive_ = true;
 
-  if (state.status == "fault" && !fault_reported_) {
+  // T2：状态帧里的电压此前被完全丢弃（只用了 status 字符串）。
+  // MCU 若只发 0xA2 不发 0xA1，/battery_state 会永远没有数据。
+  if (state.battery_voltage.has_value() && *state.battery_voltage > 0.0) {
+    PublishBatteryVoltage(*state.battery_voltage, now());
+  }
+
+  // T2：fault 位进安全链（此前只打一行 ERROR 日志，车照常跑）。
+  UpdateChassisFaultState(IsChassisFault(state), "state packet");
+
+  if (state.fault && !fault_reported_) {
     fault_reported_ = true;
     RCLCPP_ERROR(get_logger(), "Chassis reported fault state (protocol=%s)", protocol_.c_str());
-  } else if (state.status != "fault" && fault_reported_) {
+  } else if (!state.fault && fault_reported_) {
     fault_reported_ = false;
     RCLCPP_INFO(get_logger(), "Chassis fault cleared");
+  }
+}
+
+void ChassisDriverNode::UpdateChassisFaultState(const bool fault, const char* source) {
+  // 故障是锁存状态，不是事件：只在边沿打日志，避免 50Hz 刷屏。
+  // 解除沿用现有语义——收到下一帧**无故障**的上行帧即恢复。
+  if (fault && !chassis_fault_latched_) {
+    chassis_fault_latched_ = true;
+    // 关键：链路判为不可信。PublishHealth 里 transport_alive = link_alive_ &&
+    // !chassis_fault_latched_，心跳随之下沉 false，安全门 500ms 后零速。
+    RCLCPP_ERROR(get_logger(),
+                 "Chassis fault asserted (%s): marking link unhealthy, heartbeat withheld "
+                 "so safety_gate takes over",
+                 source);
+  } else if (!fault && chassis_fault_latched_) {
+    chassis_fault_latched_ = false;
+    RCLCPP_INFO(get_logger(), "Chassis fault cleared (%s): link health restored", source);
   }
 }
 
@@ -361,10 +412,15 @@ void ChassisDriverNode::PublishBatteryState(
   if (!o.battery_voltage.has_value() || *o.battery_voltage <= 0.0) {
     return;
   }
-  const double voltage = *o.battery_voltage;
-  const auto since_last = std::chrono::steady_clock::now() - last_battery_stamp_;
+  PublishBatteryVoltage(*o.battery_voltage, stamp);
+}
+
+void ChassisDriverNode::PublishBatteryVoltage(const double voltage, const rclcpp::Time& stamp) {
   // 节流：电压变化 ≥0.05V 立即发；否则每 2s 保底发一次（平台期电压恒定，
   // 只靠变化触发会让 /battery_state 彻底静默，下游订阅者永远拿不到首帧）。
+  // 0xA1 与 0xA2 都走这里：两条上行路径共用同一个节流状态，否则 50Hz 的
+  // 里程计帧会把状态帧的\"保底发布\"语义打乱。
+  const auto since_last = std::chrono::steady_clock::now() - last_battery_stamp_;
   const bool voltage_changed =
       last_battery_voltage_ <= 0.0 || std::abs(voltage - last_battery_voltage_) >= 0.05;
   if (!voltage_changed && since_last < std::chrono::seconds(2)) {
@@ -418,12 +474,23 @@ void ChassisDriverNode::PublishHealth() {
   msg.loss_rate = snap.loss_rate;
   msg.avg_latency_ms = snap.average_latency_ms;
   msg.max_latency_ms = snap.max_latency_ms;
-  // I1：链路"健康"必须同时满足两个条件——滑窗质量达标，且上行帧仍在来。
+  // I1：链路"健康"必须同时满足三个条件——滑窗质量达标、上行帧仍在来、底盘没报故障。
   // 只信滑窗会被"降级到 mock 后端"骗过：mock 永远 Open 成功、永不报错，
   // 于是串口拔掉后 loss_rate 归零、tier=HEALTHY，但底盘早已没有里程计。
+  // T2：底盘上报 fault 时同样必须判不健康，否则过流/UART 超时会被静默带病运行。
   const bool quality_healthy = backend_ctrl_->quality().IsHealthy();
   const bool transport_alive = link_alive_;
-  msg.is_healthy = quality_healthy && transport_alive;
+  msg.is_healthy = quality_healthy && transport_alive && !chassis_fault_latched_;
+
+  // T3：命令送达率只在二进制协议下有意义（文本协议的 MCU 不回显序号）。
+  // 无回显时不渲染 0，用 -1 表示"不适用"，避免运维把它误读成"命令全丢"。
+  if (binary_protocol_ && delivery_tracker_.HasEcho()) {
+    msg.command_delivery_rate = delivery_tracker_.DeliveryRate();
+    msg.commands_sent = static_cast<uint64_t>(delivery_tracker_.SentCount());
+    msg.commands_delivered = static_cast<uint64_t>(delivery_tracker_.DeliveredCount());
+  } else {
+    msg.command_delivery_rate = -1.0;
+  }
 
   switch (snap.tier) {
     case amr_dispatcher_core::chassis::LinkHealthTier::kHealthy:

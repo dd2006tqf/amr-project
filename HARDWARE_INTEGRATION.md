@@ -1,8 +1,9 @@
 # 硬件接入方案（Hardware Integration Plan）
 
-> 状态：方案定稿，代码侧前置改造已完成并通过 971 项 core 测试（+ 114 tools / 27 ros）。
+> 状态：**方案 v2（2026-10-30 修订）**。v1 的骨架保留，修订内容见文末 §13「v2 变更说明」。
 > 适用对象：Radxa Cubie A7A + ESP32 + JGB37-520 双轮差速台架。
 > 本文只描述"怎么把真硬件接进现有软件"，不重复 README 的算法说明。
+> 施工顺序见配套文档 `docs/BENCH_BRINGUP_RUNBOOK.md`。
 
 ---
 
@@ -10,7 +11,13 @@
 
 一句话：**不买整车，买 165 元的台架；不写新驱动体系，沿用现有 `ChassisBackend` 链路。**
 
-三条边界要先说清楚，避免对成果有过高预期：
+这台台架要证明的**只有三件事**，其余都不在范围内：
+
+1. 调度闭环真的驱动了物理轮子（下单 → 出车 → 到站 → `arrived` → 接下一单）；
+2. 底盘链路在**四种故障**下有可观测、可复现的失效行为；
+3. 每一层停机都有**实测响应时间**，而不是设计值。
+
+三条边界先说清楚，避免对成果有过高预期：
 
 | 能力 | 台架能做到 | 台架做不到 |
 | --- | --- | --- |
@@ -23,11 +30,35 @@
 
 主动说清这三行，比含糊地讲"我做了台 AGV"可信得多。
 
+> **口径纪律**：本文中凡标 `(设计值)` 的数字都是固件/配置的设定，凡标 `(实测)` 的数字必须在 P5 阶段填。**不要把设计值写进简历或 README 当作实测结果**——被追问一次就全盘失信。
+
 ---
 
-## 2. 硬件选型
+## 2. 安全架构：两条正交的停机路径
 
-### 2.1 已有
+v1 把"MCU 200ms → A7A 300ms → 安全门 500ms"写成三级串联，读起来像三重保险，实际上这三级**防的是同一件事**（A7A↔MCU 断链），只是越往后越慢。
+
+正确的模型是**四组互不依赖的停机理由**：
+
+| 停机路径 | 触发方 | 保护对象 | 目标时间 | 依赖 |
+| --- | --- | --- | --- | --- |
+| **A. 底盘失联** | MCU 自己（200ms 无合法 `0xF3`） | A7A 死机/挂起时车不能继续跑 | ≤200ms (设计值) | 仅 MCU 本地，不依赖 ROS |
+| **B. 上游失联** | `safety_gate`（心跳 500ms） | 调度/跟踪节点死掉时车不能继续跑 | ≤500ms (设计值) | ROS 侧，不依赖 MCU |
+| **C. 底盘故障** | MCU 上报 fault 位（过流/UART 超时/急停输入） | 驱动器异常时不能带病运行 | ≤500ms (设计值) | 复用路径 B |
+| **D. 人身安全** | 急停开关物理断 12V | 一切软件失效 | 立即，零计算 | 纯硬件 |
+
+**A 与 B 必须各自独立成立**，这是整份方案的核心卖点。所以：
+
+- F1（拔 UART）的正确叙述不是"三级依次触发"，而是"MCU 先独立停机（路径 A），A7A 判假活是第二条独立证据（路径 B）"；
+- 路径 C 已在 v2.1 **接通**（§9 T2）：`flags` 任一位命中或 `0xA2 payload[0]` 非 0，
+  都会让 chassis_driver 把链路判为不可信、心跳下沉，500ms 后安全门零速。
+  它**复用路径 B 的通道**，但触发源独立（底盘自己报的硬件异常，而非上游失联）。
+
+---
+
+## 3. 硬件选型
+
+### 3.1 已有
 
 | 部件 | 规格 | 作用 |
 | --- | --- | --- |
@@ -36,43 +67,89 @@
 
 节点栈实测常驻内存合计 **57 MB**，`install/` 仅 17 MB，A7A 的算力严重过剩——瓶颈不在板子。
 
-### 2.2 待购（双轮差速，约 163 元）
+### 3.2 待购（双轮差速，约 164 元）
 
 | 物料 | 搜索词 | 数量 | 单价 | 小计 |
 | --- | --- | --- | --- | --- |
 | MCU | `ESP32开发板 Type-C 38P` | 1 | 18 | 18 |
-| 编码器电机 | `JGB37-520 编码器电机 12V` 1:30，**必须 6 线带 AB 相** | 2 | 32 | 64 |
+| 编码器电机 | `JGB37-520 编码器电机 12V` **1:60**，**必须 6 线带 AB 相** | 2 | 32 | 64 |
 | 电机支架 | `37电机支架 L型` | 2 | 4 | 8 |
 | 驱动 | `TB6612FNG 电机驱动模块`（排针已焊） | 1 | 8 | 8 |
 | 电源 | `12V 5A 电源适配器 DC5.5` | 1 | 25 | 25 |
 | 电源转接 | `DC5.5 母头转接线柱` | 1 | 3 | 3 |
 | 杜邦线 | `杜邦线 20cm` 公母各一排 | 1 | 5 | 5 |
 | 急停 | `22mm 急停开关 常闭 蘑菇头` | 1 | 10 | 10 |
-| 底板 | 亚克力/洞洞板 约 10×15cm | 1 | 12 | 12 |
+| 底板 | 亚克力/洞洞板 **约 50×20cm** | 1 | 12 | 12 |
 | 万向轮 | `牛眼轮` 2 只 | 1 | 8 | 8 |
-| 电阻 | 10k + 20k 各两只（备用分压） | 1 | 1 | 1 |
+| 分压电阻 | **100k + 10k 各两只**（见 3.4） | 1 | 1 | 1 |
+| 蜂鸣器 | 有源蜂鸣器 3.3V | 1 | 2 | 2 |
 
 **预算紧张就买 96 元的单轮版**（去掉一只电机、一个支架、底板、万向轮），先验证 MCU + 协议 + 编码器这一层。单轮跑不了差速 tracker，但能跑通全部通信与安全链路，不是白买。
 
-### 2.3 明确不买
+### 3.3 减速比选 1:60，不是 1:30
+
+| 减速比 | 空载转速 | 空载线速度 | 编码器分辨率 |
+| --- | --- | --- | --- |
+| 1:30 | ~330 rpm | **~3.0 m/s** | 1320 counts/圈 |
+| **1:60** | ~170 rpm | **~1.4 m/s** | 2640 counts/圈 |
+| 1:90 | ~110 rpm | ~0.9 m/s | 3960 counts/圈 |
+
+理由（按 Ø160 轮、目标 0.5 m/s 计算）：
+
+- 1:30 时巡航只用到 16% 额定转速，**低速死区与量化误差都集中在最常用的工况**；
+- 1:60 空载 1.4 m/s，正好吃满 `max_linear_x_mps = 1.5`，不打饱和；
+- 编码器分辨率翻倍，20ms 测速窗口的量化误差从 3.8% 降到 1.9%（§6.2）；
+- 扭矩翻倍，0.45m 轮距原地转向更容易。
+
+> 1:90/1:120 也可以，代价是最快只能跑 0.9/0.7 m/s，调度侧 `target_speed` 需要跟着下调。
+
+### 3.4 电压采样：100k / 10k，不是 10k / 20k
+
+v1 写的 `10k + 20k` 分压在 12.6V 下输出 **8.4V**，ESP32 的 ADC 上限 3.3V——**直接烧 ADC**。
+
+正确取值考虑"12V 台架现在能用、24V 整车以后不烧"：
+
+| 分压 | 12.6V 输出 | 24V 输出 | 30V 输出 | 结论 |
+| --- | --- | --- | --- | --- |
+| 10k / 20k | **8.40V** ❌ | 16.0V ❌ | — | 烧 ADC |
+| 33k / 10k | 2.93V ⚠️ | 5.58V ❌ | — | 12V 勉强（13.5V 满电时 3.14V 已顶到上限），24V 不行 |
+| **100k / 10k（1/11）** | **1.15V** ✅ | **2.18V** ✅ | **2.73V** ✅ | 推荐 |
+
+要点：
+
+- ADC 前加 **100nF 对地**，否则高阻源+电机噪声会让读数跳变；
+- ESP32 的 ADC **非线性**，必须做两点标定（用万用表读实际电压，写进固件的 `vbat_scale` / `vbat_offset`）；
+- 采样走 ADC1（GPIO32–39），**ADC2 与 WiFi 冲突**，这是 ESP32 的经典坑。
+
+### 3.5 明确不买
 
 - **ST-Link**：ESP32 自带 USB 下载。
-- **74HC4050 / TXS0108E**：编码器 VCC 直接接 3.3V，输出即 3.3V，可直连。真遇到波形不稳再用两只 10k+20k 分压（成本 0.2 元）。
-- **OLED / 逻辑分析仪 / 第二张 SD 卡**：演示价值低，先不花。
+- **74HC4050 / TXS0108E**：编码器 VCC 直接接 3.3V，输出即 3.3V，可直连。
+- **OLED / 逻辑分析仪 / 第二张 SD 卡**：演示价值低。
 - **阿克曼底盘**：代码里 `NormalizeKinematicsModel` 把 `ackermann` 直接映射成 `diff_drive`，等于不支持。
 - **CAN 总线底盘**：`ChassisBackend` 只有 serial / udp 两个实现，接 CAN 要重写。
 - **激光雷达 / RTK / UWB**：站点式调度用不上，且软件没有感知消费方。
 
-**选型硬约束**（来自代码，不是拍脑袋）：
+### 3.6 选型约束（哪些是真的来自代码）
 
-- 电压：`kMinimumBatteryVoltage` 与 `fleet.yaml: 24.5` → 24V 系统。**台架用 12V 时必须把 `min_battery_voltage` 改成 10.8**，否则任务永远判电量不足。
-- 轮径/轮距：`wheel_radius 0.08`、`wheel_separation 0.45` → 160mm 轮、0.45m 轮距，JGB37-520 正好。
-- 速度：`max_linear_x_mps 1.5`，tracker 默认 `target_speed 0.5`。
-- 场地：demo map 13×7m、通道宽 1.2m → 车宽建议 ≤ 0.7m。
+v1 把 `wheel_radius` / `wheel_separation` 列为"来自代码的硬约束"，**这是错的**：这两个常量只存在于 `chassis_hardware_interface.cpp`（ros2_control 插件，launch 里 `parameters=[]`，从未启用）。串口链路上，轮径轮距完全由 **MCU 固件**决定，机械尺寸可以自由选。
+
+真正来自代码的约束只有这几条：
+
+| 约束 | 值 | 来源 |
+| --- | --- | --- |
+| 电压下限（若用电压判电量） | 见 §9 T1 | `dispatcher_node.cpp` 的 `kMinimumBatteryVoltage = 21.0`，仅用于 `/v2/estimate_mission_cost` |
+| 线速度上限 | 1.5 m/s | `config/safety.yaml: max_linear_x_mps` |
+| 角速度上限 | 2.0 rad/s | `config/safety.yaml: max_angular_z_radps` |
+| tracker 默认巡航 | 0.5 m/s | `path_tracker_node: target_speed` |
+| 场地 | demo map 13×7 m，**通道净宽 1.25 m**（25 px × 0.05 m/px） | `scripts/gen_demo_map.py` |
+| 车宽建议 | ≤ 0.7 m | 通道 1.25 m 留双侧余量。JGB37-520 轮宽约 0.05 m，0.45 m 轮距 → 整车宽约 **0.50–0.55 m**（底板别做太宽） |
+
+> `config/fleet.yaml` 里的 `battery_voltage: 24.5` **不构成约束**：`fleet_catalog_file` 默认空串、launch 不注入，该文件当前**完全没被加载**。
 
 ---
 
-## 3. 拓扑与供电
+## 4. 拓扑与供电
 
 ```text
         [云端 / PC]  REST + DDS
@@ -83,9 +160,10 @@
    │ /dev/ttyAS4  ← UART4 overlay │
    └───────────┬──────────────────┘
                │ TTL 3.3V  460800 8N1  TX/RX 交叉 + 单点共地
-   ┌───────────▼──────────────────┐
-   │ ESP32  1kHz 控制环            │  ← 编码器捕获 / 增量 PID / 看门狗
-   └────┬──────────────────┬──────┘
+   ┌───────────▼──────────────────┐         ┌─────────────┐
+   │ ESP32  1kHz PWM 控制环        │◄──USB───┤ PC（仅调试） │
+   │ 编码器捕获 / 增量 PID / 看门狗 │         │ 供电 + 精确日志│
+   └────┬──────────────────┬──────┘         └─────────────┘
         │ PWM + DIR        │ A/B 相
    ┌────▼──────┐    ┌──────▼──────┐
    │ TB6612FNG │    │ 霍尔编码器×2 │
@@ -98,31 +176,43 @@
 
 要点：
 
+- **ESP32 由 USB 供电**（接 PC，或 5V/1A 充电头）。**不要接 A7A 的 40-pin 3.3V**——ESP32 开 WiFi 峰值 200mA 以上，那一路不是给这个用的。接 PC 的额外好处：MCU 侧能打出**微秒级时间戳日志**，这是 P5 测量停机延迟最可靠的手段（见 §11）。
 - **双电源、单点共地**。12V 给电机，5V/3A 给 A7A，两路 GND 必须相连，否则 UART 没有电平参考。
-- 12V 入口并 470µF + 100nF，吸收电机启动浪涌。
+- 12V 入口并 **470µF + 100nF**，吸收电机启动浪涌。
 - **不要用 12V/2A**：两只 JGB37-520 堵转合计 3–5A，2A 会掉压重启。
 - **急停串在 12V 的 VM 回路上**——按下就断动力，与软件完全无关。
 
-### 3.1 A7A 引脚
+### 4.1 A7A 引脚
 
 | A7A 40-pin | 信号 | 接到 ESP32 | 备注 |
 | --- | --- | --- | --- |
 | 16 | PJ24 / UART4_TX | RX (GPIO16) | 交叉 |
 | 18 | PJ25 / UART4_RX | TX (GPIO17) | 交叉 |
 | 14 或 20 | GND | GND | 只接一根 |
-| 17 | +3.3V | — | **不要**给电机供电 |
+| 17 | +3.3V | — | **不要**给 ESP32 或电机供电 |
+
+> **GPIO16/17 的坑**：这两个脚在 **ESP32-WROOM** 上可用（UART2 默认脚），但在 **ESP32-WROVER** 上被 PSRAM 占用、**不可用**。买板子时确认型号；若是 WROVER，改用 GPIO25/26 之类做软串口，或换 UART1 的重映射脚。
 
 UART4 默认关闭：`rsetup` → Overlay → Manage overlays → 勾选 **Enable UART4** → 重启后出现 `/dev/ttyAS4`。
 
 > **关键坑**：`entrypoint.server.sh` 默认 `AMR_SERIAL_DEVICE=/dev/ttyUSB0`。A7A 板载串口叫 `/dev/ttyAS4`，不指定就会去起 PTY 模拟器，然后"系统看着正常、车一动不动"。
 
+### 4.2 驱动器余量（重要）
+
+TB6612FNG 每通道**连续 1.2A、峰值 3.2A**，而 JGB37-520 单只堵转 2–3A。这带来两个后果：
+
+1. **轻载巡航没有问题**：0.5 m/s、Ø160 轮，实测电流约 0.3–0.6A/只。
+2. **"手捏输出轴"这种验收动作会触发热保护**。P1 的验收必须改成"轻阻 1–2 秒"或"短时堵转 0.5 秒"，不能长时间捏死。
+
+若打算做爬坡或载重演示，换 **DRV8871（3.6A 连续）** 或 BTS7960，成本增加约 20 元/只。
+
 ---
 
-## 4. 通信协议：沿用 Mick 二进制帧
+## 5. 通信协议：沿用 Mick 二进制帧 + 最小增量
 
 **不要新造协议**。仓库已有 `EncodeMickBinaryFrame` / `DecodeMickBinaryPacket` 及其单测（`test_chassis_packet.cpp`）。MCU 直接实现这套帧，编解码、测试、粘包处理全部现成。
 
-### 4.1 帧格式
+### 5.1 帧格式（不改）
 
 ```text
 0xAE 0xEA | len | type | payload... | sum8 | 0xEF 0xFE
@@ -130,57 +220,190 @@ UART4 默认关闭：`rsetup` → Overlay → Manage overlays → 勾选 **Enabl
 
 `sum8` = 从 `len` 到 payload 末字节的**累加和（uint8 溢出）**。
 
-### 4.2 下行（A7A → ESP32）
+帧长随 payload 变化，`2 + 1 + 1 + payload + 1 + 2`：
 
-`type = 0xF3`，payload 6 字节，三个 int16（大端，单位 mm/s、mrad/s）：
+| 帧 | v1 payload | v1 帧长 | **v2 payload** | **v2 帧长** |
+| --- | --- | --- | --- | --- |
+| 下行 `0xF3` | 6 | 13 B | **7**（+seq） | **14 B** |
+| 上行 `0xA1` | 12 | 19 B | **14**（+flags+seq） | **21 B** |
+| 清里程计 `0xE1` | 4 | 11 B | 4（不变） | 11 B |
+| 状态 `0xA2` | 3 | 10 B | 3（不变） | 10 B |
+
+> v1 文中的"20 字节"是笔误；v2 的 21 字节才是加了两个字段之后的真实值。
+
+### 5.2 下行（A7A → ESP32）
+
+> ✅ **已实现（v2.1）**。`ChassisCommand` 新增 `sequence`，`EncodeMickSpeedCommand()`
+> 现在发 **7 字节** payload（末字节为 seq）。
+> **固件必须同时接受 6 和 7 字节两种 payload**：按 `len` 字段判断，6 字节时
+> `last_cmd_seq` 保持 0。这样主机先升级或固件先烧录都不会互相卡死。
+
+`type = 0xF3`，payload **7 字节**（v2 增加 `seq`）：
 
 | 偏移 | 字段 | 说明 |
 | --- | --- | --- |
-| 0–1 | linear_x | ×1000，mm/s |
-| 2–3 | linear_y | ×1000，差速底盘恒 0 |
-| 4–5 | angular_z | ×1000，mrad/s |
+| 0–1 | linear_x | ×1000，mm/s，int16 BE |
+| 2–3 | linear_y | 差速底盘恒 0 |
+| 4–5 | angular_z | ×1000，mrad/s，int16 BE |
+| 6 | **seq** | uint8，每帧 +1，回绕；MCU 回显到上行 |
 
-清除里程计：`type = 0xE1`，payload `01 00 00 00`。
+清除里程计：`type = 0xE1`，payload `01 00 00 00`（保持不变）。
 
-### 4.3 上行（ESP32 → A7A）
+> **向后兼容**：`DecodeMickBinaryPacket` 只要求 `0xA1` payload ≥12 字节、按固定偏移读，**多出来的字节会被忽略**。所以固件可以先发 14 字节，主机逐步接入。
 
-**里程计 `type = 0xA1`，payload ≥ 12 字节**：
+### 5.3 上行（ESP32 → A7A）
+
+**里程计 `type = 0xA1`，payload ≥ 14 字节**（v2 增加 `flags` + `last_cmd_seq`）：
+
+> ✅ **已实现（v2.1）**。`ChassisOdometryPacket` 新增 `flags` 与 `last_cmd_seq`。
+> 主机侧**天然向后兼容**：`DecodeMickBinaryPacket` 只要求 payload ≥12、按固定偏移读，
+> 多出来的字节在此之前被忽略；现在则被读取（≥13 取 flags，≥14 取 last_cmd_seq），
+> 12 字节的旧固件帧解码后两字段为 0，行为与改动前逐位一致。
+> **固件可以先发 14 字节**，主机不用改就能跑。
 
 | 偏移 | 字段 | 单位/含义 |
 | --- | --- | --- |
 | 0–1 | x | mm（int16） |
 | 2–3 | y | mm |
-| 4–5 | yaw | mrad |
+| 4–5 | yaw | mrad，**必须归一化到 [-π, π]** |
 | 6–7 | vx | mm/s |
 | 8–9 | wz | mrad/s |
-| 10–11 | battery | ×100，即 12.34V → 1234 |
+| 10–11 | battery | ×100，即 12.34V → 1234（uint16） |
+| 12 | **flags** | bit0=fault，bit1=uart_timeout，bit2=急停输入，bit3=过流 |
+| 13 | **last_cmd_seq** | 最近一次收到的 `0xF3` 的 seq |
 
 **状态 `type = 0xA2`**：`payload[0]` 0=正常/非0=fault；`payload[1..2]` 电压 ×100。
 
-> int16 表示 x 的极限是 ±32.767 m。台架够用；大场地需要扩成 int32，届时同步改 `chassis_packet.cpp`。
+#### yaw 必须归一化（否则会静默打反方向）
 
-### 4.4 时间尺度
+`chassis_packet.cpp` 里 yaw = `ReadInt16 / 1000`，量程 **±32.767 rad ≈ ±5.2 圈**。站点式调度一次演示转满 5 圈太容易，**而且绕回是无声的**：角度跳 2π 的整数倍，`path_tracker` 会算出反向的航向误差，车直接掉头。
+
+固件侧一行修好：`yaw = atan2(sin(yaw), cos(yaw))` 后再乘 1000。
+
+> 同理，`x/y` 的 int16 上限是 ±32.767 m。13×7 的场地够用；若以后换大场地，要同步扩成 int32 并改 `chassis_packet.cpp`。
+
+### 5.4 为什么加 seq：让"链路质量"变成真的
+
+当前 `ChassisLinkHealth.avg_latency_ms` **恒为 0**——`ReadPollLoop` 调用的是 `RecordSuccess(0.0)`，没有往返时延可用；`frames_lost` 统计的是"读空了"和"CRC 错"，**不是命令真的丢了**。
+
+加了 `seq` 之后，A7A 可以算出**命令送达率**：最近 N 帧 `0xF3` 中，MCU 回显的 `last_cmd_seq` 覆盖了几帧。这是一个真实、可解释、可现场演示的指标，比恒为 0 的时延强得多。
+
+| 指标 | 现在 | 加 seq 后 |
+| --- | --- | --- |
+| `avg_latency_ms` | 恒 0（无意义） | 仍无往返时延，标注为"不适用" |
+| `loss_rate` | 读空/CRC 占比 | 可继续用，另有命令送达率 |
+| **命令送达率** | 无 | ✅ 真实指标，进 `/metrics` 与故障矩阵 |
+
+### 5.5 时间尺度
 
 | 层 | 周期 | 职责 |
 | --- | --- | --- |
-| MCU 控制环 | 1 ms（1 kHz） | 读编码器 → 算实际速度 → 增量 PID → 更新 PWM |
-| MCU 上报 | 20 ms（50 Hz） | 发 0xA1 |
+| MCU PWM 环 | 1 ms（1 kHz） | 读编码器增量 → 更新 PID 输出 → 写 PWM |
+| MCU 测速窗口 | **20 ms** | 用 20ms 增量算 rpm，喂 PID 的误差项（见 §6.2） |
+| MCU 上报 | 20 ms（50 Hz） | 发 `0xA1` |
 | A7A 轮询 | 20 ms（50 Hz，`poll_rate_hz`） | 解析帧、发 odom / TF |
 | A7A 看门狗 | 300 ms（`odom_timeout_ms`） | 无有效帧 → 心跳置 false |
 | 安全门看门狗 | 500 ms（`heartbeat_timeout_ms`） | 心跳丢失 → 零速 |
 
-带宽：50 Hz × 20 字节 ≈ 1 KB/s，115200 都够；用 460800 可以把单帧传输降到 0.23 ms。
+带宽：50 Hz × 21 字节 ≈ 1.05 KB/s ≈ **10.5 kbit/s**（UART 每字节 10 bit，含起止位）。460800 下单帧 21 字节传输 **0.46 ms**；115200 下 1.82 ms，仍然够用。460800 的意义是给调试输出留余量。
 
-### 4.5 双向看门狗
+### 5.6 双向看门狗（v1 表述有误，此处修正）
 
-- **MCU 侧**：连续 200 ms 没收到合法下行帧（或 sum8 错）→ PWM 归零 + 拉高制动，状态位 `uart_timeout`。
+- **MCU 侧**：连续 **200 ms** 没收到合法下行帧（或 sum8 错）→ 目标速度置 0，**走 PID 斜坡停车**；超过 50 ms 仍未收敛再硬断 PWM + 拉高制动，`flags.bit1 = 1`。
 - **A7A 侧**：300 ms 没有有效上行帧 → `link_alive_ = false` → `ChassisLinkHealth.is_healthy = false`、心跳发 `false` → `safety_gate` 的 500 ms 看门狗接管零速。
 
-这两级是"拔线演示"能成立的基础，缺一不可。
+这两条**互不依赖**：MCU 那 200ms 在 A7A 死机时也成立（因为它不依赖 A7A），A7A 那 500ms 在 MCU 死机时也成立（因为它不依赖 MCU）。这才是"拔线演示"能成立的基础。
+
+### 5.7 上电清里程计
+
+`EncodeMickClearOdometryCommand()`（`0xE1`）**已经写好但全仓没有任何调用方**。建议在 `SerialBackend::Open()` 成功后发一次，让 MCU 的 odom 从 0 开始。
+
+这样标定就变成可重复的动作（§12），而不是每次上电都要重新量三个浮点数。
 
 ---
 
-## 5. 软件接入路径：走 `ChassisBackend`，不走 ros2_control
+## 6. 固件要点
+
+### 6.1 引脚（单电机，先做 P1）
+
+| 连接 | 说明 |
+| --- | --- |
+| 12V+ → 急停 → TB6612 `VM` | 急停必须串在动力回路里 |
+| 12V− → TB6612 `GND` | **与 ESP32 GND 共地** |
+| TB6612 `VCC` → ESP32 3.3V | 逻辑供电 |
+| TB6612 `A01/A02` → 电机 M+ / M− | 电机动力 |
+| TB6612 `PWMA` → GPIO25 | PWM |
+| TB6612 `AIN1/AIN2` → GPIO26/27 | 方向 |
+| TB6612 `STBY` → 3.3V | 否则不出力 |
+| 编码器 `VCC` → ESP32 **3.3V** | 不要接 5V，输出 5V 会打坏 GPIO |
+| 编码器 `GND` → ESP32 GND | |
+| 编码器 `A/B` → GPIO34/35 | 输入专用脚，内部无上拉，**需外接 10k 上拉到 3.3V** |
+| 分压中点 → GPIO32 (ADC1_CH4) | 100k/10k + 100nF 对地 |
+
+### 6.2 1kHz 是 PWM 频率，不是测速频率
+
+v1 写"1kHz 主循环里 `rpm = delta / (PPR*4) * 60 / dt`"，有两个问题：
+
+**问题 1：漏了减速比。** 输出轴一圈 = `PPR × 4 × 减速比` 个计数。按常见 11 线编码器：
+
+| 减速比 | counts / 输出轴圈 |
+| --- | --- |
+| 1:30 | 11 × 4 × 30 = **1320** |
+| 1:60 | 11 × 4 × 60 = **2640** |
+
+> 11 线是 JGB37-520 的常见规格，**以实物铭牌为准**；买到 13 线的按 13 算。
+
+**问题 2：1ms 窗口测速是纯量化噪声。** 0.5 m/s、Ø160 轮约 59.7 rpm 输出轴：
+
+| 测速窗口 | 1:30 计数 | 相对误差 | 1:60 计数 | 相对误差 |
+| --- | --- | --- | --- | --- |
+| 1 ms | 1.3 | **~76%** ❌ | 2.6 | **~38%** ❌ |
+| 5 ms | 6.6 | 15% | 13.1 | 7.6% |
+| **20 ms** | 26.3 | **3.8%** ✅ | 52.5 | **1.9%** ✅ |
+| 50 ms | 65.7 | 1.5% | 131 | 0.8% |
+
+**正确做法**：1 kHz 只做"读增量 + 写 PWM"，速度用 **20 ms 滑动窗口**算，PID 按窗口节拍（50 Hz）更新。
+
+### 6.3 16 位计数器回绕
+
+按 1 kHz 读增量并立刻清零，回绕问题**自然消失**（65536 远大于单次增量）。真正的风险是**懒读取**：如果每 20ms 才读一次绝对计数器再差分，仍然安全；只有在跨秒级间隔差分时才会出错。
+
+如果确实需要长时间累积位置，**在固件里用 int32 累加**，不要依赖 16 位硬件计数器。
+
+顺便注意回绕对应的距离（如果真按绝对计数差分）：
+
+| 减速比 | 回绕一次对应的行驶距离 |
+| --- | --- |
+| 1:30 | 65536 / 1320 × 0.503 m ≈ **25.0 m** |
+| 1:60 | 65536 / 2640 × 0.503 m ≈ **12.5 m** |
+
+13×7 的场地跑两趟就到了——所以"1kHz 读增量"不是优化，是必需。
+
+### 6.4 低速死区
+
+目标 0.1 m/s 时输出轴约 11.9 rpm，占空比约 6%，电机大概率不转、原地抖动（编码器还会给出正负跳变的速度）。
+
+处理方式（二选一）：
+
+- **演示层面**：巡航速度定在 **≥0.2 m/s**（`path_tracker target_speed`）；
+- **控制层面**：做一张最小 PWM 前馈表（`pwm = deadband + Kv * target_rpm`），死区随电压变化需重标。
+
+台架演示选前者即可，后者留作"知道原理但不做"。
+
+### 6.5 PID 与安全输出
+
+顺序照抄即可：
+
+1. GPIO25 配 LEDC PWM（20kHz，8bit）。
+2. GPIO34/35 配输入 + CHANGE 中断，ISR 里只做 `encoder_count++/--`，**不要在里面算浮点**。
+3. 1 kHz 定时器：取 `count` 副本并清零，累加到 20ms 窗口。
+4. 20 ms 窗口到期：`rpm = 窗口计数 / (PPR*4*gear) * 60 / 0.02`。
+5. 增量式 PID：`pwm += Kp*(e - e1) + Ki*e + Kd*(e - 2*e1 + e2)`，限幅 `[0, 255]`。
+6. 200ms 无合法下行帧 → 目标速度置 0，走斜坡；50ms 未收敛 → 硬断 PWM + 制动。
+
+---
+
+## 7. 软件接入路径：走 `ChassisBackend`，不走 ros2_control
 
 **选择理由**（这是本方案最重要的工程判断）：
 
@@ -195,28 +418,25 @@ UART4 默认关闭：`rsetup` → Overlay → Manage overlays → 勾选 **Enabl
 
 ---
 
-## 6. 已完成的代码改造
+## 8. 已完成的代码改造（逐条核实过）
 
-以下改动均已落地，容器内编译通过，`ctest` **971/971 通过**（新增 6 项 `BatteryVoltageTest`）。
+以下改动**已在代码中**（`2f71a5d` 恢复并回归）。第 8–11 条不是设计时想到的，是 PTY 端到端联调时暴露的：只跑单元测试会全部通过，因为单测直接喂完整帧，绕过了真实串口的半帧、空读与时序。
 
-> 第 8-11 条不是设计时想到的，是 PTY 端到端联调时暴露的：只跑单元测试会全部通过，因为单测直接喂完整帧，绕过了真实串口的半帧、空读与时序。
+| # | 问题 | 改动 | 核实位置 |
+| --- | --- | --- | --- |
+| 1 | 下行按协议发、上行永远按文本切，接二进制底盘后 odom 全丢 | 新增 `protocol` 参数（`text`/`mick_binary`），`IngestBytes()` 分派到 `MickBinaryPacketStream` 或 `ChassisPacketStream` | `chassis_driver_node.cpp:30,280` |
+| 2 | 底盘电压解析出来就被丢弃 | 新增 `/battery_state` 发布（`BatteryState`），≥0.05V 立即发、否则 2s 保底 | `chassis_driver_node.cpp:359` |
+| 3 | 百分比端点写死，12V/24V 无法共存 | 新增 `battery_full_voltage`/`battery_empty_voltage`，换算抽成纯函数 + 6 项单测 | `battery_voltage.hpp`, `test_battery_voltage.cpp` |
+| ~~4~~ | ~~`kMinimumBatteryVoltage` 写死~~ | **未落地**（v1 声称已参数化，实际不存在）→ 见 §9 T1 | — |
+| 5 | `PublishHealth` 无条件发 `heartbeat=true`，拔线降级到 mock 后永不刹车 | 心跳与 `is_healthy` 改为依赖 `link_alive_`（有有效上行帧），新增 `odom_timeout_ms` | `chassis_driver_node.cpp:386-430` |
+| 6 | `entrypoint.server.sh` 设备不存在时静默起 PTY 模拟器 | `AMR_USE_MOCK_CHASSIS=0` 且设备不存在 → 打印原因并 `exit 1` | `entrypoint.server.sh:120-127` |
+| 7 | `/plan` 是 map 帧，`/odom` 原点不一定是 map 原点，真机会朝反方向开 | `path_tracker_node` 新增 `odom_origin_x/y/yaw` 静态偏移（默认 0），并对非 map 帧的路径告警 | `path_tracker_node.cpp:31-38,99-110` |
+| 8 | 二进制模式下空读被计为丢包，启动后 8 个样本就把 `loss_rate` 顶到 1.0 | 空读仅在文本协议下计损；链路死亡改由 `odom_timeout_ms` 判定 | `chassis_driver_node.cpp:230-240` |
+| 9 | 坏帧用 `RecordLoss` 计，解码噪声会误判成链路中断 | 改用 `RecordCrcError()`（只污染滑窗、同时刷新 `last_seen`） | `chassis_driver_node.cpp:288-295` |
+| 10 | 超时检测写在 `Read()` 成功路径之后，空读提前 `return` 导致假活永不触发 | 抽出 `EvaluateLinkLiveness()`，两条退出路径都调用 | `chassis_driver_node.cpp:271,386` |
+| 11 | 电压恒定时节流把 `battery_state` 彻底静默 | 变化 ≥0.05V 立即发，否则每 2s 保底发一次 | `chassis_driver_node.cpp:363-372` |
 
-| # | 问题 | 改动 |
-| --- | --- | --- |
-| 1 | 下行按协议发、上行永远按文本切，接二进制底盘后 odom 全丢 | `chassis_driver_node` 新增 `protocol` 参数（`text` / `mick_binary`），`IngestBytes()` 按协议分派到 `MickBinaryPacketStream` 或 `ChassisPacketStream`，并把 `protocol` 传给 `ChassisBackendConfig` |
-| 2 | 底盘电压解析出来就被丢弃 | 新增 `/battery_state` 发布（`sensor_msgs/BatteryState`），含电压与百分比，按 0.05V 变化节流 |
-| 3 | 百分比端点写死，12V/24V 无法共存 | 新增 `battery_full_voltage` / `battery_empty_voltage` 参数；换算抽成 `battery_voltage.hpp` 纯函数 + 6 项单测 |
-| 4 | `kMinimumBatteryVoltage = 21.0` 写死，12V 台架永远判电量不足 | 改为 `min_battery_voltage` / `battery_drop_per_meter` 参数，默认值保持 21.0（不改既有 24V 行为） |
-| 5 | `PublishHealth` 无条件发 `heartbeat=true`，拔线降级到 mock 后永远不刹车 | 心跳与 `is_healthy` 改为依赖 `link_alive_`（有有效上行帧），并新增 `odom_timeout_ms` |
-| 6 | `entrypoint.server.sh` 设备不存在时静默起 PTY 模拟器 | `AMR_USE_MOCK_CHASSIS=0` 且设备不存在 → 打印原因并 `exit 1` |
-| 7 | `/plan` 是 map 帧，`/odom` 原点不一定是 map 原点，真机会朝反方向开 | `path_tracker_node` 新增 `odom_origin_x/y/yaw` 静态偏移（默认 0，仿真行为逐位不变），并对非 map 帧的路径告警 |
-| 8 | 二进制模式下空读被计为丢包，启动后 8 个样本就把 `loss_rate` 顶到 1.0、后端降级到 mock | 空读仅在文本协议下计损；链路死亡改由 `odom_timeout_ms` 判定 |
-| 9 | 坏帧用 `RecordLoss` 计，解码噪声会误判成链路中断 | 改用 `RecordCrcError()`（只污染滑窗、同时刷新 `last_seen`） |
-| 10 | 超时检测写在 `Read()` 成功路径之后，空读提前 `return` 导致假活永不触发（拔线不报警） | 抽出 `EvaluateLinkLiveness()`，两条退出路径都调用 |
-| 11 | 电压恒定时节流把 `battery_state` 彻底静默，下游拿不到首帧 | 变化 >=0.05V 立即发，否则每 2s 保底发一次 |
-
-对应参数（`config/chassis.yaml` 已写入；仓库里的默认值是 **text + 12V 台架端点**，
-接真 MCU 时才改 `protocol`）：
+对应参数（`config/chassis.yaml` 已写入；仓库默认值是 **text + 12V 台架端点**，接真 MCU 时才改 `protocol`）：
 
 ```yaml
 protocol: "text"                 # 接 MCU 时改 mick_binary（两侧必须一致）
@@ -225,46 +445,185 @@ battery_empty_voltage: 11.0      # 24V 整车改 21.0
 odom_timeout_ms: 300             # 必须小于 safety_gate 的 500ms 心跳超时
 ```
 
-注意 `protocol: "text"` 是**默认值而不是待办**：仿真链路（PTY 模拟底盘）只有文本协议，
-新装机的镜像必须能开箱即用。
+注意 `protocol: "text"` 是**默认值而不是待办**：仿真链路（PTY 模拟底盘）只有文本协议，新装机的镜像必须能开箱即用。
 
-`config/dispatcher.yaml`：
-
-```yaml
-min_battery_voltage: 10.8        # 12V 台架；24V 整车保持 21.0
-```
+> **v1 第 4 条不成立**：原文称"`kMinimumBatteryVoltage` 已改为 `min_battery_voltage` / `battery_drop_per_meter` 参数"。核实结果：`dispatcher_node.cpp` 的 `declare_parameter` 里**没有**这两个参数，`config/dispatcher.yaml` 也没有；全仓只有 `dispatcher_node.cpp:1303` 一处 `constexpr double kMinimumBatteryVoltage = 21.0`，且仅在 `/v2/estimate_mission_cost` 回调中使用。该项已移入 §9 待办 T1。
 
 ---
 
-## 7. 落地路线
+## 9. 代码侧待办（按性价比排序）
+
+> **v2.1 更新（2026-10-31）**：T1 / T2 / T3 三条**已实现并通过测试**，详见 §9.0。
+> 剩余 T4–T9 仍未落地。
+
+### 9.0 已完成的实现（v2.1）
+
+| 项 | 实现 | 验收 |
+| --- | --- | --- |
+| **T3 协议序号** | `ChassisCommand.sequence`；下行 `0xF3` payload 6→7 字节；`CommandDeliveryTracker`（uint8 环形距离，处理回绕/乱序/滞后回显） | core 新增 12 项测试 |
+| **T3 送达率** | `ChassisLinkHealth.command_delivery_rate / commands_sent / commands_delivered`（-1 = 不适用）；`/api/v1/status` 暴露 | ROS 27/27 |
+| **T2 故障进安全链** | `ChassisOdometryPacket.flags` + `ChassisStatePacket.fault`；`IsChassisFault()` 纯函数；`UpdateChassisFaultState()` 锁存后 `is_healthy=false` → 心跳下沉 → 安全门 500ms 零速 | ROS 新增 5 项测试 |
+| **T1 电量链路** | `BatteryStateTracker`（新鲜度 + 端点折算）；dispatcher 订阅 `/battery_state/{vid}` → `vehicle_states_[].battery_percent` | core 新增 8 项测试 |
+| **附：launch 修复** | `supervision()` 的 `respawn` 曾把 `ParameterValue` 传给 `ExecuteProcess`、`float(LaunchConfiguration)` 直接抛 TypeError —— 生产容器每 30s 崩溃重启 | 实测 8 节点正常拉起 |
+
+**关于 T1 的一个重要澄清**：`/battery_state/{vid}` 是 **per-vehicle 话题**，只在多车模式（`vehicle_ids` 非空）下订阅。**legacy 单车模式下 `vehicle_states_` 本来就是空的**，电量阈值不参与决策——也就是说，单车台架上"电量"从来不是问题，多车才需要修。
+
+### T1（已实现）修正文档与代码的口径：电量链路
+
+修复前有两个互相独立的问题：
+
+1. **`/battery_state` 没有任何订阅者**。全仓 grep 只有 `chassis_driver_node` 自己在发。
+2. **调度侧的 `battery_percent` 对 local_sim 车写死 100**，只有 VDA 5050 车从 state 报文更新。
+
+实际后果：多车台架上**电量恒为 100%**，`min_battery_percent` 与 `auto_charging_*` 全部不生效。注意这与 v1 的担心（"永远判电量不足"）**方向相反**。
+
+**已落地的改法（v2.1）**：
+
+- `BatteryStateTracker`（core 纯逻辑）：电压→百分比 + 新鲜度判定，8 项单测；
+- dispatcher 在 `SetupVehicleTopics` 里按 `ResolveVehicleTopic("", "/battery_state", vid)` 建订阅，
+  回调写 `vehicle_battery_samples_[vid]`；
+- `RefreshVehicleStates` 把**未超龄**的样本写进 `state.battery_percent`；
+  超龄样本回落到 100（与旧行为一致），但这是"只在新样本过期时"才发生；
+- 新参数 `battery_state_timeout_ms`（默认 3000，必须小于 `vehicle_state_max_age_ms`）；
+- 只接受 `present=true` 且 `percentage` 有限的样本：`percentage` 为 NaN 或负值不能当 0%，
+  否则会立刻触发充电单。
+
+**剩余验收（需真机）**：用可调电源从 12.6V 调到 10.8V，`/api/v1/vehicles` 里的
+`battery_percent` 随之下降；开启 `auto_charging_enabled` 后能自动插充电单。
+
+> **注意适用范围**：`/battery_state/{vid}` 是 per-vehicle 话题，只有 `vehicle_ids` 非空时才订阅。
+> legacy 单车模式下 `vehicle_states_` 本来就是空的、不参与选车，所以**单车台架上电量从来不是问题**。
+
+### T2（已实现）把 MCU fault 位接进安全链
+
+`HandleState` 原先只打一行日志：MCU 报 `fault`（过流 / UART 超时 / 急停输入）时**车不会停**。
+
+**已落地的改法**：`IsChassisFault(flags)` 判定 → `UpdateChassisFaultState()` 置锁存 → `is_healthy=false` 且心跳发 `false` → 现有 500ms 安全门接管零速。`ChassisStatePacket.fault` 与 `ChassisOdometryPacket.flags` 两条上行路径都覆盖。
+
+**锁存是必需的**：0xA2 只在状态变化时发送，若只在"收到 fault 帧的那一拍"降级，下一拍就恢复了。
+
+**剩余验收（需真机）**：固件加一个可触发的 fault 开关，置位后 ≤500ms `/cmd_vel_safe` 归零。
+
+### T3（已实现）协议加 `seq` / `flags`
+
+见 §5.2 / §5.3。已落地：
+
+- 下行 `0xF3` payload 6→7 字节，末字节为 `seq`（`ChassisCommand.sequence`）；
+- `CommandDeliveryTracker` 用 uint8 环形距离判定送达，正确处理 255→0 回绕、
+  迟到的乱序回显、以及“回显滞后几帧”这种常态；
+- 零帧兜底也占用序号（否则送达率分子分母与串口真实帧数不符）；
+- 后端切换时 `Reset()`，避免旧链路序号基准污染新链路；
+- `ChassisLinkHealth` 新增三个字段，`/api/v1/status` 渲染 `null` 表示不适用。
+
+**剩余验收（需真机）**：注入 10% 丢帧时 `command_delivery_rate` 同步下降。
+
+> 注意 `avg_latency_ms` 仍然是 0 且**不打算修**：本协议没有“发出指令→收到对应反馈”
+> 的配对，硬造一个往返时延只会是假数据。文档与 UI 都应标注为“不适用”，
+> 真正的可解释指标是命令送达率。
+
+### T4（建议）`goal_tolerance` 暴露成参数
+
+`path_tracker_node` 的 `declare_parameter` 列表里**没有** `goal_tolerance`，控制器里写死 **0.10 m**（`pure_pursuit.hpp:36`）。
+
+台架标定不到位时（`odom_origin_*` 偏几十厘米），车可能永远进不了 10cm 窗口 → 不 `arrived` → 任务挂着 → 10s 后被 `DeadlockDetector` 判 `kIdleActive`。**这是最容易卡住 P4 的地方。**
+
+**验收**：参数可调，0.3m 容差下能到达。
+
+### T5（建议）`protocol` / `serial_baud` 走 launch 参数
+
+现在切台架要手改 `config/chassis.yaml`，而 launch 只暴露了 `serial_device` / `health_rate_hz`。演示完仓库默认值就脏了。
+
+**改法**：仿照现有 `AMR_SERIAL_DEVICE`，由 entrypoint 传 `AMR_CHASSIS_PROTOCOL` / `AMR_CHASSIS_BAUD`。
+
+**验收**：不改任何 yaml，仅靠三个环境变量完成台架/仿真切换。
+
+### T6（建议）补静态 `map→odom` TF
+
+`chassis_driver` 发 `odom→base_link`，`path_tracker` 在内部把 odom 位姿平移进 map，但 **TF 树上没有 `map→odom`**。后果：RViz/Foxglove 里车永远在地图原点附近飘。
+
+**改法**：加一个 `static_transform_publisher`，参数等于 `odom_origin_*`，可视化和 tracker 的数学就严格一致。
+
+**验收**：RViz 里车的位置与站点坐标吻合。
+
+### T7（可选）容器补 `python3-serial`
+
+`docker/Dockerfile.jazzy` 没有装 pyserial，`tools/bench_serial_probe.py` 在容器里跑不了。宿主机有 pyserial 时在宿主机跑即可，容器里补一行更省事。
+
+### T8（已实现）C++ / Python 二进制流对齐
+
+`MickBinaryPacketStream::DrainPackets` 原先在找不到 magic 时 `buffer_.clear()`，会把末尾那个
+**可能是下一帧首字节的 `0xAE`** 一起丢掉——第二字节 `0xEA` 到达后帧头再也拼不起来，
+于是每次跨读边界的帧都稳定丢一帧。Python 探针的 `FrameParser` 特意保留了它。
+
+**已对齐**：C++ 侧现在只在「缓冲区末字节是 `0xAE`」时保留它，其余噪声照旧清掉
+（否则纯噪声会无限累积到溢出）。新增 2 项回归测试锁定该行为：
+`KeepsTrailingMagicByteAcrossDrain`（跨边界帧不丢）与
+`PureNoiseIsDiscardedWithoutOverflow`（纯噪声不累积）。
+
+### T9（可选）安全门心跳阈值与语义
+
+现状：`heartbeat_timeout_ms = 500`、心跳 5Hz（200ms）、`watchdog_ok_ = events.empty()` 把 warn 也算作不健康、`FaultSupervisor` 里 `!watchdog_healthy` 直接给 `kEmergencyStop`。
+
+合起来意味着**连续丢 2 拍心跳（约 600ms 空窗）就锁存急停**，而 `soft_timeout_ms = 2000` 名义上是"软超时"却只会让 severity 变重、不影响动作——**名字和语义是反的**。
+
+建议：warn 只限速 30%，只有 `soft_timeout` 才急停；或把 `heartbeat_timeout_ms` 抬到 800–1000。台架 USB/DDS 抖一下就可能假停。
+
+---
+
+## 10. 落地路线
 
 | 阶段 | 目标 | 验收标准 | 预估 |
 | --- | --- | --- | --- |
 | P0 | A7A 开 UART4 overlay | 短接 PJ24/PJ25 能回环收发 | 2h |
-| P1 | ESP32 单机闭环 | 串口给目标转速，电机稳转，手捏阻力能补 PWM | 4h |
+| P1 | ESP32 单机闭环 | 目标 0.2 m/s 稳转；**轻阻 1–2s** 能补 PWM 且不过冲 | 4h |
 | P2 | 双向帧协议 | 拔线 200ms 内零速；sum8 错帧被丢弃并计数 | 4h |
-| P3 | 接入 ROS | `ros2 topic echo /odom` 有真实位姿；`/battery_state` 有电压 | 3h |
+| P3 | 接入 ROS | `/odom` 有真实位姿；`/battery_state` 有电压 | 3h |
 | P4 | 调度闭环 | Web 下单 → 车真的开到站点 → `arrived` → 接下一单 | 4h |
-| P5 | 故障矩阵 | 拔线 / `kill -9` / 错帧 / 按急停，四种故障行为符合预期 | 4h |
+| P5 | 故障矩阵 | §11 的 8 项，全部填实测响应时间 | 4h |
 
 **P5 是重点产出**：一张"故障注入 × 预期行为 × 实测响应时间 × 恢复方式"的表，比任何形容词都硬。建议直接放进 README。
 
 ---
 
-## 8. 故障矩阵（待实测填写）
+## 11. 故障矩阵（8 项，P5 填写）
 
-| 注入手段 | 预期行为 | 实测响应 | 恢复方式 |
-| --- | --- | --- | --- |
-| 拔 UART 线 | MCU 200ms 内零速；A7A 300ms 判假活；安全门 500ms 零速 | | 插回自动重连 |
-| `kill -9` chassis_driver | 心跳停 → 安全门零速 | | 重启节点 |
-| 注入 sum8 错帧 | 帧被丢弃，`frames_lost` 递增，不影响后续帧 | | 自动 |
-| 按下急停 | 物理断 12V，电机立刻失力 | | 旋出急停 |
-| 暂停上游 cmd_vel | 500ms 后驱动主动写零帧兜底 | | 恢复指令即解除 |
-| 底盘掉电重启 | odom 归零 → 需重新标定 `odom_origin_*` | | 重新标定 |
+测量方式决定了数字可不可信，所以每项都写清怎么测。
+
+| # | 注入手段 | 预期行为 | 测量方式 | 实测 |
+| --- | --- | --- | --- | --- |
+| F1 | 拔 UART | MCU ≤200ms 停 + 蜂鸣（路径 A）；A7A 300ms 判假活、安全门 500ms 零速（路径 B，独立证据） | **MCU 的 USB 日志时间戳**（最准，不受 DDS 影响） | |
+| F2 | `kill -9 chassis_driver_node` | 心跳停 → 安全门 500ms 零速 | `ros2 topic echo --stamp /cmd_vel_safe` | |
+| F3 | 注入 sum8 错帧 | 帧被丢弃，`frames_crc_error` 递增，**不影响后续帧、不停车** | `bench_serial_probe.py --mode corrupt` + `/chassis/link_health` | |
+| F4 | 按下急停 | 物理断 12V，电机立刻失力 | 万用表测 VM | |
+| F5 | 停发 `/cmd_vel_safe` | `cmd_stale_timeout_ms` 后驱动主动写零帧（仓库默认 500ms，**建议调到 300ms** 与心跳超时错开） | 驱动日志 + `/cmd_vel_safe` | |
+| F6 | 底盘掉电重启 | odom 归零 → **摆回标记点 + 重启节点即恢复**（§12），不需要改参数 | 目视 + `/odom` | |
+| **F7** | **断开 Wi-Fi** | **当前任务跑完并停在终点，不接受新单** | 拔网线后观察任务终态 | |
+| **F8** | **MCU 注入 fault 位** | **≤500ms 进安全门零速**（T2 已实现，仅剩真机实测） | 固件开关 + `/cmd_vel_safe` | |
+
+关于 F7：现在的行为（跟踪器到达后 `has_path_=false` → 停发指令 → 500ms 零帧）**恰好就是"完成任务后再停"**。这是个可以主动讲的设计选择——**在通道里急停比跑完再停更危险**。写进文档，比不测强。
+
+关于 F1：不要用秒表。人眼反应时间就有 200ms，秒表测不出 200ms 的差异。MCU 侧日志才是可信来源。
 
 ---
 
-## 9. Debian 上部署 ROS 2
+## 12. 标定：把 `odom_origin_*` 从"填浮点数"变成"摆车"
+
+v1 的 F6 写"底盘掉电 → odom 归零 → 需重新标定 `odom_origin_*`"，这是一条会让演示翻车的操作：每次上电都要重新量三个浮点数。
+
+**改成流程化**：
+
+1. 桌上贴一个十字标记，标记点 = map 原点，短边指向 map **+x**。
+2. `odom_origin_x/y/yaw` **永远保持 0**。
+3. 节点启动（`SerialBackend::Open()` 成功后）发一帧 `0xE1` 清 MCU 里程计（§5.7）。
+4. 上电就把车摆在标记上、车头朝 +x。
+
+F6 的恢复动作于是变成"**把车摆回标记点 + 重启节点**"，十秒完成，可重复。
+
+若确实需要偏移（比如车必须停在别处），再按需要填参数；但演示场景不需要。
+
+---
+
+## 13. Debian 上部署 ROS 2
 
 A7A 官方只有 Debian / Android，没有 Ubuntu；`ros-jazzy-*` 只针对 noble 构建，直接 `apt install` 会失败。
 
@@ -288,15 +647,73 @@ docker run -d --name amr_dispatcher \
 - 板子 **不要跑 RViz**，headless 即可；PC 上用 RViz2 或 Foxglove 看。
 - 小内存机器编译有 OOM 风险，镜像在 PC 上构建好再传。
 - 若 A7A 上直接跑调度（单机闭环，不跨公网 DDS），把 `dispatcher_node` 也放进同一容器最简单。
+- **容器内没有 pyserial**：`bench_serial_probe.py` 需在宿主机跑（`pip install pyserial`），或用 T7 补进镜像。
 
 ---
 
-## 10. 常见坑
+## 14. 常见坑
 
 1. **共地只接一根**：多点接地会形成地环路，编码器噪声窜进 UART。
 2. **编码器线不屏蔽**：PWM 是强干扰源，A/B 用双绞线并远离动力线。
-3. **16 位计数器回绕**：定时器编码器模式读累计值，1kHz 取增量时必须处理回绕，否则速度突然跳成负值。
+3. **16 位计数器回绕**：1kHz 读增量即可规避；若要长期累积，固件里用 int32（§6.3）。
 4. **SD 卡写坏**：ROS 日志写到 `tmpfs`，挂载加 `noatime`。
-5. **忘记改 `min_battery_voltage`**：12V 台架上所有任务会被判"电量不足"。
-6. **忘记指定 `AMR_SERIAL_DEVICE`**：会静默走 PTY 模拟器（已改为显式报错）。
-7. **`odom_origin_*` 不标定**：车会朝坐标原点方向跑偏，表现为"往反方向开"。
+5. **忘记指定 `AMR_SERIAL_DEVICE`**：会静默走 PTY 模拟器（已改为显式报错）。
+6. **yaw 未归一化**：转满 5 圈后角度绕回，车会掉头（§5.3）。
+7. **分压电阻按 10k/20k 买**：12.6V 输出 8.4V，烧 ADC（§3.4）。
+8. **ESP32 接 A7A 的 3.3V**：WiFi 峰值 200mA，供电不足会复位（§4）。
+9. **`goal_tolerance` 写死 0.10**：标定不到位时任务永远不到站（T4）。
+10. **以为电量链路是通的**：v2 之前 `battery_percent` 对 local_sim 车恒 100；现已接
+    `/battery_state/{vid}`（T1），但**仅多车模式生效**，且 `battery_state_timeout_ms`
+    超时后仍回落 100（避免拿陈旧电量派单）。
+
+---
+
+## 15. 数字口径与 v2 变更说明
+
+### 15.1 测试计数怎么报
+
+**v2.1 实测（2026-10-31，容器内串行构建后运行）：**
+
+| 层 | 数字 | 变化 |
+| --- | --- | --- |
+| core | **995 / 995** | 971 → 995（+12 协议/送达率，+8 电量状态机，+2 状态帧 fault，+2 半帧边界） |
+| ros | **27 / 27** | 22 → 27（+5 `ChassisFaultTest`） |
+| tools | **114 / 114** | 不变 |
+
+对外表述写成"**995 项 core + 27 项 ros + 114 项 tools 单测全绿**"，并注明是
+**容器内串行构建**后实跑。不要只给一个光秃秃的总数。
+
+> **构建内存注意事项**：宿主机只有 3.6 GiB 内存，4 核。全量并行构建会把
+> SSH 会话打死。可用最小并行度的命令：
+> ```bash
+> docker run --rm --memory=1500m --memory-swap=3g -e MAKEFLAGS=-j1 \
+>   -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
+>   bash -lc 'source /opt/ros/jazzy/setup.bash; export MAKEFLAGS=-j1; \
+>     colcon build --base-paths src --parallel-workers 1 --executor sequential \
+>       --packages-select amr_dispatcher_ros'
+> ```
+> 实测 `amr_dispatcher_ros` 单包串行约 7 分钟，内存峰值未触发 OOM。
+
+另外 `test_report_matrix.json` 里的 `watchdog_200ms_timeout_cutoff: PASSED` 容易误读：`scripts/check_watchdog_estop.sh` 实际只跑了 50–500ms 的**单元测试**，200ms 是 **MCU 设计值**，不是端到端测出来的。§11 已把它标成 `(设计值)`，请保持这个口径。
+
+### 15.2 v2 相对 v1 的变更
+
+| 项 | v1 | v2 | 原因 |
+| --- | --- | --- | --- |
+| 安全架构 | 三级串联兜底 | **两条正交路径 + 两条复用** | 三级防的是同一件事，叙述上会被追问 |
+| 减速比 | 1:30 | **1:60** | 1:30 空载 3 m/s，巡航只用 16% 转速 |
+| 分压电阻 | 10k+20k | **100k+10k** | 10k/20k 在 12.6V 输出 8.4V，烧 ADC |
+| ESP32 供电 | 未说明 | **USB 供电（接 PC）** | 同时解决供电与精确时间戳日志 |
+| 底板 | 10×15cm | **50×20cm** | 0.45m 轮距放不进去 |
+| 帧长 | "20 字节" | **下行 13 / 上行 19** | 原值算错 |
+| 传输时间 | 460800 下 0.23ms | **0.46ms（21 字节帧）** | 原值算错 |
+| 协议 | 无序号 | **增加 `seq` / `flags`** | 让"命令送达率"成为真实指标 |
+| 固件节拍 | 1kHz 测速 | **1kHz PWM + 20ms 测速窗口** | 1ms 窗口量化误差 76% |
+| 看门狗动作 | 立即断 PWM | **先斜坡、50ms 未收敛再硬断** | 小台架无所谓，语义更专业 |
+| 轮径/轮距 | 列为"代码硬约束" | **删除该说法** | 该常量只在未启用的 ros2_control 插件里 |
+| `fleet.yaml` | 作为 24V 证据 | **标注为未加载** | `fleet_catalog_file` 默认空 |
+| `min_battery_voltage` | 已完成 | **该参数不存在，且不应存在** | v2.1 改为接通 `/battery_state/{vid}` → `min_battery_percent`；参数名本身从未落地 |
+| 电量语义 | "12V 会判电量不足" | **"电量恒为 100%，阈值不生效"** | 方向相反，`battery_state` 无订阅者 |
+| `odom_origin_*` | 每次掉电重新标定 | **十字标记 + 上电清 odom** | 让 F6 可重复 |
+| 故障矩阵 | 6 项 | **8 项（+WiFi 断网、MCU fault）** | 补两个真实会发生的故障 |
+| 文档错误 | — | 修正 4 处 | 见上表 |

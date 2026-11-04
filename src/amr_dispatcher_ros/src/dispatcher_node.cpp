@@ -67,6 +67,10 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   // 自动选车的打分策略：nearest（默认，改动前行为）| battery_preferred（低电量软降权）
   declare_parameter("vehicle_selection_strategy", "nearest");
   declare_parameter("vehicle_state_max_age_ms", 5000);
+  // T1：/battery_state/{vid} 样本保鲜期（毫秒）。超龄样本不参与选车与自动充电，
+  // 否则底盘掉线后调度会拿掉线前的最后一帧电压继续派单。
+  // 必须小于 vehicle_state_max_age_ms，否则\"陈旧电量\"会伪装成新鲜状态。
+  declare_parameter("battery_state_timeout_ms", 3000);
   // A6：选车扫描深度（队首阻塞规避）——一次 tick 最多考察前 N 个排队任务
   declare_parameter("assignment_scan_depth", 8);
   // B3：交通协调模式——static（静态排他锁，现网行为）| time_space（时空窗预约）
@@ -298,6 +302,8 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
                     vehicle_selection_strategy_));
   }
   vehicle_state_max_age_ms_ = get_parameter("vehicle_state_max_age_ms").as_int();
+  battery_state_timeout_ms_ =
+      std::max<std::int64_t>(0, get_parameter("battery_state_timeout_ms").as_int());
   LoadFleetCatalog();
 
   // Phase 8: 物理设施目录加载与适配器初始化
@@ -3097,6 +3103,8 @@ void DispatcherNode::SetupVehicleTopics(const std::string& vehicles_param) {
   vehicle_odom_subs_.clear();
   vehicle_tracking_error_subs_.clear();
   vehicle_poses_.clear();
+  vehicle_battery_subs_.clear();
+  vehicle_battery_samples_.clear();
 
   for (const auto& vehicle_id : SplitVehicleIds(vehicles_param)) {
     if (!IsValidVehicleId(vehicle_id)) {
@@ -3122,6 +3130,14 @@ void DispatcherNode::SetupVehicleTopics(const std::string& vehicles_param) {
             [this, vehicle_id](const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
               TrackingErrorCbForVehicle(vehicle_id, msg);
             });
+    // T1：/battery_state/{vid} 订阅——电量唯一真实来源。
+    // 这里**不**用 sensor_msgs 默认的 transient_local QoS：底盘 50Hz 常发，
+    // 新订阅者不需要历史回放；而保留 latest 语义由我们自己维护（BatterySample）。
+    vehicle_battery_subs_[vehicle_id] = create_subscription<sensor_msgs::msg::BatteryState>(
+        ResolveVehicleTopic("", "/battery_state", vehicle_id), 10,
+        [this, vehicle_id](const sensor_msgs::msg::BatteryState::SharedPtr msg) {
+          BatteryStateCbForVehicle(vehicle_id, msg);
+        });
   }
   if (vehicle_ids_.empty()) {
     return;  // 单车兼容模式：零行为变化
@@ -3164,6 +3180,25 @@ void DispatcherNode::OdomCbForVehicle(const std::string& vehicle_id,
   slot.pose.yaw = amr_dispatcher_core::path_tracking::YawFromQuaternion(
       msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
   slot.has_odom = true;
+}
+
+void DispatcherNode::BatteryStateCbForVehicle(
+    const std::string& vehicle_id, const sensor_msgs::msg::BatteryState::SharedPtr msg) {
+  // T1：电量的**唯一**真实来源。之前这张表对 local_sim 车写死 100，
+  // 导致 min_battery_percent / auto_charging_* 全部静默失效。
+  //
+  // 只接受 present 且 percentage 有效的样本：
+  //   * percentage 为 NaN 或负值 = 底盘没给换算结果，不能当 0%；
+  //   * present=false = 无电池信息（部分底盘只在充电时置 present）。
+  // 注意这里**不**用电压重算百分比：chassis_driver 已按参数换算并做了节流，
+  // 两处各算一遍会出现"Web 显示 42%、调度认为是 40%"的对不上。
+  if (!msg->present || !std::isfinite(msg->percentage) || msg->percentage < 0.0) {
+    return;
+  }
+  auto& sample = vehicle_battery_samples_[vehicle_id];
+  sample.percent = std::min(100.0, static_cast<double>(msg->percentage));
+  sample.stamp = std::chrono::steady_clock::now();
+  sample.valid = true;
 }
 
 void DispatcherNode::TrackingErrorCbForVehicle(
@@ -3500,6 +3535,22 @@ void DispatcherNode::RefreshVehicleStates() {
     state.position_valid = true;
     state.state_time = std::chrono::steady_clock::now();
     state.busy = IsVehicleBusy(vehicle_id);
+
+    // T1：电量来自 /battery_state/{vid}。超龄样本视为未知——不能拿掉线前的
+    // 最后一帧电压当现状，否则车已经没电了调度还在派单。
+    const auto battery_it = vehicle_battery_samples_.find(vehicle_id);
+    if (battery_it != vehicle_battery_samples_.end() && battery_it->second.valid) {
+      const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - battery_it->second.stamp);
+      if (age.count() <= battery_state_timeout_ms_) {
+        state.battery_percent = battery_it->second.percent;
+      } else {
+        // 陈旧的样本要显式丢弃：留着上次的数值比留 100 更危险，
+        // 因为它是"看起来真实"的假数据。回落到 100 保持与旧行为一致，
+        // 但这是**只在样本过期时**才发生，且下一帧电压会立刻纠正。
+        state.battery_percent = 100.0;
+      }
+    }
   }
   // VDA 5050 车的位置/电量来源：/fleet/{vid}/state
   for (const auto& vehicle_id : vda5050_vehicle_ids_) {

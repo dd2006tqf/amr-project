@@ -14,6 +14,7 @@
 
 #include "amr_dispatcher_core/chassis/backend_degradation.hpp"
 #include "amr_dispatcher_core/chassis/chassis_packet_stream.hpp"
+#include "amr_dispatcher_core/chassis/command_delivery_tracker.hpp"
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
 
 namespace amr_dispatcher_ros {
@@ -36,6 +37,10 @@ class ChassisDriverNode : public rclcpp::Node {
   void PublishBatteryState(
       const amr_dispatcher_core::chassis::ChassisOdometryPacket& odometry,
       const rclcpp::Time& stamp);
+  // 0xA1 与 0xA2 共用的电压发布路径（共用节流状态，见实现处的注释）。
+  void PublishBatteryVoltage(double voltage, const rclcpp::Time& stamp);
+  // T2：故障位进安全链。锁存语义：置位后链路判不可信，收到无故障帧才解除。
+  void UpdateChassisFaultState(bool fault, const char* source);
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
@@ -50,6 +55,9 @@ class ChassisDriverNode : public rclcpp::Node {
   std::unique_ptr<amr_dispatcher_core::chassis::BackendDegradationController> backend_ctrl_;
   amr_dispatcher_core::chassis::ChassisPacketStream text_stream_;
   amr_dispatcher_core::chassis::MickBinaryPacketStream binary_stream_;
+  // T3：下行序号 + 命令送达率。只在 mick_binary 协议下推进 seq；
+  // 文本协议的 MCU 不回显，统计保持“无回显”状态（送达率 0、不参与健康判定）。
+  amr_dispatcher_core::chassis::CommandDeliveryTracker delivery_tracker_;
 
   // 链路协议：text（ODOM/STATE 文本行）| mick_binary（0xAE 0xEA ... 0xEF 0xFE 帧）。
   // 必须与 ChassisBackendConfig.protocol 一致，否则下行编码与上行解析不匹配。
@@ -71,6 +79,10 @@ class ChassisDriverNode : public rclcpp::Node {
   double battery_full_voltage_ = 12.6;
   double battery_empty_voltage_ = 11.0;
   bool fault_reported_ = false;
+  // T2：底盘上报的故障锁存。置位后链路判为不可信（心跳下沉），直到
+  // 收到一帧无故障的上行帧才自动解除。锁存是必需的：0xA2 只在状态变化时
+  // 发送，若只在“收到 fault 帧的那一拍”降级，下一拍就恢复了。
+  bool chassis_fault_latched_ = false;
 
   std::string odom_frame_id_ = "odom";
   std::string base_frame_id_ = "base_link";
