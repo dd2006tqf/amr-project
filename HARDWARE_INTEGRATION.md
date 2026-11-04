@@ -453,8 +453,12 @@ odom_timeout_ms: 300             # 必须小于 safety_gate 的 500ms 心跳超�
 
 ## 9. 代码侧待办（按性价比排序）
 
-> **v2.1 更新（2026-10-31）**：T1 / T2 / T3 三条**已实现并通过测试**，详见 §9.0。
-> 剩余 T4–T9 仍未落地。
+> **v2.2 更新（2026-11-04）**：T1–T9 **代码侧全部落地**。T1/T2/T3/T8 见 §9.0 首批；
+> T4/T5/T6/T7/T9 见 §9.1 第二批。
+>
+> **仍未完成的只剩真机实测**——§11 故障矩阵的 8 项、电量端点实测、10% 丢帧下的
+> 送达率下降，这三类没有台架就填不了，文档里一律留空标"待实测"，不把设计值
+> 写成结果。
 
 ### 9.0 已完成的实现（v2.1）
 
@@ -521,33 +525,70 @@ odom_timeout_ms: 300             # 必须小于 safety_gate 的 500ms 心跳超�
 > 的配对，硬造一个往返时延只会是假数据。文档与 UI 都应标注为“不适用”，
 > 真正的可解释指标是命令送达率。
 
-### T4（建议）`goal_tolerance` 暴露成参数
+### T4（已实现）`goal_tolerance` 暴露成参数
 
-`path_tracker_node` 的 `declare_parameter` 列表里**没有** `goal_tolerance`，控制器里写死 **0.10 m**（`pure_pursuit.hpp:36`）。
+**修复前**：`path_tracker_node` 的 `declare_parameter` 里没有 `goal_tolerance`，控制器写死
+**0.10 m**（`pure_pursuit.hpp:36` / `stanley.hpp:28`）。台架标定偏几十厘米时车永远进不了
+10cm 窗口 → 不 `arrived` → 任务挂到 10s 后被 `DeadlockDetector` 判 `kIdleActive`。
+**这是最容易卡住 P4 的地方。**
 
-台架标定不到位时（`odom_origin_*` 偏几十厘米），车可能永远进不了 10cm 窗口 → 不 `arrived` → 任务挂着 → 10s 后被 `DeadlockDetector` 判 `kIdleActive`。**这是最容易卡住 P4 的地方。**
+**已落地**：
 
-**验收**：参数可调，0.3m 容差下能到达。
+- `path_tracker_node` 新增 `goal_tolerance` 参数，同时喂给 pure_pursuit 与 stanley
+  （两者共用 `IsFinalWaypointReached`，到达语义必须只有一套）；
+- 默认值 **0.10**，与改动前逐位一致，不覆盖就不改行为；
+- launch 暴露 `goal_tolerance:=`，单车/多车两条路径同源；
+- entrypoint 支持 `AMR_GOAL_TOLERANCE`；
+- 新增 `test_goal_tolerance_config`（5 项）：锁定"默认 0.10 在 0.25m 外不到达 /
+  0.30 到达 / Stanley 同样生效 / 负值钳到 0 / 大容差仍要求走到路径末端"。
 
-### T5（建议）`protocol` / `serial_baud` 走 launch 参数
+**台架用法**：`goal_tolerance:=0.3`。**剩余验收（需真机）**：0.3m 容差下能到达。
 
-现在切台架要手改 `config/chassis.yaml`，而 launch 只暴露了 `serial_device` / `health_rate_hz`。演示完仓库默认值就脏了。
+> 顺带修掉的相邻缺陷：`path_tracker` 的 `odom_origin_x/y/yaw` 三个参数**早就声明了，
+> 但 launch 从来没传过**——等于台架标定值根本无处可填。现已一并接进 launch 与 entrypoint
+> （`AMR_ODOM_ORIGIN_*`），并与 T6 的静态 TF 同源。
 
-**改法**：仿照现有 `AMR_SERIAL_DEVICE`，由 entrypoint 传 `AMR_CHASSIS_PROTOCOL` / `AMR_CHASSIS_BAUD`。
+### T5（已实现）`protocol` / `serial_baud` 走 launch 参数
 
-**验收**：不改任何 yaml，仅靠三个环境变量完成台架/仿真切换。
+**修复前**：切台架要手改 `config/chassis.yaml`，而 launch 只暴露了 `serial_device` /
+`health_rate_hz`。演示完仓库默认值就脏了，而且极易忘记改回来。
 
-### T6（建议）补静态 `map→odom` TF
+**已落地**：
 
-`chassis_driver` 发 `odom→base_link`，`path_tracker` 在内部把 odom 位姿平移进 map，但 **TF 树上没有 `map→odom`**。后果：RViz/Foxglove 里车永远在地图原点附近飘。
+- launch 新增 `chassis_protocol:=`、`chassis_baud:=`，单车与多车两条路径都透传；
+- entrypoint 支持 `AMR_CHASSIS_PROTOCOL` / `AMR_CHASSIS_BAUD`；
+- **默认值留空而不是抄一份**：空串 = 不传该 launch 参数，由 launch 默认值
+  （`text` / `115200`，与 `chassis.yaml` 一致）决定。脚本里再抄一份默认值就会变成
+  第二事实源——改 launch 默认值时两边悄悄不一致，这个坑 `respawn_delay` 已经踩过一次。
 
-**改法**：加一个 `static_transform_publisher`，参数等于 `odom_origin_*`，可视化和 tracker 的数学就严格一致。
+**验收**：不改任何 yaml，仅靠环境变量完成台架/仿真切换。
 
-**验收**：RViz 里车的位置与站点坐标吻合。
+### T6（已实现）补静态 `map→odom` TF
 
-### T7（可选）容器补 `python3-serial`
+**修复前**：`chassis_driver` 发 `odom→base_link`，`path_tracker` 在内部把 odom 位姿按
+`odom_origin_*` 平移进 map，但 **TF 树上没有 `map→odom`**。后果：RViz/Foxglove 里车
+永远停在地图原点附近，和站点坐标对不上。
 
-`docker/Dockerfile.jazzy` 没有装 pyserial，`tools/bench_serial_probe.py` 在容器里跑不了。宿主机有 pyserial 时在宿主机跑即可，容器里补一行更省事。
+**已落地**：launch 里加 `static_transform_publisher`，平移/旋转直接取 `odom_origin_*`。
+
+三个刻意的设计点：
+
+1. **与 tracker 同源**：TF 用的就是 `odom_origin_*` 这三个数，不是另一套参数——
+   否则"看到的"和"算的"会不一致，这种偏差在 RViz 里表现为"车走在路旁边"，
+   极难定位到是两套数学打架。
+2. **多车模式自动关闭**：每台车的 `odom` 帧是 `{vid}/odom`，且落地位置各不相同，
+   一套 `odom_origin_*` 描述不了 N 台车的摆放。硬发一条只能让所有车在 RViz 里叠在
+   同一点。多车可视化应由定位/地图服务提供 per-vehicle 的 `map→{vid}/odom`。
+3. **可关**：`publish_map_to_odom:=false`（或 `AMR_PUBLISH_MAP_TO_ODOM=false`）。
+   将来若接了真实定位发布动态 `map→odom`，必须关掉这一路，否则两条边打架。
+
+**验收**：RViz 里车的位置与站点坐标吻合；`odom_origin_*` 全 0 时是恒等变换，
+不影响现有仿真可视化。
+
+### T7（已实现）容器补 `python3-serial`
+
+`docker/Dockerfile.jazzy` 已加入 `python3-serial`，`tools/bench_serial_probe.py`
+现在容器内可直接跑（此前只能在装了 pyserial 的宿主机上跑）。
 
 ### T8（已实现）C++ / Python 二进制流对齐
 
@@ -560,13 +601,38 @@ odom_timeout_ms: 300             # 必须小于 safety_gate 的 500ms 心跳超�
 `KeepsTrailingMagicByteAcrossDrain`（跨边界帧不丢）与
 `PureNoiseIsDiscardedWithoutOverflow`（纯噪声不累积）。
 
-### T9（可选）安全门心跳阈值与语义
+### T9（已实现）安全门心跳阈值与语义
 
-现状：`heartbeat_timeout_ms = 500`、心跳 5Hz（200ms）、`watchdog_ok_ = events.empty()` 把 warn 也算作不健康、`FaultSupervisor` 里 `!watchdog_healthy` 直接给 `kEmergencyStop`。
+**修复前**：`heartbeat_timeout_ms = 500`、心跳 5Hz（200ms），而 `safety_gate` 用
+`watchdog_ok_ = events.empty()` 一刀切——`Inspect()` 产生的 **warn 事件也被算作"不健康"**。
+`FaultSupervisor` 见到 `!watchdog_healthy` 直接给 `kEmergencyStop`。
 
-合起来意味着**连续丢 2 拍心跳（约 600ms 空窗）就锁存急停**，而 `soft_timeout_ms = 2000` 名义上是"软超时"却只会让 severity 变重、不影响动作——**名字和语义是反的**。
+合起来意味着**连续丢 2 拍心跳就锁存急停**，而 `soft_timeout_ms = 2000` 名义上是"软超时"
+却只会让 severity 变重、不影响动作——**名字和语义是反的**。台架 USB/DDS 抖一下就假停，
+而且是锁存的，必须人工干预。
 
-建议：warn 只限速 30%，只有 `soft_timeout` 才急停；或把 `heartbeat_timeout_ms` 抬到 800–1000。台架 USB/DDS 抖一下就可能假停。
+**已落地的改法（不改任何默认阈值）**：
+
+- `safety_gate` 把看门狗事件按 severity 分流：`kWarn`（丢拍）→ `watchdog_degraded_`，
+  `kCritical`（超过 `soft_timeout` 或**从未收到心跳**）→ 判不可动；
+- `MultiSourceHealthReport` 新增 `watchdog_degraded` 字段，与 `watchdog_healthy` 分开；
+- `FaultSupervisor` 对 `watchdog_degraded` 走**降级限速 30%**，不再升级成急停；
+- `/safety/state` 空闲播报同步反映降级（`reason=idle_degraded`、severity=WARN、
+  `speed_scale=0.3`）——否则运动路径在限速、空闲播报却报 INFO/1.0，运维会以为系统全好。
+
+**语义对照（新）**：
+
+| 现象 | 判定 | 动作 |
+| --- | --- | --- |
+| 超过 `heartbeat_timeout`（默认 500ms） | 丢拍 | 限速 30%，**可自愈** |
+| 超过 `soft_timeout`（默认 2000ms） | 真失联 | 急停锁存 |
+| 该源从未喂过心跳 | 上游不在 | 急停（启动期就该暴露） |
+
+新增 `test_watchdog_semantics`（5 项）锁定这三条，其中包括"丢拍恢复后必须能自己走回
+NORMAL、不留锁存痕迹"——修复前这里会卡在 FAULT。
+
+**没有选择的方案**：把 `heartbeat_timeout_ms` 抬到 800–1000。那样能压住症状，但
+`soft_timeout` 仍然名不副实，而且台架之外的真实失联也会被一起延迟。改语义比改数值正确。
 
 ---
 
@@ -647,7 +713,9 @@ docker run -d --name amr_dispatcher \
 - 板子 **不要跑 RViz**，headless 即可；PC 上用 RViz2 或 Foxglove 看。
 - 小内存机器编译有 OOM 风险，镜像在 PC 上构建好再传。
 - 若 A7A 上直接跑调度（单机闭环，不跨公网 DDS），把 `dispatcher_node` 也放进同一容器最简单。
-- **容器内没有 pyserial**：`bench_serial_probe.py` 需在宿主机跑（`pip install pyserial`），或用 T7 补进镜像。
+- **`bench_serial_probe.py` 的运行位置**：镜像已装 `python3-serial`（T7），容器内与宿主机都能跑。
+  注意容器里要指向**容器内**的设备路径——`--device` 透传后名字可能不同（如 `/dev/ttyAS4` 或 `/dev/ttyUSB0`），
+  先用 `ls /dev/tty*` 确认。
 
 ---
 
@@ -661,7 +729,8 @@ docker run -d --name amr_dispatcher \
 6. **yaw 未归一化**：转满 5 圈后角度绕回，车会掉头（§5.3）。
 7. **分压电阻按 10k/20k 买**：12.6V 输出 8.4V，烧 ADC（§3.4）。
 8. **ESP32 接 A7A 的 3.3V**：WiFi 峰值 200mA，供电不足会复位（§4）。
-9. **`goal_tolerance` 写死 0.10**：标定不到位时任务永远不到站（T4）。
+9. **忘了调 `goal_tolerance`**：默认 0.10 m，标定偏几十厘米时车永远不进到达窗口
+   → 任务挂到 10s 后被判 `kIdleActive`。台架先设 `goal_tolerance:=0.3`（T4 已参数化）。
 10. **以为电量链路是通的**：v2 之前 `battery_percent` 对 local_sim 车恒 100；现已接
     `/battery_state/{vid}`（T1），但**仅多车模式生效**，且 `battery_state_timeout_ms`
     超时后仍回落 100（避免拿陈旧电量派单）。
@@ -676,9 +745,11 @@ docker run -d --name amr_dispatcher \
 
 | 层 | 数字 | 变化 |
 | --- | --- | --- |
-| core | **995 / 995** | 971 → 995（+12 协议/送达率，+8 电量状态机，+2 状态帧 fault，+2 半帧边界） |
-| ros | **27 / 27** | 22 → 27（+5 `ChassisFaultTest`） |
+| core | **1005 / 1005** | 971 → 1005（+12 协议/送达率，+8 电量状态机，+2 状态帧 fault，
++2 半帧边界，+5 `GoalToleranceTest`，+5 `WatchdogSemanticsTest`） |
+| ros | **32 / 32** + L2 契约 8 | 22 → 32（+5 `ChassisFaultTest`，其余为既有） |
 | tools | **114 / 114** | 不变 |
+| 合计 | **1159** | 0 failures / 0 errors / 0 skipped |
 
 对外表述写成"**995 项 core + 27 项 ros + 114 项 tools 单测全绿**"，并注明是
 **容器内串行构建**后实跑。不要只给一个光秃秃的总数。

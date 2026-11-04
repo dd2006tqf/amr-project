@@ -17,6 +17,10 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   declare_parameter("target_speed", 0.5);
   declare_parameter("stanley_k", 0.5);
   declare_parameter("control_rate_hz", 20.0);
+  // T4：终点判定容差（m）。此前写死在控制器默认值 0.10，台架标定偏几十厘米时
+  // 车永远进不了到达窗口 -> 不 arrived -> 任务挂着 -> 10s 后被死锁检测判
+  // kIdleActive。默认值保持 0.10（与改动前逐位一致），仅在本参数被覆盖时生效。
+  declare_parameter("goal_tolerance", 0.10);
   // ---- P0.6 / A4：per-vehicle 话题隔离 ----
   // vehicle_id 空 = 单车兼容模式（话题名逐字不变）；非空 = 按 {vid} 派生。
   declare_parameter("vehicle_id", "");
@@ -40,11 +44,13 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   amr_dispatcher_core::path_tracking::PurePursuitController::Config pp_cfg;
   pp_cfg.lookahead_distance = get_parameter("lookahead_distance").as_double();
   pp_cfg.target_speed = get_parameter("target_speed").as_double();
+  pp_cfg.goal_tolerance = get_parameter("goal_tolerance").as_double();
   pp_controller_ = std::make_unique<amr_dispatcher_core::path_tracking::PurePursuitController>(pp_cfg);
 
   amr_dispatcher_core::path_tracking::StanleyController::Config st_cfg;
   st_cfg.gain = get_parameter("stanley_k").as_double();
   st_cfg.target_speed = get_parameter("target_speed").as_double();
+  st_cfg.goal_tolerance = get_parameter("goal_tolerance").as_double();
   stanley_controller_ = std::make_unique<amr_dispatcher_core::path_tracking::StanleyController>(st_cfg);
 
   // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----

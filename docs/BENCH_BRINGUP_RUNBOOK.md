@@ -6,6 +6,9 @@
 >
 > **v2 修订（2026-10-30）**：修正分压电阻、减速比、底板尺寸、测速窗口、yaw 归一化等
 > 会导致烧件或白跑的问题。变更清单见文末 §10。
+>
+> **v2.1 修订（2026-11-04）**：T4–T7/T9 落地后，台架不再需要手改任何 yaml ——
+> 协议/波特率/原点/容差全部走环境变量（见 §0 表格与 §5.1）。
 
 ---
 
@@ -20,20 +23,24 @@
 | 上行里程计 | `type=0xA1`，payload **≥12B**：x,y,yaw,vx,wz(mm/mrad) + battery(×100)；**可选扩展**：第 12 字节 flags（bit0 fault/bit1 uart_timeout/bit2 estop/bit3 overcurrent）、第 13 字节 last_cmd_seq | `DecodeMickBinaryPacket` |
 | 上行状态 | `type=0xA2`，`payload[0]` 非0=fault（**会触发停车**），`payload[1..2]` 电压 ×100 | 同上 |
 | 校验 | `sum8`：从 `len` 字节累加到 payload 末字节，uint8 溢出 | `EncodeMickBinaryFrame` |
-| 链路参数 | `serial_baud=115200`、`protocol="text"` 为仓库默认 | `config/chassis.yaml` |
+| 链路参数 | `serial_baud=115200`、`protocol="text"` 为仓库默认；**可从 launch/环境变量覆盖**（T5） | `config/chassis.yaml` / `full_system.launch.py` |
 | 接入后端 | `ChassisBackend`（serial/udp），**不是** `ros2_control` | `chassis_driver_node.cpp` |
 | 看门狗 | `odom_timeout_ms=300` < `heartbeat_timeout_ms=500` | `chassis.yaml` / `safety.yaml` |
-| 到达容差 | 写死 **0.10 m**，不可配置 | `pure_pursuit.hpp:36`（见 §8 T4） |
+| 到达容差 | 默认 **0.10 m**，**可配置**：`goal_tolerance:=0.3` 或 `AMR_GOAL_TOLERANCE=0.3`（T4） | `path_tracker_node` 参数 |
 
-两个默认值必须先改，否则台架一上电就"行为正常但车不动"：
+两个默认值必须先处理，否则台架一上电就"行为正常但车不动"：
 
-1. `config/chassis.yaml` 的 `protocol: "text"` → `"mick_binary"`。
-2. `serial_baud: 115200` → `460800`（可选，但建议，见 P2）。
+1. `protocol`：默认 `text` → 必须是 `mick_binary`。
+2. `serial_baud`：默认 `115200` → 与固件一致（建议 `460800`，见 P2）。
 
-**改完记得同步 ESP32 固件里的波特率，两侧必须一致。**
+**推荐用环境变量，不要改 yaml**（T5 已落地）：
 
-> **不要改完忘记改回来**：仓库默认值 `text` 是给 PTY 仿真链路用的，新装机器的镜像必须开箱即用。
-> 若嫌来回改麻烦，见 `HARDWARE_INTEGRATION.md` §9 T5（把 `protocol`/`serial_baud` 做成 launch 参数）。
+```bash
+-e AMR_CHASSIS_PROTOCOL=mick_binary -e AMR_CHASSIS_BAUD=460800
+```
+
+这样仓库默认值保持 `text`/`115200`（PTY 仿真链路靠它开箱即用），演示完也不必记得改回来。
+**固件侧波特率必须同步，两侧不一致的表现是"一帧都收不到"，不是"收到乱码"。**
 
 ---
 
@@ -244,7 +251,8 @@ docker ps -a | grep -i amr
 
 ### 4.2 用 PC 先验证协议（不用 A7A）
 
-这一步能省掉大量来回烧录的时间。**注意容器里没有 pyserial**，这里在宿主机跑：
+这一步能省掉大量来回烧录的时间。镜像已装 `python3-serial`（T7），容器内或宿主机都能跑；
+下面按宿主机写，容器内把 `python3` 换成容器里的即可。
 
 ```bash
 pip install pyserial
@@ -286,9 +294,25 @@ python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --baud 460800 --mode dri
 
 目标：让仓库现有的 `chassis_driver_node` 认到真底盘，`/odom` 和 `/battery_state` 出真实数据。
 
-### 5.1 改配置（两侧必须一致）
+### 5.1 启动参数（两侧必须一致）
 
-`config/chassis.yaml`：
+**首选**：不改任何 yaml，用环境变量传入（T5/T6/T4 均已落地）：
+
+```bash
+docker run -d --name amr_dispatcher \
+  --network host \
+  --device /dev/ttyAS4:/dev/ttyAS4 \
+  -e AMR_USE_MOCK_CHASSIS=0 \
+  -e AMR_SERIAL_DEVICE=/dev/ttyAS4 \
+  -e AMR_CHASSIS_PROTOCOL=mick_binary \
+  -e AMR_CHASSIS_BAUD=460800 \
+  -e AMR_ODOM_ORIGIN_X=0 -e AMR_ODOM_ORIGIN_Y=0 -e AMR_ODOM_ORIGIN_YAW=0 \
+  -e AMR_GOAL_TOLERANCE=0.3 \
+  -v /home/radxa/amr_dispatcher:/workspace \
+  amr-dispatcher:jazzy-arm64
+```
+
+**等价的 yaml 写法**（`config/chassis.yaml`，仅在需要固化到仓库时用）：
 
 ```yaml
 chassis_driver_node:
@@ -302,6 +326,10 @@ chassis_driver_node:
     battery_empty_voltage: 11.0
     cmd_stale_timeout_ms: 300    # 建议与 500ms 心跳超时错开，便于区分是哪一级先动
 ```
+
+> **`AMR_CHASSIS_PROTOCOL` / `AMR_CHASSIS_BAUD` 留空即"不传"**，由 launch 默认值
+> （`text` / `115200`，与 yaml 一致）决定。entrypoint 故意不抄一份默认值——
+> 抄了就是第二事实源，改 launch 时两边会悄悄不一致。
 
 > **`min_battery_voltage` 这个参数不存在**（v1 文档写错过）。`config/dispatcher.yaml` 里能用的是
 > `min_battery_percent`。电量链路已在 v2.1 接通：dispatcher 订阅 `/battery_state/{vid}`，
@@ -406,7 +434,8 @@ ros2 topic echo /odom --once | grep -A3 pose
 **① 车到了但不 `arrived`**：`pure_pursuit` 的 `goal_tolerance` 写死 **0.10 m**
 （`pure_pursuit.hpp:36`，`path_tracker_node` 没有暴露这个参数）。标定偏几十厘米时，
 车永远进不了 10cm 窗口 → 不 `arrived` → 任务挂着 → 10s 后被死锁检测判 `deadlock_detected`。
-临时办法是把车摆得更准；根治见 `HARDWARE_INTEGRATION.md` §9 T4。
+**已参数化（T4）**：启动时加 `goal_tolerance:=0.3`（或 `AMR_GOAL_TOLERANCE=0.3`），
+不必再靠摆准车来凑。
 
 **② 车不动且日志正常**：先看 `/chassis/link_health.is_healthy`。如果 `false`，
 说明 `odom_timeout_ms` 内没有有效上行帧——回 P3 的 ① ② 逐层查。
@@ -462,7 +491,7 @@ ros2 topic echo /odom --once | grep -A3 pose
 | 松手后速度冲过目标 | PID 只有 P/I，没有抗饱和 | 加积分限幅与输出限幅 |
 | 拔线不报警 | `odom_timeout_ms` 太大 | 设为 300，且 < 500 |
 | 车朝反方向开 | `odom_origin_*` 未标定 | 按 §5.4 贴十字标记 |
-| 到了站点但任务不结束 | `goal_tolerance` 写死 0.10m | 摆准；根治见 T4 |
+| 到了站点但任务不结束 | 距终点超出 `goal_tolerance`（默认 0.10m） | 设 `AMR_GOAL_TOLERANCE=0.3` 后重启 |
 | 任务永远"电量不足" | 单车模式本来就不参与电量判定；多车模式下检查 `/battery_state/{vid}` 是否有数据 | 见 T1 |
 | 电量百分比一直 100 | 多车模式未收到 `/battery_state/{vid}`，或样本已超 `battery_state_timeout_ms` | 见 T1 |
 | MCU 报 fault 后车不动了 | **这是预期行为**：故障已进安全链（心跳下沉 → 安全门零速） | 查 `flags`/`0xA2 payload[0]` |

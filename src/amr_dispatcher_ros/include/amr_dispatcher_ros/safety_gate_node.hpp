@@ -69,6 +69,9 @@ class SafetyGateNode : public rclcpp::Node {
   bool bumper_active_ = false;
   bool manual_takeover_active_ = false;
   bool watchdog_ok_ = true;
+  // T9：看门狗降级（丢拍但未到软超时）。只限速，不急停——与 watchdog_ok_
+  // （硬超时/从未收到心跳，判不可动）分开，否则 soft_timeout_ms 名存实亡。
+  bool watchdog_degraded_ = false;
   double chassis_loss_rate_ = 0.0;
   bool chassis_healthy_ = true;
   bool deadlock_active_ = false;

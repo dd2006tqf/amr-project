@@ -147,6 +147,7 @@ if(BUILD_TESTING)
     test_battery_state_tracker
     test_pure_pursuit
     test_stanley
+    test_goal_tolerance_config
     test_mission_queue
     test_mission_state
     test_dispatch_state_snapshot
@@ -167,6 +168,7 @@ if(BUILD_TESTING)
     test_recovery_policy
     test_cmd_vel_gate
     test_watchdog
+    test_watchdog_semantics
     test_safety_sources
     test_config_loader
     test_logger

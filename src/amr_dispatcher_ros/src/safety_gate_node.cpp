@@ -241,7 +241,25 @@ void SafetyGateNode::WatchdogTick() {
   if (!watchdog_ || !gate_ || !fault_supervisor_) return;
 
   auto events = watchdog_->Inspect(watched_nodes_);
-  watchdog_ok_ = events.empty();
+  // T9：把"丢拍"与"真失联"分开。Inspect 对每个源最多产出一条事件：
+  //   kWarn     = 超过 heartbeat_timeout 但未到 soft_timeout（丢拍）
+  //   kCritical = 超过 soft_timeout，或该源从未喂过心跳（真失联）
+  // 此前用 events.empty() 一刀切，丢 1 拍就等同失联 → FaultSupervisor 直接
+  // kEmergencyStop 锁存，而名义上的 soft_timeout_ms=2000 永远轮不到执行。
+  // 现在 warn 只限速（30%），critical 才急停，语义与配置名一致。
+  bool watchdog_critical = false;
+  bool watchdog_degraded = false;
+  for (const auto& ev : events) {
+    if (ev.severity == amr_dispatcher_core::safety::SafetySeverity::kCritical) {
+      watchdog_critical = true;
+    } else if (ev.severity == amr_dispatcher_core::safety::SafetySeverity::kWarn) {
+      watchdog_degraded = true;
+    }
+  }
+  // watchdog_ok_ 保留"无 critical"语义：它同时被空闲状态播报与门控 allowed 使用，
+  // 那里的语义是"能不能动"，只有真失联才该判不可动。
+  watchdog_ok_ = !watchdog_critical;
+  watchdog_degraded_ = watchdog_degraded;
   for (auto& ev : events) {
     gate_->PushEvent(ev);
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -271,9 +289,14 @@ void SafetyGateNode::WatchdogTick() {
   report.chassis_healthy = chassis_healthy_;
   report.chassis_loss_rate = chassis_loss_rate_;
   report.watchdog_healthy = watchdog_ok_;
+  // T9：丢拍单独上报，由 FaultSupervisor 走降级限速而不是急停。
+  report.watchdog_degraded = watchdog_degraded_;
   report.deadlock_detected = deadlock_active_;
   report.manual_estop = estop_active_ || bumper_active_;
-  report.detail_message = watchdog_ok_ ? (chassis_healthy_ ? "healthy" : "chassis degraded") : "watchdog timeout";
+  report.detail_message = watchdog_critical
+                              ? "watchdog timeout"
+                              : (watchdog_degraded ? "heartbeat degraded"
+                                                   : (chassis_healthy_ ? "healthy" : "chassis degraded"));
 
   // I1：时效戳只在真实数据到达时刷新（订阅回调打点），巡检周期不续命——
   // 上游 link_health / 心跳发布者死亡后，对应源会按陈旧降级限速。
@@ -362,11 +385,16 @@ void SafetyGateNode::PublishIdleSafetyState() {
   // reason 标注 idle 以便运维区分"门控放行"与"门控阻断"。
   amr_dispatcher_core::safety::CmdVelGateDecision idle;
   const bool effective_estop = estop_active_ || auto_fault_latched_;
+  // T9：空闲态的可信度必须与运动路径一致——心跳丢拍时正在限速，
+  // 空闲播报却报 INFO/speed_scale=1.0，会让运维以为系统完全健康。
+  const bool heartbeat_degraded = watchdog_degraded_ && watchdog_ok_;
   idle.allowed = watchdog_ok_ && !effective_estop && !bumper_active_ && !manual_takeover_active_;
-  idle.reason = idle.allowed ? "idle" : "idle_blocked";
-  idle.severity = effective_estop || bumper_active_ ? amr_dispatcher_core::safety::SafetySeverity::kCritical
-                                                 : (watchdog_ok_ ? amr_dispatcher_core::safety::SafetySeverity::kInfo
-                                                                 : amr_dispatcher_core::safety::SafetySeverity::kWarn);
+  idle.reason = !idle.allowed ? "idle_blocked" : (heartbeat_degraded ? "idle_degraded" : "idle");
+  idle.severity = effective_estop || bumper_active_
+                      ? amr_dispatcher_core::safety::SafetySeverity::kCritical
+                      : ((watchdog_ok_ && !heartbeat_degraded)
+                             ? amr_dispatcher_core::safety::SafetySeverity::kInfo
+                             : amr_dispatcher_core::safety::SafetySeverity::kWarn);
   PublishSafetyState(idle);
 }
 

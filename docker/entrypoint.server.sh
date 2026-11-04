@@ -31,6 +31,11 @@
 #   AMR_USE_MOCK_CHASSIS=1   无串口时启动 PTY 模拟器（默认 1）
 #   AMR_SERIAL_DEVICE        指定串口设备（默认 /dev/ttyUSB0）
 #   AMR_HEALTH_RATE_HZ       底盘健康/心跳发布频率（默认 5.0）
+#   AMR_CHASSIS_PROTOCOL     底盘协议 text | mick_binary（默认取 chassis.yaml 的 text）
+#   AMR_CHASSIS_BAUD         底盘串口波特率（默认取 chassis.yaml 的 115200）
+#   AMR_ODOM_ORIGIN_X/Y/YAW  odom 原点在 map 下的位姿（默认 0；台架需标定）
+#   AMR_GOAL_TOLERANCE       终点判定容差，米（默认 0.10；台架标定不准时调大）
+#   AMR_PUBLISH_MAP_TO_ODOM  是否发布静态 map→odom（默认 true；多车模式下自动关闭）
 #   AMR_COLCON_WORKERS       colcon 并发数（默认 nproc；低内存机器建议设 1 或 2）
 #   AMR_TOPOLOGY_OVERLAY_FILE 运行时拓扑叠加层文件绝对路径（默认
 #                            /workspace/config/generated/topology_overlay.yaml）。
@@ -106,6 +111,17 @@ fi
 # ------------------------------------------------------- PTY 底盘模拟器
 SERIAL_DEVICE="${AMR_SERIAL_DEVICE:-/dev/ttyUSB0}"
 HEALTH_RATE_HZ="${AMR_HEALTH_RATE_HZ:-5.0}"
+# T5：协议/波特率默认值故意留空 —— 空串表示"不传该 launch 参数"，
+# 由 launch 的默认值（text / 115200，与 config/chassis.yaml 一致）决定。
+# 这样 entrypoint 不需要重复维护第二份默认值，改 yaml 也不会被脚本悄悄覆盖。
+CHASSIS_PROTOCOL="${AMR_CHASSIS_PROTOCOL:-}"
+CHASSIS_BAUD="${AMR_CHASSIS_BAUD:-}"
+# T6/T4：台架外参。默认空串 = 用 launch 的默认值（原点 0、容差 0.10）。
+ODOM_ORIGIN_X="${AMR_ODOM_ORIGIN_X:-}"
+ODOM_ORIGIN_Y="${AMR_ODOM_ORIGIN_Y:-}"
+ODOM_ORIGIN_YAW="${AMR_ODOM_ORIGIN_YAW:-}"
+GOAL_TOLERANCE="${AMR_GOAL_TOLERANCE:-}"
+PUBLISH_MAP_TO_ODOM="${AMR_PUBLISH_MAP_TO_ODOM:-}"
 MOCK_PID=""
 
 cleanup() {
@@ -181,7 +197,21 @@ else
 fi
 
 log "启动完整系统（工作目录 $PWD，ROS_DOMAIN_ID=$ROS_DOMAIN_ID）"
-ros2 launch launch/full_system.launch.py \
-  serial_device:="$SERIAL_DEVICE" \
-  health_rate_hz:="$HEALTH_RATE_HZ" \
-  topology_overlay_file:="$TOPOLOGY_OVERLAY_FILE"
+
+# T4/T5/T6：只把**显式设置**的可选参数透传给 launch。
+# 空串一律不传——launch 自己带默认值，脚本里再抄一份默认值就会变成
+# 第二事实源，改 launch 默认值时两边悄悄不一致（这个坑 respawn_delay 踩过一次）。
+launch_args=(
+  "serial_device:=$SERIAL_DEVICE"
+  "health_rate_hz:=$HEALTH_RATE_HZ"
+  "topology_overlay_file:=$TOPOLOGY_OVERLAY_FILE"
+)
+[ -n "$CHASSIS_PROTOCOL" ]      && launch_args+=("chassis_protocol:=$CHASSIS_PROTOCOL")
+[ -n "$CHASSIS_BAUD" ]          && launch_args+=("chassis_baud:=$CHASSIS_BAUD")
+[ -n "$ODOM_ORIGIN_X" ]         && launch_args+=("odom_origin_x:=$ODOM_ORIGIN_X")
+[ -n "$ODOM_ORIGIN_Y" ]         && launch_args+=("odom_origin_y:=$ODOM_ORIGIN_Y")
+[ -n "$ODOM_ORIGIN_YAW" ]       && launch_args+=("odom_origin_yaw:=$ODOM_ORIGIN_YAW")
+[ -n "$GOAL_TOLERANCE" ]        && launch_args+=("goal_tolerance:=$GOAL_TOLERANCE")
+[ -n "$PUBLISH_MAP_TO_ODOM" ]   && launch_args+=("publish_map_to_odom:=$PUBLISH_MAP_TO_ODOM")
+
+ros2 launch launch/full_system.launch.py "${launch_args[@]}"

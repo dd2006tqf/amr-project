@@ -85,6 +85,9 @@ void FaultSupervisor::Tick(std::chrono::steady_clock::time_point now) {
   // 1. 判断是否属于严重硬件/人身故障 (E-Stop, Bumper, Watchdog 丢失, 高危丢包率 > 35%)
   //    人工急停/看门狗按最后已知值锁存（安全信号不因报告过期而清除）；
   //    高危丢包率只在该源数据仍新鲜时采信，过期数据不升级为急停。
+  //    T9：watchdog_healthy 现在只表示**硬超时/从未收到心跳**（critical 事件）。
+  //    单纯丢拍（warn）由 watchdog_degraded 承载，走下方降级限速分支——
+  //    否则 5Hz 心跳下连续丢 2 拍就锁存急停，而名义上的 soft_timeout 永远轮不到。
   bool critical_fault = latest_report_.manual_estop ||
                         !latest_report_.watchdog_healthy ||
                         (!chassis_stale &&
@@ -136,7 +139,15 @@ void FaultSupervisor::Tick(std::chrono::steady_clock::time_point now) {
     return;
   }
 
-  // 3. 判断是否属于通信降级 (中度丢包 15%~35%)
+  // 3. 判断是否属于通信降级 (心跳丢拍 / 中度丢包 15%~35%)
+  //    T9：心跳丢拍（warn）只限速，不急停——给 USB/DDS 抖动留出恢复窗口。
+  //    真正该急停的是上方 critical 分支（软超时 / 从未收到心跳）。
+  if (latest_report_.watchdog_degraded) {
+    state_ = SupervisorState::kDegraded;
+    recommendation_ = SystemActionRecommendation::kClampSpeed;
+    message_ = "heartbeat degraded, speed clamped: " + latest_report_.detail_message;
+    return;
+  }
   if (!latest_report_.chassis_healthy ||
       (latest_report_.chassis_loss_rate >= config_.degraded_loss_rate_threshold)) {
     state_ = SupervisorState::kDegraded;

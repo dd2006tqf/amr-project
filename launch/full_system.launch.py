@@ -20,6 +20,17 @@ def generate_launch_description():
     # 可覆盖参数，默认值与改动前保持一致，不影响本机开发
     serial_device = LaunchConfiguration('serial_device')
     health_rate_hz = LaunchConfiguration('health_rate_hz')
+    # T5：底盘协议与波特率可覆盖——切台架不必再手改 config/chassis.yaml
+    #（手改会把仓库默认值弄脏，演示完还得记得改回来）。
+    chassis_protocol = LaunchConfiguration('chassis_protocol')
+    chassis_baud = LaunchConfiguration('chassis_baud')
+    # T6：地图原点 → odom 的静态外参（与 path_tracker 的 odom_origin_* 同源）
+    odom_origin_x = LaunchConfiguration('odom_origin_x')
+    odom_origin_y = LaunchConfiguration('odom_origin_y')
+    odom_origin_yaw = LaunchConfiguration('odom_origin_yaw')
+    publish_map_to_odom = LaunchConfiguration('publish_map_to_odom')
+    # T4：终点判定容差（米），透传给 path_tracker（pure_pursuit 与 stanley 共用）
+    goal_tolerance = LaunchConfiguration('goal_tolerance')
     # Task 8：可选地图导入链路（默认关闭，完全向后兼容）
     use_map_server = LaunchConfiguration('use_map_server')
     map_yaml = LaunchConfiguration('map_yaml')
@@ -105,6 +116,53 @@ def generate_launch_description():
             default_value='5.0',
             description='底盘链路健康/心跳发布频率。安全门的 heartbeat_timeout_ms '
                         '默认 500ms，5Hz 留足 2.5 倍心跳余量避免看门狗误触发（B1）。',
+        ),
+        # T5：协议/波特率从 CLI 或环境变量传入，覆盖 config/chassis.yaml 的同名值。
+        # 默认值与 yaml 一致（text / 115200），不改变现网行为。
+        DeclareLaunchArgument(
+            'chassis_protocol',
+            default_value='text',
+            description='底盘链路协议：text（文本行）| mick_binary（0xAE 0xEA 帧）。'
+                        '接真实 MCU 时传 mick_binary；两侧协议必须一致，否则上行 odom 全丢。',
+        ),
+        DeclareLaunchArgument(
+            'chassis_baud',
+            default_value='115200',
+            description='底盘串口波特率，必须与 MCU 固件一致（台架常设 460800）。',
+        ),
+        # T6：静态 map→odom。chassis_driver 只发 odom→base_link，path_tracker 在内部
+        # 把 odom 位姿平移到 map，但 TF 树上没有 map→odom —— RViz/Foxglove 里车会
+        # 永远停在地图原点附近。这三个参数与 path_tracker 的 odom_origin_* 同源，
+        # 保证"可视化看到的"和"tracker 算的"是同一套数学。
+        DeclareLaunchArgument(
+            'odom_origin_x',
+            default_value='0.0',
+            description='odom 原点在 map 帧下的 x（米）。真机台架必须标定（车摆在哪个 map 坐标上电）。',
+        ),
+        DeclareLaunchArgument(
+            'odom_origin_y',
+            default_value='0.0',
+            description='odom 原点在 map 帧下的 y（米）。',
+        ),
+        DeclareLaunchArgument(
+            'odom_origin_yaw',
+            default_value='0.0',
+            description='odom 原点在 map 帧下的 yaw（弧度）。',
+        ),
+        DeclareLaunchArgument(
+            'publish_map_to_odom',
+            default_value='true',
+            description='是否发布静态 map→odom 变换（T6）。false = 关闭，保持引入前的 TF 树。'
+                        'odom_origin_* 全为 0 时该变换是恒等变换，发布它不影响现有可视化。',
+        ),
+        # T4：终点容差。默认 0.10 与控制器内置值逐位一致（不改变现网行为）。
+        # 台架标定偏几十厘米时调到 0.3 —— 否则车永远进不了到达窗口，
+        # 任务会挂到 10s 后被死锁检测判 kIdleActive。
+        DeclareLaunchArgument(
+            'goal_tolerance',
+            default_value='0.10',
+            description='终点判定容差（米）。pure_pursuit 与 stanley 共用；'
+                        '台架标定不准时调大（如 0.3），仿真/精确标定下保持 0.10。',
         ),
         DeclareLaunchArgument(
             'use_map_server',
@@ -315,6 +373,9 @@ def generate_launch_description():
                 # serial_device 同理保留 CLI 覆盖位。
                 'serial_device': serial_device,
                 'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
+                # T5：协议/波特率覆盖位。不传时与 chassis.yaml 的默认值一致。
+                'protocol': ParameterValue(chassis_protocol, value_type=str),
+                'serial_baud': ParameterValue(chassis_baud, value_type=int),
             },
         ],
         **supervision(),
@@ -331,6 +392,13 @@ def generate_launch_description():
             'lookahead_distance': 0.6,
             'target_speed': 0.5,
             'control_rate_hz': 20.0,
+            # T4：终点容差参数化（默认与控制器内置值一致）
+            'goal_tolerance': ParameterValue(goal_tolerance, value_type=float),
+            # T6：与静态 map→odom 同源——两者必须一致，否则车在 RViz 里
+            # 显示的位置和 tracker 用于控制的位姿会对不上。
+            'odom_origin_x': ParameterValue(odom_origin_x, value_type=float),
+            'odom_origin_y': ParameterValue(odom_origin_y, value_type=float),
+            'odom_origin_yaw': ParameterValue(odom_origin_yaw, value_type=float),
         }],
         **supervision(),
     )
@@ -361,6 +429,40 @@ def generate_launch_description():
         name='rest_gateway_node',
         output='screen',
         parameters=rest_gateway_parameters,
+        **supervision(),
+    )
+
+    # ---- T6：静态 map→odom ----
+    # chassis_driver 只发 odom→base_link；path_tracker 在内部把 odom 位姿按
+    # odom_origin_* 平移进 map 帧，但 TF 树上从来没有 map→odom。
+    # 后果是 RViz/Foxglove 里车永远停在地图原点附近，和站点坐标对不上。
+    # 这里补上这条静态边，参数与 path_tracker 完全同源——可视化和控制用同一套数学。
+    # 注意：这是**静态**外参，适用于"车每次都在同一个固定位置上线"的台架；
+    # 真机若需要靠定位系统动态修正 map→odom，应改由定位节点发布并由
+    # publish_map_to_odom:=false 关掉这一路，否则两条边会打架。
+    # 注意 2：**只在单车模式下发布**。多车时每台车的 `odom` 帧是 `{vid}/odom`，
+    # 且每台车的落地位置各不相同——一套 odom_origin_* 描述不了 N 台车的摆放，
+    # 硬发一条 map→odom 只会让所有车在 RViz 里叠在同一个点上。多车要可视化，
+    # 应由定位/地图服务提供 per-vehicle 的 map→{vid}/odom。
+    map_to_odom_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_odom_static_tf',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "str('", publish_map_to_odom, "').lower() in ('true','1','yes','on')",
+            " and str('", vehicle_ids, "') == ''",
+        ])),
+        arguments=[
+            '--x', odom_origin_x,
+            '--y', odom_origin_y,
+            '--z', '0.0',
+            '--yaw', odom_origin_yaw,
+            '--pitch', '0.0',
+            '--roll', '0.0',
+            '--frame-id', 'map',
+            '--child-frame-id', 'odom',
+        ],
         **supervision(),
     )
 
@@ -495,6 +597,10 @@ def generate_launch_description():
         serials = [t.strip() for t in raw_serials.split(',') if t.strip()]
         default_serial = launch_config_value(context, 'serial_device')
         health = launch_config_value(context, 'health_rate_hz')
+        protocol = launch_config_value(context, 'chassis_protocol')
+        baud = launch_config_value(context, 'chassis_baud')
+        # T4：多车与单车用同一个容差来源，否则同一份配置在两种模式下行为不同。
+        tolerance = launch_config_value(context, 'goal_tolerance')
         nodes = []
         for idx, vid in enumerate(ids):
             serial = serials[idx] if idx < len(serials) else default_serial
@@ -511,6 +617,8 @@ def generate_launch_description():
                     'lookahead_distance': 0.6,
                     'target_speed': 0.5,
                     'control_rate_hz': 20.0,
+                    # T4：与单车模式同一来源
+                    'goal_tolerance': float(tolerance),
                 }],
                 **supervision(),
             ))
@@ -537,7 +645,14 @@ def generate_launch_description():
                     {
                         'vehicle_id': vid,
                         'serial_device': serial,
-                        'health_rate_hz': ParameterValue(health, value_type=float),
+                        # OpaqueFunction 里 launch_config_value 已经求值成字符串，
+                        # 不能再包 ParameterValue(float)——那要求传入真正的 float，
+                        # 会抛 "value='5.0' is not an instance of <class 'float'>"，
+                        # 整个 launch 直接退出（多车模式此前从未成功启动过）。
+                        'health_rate_hz': float(health),
+                        # T5：协议/波特率与单车模式同源
+                        'protocol': protocol,
+                        'serial_baud': int(baud),
                     },
                 ],
                 **supervision(),
@@ -553,6 +668,7 @@ def generate_launch_description():
         safety_gate_node,
         chassis_driver_node,
         path_tracker_node,
+        map_to_odom_tf,
         multi_vehicle_nodes,
         navigate_sequence_bridge_node,
         rest_gateway_node,

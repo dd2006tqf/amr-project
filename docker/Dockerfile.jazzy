@@ -57,6 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libpaho-mqtt-dev \
       libpaho-mqttpp-dev \
       python3-paho-mqtt \
+      python3-serial \
       mosquitto \
       mosquitto-clients \
       python3-colcon-common-extensions \

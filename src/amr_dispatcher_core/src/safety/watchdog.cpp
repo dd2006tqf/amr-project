@@ -35,10 +35,15 @@ std::vector<SafetyEvent> SafetyWatchdog::Inspect(
     e.stamp = now;
     if (since >= config_.soft_timeout) {
       e.severity = SafetySeverity::kCritical;
-      e.message = "heartbeat soft timeout " + std::to_string(since.count()) + "ms";
+      e.message = "heartbeat soft timeout " + std::to_string(since.count()) + "ms (>= " +
+                  std::to_string(config_.soft_timeout.count()) + "ms)";
     } else if (since >= config_.heartbeat_timeout) {
+      // T9：这条只是**丢拍**（限速），不是失联。日志里必须能一眼看出区别，
+      // 否则现场看到 "heartbeat_timeout" 会以为安全门已经急停了。
       e.severity = SafetySeverity::kWarn;
-      e.message = "heartbeat heartbeat_timeout " + std::to_string(since.count()) + "ms";
+      e.message = "heartbeat missed " + std::to_string(since.count()) + "ms (warn at " +
+                  std::to_string(config_.heartbeat_timeout.count()) + "ms, soft at " +
+                  std::to_string(config_.soft_timeout.count()) + "ms)";
     } else {
       continue;  // 健康：不产生事件
     }

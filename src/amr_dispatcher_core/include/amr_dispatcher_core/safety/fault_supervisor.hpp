@@ -27,6 +27,10 @@ struct MultiSourceHealthReport {
   bool chassis_healthy = true;
   double chassis_loss_rate = 0.0;
   bool watchdog_healthy = true;
+  // T9：看门狗**降级**（丢拍但未到软超时）。与 watchdog_healthy 分成两个字段，
+  // 是因为它们对应的动作本来就不同：降级只限速，只有软超时/从未收到心跳才急停。
+  // 合并成一个布尔会让"连续丢 2 拍"直接升级成锁存急停，soft_timeout 名存实亡。
+  bool watchdog_degraded = false;
   std::string missing_heartbeat_node;
   bool deadlock_detected = false;
   bool manual_estop = false;
