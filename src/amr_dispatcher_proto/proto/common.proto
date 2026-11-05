@@ -1,0 +1,27 @@
+// amr_dispatcher 的 protobuf 公共定义。
+//
+// 设计约束（务必先读，否则容易走偏）：
+//   1. 这些 .proto 只用于 **ROS 话题**，不用于 service / action。
+//      service/action 的 typesupport 是 request/response/event 三元组，
+//      不在本方案的覆盖范围内（详见 docs/protobuf_migration_plan.md）。
+//   2. 字段编号一旦发布就不允许复用；删除字段必须用 reserved。
+//      这是 protobuf 相对 rosidl 的核心优势，别浪费。
+//   3. 与现有 .msg 的字段语义保持一一对应，便于双向桥接。
+syntax = "proto3";
+
+package amr_dispatcher.proto;
+
+// 时间戳。对应 builtin_interfaces/Time。
+// 用两个字段而不是 google.protobuf.Timestamp，是为了精确对齐 ROS 的
+// (sec, nanosec) 结构，桥接时零转换。
+message Time {
+  int32 sec = 1;
+  uint32 nanosec = 2;
+}
+
+// 对应 std_msgs/Header。
+// frame_id 用 string 而非 bytes：它是人类可读的坐标系名，不需要压缩。
+message Header {
+  Time stamp = 1;
+  string frame_id = 2;
+}

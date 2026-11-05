@@ -1,0 +1,74 @@
+// 调度器状态与车辆链路状态。
+//
+// 迁移来源：
+//   amr_dispatcher_interfaces/msg/DispatcherState.msg
+//   amr_dispatcher_interfaces/msg/VehicleLinkState.msg
+//
+// 这是本方案里**最值得迁移**的一条：DispatcherState 里有
+//   VehicleLinkState[] vehicle_links
+// 这种嵌套结构，rosidl 需要为每个嵌套类型单独生成、单独注册；
+// protobuf 的 message 嵌套是原生的，且 repeated 字段可以增量解析。
+syntax = "proto3";
+
+package amr_dispatcher.proto;
+
+import "common.proto";
+
+// 对应 amr_dispatcher_interfaces/msg/VehicleLinkState。
+message VehicleLinkState {
+  string vehicle_id = 1;
+
+  // 执行后端：local_sim | vda5050
+  string backend = 2;
+
+  bool online = 3;
+  bool busy = 4;
+
+  // 隔离态：人工强清后，不再参与自动分配，需显式恢复
+  bool quarantined = 5;
+
+  bool position_valid = 6;
+  string current_station_id = 7;
+  double battery_percent = 8;
+
+  // 状态时延（距上次收到状态报文的时间）。
+  // int64 而非 uint64：若上游时钟异常可能出现负值，保留符号更安全。
+  int64 state_age_ms = 9;
+
+  string last_error = 10;
+}
+
+// 对应 amr_dispatcher_interfaces/msg/DispatcherState。
+message DispatcherState {
+  Header header = 1;
+
+  string current_comparator = 2;
+  uint32 queue_size = 3;
+  uint32 queue_capacity = 4;
+  uint32 active_missions_count = 5;
+  uint32 paused_missions_count = 6;
+  bool deadlock_detected = 7;
+
+  string active_mission_id = 8;
+
+  // 对应 string[] active_mission_ids
+  repeated string active_mission_ids = 9;
+
+  // 对应 VehicleLinkState[] vehicle_links
+  // 结构化，替代平行数组
+  repeated VehicleLinkState vehicle_links = 10;
+
+  // ---- 派发计数器（累积，供 /metrics 与运维趋势）----
+  uint64 dispatch_total = 11;
+  uint64 dispatch_rejected_total = 12;
+  uint64 dispatch_deferred_total = 13;
+  uint64 lock_contention_total = 14;
+  uint64 event_total = 15;
+
+  // ---- 运行时拓扑叠加层（相位 11）----
+  // 叠加层本身不改变 map_hash —— 它是同一张地图上的"临时交通管制"。
+  bool overlay_active = 16;
+  uint32 overlay_revision = 17;
+  uint32 blocked_edges = 18;
+  uint32 one_way_edges = 19;
+}

@@ -1,0 +1,85 @@
+// 底盘链路健康与跟踪误差。
+//
+// 迁移来源：
+//   amr_dispatcher_interfaces/msg/ChassisLinkHealth.msg
+//   amr_dispatcher_interfaces/msg/TrackingError.msg
+//
+// 为什么 ChassisLinkHealth 是第一个迁移对象：
+//   它几乎全是 uint64 计数器（frames_*、commands_*）。protobuf 的 varint
+//   编码对这类「单调递增、数值随时间变大但高位多为 0」的数据非常友好；
+//   而 rosidl 固定 8 字节。这是本方案里少数真有字节数收益的消息。
+syntax = "proto3";
+
+package amr_dispatcher.proto;
+
+import "common.proto";
+
+// 对应 amr_dispatcher_interfaces/msg/ChassisLinkHealth。
+message ChassisLinkHealth {
+  Header header = 1;
+
+  string backend_name = 2;
+
+  // UNKNOWN / HEALTHY / DEGRADED / CRITICAL
+  //
+  // 用 enum 而非 string 是刻意的改进：原 .msg 里这是个 string，
+  // 拼写错误要到运行时才发现；enum 在编译期就能拦住。
+  // 但桥接时仍需保留字符串形式，所以额外提供 backend_name 之外的
+  // 原始 tier 文本（见 tier_text）。
+  enum Tier {
+    TIER_UNKNOWN = 0;
+    TIER_HEALTHY = 1;
+    TIER_DEGRADED = 2;
+    TIER_CRITICAL = 3;
+  }
+  Tier tier = 3;
+
+  // 兼容字段：原 .msg 的 tier 是 string，若上游写了枚举外的值
+  // （例如未来新增状态），放进这里而不是丢弃，避免信息损失。
+  // proto3 默认空字符串不占字节。
+  string tier_text = 4;
+
+  // ---- T2：链路质量统计（接收侧）----
+  uint64 frames_total = 5;
+  uint64 frames_success = 6;
+  uint64 frames_lost = 7;
+  uint64 frames_crc_error = 8;
+  double loss_rate = 9;
+  double avg_latency_ms = 10;
+  double max_latency_ms = 11;
+  bool is_healthy = 12;
+
+  // ---- T3：命令送达率（下行 0xF3 是否真的被 MCU 收到）----
+  // 语义：最近 commands_sent 帧下行里，MCU 回显序号已确认送达的比例。
+  // -1 = 不适用（文本协议，或 MCU 尚未回显过序号）。
+  //
+  // 注意：这里不能用 uint32/uint64 表达「-1」哨兵值，
+  // proto3 的无符号类型没有负数表示。所以显式拆成
+  //   command_delivery_rate_valid + command_delivery_rate
+  // 两个字段，桥接时把 -1 翻译成 valid=false。
+  bool command_delivery_rate_valid = 13;
+  double command_delivery_rate = 14;
+  uint64 commands_sent = 15;
+  uint64 commands_delivered = 16;
+
+  // 预留：原 .msg 的字段若未来删除，在此声明编号，防止复用。
+  // reserved 5, 6;
+}
+
+// 对应 amr_dispatcher_interfaces/msg/TrackingError。
+message TrackingError {
+  Header header = 1;
+
+  // pure_pursuit / stanley
+  string controller_name = 2;
+
+  double lateral_error_m = 3;
+  double heading_error_rad = 4;
+  double lookahead_distance_m = 5;
+  double target_linear_x_mps = 6;
+  double target_angular_z_radps = 7;
+  double actual_linear_x_mps = 8;
+  double actual_angular_z_radps = 9;
+  int32 nearest_waypoint_index = 10;
+  bool arrived = 11;
+}

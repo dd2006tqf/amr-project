@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>amr_dispatcher_proto_cli</name>
+  <version>0.1.0</version>
+  <description>
+    ros2 CLI extension for inspecting protobuf-encoded ROS topics.
+
+    Provides `ros2 amr echo`, which parses topics published by
+    amr_dispatcher_proto. This exists because `ros2 topic echo` cannot parse
+    protobuf topics: it resolves message types by importing a Python module
+    whose class exposes SLOT_TYPES (a rosidl generator artifact), which
+    protobuf types do not have. That limitation is architectural, not a
+    configuration issue.
+
+    This command instead uses rclpy's raw subscription mode to receive the
+    DDS payload as bytes, then parses it with a dynamically constructed
+    protobuf descriptor pool.
+  </description>
+  <maintainer email="tanqf@example.com">tanqf</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>ros2cli</depend>
+  <depend>amr_dispatcher_proto</depend>
+
+  <!-- Python protobuf runtime. The apt package installs the module
+       `google.protobuf`. Note this is the PYTHON runtime, distinct from
+       the C++ libprotobuf-dev used by amr_dispatcher_proto. -->
+  <exec_depend>python3-protobuf</exec_depend>
+
+  <!-- protoc is needed at runtime to build the descriptor pool from .proto.
+       If unavailable, grpcio-tools is used as a pure-Python fallback. -->
+  <exec_depend>protobuf-compiler</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
