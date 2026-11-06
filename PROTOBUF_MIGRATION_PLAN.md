@@ -315,26 +315,80 @@ frames_crc_error: 3
 is_healthy: true
 ```
 
-### 阶段 1：垂直切片（1 个消息，单话题）
+### 阶段 1：垂直切片（1 个消息，单话题）✅ 已完成
 
 只迁 `ChassisLinkHealth`，双发 `/chassis/link_health` 与 `/chassis/link_health_proto`。
 
-- [ ] `chassis_driver_node` / `link_health_publisher` 增加 proto 发布
-- [ ] 保持既有 rosidl 发布不动
-- [ ] 用 `ros2 amr echo` 与 `ros2 topic echo` 对照验证两者字段一致
-- [ ] 跑现有测试套件，确认零回归
+- [x] `chassis_driver_node` / `link_health_publisher` 增加 proto 发布
+- [x] 保持既有 rosidl 发布不动
+- [x] 用 `ros2 amr echo` 与 `ros2 topic echo` 对照验证两者字段一致
+- [x] 跑现有测试套件，确认零回归
 
 退出标准：proto 与 rosidl 两条链路数据逐字段一致；现有测试全绿。
 
-### 阶段 2：核心遥测全量双发
+**实施记录**：`/system/aggregated_link_health` 与 `_proto` 实测 10 帧逐字段一致
+（`scripts/check_proto_dual_e2e.sh`）。注意 `/chassis/link_health` 由真实底盘
+驱动发布，本阶段验证用的是 `link_health_publisher` 的聚合话题——它在同一个
+`ChassisLinkHealth` 类型上走完全相同的双发路径，且不依赖串口硬件。
+
+### 阶段 2：核心遥测全量双发 ✅ 已完成
 
 `TrackingError`、`DispatcherState`、`SafetyState`、`TopologyState`、`MissionEvent`、`VehicleLinkState`。
 
-- [ ] 逐个消息加 proto 发布
-- [ ] 写一个「双发一致性检查器」：订阅两路，逐字段比对，差异即报错
-- [ ] 该检查器接入 CI
+- [x] 逐个消息加 proto 发布
+- [x] 写一个「双发一致性检查器」：订阅两路，逐字段比对，差异即报错
+- [x] 该检查器接入 CI
 
 退出标准：所有话题双发且一致性检查在 CI 中通过。
+
+**实施记录（与原计划的偏离，如实记录）**
+
+1. **`VehicleLinkState` 不是独立话题。** 它只作为 `DispatcherState.vehicle_links`
+   的嵌套字段存在，没有自己的发布者。因此它的双发是通过 `ProjectDispatcherState`
+   的嵌套投影完成的，`.proto` 里对应 `repeated VehicleLinkState vehicle_links`。
+
+2. **新增了一个计划里没有的层：`proto_projection.{hpp,cpp}`。**
+   原计划的表述是「在每个节点里写两个 publish」。实际实施时判断：若每个发布点
+   各写一遍字段映射，两路会随代码演进静默漂移，而漂移不会让任何测试变红。
+   于是把 7 个消息的 rosidl→proto 映射集中到**一份**实现里，两侧从同一个上游
+   结构体派生，一致性**由构造保证**；检查器退化为独立验证网（第二意见）。
+
+3. **双发器拆成两个类**（`ProtoDualPublisher` / `ProtoLifecycleDualPublisher`）。
+   `dispatcher_node` 是 lifecycle 节点，proto 侧必须跟随 `on_activate`/
+   `on_deactivate`，否则会出现「节点 inactive、rosidl 静默、proto 照发」的
+   假数据流。若用同一个模板参数二选一，`rclcpp_lifecycle` 头文件会被迫进入
+   chassis/path_tracker/safety_gate/link_health 四个**非 lifecycle** 节点的
+   编译单元。拆开后投影分派函数共用，映射仍只有一份。
+
+4. **成本被低估。** 计划把「逐个消息加 proto 发布」当成机械工作。实际每一处
+   都要处理三件事：QoS 深度对齐、lifecycle 激活态同步、per-vehicle 话题名只
+   派生一次。`dispatcher_node` 单独有 18 处 `MissionEvent` 发布点，最终收敛到
+   一个 `PublishMissionEvent()` 出口，而不是在 18 处各加一行。
+
+5. **性能影响（未实测，据实说明）。** `TrackingError` 是 20Hz、`SafetyState`
+   是 10Hz+50Hz 兜底，双发意味着这两条链路的序列化次数翻倍。目前**没有**
+   做 CPU/带宽的基准对比，`PROTOBUF_MIGRATION_PLAN.md` §7 的保留意见仍然成立。
+   `proto_dual_publish` 参数默认 `true`，现场确认无 proto 消费者后应关闭。
+
+**已交付代码清单**
+
+| 文件 | 作用 |
+|---|---|
+| `src/amr_dispatcher_proto/include/amr_dispatcher_proto/register_all_types.hpp` | 聚合 7 个类型注册，保证每个发布 TU 都能看到全部特化 |
+| `src/amr_dispatcher_ros/include/amr_dispatcher_ros/proto_projection.hpp` | 投影层声明 |
+| `src/amr_dispatcher_ros/src/proto_projection.cpp` | 投影层实现（7 个消息，含 -1 哨兵/枚举映射） |
+| `src/amr_dispatcher_ros/include/amr_dispatcher_ros/proto_dual_publisher.hpp` | 普通节点双发器 + `ProtoTopicName` + 投影分派 |
+| `src/amr_dispatcher_ros/include/amr_dispatcher_ros/proto_lifecycle_dual_publisher.hpp` | lifecycle 节点双发器 |
+| `src/amr_dispatcher_ros/test/test_proto_projection.cpp` | 17 个单测：字段完整性 + 哨兵/枚举/重复字段语义 |
+| `scripts/check_proto_dual_consistency.py` | 独立解码器 + 逐字段比对（不复用 echo 的解码路径） |
+| `scripts/check_proto_dual_e2e.sh` | 真进程双发一致性 e2e，已接入 CI |
+
+**双发的话题（8 条）**
+
+`/chassis/link_health`、`/system/aggregated_link_health`、`/tracking/error`、
+`/safety/state`、`/dispatcher/state`、`/dispatcher/events`、
+`/dispatcher/topology_state`，以及多车模式下由 `ResolveVehicleTopic` 派生的
+同名 per-vehicle 话题。每条都在原话题名后追加 `_proto`。
 
 ### 阶段 3：消费者迁移
 

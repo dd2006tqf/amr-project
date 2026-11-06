@@ -348,13 +348,14 @@ Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging te
 
 ### 9. CI Gates
 GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
-`build-ros2-jazzy` (colcon build of all five packages + **every** package's ctest suite,
+`build-ros2-jazzy` (colcon build of all seven packages + **every** package's ctest suite,
 including the gateway helpers and **both** L2 launch contract tests — lifecycle and
 process supervision), and `e2e-fleet` (`check_map_ingest_e2e.sh`,
 `check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,
 `check_metrics_e2e.sh`, `check_traffic_coordination_e2e.sh`,
 `check_facility_integration_e2e.sh`, `check_cbs_coordination_e2e.sh`,
-`check_health_supervision_e2e.sh`, `check_topology_hot_update_e2e.sh` inside the ROS container).
+`check_health_supervision_e2e.sh`, `check_topology_hot_update_e2e.sh`,
+`check_proto_dual_e2e.sh` inside the ROS container).
 Web-console acceptance stays a **manual/nightly** job: it needs a host-side Chrome plus
 an isolated container, which a standard runner does not provide — this is stated here
 rather than implied to be covered by CI.
