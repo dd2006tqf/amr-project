@@ -36,7 +36,9 @@
 #   AMR_ODOM_ORIGIN_X/Y/YAW  odom 原点在 map 下的位姿（默认 0；台架需标定）
 #   AMR_GOAL_TOLERANCE       终点判定容差，米（默认 0.10；台架标定不准时调大）
 #   AMR_PUBLISH_MAP_TO_ODOM  是否发布静态 map→odom（默认 true；多车模式下自动关闭）
-#   AMR_COLCON_WORKERS       colcon 并发数（默认 nproc；低内存机器建议设 1 或 2）
+#   AMR_COLCON_WORKERS       colcon 并发数（默认按内存推导：每 worker 预留 2 GB，
+#                            再被 nproc 封顶，至少 1。3.7 GB 机器上得到 1，
+#                            16 GB/4 核的 CI 上得到 4。低内存机器请勿调大）
 #   AMR_TOPOLOGY_OVERLAY_FILE 运行时拓扑叠加层文件绝对路径（默认
 #                            /workspace/config/generated/topology_overlay.yaml）。
 #                            显式设为空串 = 关闭在线拓扑热生效（写操作回 501）。
@@ -64,9 +66,37 @@ elif [ ! -f install/setup.bash ]; then
 fi
 
 if [ "$need_build" = "1" ]; then
-  workers="${AMR_COLCON_WORKERS:-$(nproc)}"
-  log "开始 colcon 构建（并行度 $workers）"
-
+  # 并发度按**内存**推导，不再用 $(nproc)。
+  #
+  # 这里曾经写死 $(nproc)，代价是 2026-11-05 连续三次构建把整台机器拖进
+  # swap 颠簸、SSH 直接卡死（dmesg 里一条 oom-kill 都没有——不是内存不够被
+  # 杀，是所有人一起等换页）。
+  #
+  # 推导逻辑只有一份实现：scripts/lib/build_workers.sh。这里**执行**它并读
+  # stdout，而不是 source —— 该文件末尾是一句裸的 `echo`（它是脚本不是函数
+  # 库），source 进来既拿不到值，还会把它的 `set -u` 泄漏进本脚本的 shell 选项。
+  #
+  # 镜像里烘焙了这份脚本的副本（Dockerfile COPY），挂载的仓库也有一份。
+  # 优先用挂载的那份（随 git pull 更新），没有则回退到镜像内副本 ——
+  # 与 entrypoint 自身的「挂载优先、镜像兜底」策略一致。两处路径都不存在时
+  # 兜底为 1：那是这台机器唯一安全的并发数，绝不能退回 $(nproc)。
+  workers="${AMR_COLCON_WORKERS:-}"
+  if [ -z "$workers" ]; then
+    workers_script=""
+    for cand in "${WORKSPACE}/scripts/lib/build_workers.sh" \
+                /workspace-docker/build_workers.sh; do
+      [ -r "$cand" ] && { workers_script="$cand"; break; }
+    done
+    if [ -n "$workers_script" ]; then
+      # bash 显式执行：镜像内副本不带可执行位时也能跑。
+      workers="$(bash "$workers_script" 2>/dev/null || true)"
+    fi
+    case "$workers" in
+      '' | *[!0-9]*)
+        log "WARN 无法推导并发度（缺 build_workers.sh？），回退为 1"
+        workers=1 ;;
+    esac
+  fi
   # --base-paths src 是必需的：仓库根目录有一个 CMakeLists.txt，若不加此参数
   # colcon 会把【整个仓库根】当成一个包（amr_dispatcher_workspace），转而忽略
   # src/ 下的真实包，导致 install/ 里没有任何 amr_dispatcher_* 包，
@@ -74,13 +104,79 @@ if [ "$need_build" = "1" ]; then
   # 该组合与 scripts/container_build.sh 中的用法一致。
   BASE_ARGS=(--base-paths src --symlink-install)
 
+  # 两个阶段共用的 cmake 参数。抽出来是因为下面两处原本各写了一份
+  # `-DCMAKE_BUILD_TYPE=Release`，加参数时极易只改一处（此前就发生过）。
+  #
+  # AMR_BUILD_TESTING=0 只跳过**测试目标**的编译（gtest 可执行文件），
+  # 不改变任何运行时产物的语义 —— 用于「只想起服务、不想等测试编译」的
+  # 迭代场景。默认保持 ON，与既有行为一致。
+  #   ⚠ 关掉之后 `colcon test` 什么都跑不了，安全相关改动请勿用此模式验收。
+  CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release)
+  case "${AMR_BUILD_TESTING:-1}" in
+    0 | false | OFF | off) CMAKE_ARGS+=(-DBUILD_TESTING=OFF) ;;
+  esac
+
+  # 第三道保险：编译缓存。
+  #
+  # 为什么需要：容器里的 build/ 虽然通过挂载持久化（增量构建有效），但
+  # colcon 会因 CMake 重新配置、依赖变化、或 `--cmake-args` 改变而重编
+  # 大量 TU。ccache 按「预处理后源码 + 编译参数」做内容寻址，命中时直接
+  # 复用 .o —— 对「改了头文件里一行注释」这类改动，能把 20 分钟的构建
+  # 压到 1–2 分钟。
+  #
+  # 缓存目录必须是挂载进容器的路径，否则容器重建即失效：
+  #   /workspace/.ccache  -> 宿主机 <repo>/.ccache
+  # 不用 $HOME/.cache/ccache：那是容器内层文件系统，重跑容器就没了。
+  #
+  # CCACHE_DIR 用 MAXSIZE 限制在 2 GB：本仓库源码规模下足够，且避免
+  # 在小磁盘上悄悄吃满。
+  #
+  # **只**在编译器支持时才启用（ccache 通过 CCACHE_* 环境变量工作，
+  # CMake 需要显式 launcher 才会用到它）。这里用 CMAKE_CXX_COMPILER_LAUNCHER
+  # 注入，与 scripts/gcc_mem_guard.sh 的机制一致；两者同时启用时，先走
+  # ccache（外）再走 gcc（内），互不干扰。
+  if command -v ccache >/dev/null 2>&1; then
+    export CCACHE_DIR=/workspace/.ccache
+    export CCACHE_MAXSIZE=2G
+    export CCACHE_BASEDIR=/workspace
+    # 相对路径化：同一份源码从不同挂载点编译时还能命中缓存。
+    export CCACHE_SLOPPINESS=include_file_mtime,time_macros
+    mkdir -p "$CCACHE_DIR" 2>/dev/null || true
+    # **必须用 -D 显式传**，不能只靠 CMAKE_CXX_COMPILER_LAUNCHER 环境变量：
+    # CMake 只在**首次配置**时把环境变量作为缓存初值。若 build/ 里已经缓存了
+    # 某个值（包括空串），之后再设环境变量完全不生效，而且是静默的 ——
+    # 表现为「日志里说 ccache 已启用，实际一次都没走缓存」。已实测确认。
+    CMAKE_ARGS+=(
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    )
+    log "ccache 已启用（缓存目录 $CCACHE_DIR，上限 $CCACHE_MAXSIZE）"
+  else
+    # 镜像可能是旧的（ccache 是后加的依赖）。此时必须确保缓存里不要遗留
+    # launcher 值，否则 CMake 会去 exec 一个不存在的 ccache 而编译失败。
+    log "未检测到 ccache，按无缓存构建（镜像较旧？重新 docker build 可启用）"
+  fi
+
+  log "开始 colcon 构建（并行度 $workers，按内存推导；可用 AMR_COLCON_WORKERS 覆盖）"
+
+  # CMAKE_BUILD_PARALLEL_LEVEL 控制**单个包内部** make/ninja 的 -j 数。
+  #
+  # 这是本脚本最容易被误解的一点：colcon 的 --parallel-workers **只管包级**
+  # 并发，一个包内部照样按 CPU 数开 -j。所以「--parallel-workers 1」在 4 核
+  # 机器上仍会出现 4 个 cc1plus 同时编译——2026-11-05 的三次事故里，前两次
+  # 都以为限了并发，实际根本没限。必须同时设这个环境变量。
+  #
+  # 取同一个 $workers：包级和包内两级并发都限制住，真实峰值才是
+  # workers × 单 TU 峰值（1 × 2 GB），而不是 workers² × 单 TU 峰值。
+  export CMAKE_BUILD_PARALLEL_LEVEL="$workers"
+
   # 两阶段：amr_dispatcher_bt / _ros / _tools 依赖 amr_dispatcher_interfaces 生成的
   # 消息头文件，必须先单独构建 interfaces（连同 core）。
   colcon build \
     "${BASE_ARGS[@]}" \
     --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
     --parallel-workers "$workers" \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release
+    --cmake-args "${CMAKE_ARGS[@]}"
 
   # shellcheck disable=SC1091
   source install/setup.bash
@@ -95,12 +191,17 @@ if [ "$need_build" = "1" ]; then
   #     工具（ros2 topic echo 架构性不可用，见 PROTOBUF_MIGRATION_PLAN.md §5.2）。
   #     镜像里不装它，部署后就没有任何手段排查 *_proto 话题的内容。
   # 顺序无需手工排列：colcon 会按 package.xml 的依赖拓扑排序，proto 一定先于 ros。
+  #   - amr_dispatcher_proto_bridge（阶段 3）对 amr_dispatcher_proto **和**
+  #     amr_dispatcher_interfaces 同时是硬依赖（反向投影库），因此不能进第一阶段，
+  #     必须排在 proto 之后。它被 amr_dispatcher_ros 与 amr_dispatcher_tools 共同
+  #     依赖，漏掉会让两个消费者包都在 find_package 处失败。
   colcon build \
     "${BASE_ARGS[@]}" \
     --packages-select amr_dispatcher_proto amr_dispatcher_proto_cli \
+                     amr_dispatcher_proto_bridge \
                      amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
     --parallel-workers "$workers" \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release
+    --cmake-args "${CMAKE_ARGS[@]}"
 
   # 注意：此处不能用 `ros2 pkg list | grep -c`，因为 `source install/setup.bash`
   # 的输出会混入 grep，计数会偏低（实测多个包被数成 2 个）。

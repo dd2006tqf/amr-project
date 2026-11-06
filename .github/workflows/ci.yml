@@ -23,10 +23,18 @@ jobs:
       # 与 scripts/build.sh 的 cmake 参数保持一致（含 -DCMAKE_BUILD_TYPE=Release），
       # 这样后面 check_all.sh 内部再次 configure 时是 no-op，不会触发二次全量编译。
       - name: Build Core
+        # 显式指定 bash：下面的 `source` 需要 bash，不能靠 runner 默认 shell。
+        # （ubuntu-* runner 目前默认就是 bash -e，但这是 runner 的隐含行为，
+        #   不写死会在 runner 镜像变化时静默失效。）
+        shell: bash
         run: |
           cmake -S src/amr_dispatcher_core -B build/core -DBUILD_TESTING=ON \
                 -DCMAKE_CXX_FLAGS="-std=c++20" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build/core -j$(nproc)
+          # 并发度走统一推导脚本（与 scripts/build.sh 同一份实现）。CI 上
+          # 16 GB / 4 vCPU 仍会算出 4，与原来的 -j$(nproc) 等价；改成推导的
+          # 目的是让「改并发策略」只有一处，避免 CI 与本地/部署三套行为分叉。
+          source "${GITHUB_WORKSPACE}/scripts/lib/build_workers.sh"
+          cmake --build build/core -j"$(build_workers)"
 
       - name: Run Core Tests
         run: |
@@ -96,7 +104,7 @@ jobs:
           # 提前放进上一批会让 colcon 找不到 amr_dispatcher_proto 的 package.sh。
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
-            amr_dispatcher_proto_cli \
+            amr_dispatcher_proto_cli amr_dispatcher_proto_bridge \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       # 这一步专门守住「装了但没装全」的情况：amr_dispatcher_tools 安装失败时
@@ -104,7 +112,8 @@ jobs:
       #
       # 数量从 5 改成 7：阶段 1/2 proto 迁移新增了 amr_dispatcher_proto
       # （类型与 typesupport）和 amr_dispatcher_proto_cli（ros2 amr echo 等）。
-      - name: Verify All 7 Packages Installed
+      # 再改成 8：阶段 3 新增 amr_dispatcher_proto_bridge（反向投影与双订阅适配器）。
+      - name: Verify All 8 Packages Installed
         shell: bash
         run: |
           set -e
@@ -114,13 +123,14 @@ jobs:
           installed=$(ls -d install/amr_dispatcher_* | wc -l)
           echo "install/ 下的包数: $installed"
           ls -d install/amr_dispatcher_*
-          if [ "$installed" -ne 7 ]; then
-            echo "::error::期望 install 7 个包，实际 $installed 个"
+          if [ "$installed" -ne 8 ]; then
+            echo "::error::期望 install 8 个包，实际 $installed 个"
             exit 1
           fi
 
           for p in amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_proto \
-                   amr_dispatcher_proto_cli amr_dispatcher_bt \
+                   amr_dispatcher_proto_cli amr_dispatcher_proto_bridge \
+                   amr_dispatcher_bt \
                    amr_dispatcher_ros amr_dispatcher_tools; do
             if ! ros2 pkg prefix "$p" >/dev/null 2>&1; then
               echo "::error::ros2 找不到包 $p"
@@ -242,7 +252,7 @@ jobs:
           # 提前放进上一批会让 colcon 找不到 amr_dispatcher_proto 的 package.sh。
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
-            amr_dispatcher_proto_cli \
+            amr_dispatcher_proto_cli amr_dispatcher_proto_bridge \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       # 阶段 2 双发的独立验证：真进程 + 真 DDS，逐字段比对 rosidl 与 proto。

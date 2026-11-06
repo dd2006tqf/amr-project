@@ -66,10 +66,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       mosquitto-clients \
       python3-colcon-common-extensions \
       build-essential \
+      ccache \
  && rm -rf /var/lib/apt/lists/*
 
 COPY docker/entrypoint.server.sh /workspace-docker/entrypoint.server.sh
 RUN chmod +x /workspace-docker/entrypoint.server.sh
+
+# 并发度推导脚本的镜像内副本。
+#
+# 入口脚本优先执行挂载的 /workspace/scripts/lib/build_workers.sh，这里烘焙一份
+# 兜底 —— 否则「未挂载仓库时用镜像内 entrypoint」这条路径上会缺依赖，只能
+# 回退成并发 1。**这一份与仓库里的那份是同一个文件**，不是内联复制品：
+# 修改时只需改 scripts/lib/build_workers.sh，镜像重建自然带上。
+COPY scripts/lib/build_workers.sh /workspace-docker/build_workers.sh
+RUN chmod +x /workspace-docker/build_workers.sh
 
 # /workspace 是项目根，运行时由绑定挂载填充
 WORKDIR /workspace

@@ -9,6 +9,10 @@ __pycache__/
 install/
 log/
 
+# ccache 缓存目录（entrypoint.server.sh 把容器内 CCACHE_DIR 指到
+# /workspace/.ccache，映射到宿主机的 <repo>/.ccache）。属本地产物，不入库。
+.ccache/
+
 # 个人简历等非项目文件，不应进入公开仓库
 *.pdf
 *简历知识库.md
