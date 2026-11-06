@@ -69,7 +69,7 @@ if [ "$need_build" = "1" ]; then
 
   # --base-paths src 是必需的：仓库根目录有一个 CMakeLists.txt，若不加此参数
   # colcon 会把【整个仓库根】当成一个包（amr_dispatcher_workspace），转而忽略
-  # src/ 下的 5 个真实包，导致 install/ 里没有任何 amr_dispatcher_* 包，
+  # src/ 下的真实包，导致 install/ 里没有任何 amr_dispatcher_* 包，
   # 后续 `ros2 launch` 直接报 "package 'amr_dispatcher_ros' not found"。
   # 该组合与 scripts/container_build.sh 中的用法一致。
   BASE_ARGS=(--base-paths src --symlink-install)
@@ -85,14 +85,25 @@ if [ "$need_build" = "1" ]; then
   # shellcheck disable=SC1091
   source install/setup.bash
 
+  # 第二阶段必须包含 amr_dispatcher_proto（以及 _proto_cli）。理由：
+  #   - amr_dispatcher_ros 对 proto 是**硬依赖**（find_package REQUIRED +
+  #     <depend>），列表里漏掉它时 colcon 会在配置前就报
+  #     "Failed to find install/amr_dispatcher_proto/share/.../package.sh"，
+  #     并连带 Abort 掉 amr_dispatcher_bt，看起来像是 BT 包坏了，其实是依赖图缺节点。
+  #     已实测复现（干净工作区按旧列表构建）。
+  #   - amr_dispatcher_proto_cli 提供 `ros2 amr echo`，是**唯一**能读懂 proto 话题的
+  #     工具（ros2 topic echo 架构性不可用，见 PROTOBUF_MIGRATION_PLAN.md §5.2）。
+  #     镜像里不装它，部署后就没有任何手段排查 *_proto 话题的内容。
+  # 顺序无需手工排列：colcon 会按 package.xml 的依赖拓扑排序，proto 一定先于 ros。
   colcon build \
     "${BASE_ARGS[@]}" \
-    --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+    --packages-select amr_dispatcher_proto amr_dispatcher_proto_cli \
+                     amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
     --parallel-workers "$workers" \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
   # 注意：此处不能用 `ros2 pkg list | grep -c`，因为 `source install/setup.bash`
-  # 的输出会混入 grep，计数会偏低（实测 5 个包被数成 2 个）。
+  # 的输出会混入 grep，计数会偏低（实测多个包被数成 2 个）。
   # 直接看 install/ 目录更可靠。
   installed=$(find install -maxdepth 1 -type d -name 'amr_dispatcher_*' 2>/dev/null | wc -l)
   log "构建完成，install/ 下已安装 $installed 个项目包"

@@ -58,6 +58,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libpaho-mqttpp-dev \
       python3-paho-mqtt \
       python3-serial \
+      libprotobuf-dev \
+      protobuf-compiler \
+      python3-protobuf \
+      pybind11-dev \
       mosquitto \
       mosquitto-clients \
       python3-colcon-common-extensions \

@@ -66,7 +66,11 @@ jobs:
             ros-jazzy-hardware-interface \
             build-essential \
             libyaml-cpp-dev \
-            libgtest-dev
+            libgtest-dev \
+            libprotobuf-dev \
+            protobuf-compiler \
+            python3-protobuf \
+            pybind11-dev
           rm -rf /var/lib/apt/lists/*
 
       # 两阶段构建：amr_dispatcher_bt / _ros / _tools 依赖 interfaces 生成的消息头，
@@ -80,14 +84,27 @@ jobs:
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
+          # proto 包单独一批，但它**不依赖** interfaces：整个
+          # amr_dispatcher_proto 源码树里没有任何对 amr_dispatcher_interfaces
+          # 的 include（已 grep 核实），只依赖 rclcpp / rosidl_runtime_* /
+          # fastcdr / libprotobuf。分两批建只是为了隔离构建失败面。
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_proto \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
           source install/setup.bash
+          # proto_cli 必须等 proto 安装完：它 package.xml 里 depend proto，
+          # 提前放进上一批会让 colcon 找不到 amr_dispatcher_proto 的 package.sh。
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+            amr_dispatcher_proto_cli \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       # 这一步专门守住「装了但没装全」的情况：amr_dispatcher_tools 安装失败时
-      # colcon 仍可能以退出码 0 收尾，必须显式断言 5 个包都在。
-      - name: Verify All 5 Packages Installed
+      # colcon 仍可能以退出码 0 收尾，必须显式断言全部包都在。
+      #
+      # 数量从 5 改成 7：阶段 1/2 proto 迁移新增了 amr_dispatcher_proto
+      # （类型与 typesupport）和 amr_dispatcher_proto_cli（ros2 amr echo 等）。
+      - name: Verify All 7 Packages Installed
         shell: bash
         run: |
           set -e
@@ -97,12 +114,13 @@ jobs:
           installed=$(ls -d install/amr_dispatcher_* | wc -l)
           echo "install/ 下的包数: $installed"
           ls -d install/amr_dispatcher_*
-          if [ "$installed" -ne 5 ]; then
-            echo "::error::期望 install 5 个包，实际 $installed 个"
+          if [ "$installed" -ne 7 ]; then
+            echo "::error::期望 install 7 个包，实际 $installed 个"
             exit 1
           fi
 
-          for p in amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_bt \
+          for p in amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_proto \
+                   amr_dispatcher_proto_cli amr_dispatcher_bt \
                    amr_dispatcher_ros amr_dispatcher_tools; do
             if ! ros2 pkg prefix "$p" >/dev/null 2>&1; then
               echo "::error::ros2 找不到包 $p"
@@ -197,7 +215,11 @@ jobs:
             procps \
             build-essential \
             libyaml-cpp-dev \
-            libgtest-dev
+            libgtest-dev \
+            libprotobuf-dev \
+            protobuf-compiler \
+            python3-protobuf \
+            pybind11-dev
           rm -rf /var/lib/apt/lists/*
 
       - name: Build Workspace
@@ -208,10 +230,33 @@ jobs:
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
+          # proto 包单独一批，但它**不依赖** interfaces：整个
+          # amr_dispatcher_proto 源码树里没有任何对 amr_dispatcher_interfaces
+          # 的 include（已 grep 核实），只依赖 rclcpp / rosidl_runtime_* /
+          # fastcdr / libprotobuf。分两批建只是为了隔离构建失败面。
+          colcon build --base-paths src --symlink-install \
+            --packages-select amr_dispatcher_proto \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
           source install/setup.bash
+          # proto_cli 必须等 proto 安装完：它 package.xml 里 depend proto，
+          # 提前放进上一批会让 colcon 找不到 amr_dispatcher_proto 的 package.sh。
           colcon build --base-paths src --symlink-install \
             --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+            amr_dispatcher_proto_cli \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      # 阶段 2 双发的独立验证：真进程 + 真 DDS，逐字段比对 rosidl 与 proto。
+      # 放在 e2e job 而不是单测 job，因为它需要完整的 colcon 工作区与运行中的
+      # DDS 环境；纯 ctest 覆盖不到「节点漏调 Publish()」这类静默缺陷。
+      - name: Proto Dual-Publish Consistency E2E
+        shell: bash
+        env:
+          AMR_E2E_INNER: "1"
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ./scripts/check_proto_dual_e2e.sh
 
       - name: Map Ingest E2E
         shell: bash
