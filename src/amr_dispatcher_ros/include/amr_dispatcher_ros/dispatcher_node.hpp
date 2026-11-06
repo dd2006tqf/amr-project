@@ -46,6 +46,8 @@
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
 #include "amr_dispatcher_ros/proto_lifecycle_dual_publisher.hpp"
+// 阶段 3：TrackingError 双订阅（proto 分支内部反投影回 rosidl）。
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
@@ -679,6 +681,9 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   // 阶段 2 双发总开关（参数 proto_dual_publish，默认开）
   bool proto_dual_publish_{true};
+  // 阶段 3：双订阅总开关。与 proto_dual_publish_ 独立——发布端与订阅端
+  // 可以分批上线（先发布侧开着观察，再逐节点打开订阅侧）。
+  bool proto_dual_subscribe_{false};
 
   // MissionEvent 双发的统一出口。
   //
@@ -688,7 +693,13 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // 调用方仍保留 is_activated() 守卫（见各调用点），本函数只负责两路投递。
   void PublishMissionEvent(const amr_dispatcher_interfaces::msg::MissionEvent& msg);
 
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
+  // 阶段 3：/tracking/error 双订阅。注意本文件是全项目**唯一**对订阅句柄
+  // 调用 reset() 的地方（生命周期收口，见 OnCleanup），适配器为此
+  // 专门提供了 reset()，语义与 rclcpp 原生句柄一致。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>
+      tracking_error_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
 
   // ---- P0.6 / A4：per-vehicle 话题隔离 ----
@@ -700,8 +711,10 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   // vehicle_id -> /odom/{vid} 订阅
   std::unordered_map<std::string, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr>
       vehicle_odom_subs_;
-  // vehicle_id -> /tracking/error/{vid} 订阅
-  std::unordered_map<std::string, rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr>
+  // vehicle_id -> /tracking/error/{vid} 订阅（阶段 3：可按开关走 proto 话题）
+  std::unordered_map<std::string, amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>>
       vehicle_tracking_error_subs_;
   // vehicle_id -> 最新里程计位姿（Pose2D + has_odom 标志）。
   // 与 legacy 的 current_pose_/has_odom_ 并存：全局 /odom 仍只喂 legacy 字段。

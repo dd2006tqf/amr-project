@@ -17,6 +17,8 @@
 #include "amr_dispatcher_interfaces/msg/safety_state.hpp"
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
 #include "amr_dispatcher_ros/proto_dual_publisher.hpp"
+// 阶段 3：链路健康与拓扑状态的双订阅（proto 分支内部反投影回 rosidl）。
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 
 namespace amr_dispatcher_ros {
 
@@ -51,8 +53,16 @@ class SafetyGateNode : public rclcpp::Node {
   // B1 心跳分源订阅（不再共用单话题）：每条只 Feed 自己的源，避免一侧挂掉拉低另一侧。
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_chassis_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr heartbeat_path_tracker_sub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_health_sub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_state_sub_;
+  // 阶段 3：这两条话题支持双订阅（proto 分支内部反投影回 rosidl，
+  // 回调与下面所有判定逻辑一字未改）。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>
+      link_health_sub_;
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TopologyState,
+      amr_dispatcher::proto::TopologyState>
+      topology_state_sub_;
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr safe_cmd_vel_pub_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
@@ -122,6 +132,7 @@ class SafetyGateNode : public rclcpp::Node {
 
   // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
   bool proto_dual_publish_{true};
+  bool proto_dual_subscribe_{false};
 };
 
 }  // namespace amr_dispatcher_ros

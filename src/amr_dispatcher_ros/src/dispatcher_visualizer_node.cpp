@@ -14,6 +14,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 
 using namespace std::chrono_literals;
 
@@ -34,6 +35,8 @@ class DispatcherVisualizerNode : public rclcpp::Node {
     declare_parameter("frame_id", "map");
     declare_parameter("marker_topic", "/dispatcher/markers");
     declare_parameter("stations_file", "config/stations.yaml");
+    // 阶段 3：拓扑来源可切到 proto 话题。默认 false，保持原有行为。
+    declare_parameter("proto_dual_subscribe", false);
 
     frame_id_ = get_parameter("frame_id").as_string();
     marker_topic_ = get_parameter("marker_topic").as_string();
@@ -45,8 +48,11 @@ class DispatcherVisualizerNode : public rclcpp::Node {
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
         marker_topic_, rclcpp::QoS(1).transient_local());
 
-    topology_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
-        "/dispatcher/topology_state", 10,
+    topology_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::TopologyState,
+        amr_dispatcher::proto::TopologyState>(
+        this, "/dispatcher/topology_state", 10,
+        get_parameter("proto_dual_subscribe").as_bool(),
         [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
           latest_topology_ = *msg;
           has_topology_ = true;
@@ -239,7 +245,11 @@ class DispatcherVisualizerNode : public rclcpp::Node {
   amr_dispatcher_interfaces::msg::TopologyState latest_topology_;
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_sub_;
+  // 阶段 3：双订阅（rosidl 或 proto 话题，回调统一收 rosidl 消息）。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TopologyState,
+      amr_dispatcher::proto::TopologyState>
+      topology_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

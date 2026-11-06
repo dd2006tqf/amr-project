@@ -7,6 +7,7 @@
 
 #include "amr_dispatcher_core/chassis/link_quality.hpp"
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 #include "amr_dispatcher_ros/proto_dual_publisher.hpp"
 
 using namespace std::chrono_literals;
@@ -21,16 +22,34 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     declare_parameter("watched_topics", std::vector<std::string>{"/chassis/link_health"});
     // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧。
     declare_parameter("proto_dual_publish", true);
+    // 阶段 3 双订阅总开关（默认关）。开启后 watched_topics 的每一项都改从
+    // "<topic>_proto" 读取，适配器内部反投影回 rosidl 后交给同一段回调。
+    //
+    // 每项必须是**已解析的最终话题名**：发布端是 ResolveVehicleTopic 之后再
+    // 追加 _proto 后缀，订阅端若传原始模板名就会派生出错误的话题名，
+    // 表现为「订阅成功但永远收不到」。
+    declare_parameter("proto_dual_subscribe", false);
     const bool proto_dual_publish = get_parameter("proto_dual_publish").as_bool();
+    const bool proto_dual_subscribe = get_parameter("proto_dual_subscribe").as_bool();
 
     auto topics = get_parameter("watched_topics").as_string_array();
+    subs_.reserve(topics.size());
     for (const auto& t : topics) {
-      auto sub = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-          t, 10,
+      // 阶段 3：每项都可切到 proto 话题。用 make_unique 存放：适配器持有
+      // 订阅句柄，放进 unique_ptr 后 vector 扩容不会搬动对象本身，
+      // 订阅生命周期与 vector 同寿命。
+      subs_.push_back(std::make_unique<amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+          amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+          amr_dispatcher::proto::ChassisLinkHealth>>(
+          this, t, 10, proto_dual_subscribe,
           [this, t](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
             latest_health_[t] = *msg;
-          });
-      subs_.push_back(sub);
+          }));
+    }
+    if (proto_dual_subscribe && !subs_.empty()) {
+      RCLCPP_INFO(get_logger(),
+                  "link health source: proto topics (*_proto), first='%s'",
+                  subs_.front()->proto_topic().c_str());
     }
 
     aggregated_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
@@ -119,7 +138,11 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     }
   }
 
-  std::vector<rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr> subs_;
+  // 阶段 3：双订阅容器。vector 可以容纳移动-only 元素，正好匹配
+  // 「watched_topics 运行时长度不定」这个既有约束。
+  std::vector<std::unique_ptr<amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>>> subs_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr aggregated_pub_;
   std::unique_ptr<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::ChassisLinkHealth,

@@ -12,6 +12,7 @@
 
 #include "amr_dispatcher_interfaces/msg/safety_state.hpp"
 #include "amr_dispatcher_interfaces/srv/get_system_readiness.hpp"
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 
 using namespace std::chrono_literals;
 
@@ -49,13 +50,26 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
     dispatcher_change_state_cli_ =
         create_client<lifecycle_msgs::srv::ChangeState>("/dispatcher_node/change_state");
 
-    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
-        "/safety/state", 10,
+    // 阶段 3：安全状态可走 proto 话题。默认 false，行为与迁移前逐字相同；
+    // 置 true 时订阅 /safety/state_proto 并在适配器内部反投影回 rosidl，
+    // 下面这个回调（以及整个就绪判定逻辑）完全不用改。
+    declare_parameter("proto_dual_subscribe", false);
+    const bool use_proto = get_parameter("proto_dual_subscribe").as_bool();
+
+    safety_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::SafetyState,
+        amr_dispatcher::proto::SafetyState>(
+        this, "/safety/state", 10, use_proto,
         [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
           safety_healthy_ = msg->motion_allowed;
           safety_seen_ = true;
           safety_last_seen_ = std::chrono::steady_clock::now();
         });
+    if (use_proto) {
+      RCLCPP_INFO(get_logger(),
+                  "Safety state source: proto topic '%s' (reverse-projected)",
+                  safety_sub_.proto_topic().c_str());
+    }
 
     readiness_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
         "/system/ready",
@@ -233,7 +247,12 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
 
   rclcpp::Client<lifecycle_msgs::srv::GetState>::SharedPtr dispatcher_get_state_cli_;
   rclcpp::Client<lifecycle_msgs::srv::ChangeState>::SharedPtr dispatcher_change_state_cli_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
+  // 阶段 3：双订阅适配器。对外仍是 rosidl 回调，内部按 proto_dual_subscribe
+  // 决定收 rosidl 话题还是 proto 话题（后者反投影后再回调）。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::SafetyState,
+      amr_dispatcher::proto::SafetyState>
+      safety_sub_;
 
   rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr healthy_srv_;

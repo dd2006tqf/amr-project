@@ -392,11 +392,123 @@ is_healthy: true
 
 ### 阶段 3：消费者迁移
 
-- [ ] `amr_dispatcher_tools`（CLI / REST）改读 proto 话题
-- [ ] 内部订阅方（`safety_gate_node`、`dispatcher_node` 等）迁移
-- [ ] 每个消费者迁移后观察一个版本周期
+**机制：反向投影 + 双订阅，业务代码零改动。**
+
+新增包 `amr_dispatcher_proto_bridge`，提供：
+
+| 文件 | 内容 |
+|---|---|
+| `include/.../proto_reverse_projection.hpp` | proto -> rosidl 反投影声明（7 个消息） |
+| `src/proto_reverse_projection.cpp` | 反投影实现，逐字段还原三处有损点 |
+| `include/.../proto_dual_subscriber.hpp` | `ProtoDualSubscriber<RosidlT, ProtoT>` + `ProtoTopicName` |
+| `test/test_proto_reverse_projection.cpp` | 25 个单测 |
+
+为什么不在消费者里直接读 protobuf：`rest_gateway` / `safety_gate` / `dispatcher_node`
+合计 60+ 处字段访问，全改写的语义漂移风险高；且「还没收到过消息」这类判据
+（`severity.empty()`）在 proto 侧没有对应表达。反向投影把 proto 还原成 rosidl
+再交给既有回调，**业务逻辑一行不改**，且可以逐话题切回。
+
+三处有损点必须逐条反向还原（否则往返测试会失败）：
+
+1. `command_delivery_rate`：`valid=false` -> `-1.0`（**不是** `0.0`；
+   0.0 是「命令全丢」，与「不适用」结论相反）
+2. `tier`：`TIER_UNKNOWN` -> `tier_text` 非空则用原文，否则 `"UNKNOWN"`
+3. `severity`：与 `tier` 同构
+
+一个**不可逆**边界：rosidl 默认构造的 `severity` 是 `""`，而 proto enum 默认值
+反投影出来是 `"UNKNOWN"`。依赖 `severity.empty()` 表达「没收到过」的判断，
+必须改看各自的 `*_seen_` 布尔量（各消费者本来就有）。
+
+**已迁移的订阅点（13 处 / 9 个文件）**
+
+| 文件 | 话题 | QoS | 开关参数 |
+|---|---|---|---|
+| `dispatcher_visualizer_node.cpp` | `/dispatcher/topology_state` | 10 | `proto_dual_subscribe` |
+| `link_health_publisher.cpp` | `watched_topics` 每项 | 10 | `proto_dual_subscribe` |
+| `safety_gate_node.cpp` | `link_health_topic_`（per-vehicle） | 10 | `proto_dual_subscribe` |
+| `safety_gate_node.cpp` | `/dispatcher/topology_state` | 10 | `proto_dual_subscribe` |
+| `lifecycle_coordinator_node.cpp` | `/safety/state` | 10 | `proto_dual_subscribe` |
+| `navigate_sequence_bridge_node.cpp` | `/tracking/error` | 10 | `proto_dual_subscribe` |
+| `dispatcher_node.cpp` | `/tracking/error` | 10 | `proto_dual_subscribe` |
+| `dispatcher_node.cpp` | `/tracking/error/{vid}` | 10 | `proto_dual_subscribe` |
+| `rest_gateway.cpp` | `/dispatcher/state` | 10 | `proto_dual_subscribe` |
+| `rest_gateway.cpp` | `/safety/state` | 10 | `proto_dual_subscribe` |
+| `rest_gateway.cpp` | `/chassis/link_health` | 10 | `proto_dual_subscribe` |
+| `rest_gateway.cpp` | `/dispatcher/events` | **20** | `proto_dual_subscribe` |
+| `dispatcher_cli.cpp` | `/dispatcher/state` | 10 | `proto_dual_subscribe` |
+
+**开关默认值一律 `false`**：发布端必须先开着 `proto_dual_publish` 才有配对话题，
+否则订阅端会「订阅成功但永远收不到」——DDS 不报错，只是没有匹配的发布者。
+这也是把「发布开关」与「订阅开关」分成两个参数的原因。
+
+launch 侧提供**单个全局开关** `proto_dual_subscribe`（`full_system.launch.py`），
+一键切换全部消费者。逐节点切换在迁移期是反模式：一半节点读 rosidl、一半读 proto
+时两侧数据流都在，谁看谁都不一致，反而最难排查。
+
+- [x] `amr_dispatcher_tools`（CLI / REST）改读 proto 话题
+- [x] 内部订阅方（`safety_gate_node`、`dispatcher_node` 等）迁移
+- [ ] 每个消费者迁移后观察一个版本周期（需现场运行，非代码变更）
+
+**阶段 3 验收记录（2026-11-06，在真实运行的系统上完成 A/B）**
+
+代码写完不等于能用。以下是在运行中的容器里（`full_system.launch.py` 起的
+7 节点系统）做的验证，不是单测：
+
+| 验证项 | 做法 | 结果 |
+|---|---|---|
+| 单测 | `test_proto_reverse_projection` 25 项 + `test_proto_round_trip` 11 项 | 全过 |
+| 全量回归 | `amr_dispatcher_ros` 的 ctest（含 2 个 L2 launch 契约测试） | 60/60 通过 |
+| 双发 e2e | `check_proto_dual_e2e.sh`（阶段 2 段 + 阶段 3 订阅侧段） | 两段均通过 |
+| **A/B 对照** | 8080 = rosidl 网关（运行中），另起 18081 = `proto_dual_subscribe:=true` | 见下 |
+
+A/B 的做法：`docker ps` 里的生产网关 `rest_gateway_node` 订阅四条 rosidl 话题；
+再起一个同名包的第二实例（`__node:=rest_gateway_proto_test`, `port:=18081`,
+`proto_dual_subscribe:=true`）。`ros2 topic info -v` 确认两条订阅分别落在
+rosidl 与 `_proto` 话题上：
+
+```
+/dispatcher/state        <- rest_gateway_node        (rosidl)
+/dispatcher/state_proto  <- rest_gateway_proto_test  (proto)
+/safety/state            <- rest_gateway_node
+/safety/state_proto      <- rest_gateway_proto_test
+/chassis/link_health     <- safety_gate_node
+/chassis/link_health_proto <- rest_gateway_proto_test
+/dispatcher/events       <- rest_gateway_node
+/dispatcher/events_proto <- rest_gateway_proto_test
+```
+
+然后比对两边 `/api/v1/state` 与 `/readyz`：
+
+- `/readyz` 四个组件（dispatcher / safety / chassis / coordinator）在 proto 侧
+  全部 `ok`，`age_seconds` 持续在 0.004–0.37 秒——证明它**真的在持续收数据**，
+  不是缓存了启动瞬间的一次值。这是分辨「订阅成功」与「订阅成功但收不到」的
+  唯一可靠判据：DDS 不会因为没人发布而报错。
+- 触发真实业务事件（`submit_order` -> `queued` -> `plan_failed`），两个网关的
+  `recent_events` 内容逐条相同。**反投影把枚举、字符串、嵌套字段都还原对了。**
+
+一个容易被误读的观察：proto 网关的 `recent_events` 一开始为空，是因为我手工
+往 rosidl 的 `/dispatcher/events` 注入了消息——那条消息不经过 `dispatcher_node`
+的双发路径，自然不会出现在 `_proto` 话题上。这不是缺陷，而是双发的定义：
+proto 话题的内容只来自发布端的投影，第三方往 rosidl 侧直接注入不会镜像过去。
+现场排查时要知道这一点，否则会误判成「proto 订阅漏消息」。
+
+**尚未验证的（据实说明）**：`proto_dual_subscribe:=true` 下跑一整个版本周期
+的行为（长时间运行下的内存、QoS 突发丢帧、per-vehicle 多车模式的实际订阅名）。
+这几项都需要现场运行，不是代码变更能覆盖的；阶段 4a 正是为此留的观察窗口。
 
 ### 阶段 4：清理
+
+**当前状态：已做到「可一键切换」，真正的删除动作待确认。**
+
+阶段 3 的双订阅结构使清理可以分三步走，每步都可独立回滚：
+
+| 步骤 | 动作 | 回滚方式 |
+|---|---|---|
+| 4a | 消费者侧 `proto_dual_subscribe:=true`，观察 | 改回 `false`，无需重新构建 |
+| 4b | 发布端 `proto_dual_publish:=false`，只留 rosidl 侧静默 | 改回 `true` |
+| 4c | 删除 rosidl 发布代码与 `.msg` | 需要回滚代码（不可一键） |
+
+4a / 4b 是**参数级**切换，不涉及代码；4c 才是真正的破坏性变更。
 
 - [ ] 删除旧 rosidl 话题发布
 - [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`
@@ -404,6 +516,21 @@ is_healthy: true
 
 > **阶段 4 的前置条件**：确认没有任何外部系统（上位机、第三方集成）还在订阅旧话题。
 > 这是整个计划里最容易被低估的风险——rosidl 话题名对第三方是公开契约。
+
+**为什么 4c 不在本次落地**：该前置条件无法由代码库自身验证——要么做现场
+broker 抓包（ros2 topic info 只能看到本机 DDS 图，看不到第三方订阅意图），
+要么由运维方书面确认。在拿到这个结论之前删除 `.msg`，等于单方面毁约。
+
+**若确认可以删除时，需要注意的连带影响**：
+
+- `amr_dispatcher_interfaces` 的 7 个 `.msg` 被 `registry/generated` 的消息
+  类型清单引用；删 `.msg` 要同步删对应 proto 反向依赖（`proto_bridge` 的反投影
+  函数签名会失去 rosidl 类型）。
+- `ProtoDualSubscriber` 的 `use_proto=false` 分支会失去编译依据——该分支
+  正是「可一键切回」的实现，删除 rosidl 后双订阅器本身就没有存在意义了，
+  应当整体退化为 `create_subscription<ProtoT>` + 反投影。
+- `scripts/check_proto_dual_consistency.py` 的比对基准（rosidl 侧）消失，
+  一致性校验脚本需要改成「只校验 proto 侧解码」或一并删除。
 
 ---
 

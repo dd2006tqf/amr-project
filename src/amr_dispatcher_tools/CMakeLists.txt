@@ -12,6 +12,9 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(amr_dispatcher_core REQUIRED)
 find_package(amr_dispatcher_interfaces REQUIRED)
+# 阶段 3：双订阅（proto 分支反投影回 rosidl）。tools 刻意不依赖
+# amr_dispatcher_ros——那会把 hardware_interface / pluginlib / BT 一并拖进来。
+find_package(amr_dispatcher_proto_bridge REQUIRED)
 
 # 1. dispatcher_cli
 add_executable(dispatcher_cli
@@ -26,6 +29,8 @@ ament_target_dependencies(dispatcher_cli
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+target_link_libraries(dispatcher_cli
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
 # 2. rest_gateway
 add_executable(rest_gateway
@@ -42,6 +47,8 @@ ament_target_dependencies(rest_gateway
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+target_link_libraries(rest_gateway
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
 install(TARGETS
   dispatcher_cli

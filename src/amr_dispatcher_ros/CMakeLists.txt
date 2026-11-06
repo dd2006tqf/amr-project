@@ -31,6 +31,8 @@ find_package(amr_dispatcher_bt REQUIRED)
 # 的镜像，而这种缺失只有在运维真的去订阅时才暴露——比构建期直接失败更贵。
 # 部署侧依赖已在 docker/Dockerfile.jazzy 与 CI 中显式安装。
 find_package(amr_dispatcher_proto REQUIRED)
+# 阶段 3：反向投影（proto -> rosidl）与双订阅适配器。与上面同理，是硬依赖。
+find_package(amr_dispatcher_proto_bridge REQUIRED)
 # 显式 find Protobuf：下游目标的 pb.h 会 include <google/protobuf/*>，
 # 需要 Protobuf_INCLUDE_DIRS。见下面 amr_dispatcher_proto_dual 的注释。
 find_package(Protobuf REQUIRED)
@@ -88,6 +90,10 @@ ament_target_dependencies(amr_dispatcher_proto_projection
 add_library(amr_dispatcher_proto_dual INTERFACE)
 target_link_libraries(amr_dispatcher_proto_dual INTERFACE
   amr_dispatcher_proto_projection
+  # 阶段 3：把反向投影库一并带给消费者目标。凡是用 ProtoDualSubscriber 的
+  # 可执行目标都已在用本 INTERFACE 目标（双发端），订阅端因此零额外改动即可
+  # 拿到 amr_dispatcher_proto_bridge 的头与库。
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge
   ${Protobuf_LIBRARIES}
 )
 target_include_directories(amr_dispatcher_proto_dual INTERFACE
@@ -164,6 +170,9 @@ if(nav2_msgs_FOUND)
   target_compile_definitions(navigate_sequence_bridge_node PRIVATE AMR_HAVE_NAV2_MSGS)
   ament_target_dependencies(navigate_sequence_bridge_node nav2_msgs)
 endif()
+# 阶段 3：/tracking/error 双订阅（proto 分支反投影回 rosidl）
+target_link_libraries(navigate_sequence_bridge_node
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
 # 3. safety_gate_node
 add_executable(safety_gate_node
@@ -236,6 +245,9 @@ ament_target_dependencies(dispatcher_visualizer_node
   amr_dispatcher_interfaces
 )
 target_link_libraries(dispatcher_visualizer_node yaml-cpp)
+# 阶段 3：/dispatcher/topology_state 双订阅
+target_link_libraries(dispatcher_visualizer_node
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
 # 7. lifecycle_coordinator_node
 add_executable(lifecycle_coordinator_node
@@ -251,6 +263,9 @@ ament_target_dependencies(lifecycle_coordinator_node
   std_msgs
   amr_dispatcher_interfaces
 )
+# 阶段 3：/safety/state 双订阅
+target_link_libraries(lifecycle_coordinator_node
+  amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
 # 8. map_ingest_node（Task 8）：/map -> 核心库算法流水线（安全空间腐蚀、
 # 骨架细化、受保护剪枝、拓扑构建）-> 原子写出 stations.yaml + 拓扑 Marker。
@@ -363,6 +378,23 @@ if(BUILD_TESTING)
     target_link_libraries(test_proto_projection PRIVATE
       amr_dispatcher_proto_dual GTest::gtest GTest::gtest_main)
     gtest_discover_tests(test_proto_projection)
+  endif()
+
+  # 阶段 3 往返恒等测试：rosidl -> proto -> rosidl。
+  #
+  # 必须同时链接正向投影（amr_dispatcher_proto_dual，本包内）与反向投影
+  # （amr_dispatcher_proto_bridge）。两个投影层各自的逐字段单测都通过，
+  # 并不能推出二者互逆——只有首尾相接跑一遍才能证明阶段 3 切换后消费者
+  # 看到的消息与切换前逐字相同，这是阶段 3 的验收标准本身。
+  #
+  # 本目标额外带了一个话题名 parity 用例：ros 侧与 bridge 侧各有一份
+  # kProtoTopicSuffix（bridge 不能依赖本包），此处是唯一的漂移守卫。
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_proto_round_trip.cpp")
+    add_executable(test_proto_round_trip
+      "${CMAKE_CURRENT_SOURCE_DIR}/test/test_proto_round_trip.cpp")
+    target_link_libraries(test_proto_round_trip PRIVATE
+      amr_dispatcher_proto_dual GTest::gtest GTest::gtest_main)
+    gtest_discover_tests(test_proto_round_trip)
   endif()
 
   # L2 契约测试：真进程 + 真服务调用（不再是 assertTrue(True)）。

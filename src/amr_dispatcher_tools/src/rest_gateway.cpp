@@ -49,6 +49,9 @@
 #include "amr_dispatcher_interfaces/srv/block_edge.hpp"
 #include "amr_dispatcher_interfaces/srv/topology_hot_update.hpp"
 #include "amr_dispatcher_interfaces/srv/get_topology_overlay.hpp"
+// 阶段 3：四条业务订阅支持双订阅（proto 分支内部反投影回 rosidl，
+// 回调里所有字段访问与 *_seen_ 判据一字未改）。
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 
 #include "amr_dispatcher_tools/alert_webhook_client.hpp"
 #include "amr_dispatcher_tools/alerting.hpp"
@@ -268,6 +271,12 @@ class RestGatewayNode : public rclcpp::Node {
     declare_parameter("alert_webhook_timeout_ms", 3000);
     declare_parameter("alert_min_interval_sec", 300);
     declare_parameter("alert_queue_capacity", 64);
+    // 阶段 3 双订阅总开关（默认关）。开启后四条业务话题改从 *_proto 读取，
+    // 适配器内部反投影回 rosidl；/v2/* 与 /readyz 的判定逻辑不变。
+    //
+    // 注意 /dispatcher/events 的 QoS 是 20（不是 10），这里必须原样传下去：
+    // proto 侧深度更小会在突发时先丢事件帧，表现为「网关偶尔少一条事件」。
+    declare_parameter("proto_dual_subscribe", false);
     declare_parameter("alert_probe_period_ms", 1000);
     declare_parameter("alert_not_ready_threshold", 3);
     declare_parameter("alert_safety_critical_sec", 30);
@@ -373,10 +382,14 @@ class RestGatewayNode : public rclcpp::Node {
         create_client<amr_dispatcher_interfaces::srv::GetTopologyOverlay>(
             "/v2/get_topology_overlay");
 
+    const bool proto_dual_subscribe = get_parameter("proto_dual_subscribe").as_bool();
+
     estop_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/estop", 10);
 
-    state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
-        "/dispatcher/state", 10,
+    state_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::DispatcherState,
+        amr_dispatcher::proto::DispatcherState>(
+        this, "/dispatcher/state", 10, proto_dual_subscribe,
         [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_state_ = *msg;
@@ -391,8 +404,10 @@ class RestGatewayNode : public rclcpp::Node {
           topology_one_way_edges_ = msg->one_way_edges;
         });
 
-    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
-        "/safety/state", 10,
+    safety_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::SafetyState,
+        amr_dispatcher::proto::SafetyState>(
+        this, "/safety/state", 10, proto_dual_subscribe,
         [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_safety_ = *msg;
@@ -408,8 +423,10 @@ class RestGatewayNode : public rclcpp::Node {
           }
         });
 
-    link_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-        "/chassis/link_health", 10,
+    link_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+        amr_dispatcher::proto::ChassisLinkHealth>(
+        this, "/chassis/link_health", 10, proto_dual_subscribe,
         [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           latest_link_ = *msg;
@@ -428,8 +445,10 @@ class RestGatewayNode : public rclcpp::Node {
           last_ready_flag_arrival_ = std::chrono::steady_clock::now();
         });
 
-    event_sub_ = create_subscription<amr_dispatcher_interfaces::msg::MissionEvent>(
-        "/dispatcher/events", 20,
+    event_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::MissionEvent,
+        amr_dispatcher::proto::MissionEvent>(
+        this, "/dispatcher/events", 20, proto_dual_subscribe,
         [this](const amr_dispatcher_interfaces::msg::MissionEvent::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(data_mutex_);
           recent_events_.push_back(*msg);
@@ -2476,10 +2495,20 @@ class RestGatewayNode : public rclcpp::Node {
       get_topology_overlay_cli_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
 
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_sub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_sub_;
+  // 阶段 3：四条业务订阅改为双订阅适配器。回调签名不变，因此下面所有
+  // 状态缓存 / *_seen_ / *_arrival_ 逻辑无需改动。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::DispatcherState,
+      amr_dispatcher::proto::DispatcherState> state_sub_;
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::SafetyState,
+      amr_dispatcher::proto::SafetyState> safety_sub_;
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth> link_sub_;
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::MissionEvent,
+      amr_dispatcher::proto::MissionEvent> event_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr ready_flag_sub_;
   rclcpp::TimerBase::SharedPtr alert_timer_;
 

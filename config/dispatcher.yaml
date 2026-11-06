@@ -54,3 +54,9 @@ dispatcher_node:
     # dispatcher 是 lifecycle 节点，proto 侧跟随 on_activate/on_deactivate ——
     # 节点 inactive 时两侧同时静默，不会出现单侧有数据流的假象。
     proto_dual_publish: true
+    # 阶段 3 双订阅：/tracking/error 与 /tracking/error/{vid} 改从 *_proto 读取
+    # （适配器内部反投影回 rosidl，TrackingErrorCb 的到达判定一字未改）。
+    #
+    # 前提：path_tracker 的 proto_dual_publish 必须为 true（launch 里已默认开）。
+    # 打开后 dispatcher 不再依赖 path_tracker 的 rosidl 发布侧。
+    proto_dual_subscribe: false

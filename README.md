@@ -348,7 +348,7 @@ Simulates a real Linux PTY tty device at 50Hz, supporting hardware unplugging te
 
 ### 9. CI Gates
 GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
-`build-ros2-jazzy` (colcon build of all seven packages + **every** package's ctest suite,
+`build-ros2-jazzy` (colcon build of all eight packages + **every** package's ctest suite,
 including the gateway helpers and **both** L2 launch contract tests — lifecycle and
 process supervision), and `e2e-fleet` (`check_map_ingest_e2e.sh`,
 `check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,

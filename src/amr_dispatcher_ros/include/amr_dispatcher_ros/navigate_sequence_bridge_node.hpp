@@ -12,6 +12,8 @@
 
 #include "amr_dispatcher_interfaces/action/navigate_sequence.hpp"
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
+// 阶段 3：双订阅适配器（rosidl 话题或 proto 话题，回调统一收 rosidl 消息）。
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 
 // Nav2 分支条件编译：镜像缺 nav2_msgs 时该宏未定义，use_nav2:=true 会降级 fallback
 #ifdef AMR_HAVE_NAV2_MSGS
@@ -79,7 +81,10 @@ class NavigateSequenceBridgeNode : public rclcpp::Node {
 
   rclcpp_action::Server<NavigateSequence>::SharedPtr action_server_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr plan_pub_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr
+  // 阶段 3：双订阅。TrackingError 只用于 fallback 模式的到达信号。
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>
       tracking_error_sub_;
   rclcpp::TimerBase::SharedPtr cancel_poll_timer_;
 #ifdef AMR_HAVE_NAV2_MSGS

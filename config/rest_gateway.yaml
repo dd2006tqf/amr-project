@@ -21,6 +21,19 @@ rest_gateway_node:
     # 网关订阅不到全局话题；此时必须置 false，否则 /readyz 永远 503。
     readyz_require_chassis: true
 
+    # ---- 阶段 3：业务话题双订阅（默认关）----
+    # true 时 /dispatcher/state、/safety/state、/chassis/link_health、
+    # /dispatcher/events 四条改从 *_proto 读取（适配器内部反投影回 rosidl）。
+    #
+    # 该开关只改传输层：/v2/* 的字段契约、/readyz 的陈旧判据、告警口径全部不变
+    # ——它们读的是反投影后的 rosidl 消息，与迁移前逐字相同。
+    #
+    # 前置条件：四个发布端的 proto_dual_publish 必须为 true。
+    # 注意 per-vehicle 模式（vehicle_ids 非空）下 /chassis/link_health 是
+    # per-vehicle 话题，网关订阅的仍是全局名——这条与 readyz_require_chassis
+    # 是同一个既有约束，切换 proto 不改变它。
+    proto_dual_subscribe: false
+
     # ---- 主动告警（默认关闭：留空 = 不起发送线程、不建巡检定时器）----
     # 只支持 http://。https 会在启动时 ERROR 并保持禁用（本构建不含 TLS），
     # 需要加密请在前面挂一个本地 http 中继。

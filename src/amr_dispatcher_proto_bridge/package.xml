@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>amr_dispatcher_proto_bridge</name>
+  <version>1.0.0</version>
+  <description>protobuf -> rosidl 反向投影与双订阅适配器（阶段 3 消费者迁移）</description>
+  <maintainer email="tanqf@example.com">tanqf</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>amr_dispatcher_interfaces</depend>
+  <depend>amr_dispatcher_proto</depend>
+  <depend>libprotobuf-dev</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

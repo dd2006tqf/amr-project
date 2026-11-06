@@ -295,6 +295,38 @@ def generate_launch_description():
         )
     )
 
+    # 阶段 3：消费者迁移总开关（一键切换，默认关）。
+    #
+    # 开启后**所有**消费者（dispatcher_node / safety_gate_node /
+    # link_health_publisher / dispatcher_visualizer_node /
+    # lifecycle_coordinator_node / navigate_sequence_bridge_node /
+    # rest_gateway / dispatcher_cli）改从 *_proto 话题读取，适配器内部
+    # 反投影回 rosidl——业务逻辑与回调一字未改。
+    #
+    # 为什么是单个全局开关而不是逐节点：迁移期的风险是「一半节点读 rosidl、
+    # 一半读 proto」，那时两侧数据流都在、谁看谁都不一致，反而最难排查。
+    # 一键切换让 A/B 对比只需改一个参数，且回滚同样只改一处。
+    #
+    # 前置条件：发布端的 proto_dual_publish 必须全开（launch 与 config 默认已开）。
+    # 订阅一条没人发布的 *_proto 话题时 DDS 不报错，只会静默收不到——
+    # 这正是本节特意把「发布开关」与「订阅开关」分成两个参数的原因。
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'proto_dual_subscribe',
+            default_value='false',
+            description='阶段 3 消费者迁移总开关。true 时全部消费者改读 *_proto '
+                        '话题（内部反投影回 rosidl，业务逻辑不变）；'
+                        '需发布端 proto_dual_publish 已开启。',
+        )
+    )
+
+    # launch 参数是字符串，这里一次性规范成 Python bool 再喂给各节点，
+    # 避免每个节点各写一遍字符串判定（各写法不一致是 Phase 1 踩过的坑）。
+    proto_dual_subscribe = PythonExpression([
+        "str('", LaunchConfiguration('proto_dual_subscribe'),
+        "').lower() in ('true', '1', 'yes', 'on')",
+    ])
+
     dispatcher_node = LifecycleNode(
         package='amr_dispatcher_ros',
         executable='dispatcher_node',
@@ -312,6 +344,8 @@ def generate_launch_description():
             {'vehicle_ids': ParameterValue(vehicle_ids, value_type=str)},
             # 相位 11：拓扑叠加层文件（空 = 在线拓扑热生效关闭，行为与改动前一致）
             {'topology_overlay_file': ParameterValue(topology_overlay_file, value_type=str)},
+            # 阶段 3：/tracking/error 双订阅总开关
+            {'proto_dual_subscribe': proto_dual_subscribe},
         ],
         # 相位 11：重生后节点回到 unconfigured；launch 的 CONFIGURE/ACTIVATE
         # 只发一次，二次提拉由 lifecycle_coordinator_node（auto_bringup，500ms
@@ -356,7 +390,10 @@ def generate_launch_description():
         name='safety_gate_node',
         output='screen',
         condition=single_vehicle_only,
-        parameters=[safety_yaml],
+        # 阶段 3：link_health / topology_state 双订阅开关。
+        # 注意必须放在 safety_yaml **之后**：ROS 参数文件的优先级低于
+        # 后出现的字典，否则 yaml 里的 proto_dual_subscribe 会覆盖 launch 参数。
+        parameters=[safety_yaml, {'proto_dual_subscribe': proto_dual_subscribe}],
         **supervision(),
     )
 
@@ -416,6 +453,10 @@ def generate_launch_description():
             'use_nav2': False,
             'nav2_action_name': '/navigate_to_pose',
             'plan_topic': '/plan',
+            # 阶段 3：/tracking/error 双订阅（fallback 模式的到达信号）。
+            # Nav2 模式下本订阅不参与逐点推进（由 navigate_to_pose 结果驱动），
+            # 因此该开关只在 use_nav2:=false 时有实际作用。
+            'proto_dual_subscribe': proto_dual_subscribe,
         }],
         **supervision(),
     )
@@ -423,7 +464,11 @@ def generate_launch_description():
     rest_gateway_parameters = []
     if os.path.exists(rest_gateway_yaml):
         rest_gateway_parameters.append(rest_gateway_yaml)
+    # 阶段 3：四条业务话题（state / safety / link_health / events）双订阅。
+    # 必须放在 rest_gateway_yaml 之后，理由同 safety_gate_node：后出现的
+    # 字典优先级更高，否则 yaml 里的 proto_dual_subscribe 会盖掉 launch 参数。
     rest_gateway_parameters.append({'port': 8080})
+    rest_gateway_parameters.append({'proto_dual_subscribe': proto_dual_subscribe})
 
     rest_gateway_node = Node(
         package='amr_dispatcher_tools',
@@ -479,6 +524,8 @@ def generate_launch_description():
             # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7），
             # 且 C1 下默认随 use_map_server 指向生成目录。
             'stations_file': stations_file,
+            # 阶段 3：/dispatcher/topology_state 双订阅
+            'proto_dual_subscribe': proto_dual_subscribe,
         }],
         **supervision(),
     )
@@ -490,7 +537,10 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'auto_bringup': True,
-            'check_period_ms': 500
+            'check_period_ms': 500,
+            # 阶段 3：/safety/state 双订阅。安全状态陈旧判据（safety_stale_sec）
+            # 不受影响——它看的是「最近一次收到消息」的时间，与传输层无关。
+            'proto_dual_subscribe': proto_dual_subscribe,
         }],
         **supervision(),
     )
@@ -633,7 +683,8 @@ def generate_launch_description():
                 output='screen',
                 parameters=[
                     safety_yaml,
-                    {'vehicle_id': vid},
+                    {'vehicle_id': vid,
+                     'proto_dual_subscribe': proto_dual_subscribe},
                 ],
                 **supervision(),
             ))

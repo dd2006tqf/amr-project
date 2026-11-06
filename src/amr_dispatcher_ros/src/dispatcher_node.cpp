@@ -97,11 +97,19 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧：state / events / topology
   // 三条 proto 话题都不会被创建，rosidl 侧逐位不变。
   declare_parameter("proto_dual_publish", true);
+  // 阶段 3 双订阅总开关（默认关）。开启后 /tracking/error 与
+  // /tracking/error/{vid} 改从 *_proto 读取，适配器内部反投影回 rosidl，
+  // 到达判定逻辑（TrackingErrorCb / TrackingErrorCbForVehicle）一字未改。
+  //
+  // 默认关是刻意的：发布端 path_tracker 的 proto_dual_publish 必须先开着，
+  // 否则订阅端会「订阅成功但永远收不到」——DDS 不报错，只是没有匹配发布者。
+  declare_parameter("proto_dual_subscribe", false);
 
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
+  proto_dual_subscribe_ = get_parameter("proto_dual_subscribe").as_bool();
 }
 
 DispatcherNode::~DispatcherNode() = default;
@@ -271,8 +279,10 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   // 位姿与到达信号订阅：path_tracker 的 TrackingError.arrived 驱动任务完成
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       "/odom", 10, std::bind(&DispatcherNode::OdomCb, this, std::placeholders::_1));
-  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
-      "/tracking/error", 10,
+  tracking_error_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>(
+      this, "/tracking/error", 10, proto_dual_subscribe_,
       std::bind(&DispatcherNode::TrackingErrorCb, this, std::placeholders::_1));
 
   // Task 5：VDA 5050 状态/链路接入（逐段解锁 + 断链守卫），按参数建订阅
@@ -3165,9 +3175,14 @@ void DispatcherNode::SetupVehicleTopics(const std::string& vehicles_param) {
           OdomCbForVehicle(vehicle_id, msg);
         });
     // /tracking/error/{vid} 订阅：到达信号按车隔离（A5 收口点）。
+    // 阶段 3：先解析出最终话题名再交给适配器——发布端也是先
+    // ResolveVehicleTopic 再追加 _proto 后缀，两处必须派生出同一个名字。
     vehicle_tracking_error_subs_[vehicle_id] =
-        create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
-            ResolveVehicleTopic("", "/tracking/error", vehicle_id), 10,
+        amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+            amr_dispatcher_interfaces::msg::TrackingError,
+            amr_dispatcher::proto::TrackingError>(
+            this, ResolveVehicleTopic("", "/tracking/error", vehicle_id), 10,
+            proto_dual_subscribe_,
             [this, vehicle_id](const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
               TrackingErrorCbForVehicle(vehicle_id, msg);
             });

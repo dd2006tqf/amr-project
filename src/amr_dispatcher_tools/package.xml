@@ -15,6 +15,8 @@
   <depend>amr_dispatcher_core</depend>
   <depend>amr_dispatcher_interfaces</depend>
   <depend>amr_dispatcher_proto</depend>
+  <!-- 阶段 3：dispatcher_cli / rest_gateway 的双订阅（proto 分支 → 反投影） -->
+  <depend>amr_dispatcher_proto_bridge</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

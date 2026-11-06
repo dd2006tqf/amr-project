@@ -33,6 +33,11 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("safety_state_topic", "");
   // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，门控行为不变。
   declare_parameter("proto_dual_publish", true);
+  // 阶段 3 双订阅总开关（默认关）。开启后 link_health 与 topology_state
+  // 改从 *_proto 读取，适配器内部反投影回 rosidl——门控判定逻辑一字未改。
+  // 默认关是刻意的：发布端必须先开着（proto_dual_publish=true）才有配对话题，
+  // 否则订阅会静默收不到任何消息（DDS 不报错）。
+  declare_parameter("proto_dual_subscribe", false);
 
   // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
   // 周期路径（10Hz/50Hz）不再重复 get_parameter。
@@ -40,6 +45,7 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
+  proto_dual_subscribe_ = get_parameter("proto_dual_subscribe").as_bool();
 
   // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
   vehicle_id_ = get_parameter("vehicle_id").as_string();
@@ -158,8 +164,10 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
         WatchdogHeartbeatCallback(msg, "path_tracker");
       });
 
-  link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-      link_health_topic_, 10,
+  link_health_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>(
+      this, link_health_topic_, 10, proto_dual_subscribe_,
       [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
         chassis_healthy_ = msg->is_healthy;
         chassis_loss_rate_ = msg->loss_rate;
@@ -167,8 +175,10 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
         last_data_arrival_["chassis"] = std::chrono::steady_clock::now();
       });
 
-  topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
-      "/dispatcher/topology_state", 10,
+  topology_state_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::TopologyState,
+      amr_dispatcher::proto::TopologyState>(
+      this, "/dispatcher/topology_state", 10, proto_dual_subscribe_,
       [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
         deadlock_active_ = msg->deadlock_detected;
       });

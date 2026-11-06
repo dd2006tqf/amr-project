@@ -183,7 +183,7 @@ C="docker exec -it amr_dispatcher bash -lc"
 | # | 检查项 | 命令 | 期望 |
 |---|---|---|---|
 | 1 | 镜像可用 | `docker images \| grep amr-dispatcher:jazzy` | 1.68GB |
-| 2 | 7 个包 | `$C 'ros2 pkg list \| grep -c amr_dispatcher'` | `7` |
+| 2 | 8 个包 | `$C 'ros2 pkg list \| grep -c amr_dispatcher'` | `8`（阶段 3 起新增 `amr_dispatcher_proto_bridge`） |
 | 3 | L1 核心链路 | `$C 'cd /workspace && ./scripts/check_all.sh'` | `🎉 [ALL CHECKS PASSED]` |
 | 4 | 节点清单 | `$C 'source install/setup.bash && ros2 node list'` | 7 个节点(见下)。**首次查询可能少 1–2 个,是 DDS 发现抖动,重查一次即可** |
 | 5 | 15 个 v2 服务 | `$C 'source install/setup.bash && ros2 service list \| grep -c /v2/'` | `15` |

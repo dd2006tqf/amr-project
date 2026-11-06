@@ -7,6 +7,8 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "amr_dispatcher_interfaces/msg/dispatcher_state.hpp"
+// 阶段 3：/dispatcher/state 双订阅（proto 分支内部反投影回 rosidl）。
+#include "amr_dispatcher_proto_bridge/proto_dual_subscriber.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/pause_mission.hpp"
 #include "amr_dispatcher_interfaces/srv/resume_mission.hpp"
@@ -24,8 +26,16 @@ class DispatcherCliClient {
     pause_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::PauseMission>("/dispatcher/pause_mission");
     resume_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::ResumeMission>("/dispatcher/resume_mission");
 
-    state_sub_ = node_->create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
-        "/dispatcher/state", 10,
+    // 阶段 3：双订阅。CLI 是运维手工工具，默认走 rosidl 话题（便于与
+    // `ros2 topic echo` 对照排查）；--ros-args -p proto_dual_subscribe:=true
+    // 可切到 *_proto。注意 node 上尚未声明该参数时不可直接 get_parameter，
+    // 因此这里显式声明一次默认值。
+    node_->declare_parameter("proto_dual_subscribe", false);
+    state_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+        amr_dispatcher_interfaces::msg::DispatcherState,
+        amr_dispatcher::proto::DispatcherState>(
+        node_.get(), "/dispatcher/state", 10,
+        node_->get_parameter("proto_dual_subscribe").as_bool(),
         [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
           latest_state_ = *msg;
         });
@@ -114,7 +124,9 @@ class DispatcherCliClient {
   rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::PauseMission>::SharedPtr pause_cli_;
   rclcpp::Client<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_cli_;
-  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
+  amr_dispatcher_proto_bridge::ProtoDualSubscriber<
+      amr_dispatcher_interfaces::msg::DispatcherState,
+      amr_dispatcher::proto::DispatcherState> state_sub_;
   amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
 };
 

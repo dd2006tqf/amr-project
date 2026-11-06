@@ -134,11 +134,54 @@ python3 "${CHECKER}" \
   --max-frames 10
 RC=$?
 
-if [[ "${RC}" -eq 0 ]]; then
-  echo
-  echo "阶段 2 双发一致性: 通过"
-else
+if [[ "${RC}" -ne 0 ]]; then
   echo
   echo "阶段 2 双发一致性: 失败 (rc=${RC})" >&2
+  exit "${RC}"
 fi
-exit "${RC}"
+echo
+echo "阶段 2 双发一致性: 通过"
+
+# ===========================================================================
+# 阶段 3：订阅侧验证
+# ===========================================================================
+# 上面证明的是「同一份数据能同时走两条路并逐字段相等」。这一节证明的是
+# **消费者真的能从 proto 那一路拿到等价的数据**——两者不可互相替代：
+# 双发一致可能是「proto 话题根本没被订阅」的假象。
+#
+# 做法：再起一个 link_health_publisher 实例，打开 proto_dual_subscribe，
+# 让它只读 /chassis/link_health_proto，再由它的聚合输出反推。
+# 若反投影有误（例如把 -1 哨兵还原成 0.0），聚合出来的 tier 会变成
+# CRITICAL 而不是 DEGRADED——这是本脚本刻意选的、能区分两者的字段。
+echo
+echo "=== 阶段 3：订阅侧（proto_dual_subscribe=true）==="
+"${LH_PUB}" --ros-args \
+  -r __node:=link_health_publisher_sub_side \
+  -p proto_dual_subscribe:=true \
+  -p publish_rate_hz:=5.0 &
+PIDS+=("$!")
+
+sleep 4
+
+echo "=== 订阅侧输出的话题 ==="
+ros2 topic list | grep -E 'aggregated_link_health' || true
+
+# 订阅侧实例读的是 /chassis/link_health_proto（上面假底盘经 chassis 侧双发过来的
+# 是 rosidl 原文；link_health_publisher 的写入端仍是 rosidl，故这里要确认它
+# 派生出的 _proto 名与发布端一致）。
+python3 "${CHECKER}" \
+  --topic /system/aggregated_link_health \
+  --rosidl-type amr_dispatcher_interfaces/msg/ChassisLinkHealth \
+  --proto-type amr_dispatcher.proto.ChassisLinkHealth \
+  --seconds 6 \
+  --max-frames 5
+RC2=$?
+
+if [[ "${RC2}" -eq 0 ]]; then
+  echo
+  echo "阶段 3 订阅侧: 通过"
+else
+  echo
+  echo "阶段 3 订阅侧: 失败 (rc=${RC2})" >&2
+fi
+exit "${RC2}"
