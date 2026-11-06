@@ -36,6 +36,24 @@ set(PROTO_FILES
 set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
+# 让构建期的 #include 路径与安装后的**逐字相同**。
+#
+# 问题：protoc 生成的 .pb.cc 之间用平铺名互相包含（`#include "common.pb.h"`），
+# 而安装后位于 include/amr_dispatcher_proto/generated/common.pb.h。若下游包
+# 按安装路径写 include，构建期就找不到；反之亦然——同一份头文件两套写法，
+# 协作方必然记错。
+#
+# 解法：构建目录里造一个与安装同形的 include 根，用符号链接指回平铺目录。
+# 于是 `amr_dispatcher_proto/generated/chassis.pb.h` 在构建期与安装后都成立，
+# 且不产生第二份实体文件（不会出现两份头内容不一致的隐患）。
+#
+# 平台约束：项目仅支持 Linux（见 docker/Dockerfile.jazzy），符号链接可用。
+set(PROTO_INCLUDE_ROOT ${CMAKE_CURRENT_BINARY_DIR}/include)
+file(MAKE_DIRECTORY ${PROTO_INCLUDE_ROOT}/amr_dispatcher_proto)
+file(CREATE_LINK ${PROTO_GEN_DIR}
+  ${PROTO_INCLUDE_ROOT}/amr_dispatcher_proto/generated
+  SYMBOLIC)
+
 set(PROTO_GENERATED_SRCS)
 set(PROTO_GENERATED_HDRS)
 
@@ -71,7 +89,7 @@ add_library(${PROJECT_NAME} SHARED
 
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<BUILD_INTERFACE:${PROTO_GEN_DIR}>
+  $<BUILD_INTERFACE:${PROTO_INCLUDE_ROOT}>
   $<INSTALL_INTERFACE:include>
 )
 
@@ -172,6 +190,9 @@ if(pybind11_FOUND)
 
   target_include_directories(_amr_proto_typesupport PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${PROTO_INCLUDE_ROOT}
+    # .inc 是 CMake 生成到平铺目录的，源文件按裸名 #include，
+    # 所以这个目录必须单独加上（不能只依赖上面的同形 include 根）。
     ${PROTO_GEN_DIR}
     ${pybind11_INCLUDE_DIRS}
     ${Python3_INCLUDE_DIRS}

@@ -45,6 +45,7 @@
 #include "amr_dispatcher_interfaces/msg/mission_event.hpp"
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
+#include "amr_dispatcher_ros/proto_lifecycle_dual_publisher.hpp"
 #include "amr_dispatcher_interfaces/srv/cancel_order.hpp"
 #include "amr_dispatcher_interfaces/srv/force_clear_vda5050_link.hpp"
 #include "amr_dispatcher_interfaces/srv/restore_vda5050_link.hpp"
@@ -653,6 +654,39 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_pub_;
   rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_pub_;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_pub_;
+
+  // ---- 阶段 2 双发：proto 副本发布端 ----
+  //
+  // 用 ProtoLifecycleDualPublisher —— dispatcher_node 是 lifecycle 节点，proto 侧
+  // 必须与 rosidl 侧同生共死：未激活时 rosidl 静默、proto 也必须静默。
+  // 若这里用普通 Publisher，节点在 inactive 状态下会出现「rosidl 不发、proto 照发」
+  // 的假数据流，一致性检查器与订阅方都会被误导。
+  //
+  // 三者的 QoS 深度必须与上面 rosidl 侧逐一对齐（10 / 20 / 10）：
+  // 深度不一致时突发丢帧会被误判成「消息不一致」。
+  std::unique_ptr<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::DispatcherState,
+      amr_dispatcher::proto::DispatcherState>>
+      state_proto_pub_;
+  std::unique_ptr<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::MissionEvent,
+      amr_dispatcher::proto::MissionEvent>>
+      event_proto_pub_;
+  std::unique_ptr<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::TopologyState,
+      amr_dispatcher::proto::TopologyState>>
+      topology_proto_pub_;
+
+  // 阶段 2 双发总开关（参数 proto_dual_publish，默认开）
+  bool proto_dual_publish_{true};
+
+  // MissionEvent 双发的统一出口。
+  //
+  // 全文件有 18 处事件发布点，每处都是「构造 msg -> event_pub_->publish(msg)」。
+  // 把双发放进这个函数而不是在每个调用点加第三行，是因为漏加一处就是一条
+  // 静默不同步的事件流，而这种偏差不会让任何测试变红。
+  // 调用方仍保留 is_activated() 守卫（见各调用点），本函数只负责两路投递。
+  void PublishMissionEvent(const amr_dispatcher_interfaces::msg::MissionEvent& msg);
 
   rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;

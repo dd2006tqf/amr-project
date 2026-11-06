@@ -36,10 +36,13 @@
 
 // 必须包含生成的 pb.h：宏体里用到的 amr_dispatcher::proto::X 是 protoc
 // 生成的 C++ 类，没有这些头文件就只有前向声明，无法取 descriptor()。
-#include "chassis.pb.h"
-#include "common.pb.h"
-#include "dispatcher.pb.h"
-#include "safety.pb.h"
+//
+// 路径统一写成安装布局（amr_dispatcher_proto/generated/...）：构建期由 CMake
+// 在 build/include 下造同形符号链接，因此包内外逐字相同。
+#include "amr_dispatcher_proto/generated/chassis.pb.h"
+#include "amr_dispatcher_proto/generated/common.pb.h"
+#include "amr_dispatcher_proto/generated/dispatcher.pb.h"
+#include "amr_dispatcher_proto/generated/safety.pb.h"
 
 namespace py = pybind11;
 

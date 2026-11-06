@@ -14,6 +14,7 @@
   <depend>std_msgs</depend>
   <depend>amr_dispatcher_core</depend>
   <depend>amr_dispatcher_interfaces</depend>
+  <depend>amr_dispatcher_proto</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

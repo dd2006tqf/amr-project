@@ -16,6 +16,7 @@
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
 #include "amr_dispatcher_interfaces/msg/safety_state.hpp"
 #include "amr_dispatcher_interfaces/msg/topology_state.hpp"
+#include "amr_dispatcher_ros/proto_dual_publisher.hpp"
 
 namespace amr_dispatcher_ros {
 
@@ -55,6 +56,15 @@ class SafetyGateNode : public rclcpp::Node {
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr safe_cmd_vel_pub_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
+  // 阶段 2 双发：/safety/state_proto。
+  //
+  // 安全消息迁移的双发**绝不能改变安全语义**：proto 侧是 rosidl 侧的纯副本，
+  // 不参与任何决策。safety_gate 的所有判断仍只读 rosidl 话题（含 self-consume
+  // 的链路健康、拓扑死锁），因此即使 proto 侧发生任何异常（序列化失败、无人订阅），
+  // 门控行为逐位不变。这一点在阶段 3 消费者迁移之前必须保持。
+  std::unique_ptr<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::SafetyState,
+      amr_dispatcher::proto::SafetyState>> safety_state_proto_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   // B1 50Hz 兜底发布定时器（独立于 100ms WatchdogTick）
@@ -109,6 +119,9 @@ class SafetyGateNode : public rclcpp::Node {
   // P0.6：全局急停/碰撞话题（per-vehicle 模式下与本车话题一并订阅）
   bool subscribe_global_estop_ = true;
   bool subscribe_global_bumper_ = true;
+
+  // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
+  bool proto_dual_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

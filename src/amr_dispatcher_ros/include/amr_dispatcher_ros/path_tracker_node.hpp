@@ -14,6 +14,7 @@
 #include "amr_dispatcher_core/path_tracking/pure_pursuit.hpp"
 #include "amr_dispatcher_core/path_tracking/stanley.hpp"
 #include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
+#include "amr_dispatcher_ros/proto_dual_publisher.hpp"
 
 namespace amr_dispatcher_ros {
 
@@ -31,6 +32,14 @@ class PathTrackerNode : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr error_pub_;
+  // 阶段 2 双发：/tracking/error_proto。
+  //
+  // 这是全项目**频率最高**的双发点（control_rate_hz，默认 20Hz）。
+  // 多一份 protobuf 序列化的 CPU/带宽成本，就是这个开关最该被看见的理由：
+  // 现场若确认没有 proto 消费者，关掉 proto_dual_publish 即可回到原状。
+  std::unique_ptr<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>> error_proto_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr heartbeat_pub_;
 
   rclcpp::TimerBase::SharedPtr timer_;
@@ -67,6 +76,9 @@ class PathTrackerNode : public rclcpp::Node {
   std::string cmd_vel_topic_{"/cmd_vel_raw"};
   std::string tracking_error_topic_{"/tracking/error"};
   std::string heartbeat_topic_{"/safety/heartbeat/path_tracker"};
+
+  // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
+  bool proto_dual_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

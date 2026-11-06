@@ -399,6 +399,8 @@ def generate_launch_description():
             'odom_origin_x': ParameterValue(odom_origin_x, value_type=float),
             'odom_origin_y': ParameterValue(odom_origin_y, value_type=float),
             'odom_origin_yaw': ParameterValue(odom_origin_yaw, value_type=float),
+            # 阶段 2 双发：/tracking/error_proto（20Hz，全项目最热的双发点）
+            'proto_dual_publish': True,
         }],
         **supervision(),
     )
@@ -619,6 +621,7 @@ def generate_launch_description():
                     'control_rate_hz': 20.0,
                     # T4：与单车模式同一来源
                     'goal_tolerance': float(tolerance),
+                    'proto_dual_publish': True,
                 }],
                 **supervision(),
             ))

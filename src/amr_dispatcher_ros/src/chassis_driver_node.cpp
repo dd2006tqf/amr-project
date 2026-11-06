@@ -42,6 +42,9 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   declare_parameter("link_health_topic", "");
   declare_parameter("heartbeat_topic", "");
   declare_parameter("battery_topic", "");
+  // 阶段 2 双发总开关（默认开）。关掉只停 proto 侧，rosidl 侧不受影响，
+  // 因此这是安全可回滚的运维开关：新话题没人消费时可随时关闭以省带宽。
+  declare_parameter("proto_dual_publish", true);
   // 电压 -> 百分比映射端点：12V 台架 12.6/11.0，24V 整车 25.2/21.0。
   // 直接报电压会让下游 percent 阈值（min_battery_percent / auto_charging_*）永远不生效。
   declare_parameter("battery_full_voltage", 12.6);
@@ -75,6 +78,9 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
     protocol_ = "text";
     binary_protocol_ = false;
   }
+
+  // 阶段 2 双发开关。先读出来，下面创建发布器时要用。
+  proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
 
   // ---- P0.6 / A4：解析 vehicle_id 与最终话题名 ----
   vehicle_id_ = get_parameter("vehicle_id").as_string();
@@ -142,6 +148,19 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   battery_pub_ = create_publisher<sensor_msgs::msg::BatteryState>(battery_topic_, 10);
   health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
       link_health_topic_, 10);
+
+  // 阶段 2 双发：QoS 深度必须与上面一致（10），否则突发时两侧丢帧点不同，
+  // 一致性检查器会把「深度差导致的丢帧」误报成「消息不一致」。
+  // 话题名传 link_health_topic_（已含 per-vehicle 派生），内部只追加 _proto 后缀。
+  health_proto_pub_ = std::make_unique<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>>(
+      this, link_health_topic_, 10, proto_dual_publish_);
+  if (health_proto_pub_->enabled()) {
+    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
+                health_proto_pub_->proto_topic().c_str());
+  }
+
   // B1：心跳分源，只喂 chassis_driver 自己的看门狗通道
   heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -508,6 +527,11 @@ void ChassisDriverNode::PublishHealth() {
       break;
   }
   health_pub_->publish(msg);
+  // 阶段 2 双发：proto 侧从**同一个 msg** 投影，因此两路内容由构造方式保证同源。
+  // 不是「再拼一次数据」——那样两份代码会在字段增减时漂移。
+  if (health_proto_pub_) {
+    health_proto_pub_->Publish(msg);
+  }
 
   // 心跳语义：只有底盘真的在回帧才算"我活着"。
   // 无条件发 true 会让 safety_gate 的看门狗永远不超时，

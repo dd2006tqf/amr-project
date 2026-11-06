@@ -24,6 +24,16 @@ find_package(pluginlib REQUIRED)
 find_package(amr_dispatcher_core REQUIRED)
 find_package(amr_dispatcher_interfaces REQUIRED)
 find_package(amr_dispatcher_bt REQUIRED)
+# 阶段 2：protobuf 双发（见 PROTOBUF_MIGRATION_PLAN.md §3.3）。
+#
+# 这里是**硬依赖**，不学 nav2_msgs / Paho 那样 QUIET 跳过。理由：
+# 双发是阶段 2 的正式功能，静默降级会得到一个「构建成功但 proto 话题根本不存在」
+# 的镜像，而这种缺失只有在运维真的去订阅时才暴露——比构建期直接失败更贵。
+# 部署侧依赖已在 docker/Dockerfile.jazzy 与 CI 中显式安装。
+find_package(amr_dispatcher_proto REQUIRED)
+# 显式 find Protobuf：下游目标的 pb.h 会 include <google/protobuf/*>，
+# 需要 Protobuf_INCLUDE_DIRS。见下面 amr_dispatcher_proto_dual 的注释。
+find_package(Protobuf REQUIRED)
 # nav2_msgs 可选：镜像缺包时 QUIET 跳过，桥接节点 Nav2 分支条件编译，容器构建永不因 Nav2 挂掉
 find_package(nav2_msgs QUIET)
 # Eclipse Paho MQTT C++ 可选（Task 4 vda5050_gateway_node）：镜像缺包时跳过该目标编译，
@@ -41,7 +51,51 @@ else()
   message(WARNING "未找到 Eclipse Paho MQTT C++ (libpaho-mqttpp-dev) 或异步 C 客户端库 (libpaho-mqtt-dev)，跳过 vda5050_gateway_node 编译")
 endif()
 
+# 2.0 proto 投影层（阶段 2 双发的地基）
+#
+# 做成共享库而不是 header-only，原因有两条：
+#   1. 投影实现在 .cpp 里（见 proto_projection.cpp）。7 个消息 × 每字段一行，
+#      放头文件会被 8 个可执行目标各编译一次，构建时间线性膨胀。
+#   2. 单测（test_proto_projection）需要链接同一份实现来验证字段完整性，
+#      共享库让「测的就是用的」成立；header-only 也能做到，但容易在
+#      不同 TU 里出现 ODR 违规的弱符号。
+add_library(amr_dispatcher_proto_projection SHARED
+  src/proto_projection.cpp
+)
+target_include_directories(amr_dispatcher_proto_projection PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(amr_dispatcher_proto_projection
+  rclcpp
+  std_msgs
+  amr_dispatcher_interfaces
+  amr_dispatcher_proto
+)
+
+# 双发所需的**全部**编译期依赖，打包成一个 INTERFACE 目标。
+#
+# 为什么需要这一层：调用 create_publisher<ProtoT> 的节点必须同时拿到
+#   - amr_dispatcher_proto 的 include（register_all_types.hpp、protobuf_typesupport.hpp）
+#   - 生成的 pb.h 所在目录（由 amr_dispatcher_proto 的 include 导出覆盖）
+#   - Protobuf 自身的头文件（pb.h 内部 include <google/protobuf/*>）
+#   - fastcdr（protobuf_typesupport.hpp include <fastcdr/Cdr.h>）
+# 后两项 amr_dispatcher_proto 通过 ament_export_dependencies 导出，但
+# ament_export_dependencies 只负责让 find_package 成功，不会自动把
+# Protobuf_INCLUDE_DIRS 塞进下游目标。漏掉它会在下游报
+# "google/protobuf/message.h: No such file or directory"，而错误位置在
+# proto 包的头文件里，指向性很差。
+add_library(amr_dispatcher_proto_dual INTERFACE)
+target_link_libraries(amr_dispatcher_proto_dual INTERFACE
+  amr_dispatcher_proto_projection
+  ${Protobuf_LIBRARIES}
+)
+target_include_directories(amr_dispatcher_proto_dual INTERFACE
+  ${Protobuf_INCLUDE_DIRS}
+)
+
 # 1. chassis_driver_node
+
 add_executable(chassis_driver_node
   src/chassis_driver_node.cpp
 )
@@ -60,6 +114,8 @@ ament_target_dependencies(chassis_driver_node
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+# 阶段 2 双发：ChassisLinkHealth -&gt; /chassis/link_health_proto
+target_link_libraries(chassis_driver_node amr_dispatcher_proto_dual)
 
 # 2. dispatcher_node
 add_executable(dispatcher_node
@@ -81,6 +137,11 @@ ament_target_dependencies(dispatcher_node
 )
 # 行为树编排层：订单路由、出队派发门控、恢复与结果决策
 target_link_libraries(dispatcher_node amr_dispatcher_bt::amr_dispatcher_bt)
+# 阶段 2 双发：DispatcherState / MissionEvent / TopologyState -> *_proto
+# 注意：dispatcher_node 是 lifecycle 节点，双发器用的是 ProtoLifecycleDualPublisher
+# （proto 侧跟随 on_activate/on_deactivate），编译期依赖与普通版完全相同。
+target_link_libraries(dispatcher_node amr_dispatcher_proto_dual)
+
 
 # 2.1 navigate_sequence_bridge_node
 # /navigate_sequence action server：fallback 转 /plan（复用 path_tracker 链），
@@ -119,6 +180,8 @@ ament_target_dependencies(safety_gate_node
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+# 阶段 2 双发：SafetyState -> /safety/state_proto
+target_link_libraries(safety_gate_node amr_dispatcher_proto_dual)
 
 # 4. path_tracker_node
 add_executable(path_tracker_node
@@ -137,6 +200,8 @@ ament_target_dependencies(path_tracker_node
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+# 阶段 2 双发：TrackingError -> /tracking/error_proto（全项目频率最高的双发点）
+target_link_libraries(path_tracker_node amr_dispatcher_proto_dual)
 
 # 5. link_health_publisher
 add_executable(link_health_publisher
@@ -151,6 +216,8 @@ ament_target_dependencies(link_health_publisher
   amr_dispatcher_core
   amr_dispatcher_interfaces
 )
+# 阶段 2 双发：/system/aggregated_link_health_proto
+target_link_libraries(link_health_publisher amr_dispatcher_proto_dual)
 
 # 6. dispatcher_visualizer_node
 add_executable(dispatcher_visualizer_node
@@ -265,6 +332,7 @@ if(BUILD_TESTING)
     amr_dispatcher_core
   )
 
+  # 纯逻辑单测：只依赖 amr_dispatcher_ros_helpers（rclcpp/几何/cored 的薄封装）
   set(ROS_UNIT_TESTS
     test_safety_publish_decision
     test_nav_pose_builder
@@ -282,6 +350,20 @@ if(BUILD_TESTING)
       gtest_discover_tests(${test_name})
     endif()
   endforeach()
+
+  # 阶段 2 双发的投影层单测：需要链接**同一份** amr_dispatcher_proto_projection
+  # 实现（而不是把投影再写一遍），才能验证「测的就是用的」。
+  #
+  # 单独成组而不并入上面那个循环，是因为它需要 amr_dispatcher_proto_dual 的
+  # 全部编译期依赖（protobuf 头文件、pb.h、typesupport）；把它塞进通用循环会
+  # 让 6 个纯逻辑测试平白多出 protobuf 依赖。
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_proto_projection.cpp")
+    add_executable(test_proto_projection
+      "${CMAKE_CURRENT_SOURCE_DIR}/test/test_proto_projection.cpp")
+    target_link_libraries(test_proto_projection PRIVATE
+      amr_dispatcher_proto_dual GTest::gtest GTest::gtest_main)
+    gtest_discover_tests(test_proto_projection)
+  endif()
 
   # L2 契约测试：真进程 + 真服务调用（不再是 assertTrue(True)）。
   # 只在 launch_testing 可用时注册——宿主机的纯 CMake 构建没有它。

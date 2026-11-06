@@ -26,3 +26,7 @@ chassis_driver_node:
     health_rate_hz: 5.0
     # B1：指令龄超时阈值；超时后 ReadPollLoop 每拍主动写零速帧兜底
     cmd_stale_timeout_ms: 500
+    # 阶段 2 双发：/chassis/link_health_proto。
+    # false 时连 publisher 都不建（DDS 里不会留空话题）；rosidl 侧逐位不变。
+    # 现场确认没有 proto 消费者后关掉，可省掉一份 5Hz 的序列化开销。
+    proto_dual_publish: true

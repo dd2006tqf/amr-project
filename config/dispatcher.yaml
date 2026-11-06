@@ -49,3 +49,8 @@ dispatcher_node:
     # 允许"车辆可能正压在被封边上"时仍提交（该边的锁留给在途车，等它自行驶离）。
     # 默认 false = 严格拒绝（409 edge_occupied_in_flight）。单向反转不受此参数影响。
     topology_allow_edge_under_vehicle: false
+    # 阶段 2 双发：/dispatcher/state_proto、/dispatcher/events_proto、
+    # /dispatcher/topology_state_proto 三条一起开关。
+    # dispatcher 是 lifecycle 节点，proto 侧跟随 on_activate/on_deactivate ——
+    # 节点 inactive 时两侧同时静默，不会出现单侧有数据流的假象。
+    proto_dual_publish: true

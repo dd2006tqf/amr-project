@@ -13,7 +13,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "amr_dispatcher_proto/register_protobuf_type.hpp"
-#include "chassis.pb.h"
+#include "amr_dispatcher_proto/generated/chassis.pb.h"
 
 // 一行完成注册，替代手写四处特化。
 AMR_PROTO_REGISTER_TYPE(amr_dispatcher::proto::ChassisLinkHealth)

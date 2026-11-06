@@ -31,12 +31,15 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("manual_takeover_topic", "");
   declare_parameter("link_health_topic", "");
   declare_parameter("safety_state_topic", "");
+  // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，门控行为不变。
+  declare_parameter("proto_dual_publish", true);
 
   // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
   // 周期路径（10Hz/50Hz）不再重复 get_parameter。
   heartbeat_timeout_ =
       std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
+  proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
 
   // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
   vehicle_id_ = get_parameter("vehicle_id").as_string();
@@ -173,6 +176,15 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(safe_cmd_vel_topic_, 10);
   safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
       safety_state_topic_, 10);
+  // 阶段 2 双发：/safety/state_proto。QoS 深度与 rosidl 侧一致（10）。
+  safety_state_proto_pub_ = std::make_unique<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::SafetyState,
+      amr_dispatcher::proto::SafetyState>>(
+      this, safety_state_topic_, 10, proto_dual_publish_);
+  if (safety_state_proto_pub_->enabled()) {
+    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
+                safety_state_proto_pub_->proto_topic().c_str());
+  }
 
   watchdog_timer_ = create_wall_timer(
       100ms, std::bind(&SafetyGateNode::WatchdogTick, this));
@@ -423,6 +435,11 @@ void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVe
   }
 
   safety_state_pub_->publish(state_msg);
+  // 阶段 2 双发：从同一个 state_msg 投影。
+  // 与 PublishIdleSafetyState 共用此函数，因此空闲播报也自动双发，无需另加调用点。
+  if (safety_state_proto_pub_) {
+    safety_state_proto_pub_->Publish(state_msg);
+  }
 }
 
 }  // namespace amr_dispatcher_ros

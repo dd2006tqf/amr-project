@@ -25,6 +25,8 @@
   <depend>amr_dispatcher_core</depend>
   <depend>amr_dispatcher_interfaces</depend>
   <depend>amr_dispatcher_bt</depend>
+  <!-- 阶段 2 双发：proto 类型与 typesupport（stage 1 已落地） -->
+  <depend>amr_dispatcher_proto</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

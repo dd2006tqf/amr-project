@@ -94,9 +94,14 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("auto_charging_critical_threshold_percent", 15.0);
   declare_parameter("auto_charging_opportunity_priority", 0);
   declare_parameter("auto_charging_critical_priority", 5);
+  // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧：state / events / topology
+  // 三条 proto 话题都不会被创建，rosidl 侧逐位不变。
+  declare_parameter("proto_dual_publish", true);
+
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
+  proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
 }
 
 DispatcherNode::~DispatcherNode() = default;
@@ -240,6 +245,28 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   // 拓扑状态：safety_gate（deadlock_active_）与 visualizer（绿锁边/红警戒柱）的死锁输入
   topology_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TopologyState>(
       "/dispatcher/topology_state", 10);
+
+  // ---- 阶段 2 双发：proto 副本（与上面三条 rosidl 发布器逐一对齐 QoS 深度）----
+  // 建在 on_configure 而不是构造函数里，是为了与 rosidl 侧同生命周期：
+  // on_cleanup 会把它们一起 reset，重新 configure 时重建，不会留下悬挂的 proto 发布器。
+  state_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::DispatcherState,
+      amr_dispatcher::proto::DispatcherState>>(
+      this, "/dispatcher/state", 10, proto_dual_publish_);
+  event_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::MissionEvent,
+      amr_dispatcher::proto::MissionEvent>>(
+      this, "/dispatcher/events", 20, proto_dual_publish_);
+  topology_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
+      amr_dispatcher_interfaces::msg::TopologyState,
+      amr_dispatcher::proto::TopologyState>>(
+      this, "/dispatcher/topology_state", 10, proto_dual_publish_);
+  if (state_proto_pub_ && state_proto_pub_->enabled()) {
+    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s %s %s",
+                state_proto_pub_->proto_topic().c_str(),
+                event_proto_pub_->proto_topic().c_str(),
+                topology_proto_pub_->proto_topic().c_str());
+  }
 
   // 位姿与到达信号订阅：path_tracker 的 TrackingError.arrived 驱动任务完成
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -567,6 +594,12 @@ CallbackReturn DispatcherNode::on_activate(const rclcpp_lifecycle::State& /*stat
   event_pub_->on_activate();
   plan_pub_->on_activate();
   topology_pub_->on_activate();
+  // 阶段 2 双发：proto 侧必须与上面逐条同步激活。
+  // 漏一条的后果：节点显示 active，但那条 proto 话题永远没有数据，
+  // 且 rosidl 侧一切正常——只在运行时可见，测试不会变红。
+  if (state_proto_pub_) state_proto_pub_->Activate();
+  if (event_proto_pub_) event_proto_pub_->Activate();
+  if (topology_proto_pub_) topology_proto_pub_->Activate();
   for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
     pub->on_activate();  // Task 6：send_order 发布端随节点激活（未激活则 publish 为空操作）
   }
@@ -650,6 +683,10 @@ CallbackReturn DispatcherNode::on_deactivate(const rclcpp_lifecycle::State& /*st
   event_pub_->on_deactivate();
   plan_pub_->on_deactivate();
   topology_pub_->on_deactivate();
+  // 阶段 2 双发：与上面逐条同步失活，否则 deactivate 后 proto 话题仍有数据流。
+  if (state_proto_pub_) state_proto_pub_->Deactivate();
+  if (event_proto_pub_) event_proto_pub_->Deactivate();
+  if (topology_proto_pub_) topology_proto_pub_->Deactivate();
   for (auto& [vehicle_id, pub] : vda5050_order_pubs_) {
     pub->on_deactivate();
   }
@@ -727,6 +764,10 @@ CallbackReturn DispatcherNode::on_cleanup(const rclcpp_lifecycle::State& /*state
   event_pub_.reset();
   plan_pub_.reset();
   topology_pub_.reset();
+  // 阶段 2 双发：proto 发布器随生命周期收口，重新 configure 时重建。
+  state_proto_pub_.reset();
+  event_proto_pub_.reset();
+  topology_proto_pub_.reset();
   vda5050_order_pubs_.clear();   // Task 6：随生命周期收口，重 configure 时重建
   vda5050_vehicle_ids_.clear();
   vda5050_link_subs_.clear();    // 终审 M4：与 SetupVda5050Links 开头清旧对齐，防残留链
@@ -858,7 +899,7 @@ void DispatcherNode::SubmitOrderCb(
       msg.event = "queued";
       msg.to_state = "PENDING";
       msg.reason = "submitted";
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
   }
 }
@@ -1065,7 +1106,7 @@ void DispatcherNode::ForceClearVda5050LinkCb(
       msg.from_state = "ACTIVE";
       msg.to_state = "FAILED";
       msg.reason = "operator force-cleared offline VDA 5050 link for vehicle " + req->vehicle_id;
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
   }
   ReArmQueueStartRequest();  // 队列后续任务需重新武装启动请求
@@ -2172,7 +2213,7 @@ std::optional<DispatcherNode::ReadyCandidate> DispatcherNode::SelectReadyCandida
           msg.from_state = "PENDING";
           msg.to_state = "PENDING";  // 任务留在队列，状态不变
           msg.reason = step.reason;
-          event_pub_->publish(msg);
+          PublishMissionEvent(msg);
         }
         if (event_log_) {
           amr_dispatcher_core::dispatcher::MissionEvent evt;
@@ -2270,7 +2311,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
       msg.event = "plan_failed";
       msg.to_state = "FAILED";
       msg.reason = endpoints.reason;
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
     // 本单已出队但被判负丢弃：Peek 阶段预留的路由锁须就地释放
     //（任务不进 active_missions_，走不到 Complete/Fail 的终态清理）
@@ -2396,7 +2437,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
       msg.from_state = "PENDING";
       msg.to_state = "ACTIVE";
       msg.reason = "dispatched by scheduler";
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
     return;
   }
@@ -2443,7 +2484,7 @@ void DispatcherNode::ExecuteDispatch(ReadyCandidate candidate) {
     msg.from_state = "PENDING";
     msg.to_state = "ACTIVE";
     msg.reason = "dispatched by scheduler";
-    event_pub_->publish(msg);
+    PublishMissionEvent(msg);
   }
 }
 
@@ -2542,7 +2583,7 @@ void DispatcherNode::CompleteMission(std::string mission_id_in, const std::strin
     msg.from_state = "ACTIVE";
     msg.to_state = "FINISHED";
     msg.reason = reason;
-    event_pub_->publish(msg);
+    PublishMissionEvent(msg);
   }
   if (event_log_) {
     amr_dispatcher_core::dispatcher::MissionEvent evt;
@@ -2610,7 +2651,7 @@ void DispatcherNode::FailMission(std::string mission_id_in, const std::string& r
     msg.from_state = "ACTIVE";
     msg.to_state = "FAILED";
     msg.reason = reason;
-    event_pub_->publish(msg);
+    PublishMissionEvent(msg);
   }
 
   // 恢复策略走 mission_recovery 行为树：retry / dock / manual 三级决策
@@ -2679,7 +2720,7 @@ void DispatcherNode::FailMission(std::string mission_id_in, const std::string& r
       msg.from_state = "FAILED";
       msg.to_state = recovery_action == "manual" ? "MANUAL_INTERVENTION" : "RECOVERING";
       msg.reason = recovery_action + ": " + recovery_message;
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
     if (event_log_) {
       amr_dispatcher_core::dispatcher::MissionEvent evt;
@@ -2889,7 +2930,7 @@ void DispatcherNode::DeadlockTick() {
               msg.event = "rerouted";
               msg.to_state = "RUNNING";
               msg.reason = recovery_dec.message;
-              event_pub_->publish(msg);
+              PublishMissionEvent(msg);
             }
             cycle_resolved_by_reroute = true;
             break;
@@ -2959,7 +3000,7 @@ void DispatcherNode::DeadlockTick() {
           msg.event = "canceled";
           msg.to_state = "CANCELED";
           msg.reason = act.reason;
-          event_pub_->publish(msg);
+          PublishMissionEvent(msg);
         }
         RCLCPP_WARN(get_logger(), "Deadlock cancel via BT: branch=%s state=%s reason=%s",
                     cancel_bt.branch.c_str(),
@@ -3068,7 +3109,7 @@ void DispatcherNode::PlanAutoChargingTick() {
       msg.from_state = "PENDING";
       msg.to_state = "PENDING";
       msg.reason = decision.reason;
-      event_pub_->publish(msg);
+      PublishMissionEvent(msg);
     }
     if (event_log_) {
       amr_dispatcher_core::dispatcher::MissionEvent evt;
@@ -3447,7 +3488,7 @@ void DispatcherNode::RejectedQueuedMission(
     msg.from_state = "PENDING";
     msg.to_state = "FAILED";
     msg.reason = "vehicle selection rejected: " + reason;
-    event_pub_->publish(msg);
+    PublishMissionEvent(msg);
   }
   if (event_log_) {
     amr_dispatcher_core::dispatcher::MissionEvent evt;
@@ -4233,7 +4274,7 @@ void DispatcherNode::LoadTopologyOverlayFromDisk() {
       ev.stamp = now();
       ev.event = "overlay_rejected";
       ev.reason = message;
-      event_pub_->publish(ev);
+      PublishMissionEvent(ev);
     }
     return;
   }
@@ -4267,7 +4308,7 @@ void DispatcherNode::LoadTopologyOverlayFromDisk() {
       ev.stamp = now();
       ev.event = "overlay_invalidated";
       ev.reason = "base map_hash changed";
-      event_pub_->publish(ev);
+      PublishMissionEvent(ev);
     }
     return;
   }
@@ -4348,7 +4389,7 @@ void DispatcherNode::ReconcileOverlayAfterBaseReload() {
       ev.stamp = now();
       ev.event = "overlay_invalidated";
       ev.reason = "base map_hash changed after reload";
-      event_pub_->publish(ev);
+      PublishMissionEvent(ev);
     }
     return;
   }
@@ -4813,7 +4854,7 @@ bool DispatcherNode::CommitTopologyPlan(
         msg.event = "rerouted";
         msg.to_state = "RUNNING";
         msg.reason = "topology change reroute";
-        event_pub_->publish(msg);
+        PublishMissionEvent(msg);
       }
     }
   }
@@ -4831,7 +4872,7 @@ bool DispatcherNode::CommitTopologyPlan(
     msg.stamp = now();
     msg.event = "topology_changed";
     msg.reason = "applied revision " + std::to_string(overlay_.revision);
-    event_pub_->publish(msg);
+    PublishMissionEvent(msg);
   }
 
   if (error_code) *error_code = "ok";
@@ -5120,6 +5161,20 @@ void DispatcherNode::AppendAudit(const std::string& action, const std::string& v
   }
 }
 
+void DispatcherNode::PublishMissionEvent(
+    const amr_dispatcher_interfaces::msg::MissionEvent& msg) {
+  // 两路投递的唯一出口。调用方已做 is_activated() 守卫，这里做二次防护，
+  // 防止将来新增调用点忘了守卫时 proto 侧在未激活状态下被投递。
+  if (event_pub_) {
+    event_pub_->publish(msg);  // 辅助函数自身的 rosidl 侧投递，不做替换
+  }
+  // proto 侧的激活态由 LifecyclePublisher 自己把关：未激活时静默丢弃并打一次日志，
+  // 与 rosidl 侧行为一致。因此这里不需要额外的 is_activated() 判断。
+  if (event_proto_pub_) {
+    event_proto_pub_->Publish(msg);
+  }
+}
+
 void DispatcherNode::PublishState() {
   if (!state_pub_ || !state_pub_->is_activated()) {
     return;
@@ -5240,6 +5295,10 @@ void DispatcherNode::PublishState() {
   }
 
   state_pub_->publish(msg);
+  // 阶段 2 双发：从同一个 msg 投影，两侧字段天然一致。
+  if (state_proto_pub_) {
+    state_proto_pub_->Publish(msg);
+  }
 
   // /dispatcher/topology_state：safety_gate 与 visualizer 的死锁/锁边输入
   //（快照全量透传，active 仅任务持有的 route_edge，deadlocked_nodes 解析成站点 id）
@@ -5261,6 +5320,11 @@ void DispatcherNode::PublishState() {
     topology_msg.deadlocked_nodes = topology.deadlocked_nodes;
     topology_msg.deadlock_detected = topology.deadlock_detected;
     topology_pub_->publish(topology_msg);
+    // 阶段 2 双发：/dispatcher/topology_state_proto。
+    // safety_gate 与 visualizer 在阶段 3 迁移前仍只读 rosidl 侧，proto 侧是纯副本。
+    if (topology_proto_pub_) {
+      topology_proto_pub_->Publish(topology_msg);
+    }
   }
 }
 

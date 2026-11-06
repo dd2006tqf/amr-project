@@ -16,6 +16,7 @@
 #include "amr_dispatcher_core/chassis/chassis_packet_stream.hpp"
 #include "amr_dispatcher_core/chassis/command_delivery_tracker.hpp"
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
+#include "amr_dispatcher_ros/proto_dual_publisher.hpp"
 
 namespace amr_dispatcher_ros {
 
@@ -46,6 +47,12 @@ class ChassisDriverNode : public rclcpp::Node {
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr health_pub_;
+  // 阶段 2 双发：与 health_pub_ 同源同帧的 protobuf 副本（话题 /chassis/link_health_proto）。
+  // 用 unique_ptr 是因为 ProtoDualPublisher 必须以「解析后的最终话题名」构造，
+  // 而该名字在构造函数体内才算出（依赖 vehicle_id 与覆盖参数）。
+  std::unique_ptr<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>> health_proto_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr heartbeat_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
@@ -104,6 +111,10 @@ class ChassisDriverNode : public rclcpp::Node {
   std::string link_health_topic_{"/chassis/link_health"};
   std::string battery_topic_{"/battery_state"};
   std::string heartbeat_topic_{"/safety/heartbeat/chassis_driver"};
+
+  // 阶段 2：proto 双发总开关（参数 proto_dual_publish）。
+  // 在构造函数最前面声明并读出，后续所有双发器都引用它。
+  bool proto_dual_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

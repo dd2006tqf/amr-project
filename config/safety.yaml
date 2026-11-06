@@ -10,3 +10,6 @@ safety_gate_node:
     soft_timeout_ms: 2000
     # M5：Fault Supervisor 降级限速（kClampSpeed）时的线速度阈值
     degraded_max_linear_x_mps: 0.2
+    # 阶段 2 双发：/safety/state_proto（10Hz+50Hz 兜底，安全消息迁移期间的最大带宽项）。
+    # 关闭只停 proto 侧：门控行为、状态播报口径全部来自 rosidl 侧，逐位不变。
+    proto_dual_publish: true

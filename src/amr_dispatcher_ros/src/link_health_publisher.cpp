@@ -7,6 +7,7 @@
 
 #include "amr_dispatcher_core/chassis/link_quality.hpp"
 #include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
+#include "amr_dispatcher_ros/proto_dual_publisher.hpp"
 
 using namespace std::chrono_literals;
 
@@ -18,6 +19,9 @@ class LinkHealthPublisherNode : public rclcpp::Node {
       : rclcpp::Node("link_health_publisher_node", options) {
     declare_parameter("publish_rate_hz", 2.0);
     declare_parameter("watched_topics", std::vector<std::string>{"/chassis/link_health"});
+    // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧。
+    declare_parameter("proto_dual_publish", true);
+    const bool proto_dual_publish = get_parameter("proto_dual_publish").as_bool();
 
     auto topics = get_parameter("watched_topics").as_string_array();
     for (const auto& t : topics) {
@@ -31,6 +35,18 @@ class LinkHealthPublisherNode : public rclcpp::Node {
 
     aggregated_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
         "/system/aggregated_link_health", 10);
+    // 阶段 2 双发：/system/aggregated_link_health_proto。
+    //
+    // 注意这条话题**不是** per-vehicle 派生的（它是全局聚合视图，由本节点把
+    // 多车健康合成一条），所以这里直接传字面量，不经 ResolveVehicleTopic。
+    aggregated_proto_pub_ = std::make_unique<ProtoDualPublisher<
+        amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+        amr_dispatcher::proto::ChassisLinkHealth>>(
+        this, "/system/aggregated_link_health", 10, proto_dual_publish);
+    if (aggregated_proto_pub_->enabled()) {
+      RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
+                  aggregated_proto_pub_->proto_topic().c_str());
+    }
 
     const double rate = get_parameter("publish_rate_hz").as_double();
     timer_ = create_wall_timer(
@@ -96,10 +112,18 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     }
 
     aggregated_pub_->publish(agg);
+    // 阶段 2 双发：从同一个 agg 投影，因此聚合逻辑（最差送达率、求和计数器等）
+    // 只有一份实现，不会出现「rosidl 侧改了聚合口径、proto 侧没跟上」的漂移。
+    if (aggregated_proto_pub_) {
+      aggregated_proto_pub_->Publish(agg);
+    }
   }
 
   std::vector<rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr> subs_;
   rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr aggregated_pub_;
+  std::unique_ptr<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+      amr_dispatcher::proto::ChassisLinkHealth>> aggregated_proto_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::unordered_map<std::string, amr_dispatcher_interfaces::msg::ChassisLinkHealth> latest_health_;
 };

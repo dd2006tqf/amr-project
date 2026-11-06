@@ -35,8 +35,11 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   declare_parameter("odom_origin_x", 0.0);
   declare_parameter("odom_origin_y", 0.0);
   declare_parameter("odom_origin_yaw", 0.0);
+  // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，rosidl 侧不变。
+  declare_parameter("proto_dual_publish", true);
 
   controller_type_ = get_parameter("controller_type").as_string();
+  proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
   odom_origin_x_ = get_parameter("odom_origin_x").as_double();
   odom_origin_y_ = get_parameter("odom_origin_y").as_double();
   odom_origin_yaw_ = get_parameter("odom_origin_yaw").as_double();
@@ -82,6 +85,15 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
   error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
       tracking_error_topic_, 10);
+  // 阶段 2 双发：/tracking/error_proto，20Hz。QoS 深度与 rosidl 侧一致（10）。
+  error_proto_pub_ = std::make_unique<ProtoDualPublisher<
+      amr_dispatcher_interfaces::msg::TrackingError,
+      amr_dispatcher::proto::TrackingError>>(
+      this, tracking_error_topic_, 10, proto_dual_publish_);
+  if (error_proto_pub_->enabled()) {
+    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
+                error_proto_pub_->proto_topic().c_str());
+  }
   // B1：心跳分源，只喂 path_tracker 自己的看门狗通道
   heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
 
@@ -192,6 +204,10 @@ void PathTrackerNode::ControlLoop() {
 
   cmd_vel_pub_->publish(cmd);
   error_pub_->publish(err_msg);
+  // 阶段 2 双发：从同一个 err_msg 投影，保证两路逐字段一致。
+  if (error_proto_pub_) {
+    error_proto_pub_->Publish(err_msg);
+  }
 
   if (err_msg.arrived) {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Goal reached, stopping robot");
