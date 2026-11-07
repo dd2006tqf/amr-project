@@ -267,6 +267,20 @@ ament_target_dependencies(lifecycle_coordinator_node
 target_link_libraries(lifecycle_coordinator_node
   amr_dispatcher_proto_bridge::amr_dispatcher_proto_bridge)
 
+# 7.1 proto_dual_benchmark：双发开销基准（不是测试，不注册 ctest 断言）。
+#
+# 为什么放在这里而不是 proto 包：它测的是**投影层**（proto_projection）的成本，
+# 而投影层在本包内（proto 包只提供 typesupport 与消息定义，不含 rosidl 依赖）。
+#
+# 为什么不做成 ctest：计时断言在共享机器上必然抖动，见源文件头注释。
+#
+# 装到 lib/${PROJECT_NAME} 与其它节点一致，用 `ros2 run amr_dispatcher_ros
+# proto_dual_benchmark` 即可执行；它不读 ROS 参数、不需要 rclcpp::init。
+add_executable(proto_dual_benchmark
+  src/proto_dual_benchmark.cpp
+)
+target_link_libraries(proto_dual_benchmark amr_dispatcher_proto_dual)
+
 # 8. map_ingest_node（Task 8）：/map -> 核心库算法流水线（安全空间腐蚀、
 # 骨架细化、受保护剪枝、拓扑构建）-> 原子写出 stations.yaml + 拓扑 Marker。
 add_executable(map_ingest_node
@@ -428,6 +442,7 @@ install(TARGETS
   dispatcher_visualizer_node
   lifecycle_coordinator_node
   map_ingest_node
+  proto_dual_benchmark
   DESTINATION lib/${PROJECT_NAME}
 )
 
