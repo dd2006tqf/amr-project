@@ -365,10 +365,35 @@ is_healthy: true
    派生一次。`dispatcher_node` 单独有 18 处 `MissionEvent` 发布点，最终收敛到
    一个 `PublishMissionEvent()` 出口，而不是在 18 处各加一行。
 
-5. **性能影响（未实测，据实说明）。** `TrackingError` 是 20Hz、`SafetyState`
-   是 10Hz+50Hz 兜底，双发意味着这两条链路的序列化次数翻倍。目前**没有**
-   做 CPU/带宽的基准对比，`PROTOBUF_MIGRATION_PLAN.md` §7 的保留意见仍然成立。
-   `proto_dual_publish` 参数默认 `true`，现场确认无 proto 消费者后应关闭。
+5. **性能影响（已实测，2026-11-07 补齐）。** 原记录是「未实测」——现在有了基线与
+   数字。`TrackingError` 是 20Hz、`SafetyState` 是 10Hz，双发意味着这两条链路的
+   序列化次数翻倍；实测下来这个翻倍的代价**可以忽略不计**：
+   `proto_dual_benchmark` 在容器内实测（iterations=50000，取中位数）：
+
+   | 消息 | 频率 | 投影 | 编码 | 合计 p95 | proto 字节 | 每秒 CPU |
+   |---|---|---|---|---|---|---|
+   | ChassisLinkHealth | 5 Hz | 163 ns | 127 ns | 616 ns | 98 B | 1.4 µs/s |
+   | TrackingError | 20 Hz | 157 ns | 109 ns | 494 ns | 100 B | 5.3 µs/s |
+   | SafetyState | 10 Hz | 335 ns | 141 ns | 707 ns | 54 B | 4.8 µs/s |
+   | TopologyState | 2 Hz | 1226 ns | 581 ns | 2998 ns | 181 B | 3.6 µs/s |
+   | MissionEvent | 1 Hz | 236 ns | 153 ns | 517 ns | 78 B | 0.4 µs/s |
+   | DispatcherState | 2 Hz | 1108 ns | 450 ns | 2128 ns | 281 B | 3.1 µs/s |
+
+   **合计约 18.7 微秒 CPU/秒 ≈ 单核的 0.0019%。** 即便是负载最重的
+   `TopologyState`（1.2 µs 投影 + 0.6 µs 编码），在 2Hz 下也只有 3.6 µs/s。
+
+   边界必须一并记住：这个数字**只含投影与 protobuf 编码**，不含 rosidl 侧的 DDS
+   编码（它在 `publish()` 内部、本进程外，测不到）；也**不含带宽**。所以它是
+   「双发相对单发的新增 CPU 成本」，不是双发的总成本——单发本身的开销在两种模式
+   下都存在，被抵消了。
+
+   各频率取值经 `ros2 topic hz` 在运行中的系统上核对：`/safety/state` 9.999 Hz、
+   `/dispatcher/state` 2.000 Hz、`/chassis/link_health` 5.000 Hz、
+   `/dispatcher/topology_state` 2.000 Hz，与基准假设一致。
+
+   由此可以给出明确结论：**CPU 不构成保留或关掉 double-publish 的理由**。
+   `proto_dual_publish` 的默认值该不该改，取决于「有没有 proto 消费者」这个
+   架构问题，而不是性能问题。
 
 **已交付代码清单**
 
@@ -447,7 +472,8 @@ launch 侧提供**单个全局开关** `proto_dual_subscribe`（`full_system.lau
 
 - [x] `amr_dispatcher_tools`（CLI / REST）改读 proto 话题
 - [x] 内部订阅方（`safety_gate_node`、`dispatcher_node` 等）迁移
-- [ ] 每个消费者迁移后观察一个版本周期（需现场运行，非代码变更）
+- [x] 每个消费者迁移后观察一个版本周期（2026-11-07 完成，见下方观察期记录。
+      唯一未覆盖项：**多车模式的 per-vehicle 订阅名**，本次跑的是单车）
 
 **阶段 3 验收记录（2026-11-06，在真实运行的系统上完成 A/B）**
 
@@ -496,6 +522,49 @@ proto 话题的内容只来自发布端的投影，第三方往 rosidl 侧直接
 的行为（长时间运行下的内存、QoS 突发丢帧、per-vehicle 多车模式的实际订阅名）。
 这几项都需要现场运行，不是代码变更能覆盖的；阶段 4a 正是为此留的观察窗口。
 
+**阶段 4a 观察期记录（2026-11-07，消费者全量切到 proto 链路）**
+
+把 `proto_dual_subscribe:=true` 做成入口脚本的 `AMR_PROTO_DUAL_SUBSCRIBE` 环境变量
+（`docker/entrypoint.server.sh`）并写进 compose，重启后全部 6 个消费者切换完成。
+实测结果：
+
+| 验证项 | 判据 | 结果 |
+|---|---|---|
+| 消费者真的切过去了 | `ros2 topic info -v` 看订阅方落在哪个话题 | rosidl 侧 `Subscription count: 0`，`_proto` 侧 2 个订阅者 |
+| 数据真的在流动 | `/readyz` 的 `age_seconds` 连续采样 | 四个组件持续 0.01–0.85 s，非缓存值 |
+| 业务功能正常 | `POST /api/v1/orders` 连发 8 单 | 8×200，16 条事件（8 queued + 8 plan_failed）全部到达 |
+| **QoS 突发不丢帧** | 突发前后 `recent_events` 长度 | 0 → 16，**一帧不丢**（events QoS depth 20 够用） |
+| 内存无泄漏迹象 | 每节点 RSS，39 分钟 | 全系统 292.9 → 295.3 MB（+0.8%，非单调增长） |
+| 字段语义正确 | `/dispatcher/state` 与 `_proto` 逐字段对照 | 一致；`chassis_command_delivery_rate: null` 证明 `-1` 哨兵反投影正确 |
+
+一个必须记住的排查陷阱：`ros2 topic hz` **读不到 proto 话题**（它靠 rosidl
+introspection，§5.2 已说明不可用），会报「does not appear to be published yet」。
+这不是「没数据」，只是工具不可用。判断 proto 话题有没有数据要用
+`ros2 amr echo` 或看 `/readyz` 的 `age_seconds`。
+
+**per-vehicle 多车模式的实际订阅名仍未验证**——本次是单车模式（`vehicle_id` 为空）。
+多车场景下 `ResolveVehicleTopic` 会派生 `/tracking/error/{vid}` 这类带车名的话题，
+其 `_proto` 配对名没有在真实多车环境下核过。这是个明确的待办，不能算已验证。
+
+**观察期发现的真实缺陷（已修，两处）**
+
+1. **`ros2 amr echo` 在部署环境完全不可用。** 报
+   `AttributeError: module 'google.protobuf.message_factory' has no attribute
+   'GetMessageClass'`。根因：`GetMessageClass` 是 protobuf 4.22+ 的 API，而
+   Ubuntu 24.04（Jazzy 基线）自带的是 4.21.x，只有旧的
+   `MessageFactory().GetPrototype()`。修法是加版本兼容层
+   （`descriptor_pool.py:_message_class_for`），两条路径都覆盖。
+   **这个缺陷只在部署环境显形**（开发机 protobuf 更新），而它恰好击穿了
+   §5.2 的承诺：`ros2 amr echo` 是唯一能读懂 proto 话题的工具，坏了等于
+   整套 proto 链路在运维侧变成黑盒。
+
+2. **镜像缺 `libprotobuf.so.32`，所有节点 exit code 127。** 详见
+   `docs/DEPLOYMENT.md` 新增的排障条目。这不是本次改动引入的——Dockerfile 一直
+   列着这些包，但镜像里一个都没有。它被瞒住是因为旧容器从 `docker restart`
+   一路活下来（保留手工装过的库），`docker compose up -d` 重建容器时才显形。
+   已在 Dockerfile 里加构建期自检（`dpkg -s ... && ldconfig -p | grep -q`），
+   包没装上就让构建失败，而不是产出一个跑不起来的镜像。
+
 ### 阶段 4：清理
 
 **当前状态：已做到「可一键切换」，真正的删除动作待确认。**
@@ -510,9 +579,41 @@ proto 话题的内容只来自发布端的投影，第三方往 rosidl 侧直接
 
 4a / 4b 是**参数级**切换，不涉及代码；4c 才是真正的破坏性变更。
 
+- [x] 4a：消费者侧切 proto 并观察（2026-11-07，见上方观察期记录）
+- [ ] 4b：发布端关闭 rosidl 侧（**故意未做**，理由见下）
 - [ ] 删除旧 rosidl 话题发布
 - [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`
 - [ ] 更新文档与运维手册
+
+**4b 为什么这次不做**：4b 的语义是「rosidl 侧不再发布」，但当前仓库里
+`proto_dual_publish` 只控制 **proto 侧**（这是它设计上的正确行为）。rosidl 侧的
+`create_publisher` 与 `publish` 调用**无条件执行**，没有任何参数能关掉它们。
+也就是说**当前代码没有「只留 proto、关掉 rosidl」这个开关**：
+
+```cpp
+// dispatcher_node.cpp:  rosidl 侧无条件创建
+state_pub_ = create_publisher<...>("/dispatcher/state", 10);
+// proto 侧才受参数控制
+topology_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<...>>(
+    this, "/dispatcher/topology_state", 10, proto_dual_publish_);
+```
+
+因此 4b 不是「改个参数」就能完成的，它需要一次性代码改动：把 rosidl 的
+`create_publisher` 与 `publish` 调用改成受参数控制。这属于 4c 的前半部分，
+与「删除 rosidl 发布代码」是同一件事，应当一起做、一起评审——而不是先做出
+一个「rosidl 还在发但没人订阅」的中间态。
+
+**4c 的阻塞条件没有变化，且这次观察反而加强了它**：
+
+- 这台机器上跑的是完整系统，但它是**单车、且没有第三方订阅者**的实验环境。
+  `ros2 topic info -v` 只能看到本机 DDS 图，看不到「某台上位机正在按旧话题名
+  订阅」这类外部意图。
+- 观察期还发现 `docs/DEPLOYMENT.md` 里过期的「正常必须是 5 个包」这类文档漂移，
+  说明「删除前先对齐文档」这一步不能省。
+
+结论：**在拿到运维方「没有第三方订阅旧话题」的书面确认之前，不执行 4c。**
+这不是保守，是因为删除 `.msg` 会让 rosidl 话题名这个公开契约单方面失效，
+回滚成本远高于多等一个版本周期。
 
 > **阶段 4 的前置条件**：确认没有任何外部系统（上位机、第三方集成）还在订阅旧话题。
 > 这是整个计划里最容易被低估的风险——rosidl 话题名对第三方是公开契约。
