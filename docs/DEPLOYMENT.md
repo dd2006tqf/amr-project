@@ -710,10 +710,55 @@ ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && docker compose -f dock
 判断构建是否真的成功,看这一行(它统计的是 `install/` 下的包目录,不受日志干扰):
 
 ```
-[amr-entrypoint] 构建完成，install/ 下已安装 5 个项目包
+[amr-entrypoint] 构建完成，install/ 下已安装 8 个项目包
 ```
 
-**看到 `3 个` 或更少就是失败了** —— 正常必须是 5 个(`core` / `interfaces` / `bt` / `ros` / `tools`)。
+> 这个数字随包数量演进（阶段 0 时是 5，protobuf 迁移加了 proto / proto_cli /
+> proto_bridge 三个包后是 8）。入口脚本是从 `install/` 目录**实点**的，不是硬编码，
+> 所以以脚本输出为准即可；这里写死数字只是给一个肉眼可比的锚点。
+
+**看到 `6 个` 或更少就是失败了** —— 正常必须是 8 个(`core` / `interfaces` / `bt` /
+`ros` / `tools` / `proto` / `proto_cli` / `proto_bridge`)。
+
+### 所有节点 `exit code 127`：缺 `libprotobuf.so.32`
+
+**症状**：容器 `Up`，但 `ros2 node list` 一个节点都没有；`docker logs` 里每个进程都是
+
+```
+error while loading shared libraries: libprotobuf.so.32: cannot open shared object file
+```
+
+**这不是代码问题，是镜像缺运行时库。** 2026-11-07 实际发生过一次。
+
+关键鉴别点：消息是 `exit code 127` + `cannot open shared object file`，而不是
+Python 异常或 `package not found`。看到这个组合就直接跳到本段，不用查代码。
+
+**为什么它能被瞒很久**：`docker restart`（重启已有容器）保留容器的可写层，里面
+可能有手工装过的库；而 `docker compose up -d` 在镜像变了/配置变了时会**重建**容器，
+可写层丢弃，缺陷立刻显形。所以「昨天还好好的，今天一 up 就全挂」是这种缺陷的典型
+时间线。
+
+确认与修复：
+
+```bash
+# 确认：容器里到底有没有
+docker exec amr_dispatcher bash -lc 'ldconfig -p | grep libprotobuf; dpkg -l | grep protobuf'
+
+# 临时修复（容器不重建就一直有效；重建后需重做）
+docker exec amr_dispatcher bash -lc \
+  'apt-get update && apt-get install -y --no-install-recommends \
+     libprotobuf-dev protobuf-compiler python3-protobuf'
+docker restart amr_dispatcher
+```
+
+**根治**：`docker/Dockerfile.jazzy` 已加一层自检（`dpkg -s ... && ldconfig -p |
+grep -q libprotobuf`），构建时若包没装上会直接失败，而不是产出一个跑不起来的镜像。
+注意 Ubuntu 24.04 的运行时包名是 `libprotobuf32t64`（不是老文章里的 `libprotobuf32`），
+但 `libprotobuf-dev` 会自动带上它，不必单独列。
+
+⚠ `libprotobuf-dev` 是**构建期**依赖，`libprotobuf32t64` 是**运行期**依赖。当前
+Dockerfile 只显式列了前者、靠它传递依赖带出后者。若将来把镜像拆成多阶段构建，
+运行阶段必须显式安装 `libprotobuf32t64`，否则运行镜像会缺库。
 
 ### 内存不足 / OOM
 

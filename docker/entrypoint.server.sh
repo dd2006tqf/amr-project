@@ -42,6 +42,12 @@
 #   AMR_TOPOLOGY_OVERLAY_FILE 运行时拓扑叠加层文件绝对路径（默认
 #                            /workspace/config/generated/topology_overlay.yaml）。
 #                            显式设为空串 = 关闭在线拓扑热生效（写操作回 501）。
+#   AMR_PROTO_DUAL_SUBSCRIBE 消费者是否改读 *_proto 话题（阶段 4a，默认不传 =
+#                            用 launch 默认值 false）。空串同样表示"不传"。
+#                            **前置条件**：发布端 proto_dual_publish 必须为 true
+#                            （默认即 true）。只开订阅、发布端关掉的话，消费者会
+#                            「订阅成功但永远收不到」——DDS 不报错，没有任何匹配
+#                            的发布者，故障表现是数据静止而非报错，极难排查。
 
 set -eo pipefail
 
@@ -234,6 +240,9 @@ ODOM_ORIGIN_Y="${AMR_ODOM_ORIGIN_Y:-}"
 ODOM_ORIGIN_YAW="${AMR_ODOM_ORIGIN_YAW:-}"
 GOAL_TOLERANCE="${AMR_GOAL_TOLERANCE:-}"
 PUBLISH_MAP_TO_ODOM="${AMR_PUBLISH_MAP_TO_ODOM:-}"
+# 阶段 4a：消费者侧切换开关。默认空串 = 不传 = 用 launch 默认值 false，
+# 因此不加这个变量时行为与迁移前完全一致。
+PROTO_DUAL_SUBSCRIBE="${AMR_PROTO_DUAL_SUBSCRIBE:-}"
 MOCK_PID=""
 
 cleanup() {
@@ -325,5 +334,6 @@ launch_args=(
 [ -n "$ODOM_ORIGIN_YAW" ]       && launch_args+=("odom_origin_yaw:=$ODOM_ORIGIN_YAW")
 [ -n "$GOAL_TOLERANCE" ]        && launch_args+=("goal_tolerance:=$GOAL_TOLERANCE")
 [ -n "$PUBLISH_MAP_TO_ODOM" ]   && launch_args+=("publish_map_to_odom:=$PUBLISH_MAP_TO_ODOM")
+[ -n "$PROTO_DUAL_SUBSCRIBE" ]  && launch_args+=("proto_dual_subscribe:=$PROTO_DUAL_SUBSCRIBE")
 
 ros2 launch launch/full_system.launch.py "${launch_args[@]}"

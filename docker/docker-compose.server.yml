@@ -64,6 +64,16 @@ services:
       # 上的 -j2 已经贴着 swap 颠簸边界（单个 cc1plus 峰值 1.5–2 GB），
       # 2026-11-05 的 SSH 卡死就是这条路径造成的。需要临时覆盖时用
       # `docker compose run -e AMR_COLCON_WORKERS=N`，不要改这里。
+      #
+      # 阶段 4a 观察期：消费者改读 *_proto 话题。
+      #
+      # 打开它的前提是发布端 proto_dual_publish 为 true（默认即 true）。若发布端
+      # 被关掉，消费者会「订阅成功但永远收不到」——DDS 不会因为无发布者而报错，
+      # 现象是 /readyz 一直 INITIALIZING、告警全绿但数据静止，排查成本很高。
+      #
+      # 回滚：把 true 改成 false（或整行删掉）后 `docker compose up -d`，
+      # 不需要重新构建、不需要改代码。
+      - AMR_PROTO_DUAL_SUBSCRIBE=true
 
     # Fast DDS 走共享内存，默认 64MB 偏小
     shm_size: 512m

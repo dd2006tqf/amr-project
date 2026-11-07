@@ -182,6 +182,25 @@ jobs:
             fi
           done
 
+      # proto_cli 是纯 Python 包，没有 ctest 目标，pytest 单独跑。
+      #
+      # 为什么它必须有测试：2026-11-07 在部署环境发现 `ros2 amr echo` 完全不可用
+      # （AttributeError: GetMessageClass），根因是 protobuf 4.22+ 才有的 API
+      # 被用在了 4.21 上。该包此前零测试，所以一个只在部署环境显形的 API 差异
+      # 直接击穿了「这是唯一能读懂 *_proto 话题的工具」这条承诺。
+      #
+      # 这些用例里有强制走旧 API 路径的一项（monkeypatch 摘掉 GetMessageClass），
+      # 因而能在 protobuf 较新的 CI 镜像上复现部署环境的失败，而不是只在
+      # 开发机上全绿。
+      - name: Run proto CLI Tests (pytest)
+        shell: bash
+        run: |
+          set -e
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          cd src/amr_dispatcher_proto_cli
+          python3 -m pytest test/ -v
+
   # e2e 门禁 job（10 套脚本串行）。
   #
   # 直接在 ros:jazzy-ros-base 容器 job 内以 AMR_E2E_INNER=1 运行：

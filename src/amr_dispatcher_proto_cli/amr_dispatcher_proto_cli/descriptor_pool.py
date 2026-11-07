@@ -242,9 +242,64 @@ class SchemaRegistry:
                 f'类型 {full_name} 不在描述符池中。\n已知类型: {available}'
             ) from exc
 
-        cls = message_factory.GetMessageClass(descriptor)
+        cls = _message_class_for(descriptor)
         self._classes[full_name] = cls
         return cls
+
+
+def _message_class_for(descriptor) -> type:
+    """从 Descriptor 取得可实例化的消息类，兼容新旧两代 protobuf Python API。
+
+    ========================================================================
+    为什么需要这个兼容层（这不是防御性编程，是修一个真实故障）
+    ========================================================================
+    `message_factory.GetMessageClass()` 是 protobuf **4.22+** 才引入的 API。
+    Ubuntu 24.04（ROS 2 Jazzy 的基线）自带的 python3-protobuf 是
+    **4.21.x**，它只有旧接口 `MessageFactory().GetPrototype()`。
+
+    2026-11-07 实测：在本项目的运行镜像里直接调用 GetMessageClass 会抛
+
+        AttributeError: module 'google.protobuf.message_factory'
+        has no attribute 'GetMessageClass'. Did you mean: 'GetMessages'?
+
+    后果是 `ros2 amr echo` **完全不可用**——而它是 PROTOBUF_MIGRATION_PLAN.md
+    §5.2 里承诺的、也是**唯一**能读懂 *_proto 话题的工具（ros2 topic echo 对
+    proto 类型架构性不可用）。也就是说，这个 API 差异会让整套 proto 迁移在
+    运维侧变成黑盒：话题在跑、数据在对，但没有任何手段查看内容。
+
+    这个缺陷在开发机上不会暴露——那里的 protobuf 可能更新。**只在部署环境
+    才显形**，所以必须按「已安装版本」而非「开发机版本」来写。
+
+    ========================================================================
+    两条路径
+    ========================================================================
+    1. 新 API（4.22+）：`message_factory.GetMessageClass(descriptor)`
+    2. 旧 API（<4.22）：`message_factory.MessageFactory(pool).GetPrototype(descriptor)`
+
+    旧路径必须显式传 pool：默认构造的 MessageFactory 用**默认全局池**，
+    而我们的描述符来自自己构建的池（`_build_pool`），两个池的 descriptor
+    对象不通用，会报 "not in the same pool"。
+
+    用 getattr 探测而不是比较版本号：版本号解析要处理 '4.21.12' / '3.20.3' /
+    '5.28.0rc1' 等各种形态，且第三方重新打包时版本号未必可信。直接看 API
+    在不在，是唯一不会误判的判据。
+    """
+    # 新 API 优先：存在就用，行为最直接。
+    get_message_class = getattr(message_factory, 'GetMessageClass', None)
+    if get_message_class is not None:
+        return get_message_class(descriptor)
+
+    # 旧 API 兜底。注意 pool 参数：见上面 docstring 的说明。
+    factory_cls = getattr(message_factory, 'MessageFactory', None)
+    if factory_cls is None:
+        raise ProtoSchemaError(
+            '无法从描述符构造消息类：google.protobuf.message_factory 既没有 '
+            'GetMessageClass（4.22+）也没有 MessageFactory（更早版本）。'
+            '请检查 python3-protobuf 是否损坏（pip show protobuf）。'
+        )
+    # 优先用描述符自带的池，保证 descriptor 与 pool 同源。
+    pool = getattr(descriptor, '_pool', None) or descriptor_pool.Default()
+    return factory_cls(pool).GetPrototype(descriptor)
 
 
 def _collect_message_names(fds: descriptor_pb2.FileDescriptorSet) -> list[str]:
