@@ -60,3 +60,12 @@ dispatcher_node:
     # 前提：path_tracker 的 proto_dual_publish 必须为 true（launch 里已默认开）。
     # 打开后 dispatcher 不再依赖 path_tracker 的 rosidl 发布侧。
     proto_dual_subscribe: false
+    # 阶段 4b 切流：rosidl 侧开关（默认 true = 行为与改动前逐位一致）。
+    # false 时 /dispatcher/state、/dispatcher/events、/dispatcher/topology_state
+    # 三条**同时**只发 *_proto，DDS 里不再有对应的 rosidl 话题。
+    # plan_pub_（nav_msgs::Path，无 proto 对应物）不受此开关影响。
+    #
+    # 切流前必须确认：safety_gate 的 proto_dual_subscribe 已打开（否则它读的
+    # /dispatcher/topology_state 会静默断流），Web 控制台与 visualizer 也已
+    # 迁到 *_proto。DDS 不会因为发布者消失而报错。
+    proto_rosidl_publish: true

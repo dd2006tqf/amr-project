@@ -31,8 +31,11 @@ class PathTrackerNode : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
-  rclcpp::Publisher<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr error_pub_;
-  // 阶段 2 双发：/tracking/error_proto。
+  // 阶段 4b：原先这里还有 error_pub_（节点自建的 rosidl 发布器）。
+  // 已删除并收进 error_proto_pub_——留着它就会有两个 rosidl 发布器指向
+  // /tracking/error，而「只发 proto」的开关也就随之失效。
+  //
+  // 阶段 2 双发：/tracking/error_proto，rosidl 侧同样由双发器持有。
   //
   // 这是全项目**频率最高**的双发点（control_rate_hz，默认 20Hz）。
   // 多一份 protobuf 序列化的 CPU/带宽成本，就是这个开关最该被看见的理由：
@@ -79,6 +82,9 @@ class PathTrackerNode : public rclcpp::Node {
 
   // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
   bool proto_dual_publish_{true};
+  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
+  // false = 只发 /tracking/error_proto，DDS 里不再有 /tracking/error。
+  bool proto_rosidl_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

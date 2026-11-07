@@ -45,6 +45,9 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   // 阶段 2 双发总开关（默认开）。关掉只停 proto 侧，rosidl 侧不受影响，
   // 因此这是安全可回滚的运维开关：新话题没人消费时可随时关闭以省带宽。
   declare_parameter("proto_dual_publish", true);
+  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后本节点只发布 *_proto，
+  // DDS 里不再出现 /chassis/link_health。与 proto_dual_publish 相互独立。
+  declare_parameter("proto_rosidl_publish", true);
   // 电压 -> 百分比映射端点：12V 台架 12.6/11.0，24V 整车 25.2/21.0。
   // 直接报电压会让下游 percent 阈值（min_battery_percent / auto_charging_*）永远不生效。
   declare_parameter("battery_full_voltage", 12.6);
@@ -81,6 +84,8 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
 
   // 阶段 2 双发开关。先读出来，下面创建发布器时要用。
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
+  // 阶段 4b：rosidl 侧开关，同样先读出来。
+  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
 
   // ---- P0.6 / A4：解析 vehicle_id 与最终话题名 ----
   vehicle_id_ = get_parameter("vehicle_id").as_string();
@@ -146,20 +151,21 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   // 底盘电量是本项目里 auto_charging / 选车电量门槛唯一的真实数据源：
   // 之前 kOdometry/kState 里的 battery_voltage 解析出来就被丢弃了。
   battery_pub_ = create_publisher<sensor_msgs::msg::BatteryState>(battery_topic_, 10);
-  health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-      link_health_topic_, 10);
 
-  // 阶段 2 双发：QoS 深度必须与上面一致（10），否则突发时两侧丢帧点不同，
+  // 阶段 2 双发 + 阶段 4b 收口：rosidl 侧原先在这里自己 create_publisher，
+  // 现在一并交给双发器——这样「只发 proto」才能用参数表达（否则关掉 proto
+  // 之外还得再删一处 rosidl 创建，运维上没有可操作的手段）。
+  //
+  // QoS 深度必须与旧值一致（10），否则突发时两侧丢帧点不同，
   // 一致性检查器会把「深度差导致的丢帧」误报成「消息不一致」。
   // 话题名传 link_health_topic_（已含 per-vehicle 派生），内部只追加 _proto 后缀。
   health_proto_pub_ = std::make_unique<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::ChassisLinkHealth,
       amr_dispatcher::proto::ChassisLinkHealth>>(
-      this, link_health_topic_, 10, proto_dual_publish_);
-  if (health_proto_pub_->enabled()) {
-    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
-                health_proto_pub_->proto_topic().c_str());
-  }
+      this, link_health_topic_, 10, proto_dual_publish_, proto_rosidl_publish_);
+  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
+  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+  health_proto_pub_->LogStatus(get_logger());
 
   // B1：心跳分源，只喂 chassis_driver 自己的看门狗通道
   heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
@@ -526,11 +532,11 @@ void ChassisDriverNode::PublishHealth() {
       msg.tier = "UNKNOWN";
       break;
   }
-  health_pub_->publish(msg);
-  // 阶段 2 双发：proto 侧从**同一个 msg** 投影，因此两路内容由构造方式保证同源。
-  // 不是「再拼一次数据」——那样两份代码会在字段增减时漂移。
+  // 阶段 2 双发 + 阶段 4b 收口：两侧都从**同一个 msg** 投递，
+  // 因此内容由构造方式保证同源。不是「再拼一次数据」——那样两份代码会在
+  // 字段增减时漂移。PublishAll 内部按构造参数决定是否发 rosidl。
   if (health_proto_pub_) {
-    health_proto_pub_->Publish(msg);
+    health_proto_pub_->PublishAll(msg);
   }
 
   // 心跳语义：只有底盘真的在回帧才算"我活着"。

@@ -652,19 +652,22 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::GetOperatorSnapshot>::SharedPtr snapshot_srv_;
   rclcpp::Service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>::SharedPtr validate_site_srv_;
 
-  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_pub_;
+  // 阶段 4b：原先这里还有 state_pub_ / event_pub_ / topology_pub_ 三个
+  // 节点自建的 rosidl LifecyclePublisher。已全部删除并收进下面三个双发器——
+  // 留着它们就会出现两份 rosidl 发布器指向同一话题，而「只发 proto」的开关
+  // 也就随之失效（删掉双发器里的 rosidl 行，节点自己那份照样在发）。
+  //
+  // plan_pub_ 是唯一保留的：nav_msgs::Path 没有 proto 对应物，不在迁移范围内，
+  // 因此它仍由节点自己持有，也不受 proto_rosidl_publish 影响。
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_pub_;
 
-  // ---- 阶段 2 双发：proto 副本发布端 ----
+  // ---- 阶段 2 双发 + 阶段 4b 收口：两侧发布器的唯一 owner ----
   //
-  // 用 ProtoLifecycleDualPublisher —— dispatcher_node 是 lifecycle 节点，proto 侧
-  // 必须与 rosidl 侧同生共死：未激活时 rosidl 静默、proto 也必须静默。
-  // 若这里用普通 Publisher，节点在 inactive 状态下会出现「rosidl 不发、proto 照发」
-  // 的假数据流，一致性检查器与订阅方都会被误导。
+  // 用 ProtoLifecycleDualPublisher —— dispatcher_node 是 lifecycle 节点，两侧
+  // 必须同生共死：未激活时一起静默，避免「rosidl 不发、proto 照发」的假数据流，
+  // 那会让一致性检查器与订阅方误判调度器在正常工作。
   //
-  // 三者的 QoS 深度必须与上面 rosidl 侧逐一对齐（10 / 20 / 10）：
+  // 三者的 QoS 深度必须与历史 rosidl 侧逐一对齐（10 / 20 / 10）：
   // 深度不一致时突发丢帧会被误判成「消息不一致」。
   std::unique_ptr<ProtoLifecycleDualPublisher<
       amr_dispatcher_interfaces::msg::DispatcherState,
@@ -681,16 +684,19 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
 
   // 阶段 2 双发总开关（参数 proto_dual_publish，默认开）
   bool proto_dual_publish_{true};
+  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
+  // false = state / events / topology 三条只发 *_proto。plan_pub_ 不受影响。
+  bool proto_rosidl_publish_{true};
   // 阶段 3：双订阅总开关。与 proto_dual_publish_ 独立——发布端与订阅端
   // 可以分批上线（先发布侧开着观察，再逐节点打开订阅侧）。
   bool proto_dual_subscribe_{false};
 
   // MissionEvent 双发的统一出口。
   //
-  // 全文件有 18 处事件发布点，每处都是「构造 msg -> event_pub_->publish(msg)」。
+  // 全文件有 18 处事件发布点，每处都是「构造 msg -> PublishMissionEvent(msg)」。
   // 把双发放进这个函数而不是在每个调用点加第三行，是因为漏加一处就是一条
   // 静默不同步的事件流，而这种偏差不会让任何测试变红。
-  // 调用方仍保留 is_activated() 守卫（见各调用点），本函数只负责两路投递。
+  // 调用方仍保留 IsActivated() 守卫（见各调用点），本函数只负责两侧投递。
   void PublishMissionEvent(const amr_dispatcher_interfaces::msg::MissionEvent& msg);
 
   // 阶段 3：/tracking/error 双订阅。注意本文件是全项目**唯一**对订阅句柄

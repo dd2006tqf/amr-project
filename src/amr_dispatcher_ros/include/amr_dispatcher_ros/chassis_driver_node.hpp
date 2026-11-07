@@ -46,8 +46,11 @@ class ChassisDriverNode : public rclcpp::Node {
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
-  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr health_pub_;
-  // 阶段 2 双发：与 health_pub_ 同源同帧的 protobuf 副本（话题 /chassis/link_health_proto）。
+  // 阶段 4b：原先这里还有 health_pub_（节点自建的 rosidl 发布器）。
+  // 已删除并收进 health_proto_pub_——留着它就会出现两个 rosidl 发布器
+  // 指向同一话题，而「只发 proto」的开关也因此不能真正生效。
+  //
+  // 阶段 2 双发：与 rosidl 侧同源同帧的 protobuf 副本（话题 /chassis/link_health_proto）。
   // 用 unique_ptr 是因为 ProtoDualPublisher 必须以「解析后的最终话题名」构造，
   // 而该名字在构造函数体内才算出（依赖 vehicle_id 与覆盖参数）。
   std::unique_ptr<ProtoDualPublisher<
@@ -115,6 +118,9 @@ class ChassisDriverNode : public rclcpp::Node {
   // 阶段 2：proto 双发总开关（参数 proto_dual_publish）。
   // 在构造函数最前面声明并读出，后续所有双发器都引用它。
   bool proto_dual_publish_{true};
+  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
+  // false = 只发 *_proto，DDS 里不再有 /chassis/link_health。
+  bool proto_rosidl_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

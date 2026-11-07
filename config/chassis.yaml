@@ -30,3 +30,11 @@ chassis_driver_node:
     # false 时连 publisher 都不建（DDS 里不会留空话题）；rosidl 侧逐位不变。
     # 现场确认没有 proto 消费者后关掉，可省掉一份 5Hz 的序列化开销。
     proto_dual_publish: true
+    # 阶段 4b 切流：rosidl 侧开关（默认 true = 行为与改动前逐位一致）。
+    # false 时本节点只发 /chassis/link_health_proto，DDS 里**不会**再有
+    # /chassis/link_health——这就是「切流」。与 proto_dual_publish 相互独立：
+    # 两个都 false = 一条都不发（只用于测试）。
+    #
+    # 打开前必须确认没有第三方还订阅着 rosidl 话题：DDS 不会因为
+    # 「话题没有发布者」而报错，订阅端也不会超时退出，只会无限等下去。
+    proto_rosidl_publish: true

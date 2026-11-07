@@ -37,9 +37,12 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
   declare_parameter("odom_origin_yaw", 0.0);
   // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，rosidl 侧不变。
   declare_parameter("proto_dual_publish", true);
+  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后只发 /tracking/error_proto。
+  declare_parameter("proto_rosidl_publish", true);
 
   controller_type_ = get_parameter("controller_type").as_string();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
+  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
   odom_origin_x_ = get_parameter("odom_origin_x").as_double();
   odom_origin_y_ = get_parameter("odom_origin_y").as_double();
   odom_origin_yaw_ = get_parameter("odom_origin_yaw").as_double();
@@ -83,17 +86,17 @@ PathTrackerNode::PathTrackerNode(const rclcpp::NodeOptions& options)
       std::bind(&PathTrackerNode::OdomCallback, this, std::placeholders::_1));
 
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
-  error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
-      tracking_error_topic_, 10);
-  // 阶段 2 双发：/tracking/error_proto，20Hz。QoS 深度与 rosidl 侧一致（10）。
+  // 阶段 2 双发 + 阶段 4b 收口：rosidl 侧也由双发器持有。
+  // /tracking/error 是全项目频率最高的双发点（20Hz），所以「关掉 rosidl 省一半
+  // 序列化开销」在这里最有意义。
+  // QoS 深度与旧值一致（10）。
   error_proto_pub_ = std::make_unique<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::TrackingError,
       amr_dispatcher::proto::TrackingError>>(
-      this, tracking_error_topic_, 10, proto_dual_publish_);
-  if (error_proto_pub_->enabled()) {
-    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
-                error_proto_pub_->proto_topic().c_str());
-  }
+      this, tracking_error_topic_, 10, proto_dual_publish_, proto_rosidl_publish_);
+  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
+  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+  error_proto_pub_->LogStatus(get_logger());
   // B1：心跳分源，只喂 path_tracker 自己的看门狗通道
   heartbeat_pub_ = create_publisher<std_msgs::msg::Bool>(heartbeat_topic_, 10);
 
@@ -203,10 +206,10 @@ void PathTrackerNode::ControlLoop() {
   }
 
   cmd_vel_pub_->publish(cmd);
-  error_pub_->publish(err_msg);
-  // 阶段 2 双发：从同一个 err_msg 投影，保证两路逐字段一致。
+  // 阶段 2 双发 + 阶段 4b 收口：从同一个 err_msg 投递两侧，保证逐字段一致；
+  // 「发不发 rosidl」已由双发器的构造参数决定，这里不再有第二个 if。
   if (error_proto_pub_) {
-    error_proto_pub_->Publish(err_msg);
+    error_proto_pub_->PublishAll(err_msg);
   }
 
   if (err_msg.arrived) {

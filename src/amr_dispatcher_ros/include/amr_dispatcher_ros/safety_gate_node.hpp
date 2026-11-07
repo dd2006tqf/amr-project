@@ -65,8 +65,11 @@ class SafetyGateNode : public rclcpp::Node {
       topology_state_sub_;
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr safe_cmd_vel_pub_;
-  rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
-  // 阶段 2 双发：/safety/state_proto。
+  // 阶段 4b：原先这里还有 safety_state_pub_（节点自建的 rosidl 发布器）。
+  // 已删除并收进 safety_state_proto_pub_——留着它就会有两个 rosidl 发布器
+  // 指向 /safety/state，而「只发 proto」的开关也就随之失效。
+  //
+  // 阶段 2 双发：/safety/state_proto，rosidl 侧同样由双发器持有。
   //
   // 安全消息迁移的双发**绝不能改变安全语义**：proto 侧是 rosidl 侧的纯副本，
   // 不参与任何决策。safety_gate 的所有判断仍只读 rosidl 话题（含 self-consume
@@ -132,6 +135,9 @@ class SafetyGateNode : public rclcpp::Node {
 
   // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
   bool proto_dual_publish_{true};
+  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
+  // false = 只发 /safety/state_proto，DDS 里不再有 /safety/state。
+  bool proto_rosidl_publish_{true};
   bool proto_dual_subscribe_{false};
 };
 

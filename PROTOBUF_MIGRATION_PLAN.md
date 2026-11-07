@@ -567,43 +567,72 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 
 ### 阶段 4：清理
 
-**当前状态：已做到「可一键切换」，真正的删除动作待确认。**
+**当前状态：4b 已完成（2026-11-07）；4c 仍待运维方确认。**
 
 阶段 3 的双订阅结构使清理可以分三步走，每步都可独立回滚：
 
 | 步骤 | 动作 | 回滚方式 |
 |---|---|---|
 | 4a | 消费者侧 `proto_dual_subscribe:=true`，观察 | 改回 `false`，无需重新构建 |
-| 4b | 发布端 `proto_dual_publish:=false`，只留 rosidl 侧静默 | 改回 `true` |
+| 4b | 发布端 `proto_rosidl_publish:=false`，只留 proto 侧 | 改回 `true`，无需重新构建 |
 | 4c | 删除 rosidl 发布代码与 `.msg` | 需要回滚代码（不可一键） |
 
 4a / 4b 是**参数级**切换，不涉及代码；4c 才是真正的破坏性变更。
 
 - [x] 4a：消费者侧切 proto 并观察（2026-11-07，见上方观察期记录）
-- [ ] 4b：发布端关闭 rosidl 侧（**故意未做**，理由见下）
-- [ ] 删除旧 rosidl 话题发布
+- [x] 4b：发布端支持关闭 rosidl 侧（2026-11-07，见下节）
+- [ ] 4c：删除旧 rosidl 话题发布代码
 - [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`
 - [ ] 更新文档与运维手册
 
-**4b 为什么这次不做**：4b 的语义是「rosidl 侧不再发布」，但当前仓库里
-`proto_dual_publish` 只控制 **proto 侧**（这是它设计上的正确行为）。rosidl 侧的
-`create_publisher` 与 `publish` 调用**无条件执行**，没有任何参数能关掉它们。
-也就是说**当前代码没有「只留 proto、关掉 rosidl」这个开关**：
+#### 4b 已落地：`proto_rosidl_publish`
+
+4a 期间确认了一个设计缺口：`proto_dual_publish` 只控制 **proto 侧**（这是它
+本来的正确语义），而 rosidl 侧的 `create_publisher` 与 `publish` 是**无条件**
+执行的。因此「只留 proto、关掉 rosidl」这个方向当时没有任何开关可表达：
 
 ```cpp
-// dispatcher_node.cpp:  rosidl 侧无条件创建
+// 4b 之前：rosidl 侧无条件创建，proto 侧才受参数控制
 state_pub_ = create_publisher<...>("/dispatcher/state", 10);
-// proto 侧才受参数控制
 topology_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<...>>(
     this, "/dispatcher/topology_state", 10, proto_dual_publish_);
 ```
 
-因此 4b 不是「改个参数」就能完成的，它需要一次性代码改动：把 rosidl 的
-`create_publisher` 与 `publish` 调用改成受参数控制。这属于 4c 的前半部分，
-与「删除 rosidl 发布代码」是同一件事，应当一起做、一起评审——而不是先做出
-一个「rosidl 还在发但没人订阅」的中间态。
+补上来的做法**不是**在七个节点里各加一个 `if`，而是把 rosidl 侧的
+`create_publisher` / `publish` 一并**收进双发器**——每个话题从「两个独立句柄」
+变成「单一 owner + 单一出口」：
 
-**4c 的阻塞条件没有变化，且这次观察反而加强了它**：
+```cpp
+// 4b 之后：两侧都归双发器，PublishAll() 是唯一出口
+state_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<...>>(
+    this, "/dispatcher/state", 10, proto_dual_publish_, proto_rosidl_publish_);
+...
+state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参数里
+```
+
+这一点是 4b 能成为**参数级**操作的前提：只要节点还自己留着一个 rosidl
+发布器，删掉双发器里的 rosidl 行就没用——节点自己那份照样在发。
+
+| 项 | 值 |
+|---|---|
+| 新参数 | `proto_rosidl_publish`，默认 `true` |
+| 与 `proto_dual_publish` 关系 | 相互独立。都 `false` = 一条都不发（仅测试用） |
+| 覆盖节点 | chassis_driver / path_tracker / safety_gate / dispatcher / link_health_publisher |
+| 不受影响 | `dispatcher_node` 的 `/plan`（`nav_msgs::Path`，无 proto 对应物） |
+| 四个组合的日志 | 由双发器的 `LogStatus()` 统一播报，避免各节点文案漂移 |
+
+**验证方式**（2026-11-07，容器内真进程 + 真 DDS）：
+
+- `proto_rosidl_publish:=false` 起 `link_health_publisher`：`ros2 topic list`
+  里只有 `/system/aggregated_link_health_proto`，rosidl 侧话题**根本不存在**。
+- 同一手法验证 lifecycle 节点：`dispatcher_node` configure+activate 后，
+  `/dispatcher/{state,events,topology_state}` 三条 rosidl 话题上该实例的
+  writer 数均为 **0**，而三条 `_proto` 话题各有 1 个 writer。
+- 反向组合 `proto_dual_publish:=false`：只有 rosidl、没有 `_proto`，证明两个
+  开关互不牵连。
+- 两个都关：两侧 writer 均为 0，日志报 `ERROR` 而不是谎称「仅发布 proto」。
+
+**4c 的阻塞条件没有变化**：
 
 - 这台机器上跑的是完整系统，但它是**单车、且没有第三方订阅者**的实验环境。
   `ros2 topic info -v` 只能看到本机 DDS 图，看不到「某台上位机正在按旧话题名

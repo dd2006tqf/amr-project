@@ -33,6 +33,10 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("safety_state_topic", "");
   // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，门控行为不变。
   declare_parameter("proto_dual_publish", true);
+  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后只发 /safety/state_proto。
+  // 注意本节点自己**不订阅** /safety/state，所以关掉 rosidl 侧不影响门控判定；
+  // 但外部仪表盘/上层如果还在读 rosidl 话题，会静默收不到。
+  declare_parameter("proto_rosidl_publish", true);
   // 阶段 3 双订阅总开关（默认关）。开启后 link_health 与 topology_state
   // 改从 *_proto 读取，适配器内部反投影回 rosidl——门控判定逻辑一字未改。
   // 默认关是刻意的：发布端必须先开着（proto_dual_publish=true）才有配对话题，
@@ -45,6 +49,7 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
+  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
   proto_dual_subscribe_ = get_parameter("proto_dual_subscribe").as_bool();
 
   // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
@@ -184,17 +189,18 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       });
 
   safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(safe_cmd_vel_topic_, 10);
-  safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
-      safety_state_topic_, 10);
-  // 阶段 2 双发：/safety/state_proto。QoS 深度与 rosidl 侧一致（10）。
+  // 阶段 2 双发 + 阶段 4b 收口：/safety/state 的 rosidl 侧也由双发器持有。
+  // 此前这里是 create_publisher 建 safety_state_pub_ + 双发器只管 proto，
+  // 两套句柄让「只发一侧」无法用参数表达；且两个发布器同时指向
+  // /safety/state 时，DDS 会合并成同一话题的多个 writer，出问题极难定位。
+  // QoS 深度与旧值一致（10）。
   safety_state_proto_pub_ = std::make_unique<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::SafetyState,
       amr_dispatcher::proto::SafetyState>>(
-      this, safety_state_topic_, 10, proto_dual_publish_);
-  if (safety_state_proto_pub_->enabled()) {
-    RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
-                safety_state_proto_pub_->proto_topic().c_str());
-  }
+      this, safety_state_topic_, 10, proto_dual_publish_, proto_rosidl_publish_);
+  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
+  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+  safety_state_proto_pub_->LogStatus(get_logger());
 
   watchdog_timer_ = create_wall_timer(
       100ms, std::bind(&SafetyGateNode::WatchdogTick, this));
@@ -444,11 +450,11 @@ void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVe
     state_msg.active_stop_source = state_msg.active_sources.front();
   }
 
-  safety_state_pub_->publish(state_msg);
-  // 阶段 2 双发：从同一个 state_msg 投影。
-  // 与 PublishIdleSafetyState 共用此函数，因此空闲播报也自动双发，无需另加调用点。
+  // 阶段 2 双发 + 阶段 4b 收口：从同一个 state_msg 投递两侧。
+  // 与 PublishIdleSafetyState 共用此函数，因此空闲播报也自动双发，无需另加调用点；
+  // 「发不发 rosidl」由双发器的构造参数统一决定。
   if (safety_state_proto_pub_) {
-    safety_state_proto_pub_->Publish(state_msg);
+    safety_state_proto_pub_->PublishAll(state_msg);
   }
 }
 

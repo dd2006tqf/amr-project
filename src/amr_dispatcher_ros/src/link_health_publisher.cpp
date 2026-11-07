@@ -22,6 +22,10 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     declare_parameter("watched_topics", std::vector<std::string>{"/chassis/link_health"});
     // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧。
     declare_parameter("proto_dual_publish", true);
+    // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后本节点只发布 *_proto，
+    // DDS 里不再出现 /system/aggregated_link_health——这就是「切流」。
+    // 与 proto_dual_publish 相互独立：两个都关 = 什么都不发（只用于测试）。
+    declare_parameter("proto_rosidl_publish", true);
     // 阶段 3 双订阅总开关（默认关）。开启后 watched_topics 的每一项都改从
     // "<topic>_proto" 读取，适配器内部反投影回 rosidl 后交给同一段回调。
     //
@@ -30,6 +34,7 @@ class LinkHealthPublisherNode : public rclcpp::Node {
     // 表现为「订阅成功但永远收不到」。
     declare_parameter("proto_dual_subscribe", false);
     const bool proto_dual_publish = get_parameter("proto_dual_publish").as_bool();
+    const bool proto_rosidl_publish = get_parameter("proto_rosidl_publish").as_bool();
     const bool proto_dual_subscribe = get_parameter("proto_dual_subscribe").as_bool();
 
     auto topics = get_parameter("watched_topics").as_string_array();
@@ -52,20 +57,22 @@ class LinkHealthPublisherNode : public rclcpp::Node {
                   subs_.front()->proto_topic().c_str());
     }
 
-    aggregated_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
-        "/system/aggregated_link_health", 10);
     // 阶段 2 双发：/system/aggregated_link_health_proto。
     //
     // 注意这条话题**不是** per-vehicle 派生的（它是全局聚合视图，由本节点把
     // 多车健康合成一条），所以这里直接传字面量，不经 ResolveVehicleTopic。
+    //
+    // 阶段 4b：rosidl 侧也收进来了——原先这里是 create_publisher 建 agg 的
+    // rosidl 发布器 + 双发器只管 proto，两套句柄让「只发一侧」无法用参数表达。
+    // 现在双发器是唯一出口，PublishAll 负责两侧投递。
     aggregated_proto_pub_ = std::make_unique<ProtoDualPublisher<
         amr_dispatcher_interfaces::msg::ChassisLinkHealth,
         amr_dispatcher::proto::ChassisLinkHealth>>(
-        this, "/system/aggregated_link_health", 10, proto_dual_publish);
-    if (aggregated_proto_pub_->enabled()) {
-      RCLCPP_INFO(get_logger(), "proto dual-publish enabled: %s",
-                  aggregated_proto_pub_->proto_topic().c_str());
-    }
+        this, "/system/aggregated_link_health", 10, proto_dual_publish,
+        proto_rosidl_publish);
+    // 状态播报收在双发器里：四类开关组合各有一句准确说法，
+    // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+    aggregated_proto_pub_->LogStatus(get_logger());
 
     const double rate = get_parameter("publish_rate_hz").as_double();
     timer_ = create_wall_timer(
@@ -130,11 +137,12 @@ class LinkHealthPublisherNode : public rclcpp::Node {
       agg.tier = "UNKNOWN";
     }
 
-    aggregated_pub_->publish(agg);
-    // 阶段 2 双发：从同一个 agg 投影，因此聚合逻辑（最差送达率、求和计数器等）
-    // 只有一份实现，不会出现「rosidl 侧改了聚合口径、proto 侧没跟上」的漂移。
+    // 阶段 2 双发 + 阶段 4b 收口：从同一个 agg 同时投递两侧。
+    // 聚合逻辑（最差送达率、求和计数器等）只有一份实现，不会出现
+    // 「rosidl 侧改了聚合口径、proto 侧没跟上」的漂移；
+    // 「发不发 rosidl」也由构造参数统一决定，调用点不再有 if。
     if (aggregated_proto_pub_) {
-      aggregated_proto_pub_->Publish(agg);
+      aggregated_proto_pub_->PublishAll(agg);
     }
   }
 
@@ -143,7 +151,9 @@ class LinkHealthPublisherNode : public rclcpp::Node {
   std::vector<std::unique_ptr<amr_dispatcher_proto_bridge::ProtoDualSubscriber<
       amr_dispatcher_interfaces::msg::ChassisLinkHealth,
       amr_dispatcher::proto::ChassisLinkHealth>>> subs_;
-  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr aggregated_pub_;
+  // 阶段 4b：rosidl 与 proto 两侧都由双发器持有，原先独立的
+  // aggregated_pub_（rclcpp::Publisher）已删除——留着它就会有两个
+  // rosidl 发布器指向同一话题，切流参数也就不再是真开关。
   std::unique_ptr<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::ChassisLinkHealth,
       amr_dispatcher::proto::ChassisLinkHealth>> aggregated_proto_pub_;
