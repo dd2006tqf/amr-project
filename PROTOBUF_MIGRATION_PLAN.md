@@ -581,9 +581,9 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 
 - [x] 4a：消费者侧切 proto 并观察（2026-11-07，见上方观察期记录）
 - [x] 4b：发布端支持关闭 rosidl 侧（2026-11-07，见下节）
+- [x] 更新文档与运维手册（2026-11-07，`docs/DEPLOYMENT.md` §6.3 切流 runbook）
 - [ ] 4c：删除旧 rosidl 话题发布代码
 - [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`
-- [ ] 更新文档与运维手册
 
 #### 4b 已落地：`proto_rosidl_publish`
 
@@ -639,6 +639,20 @@ state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参�
   订阅」这类外部意图。
 - 观察期还发现 `docs/DEPLOYMENT.md` 里过期的「正常必须是 5 个包」这类文档漂移，
   说明「删除前先对齐文档」这一步不能省。
+
+**4b 验证过程中踩到的三个坑**（写下来是因为 4c 的验收会以更严的方式重复遇到）：
+
+1. **`ros2 topic hz` 读不到 `*_proto` 话题**，报 `does not appear to be published yet`。
+   它靠 rosidl introspection，对 proto 类型架构性不可用。判断 proto 话题有没有数据
+   必须用 `ros2 amr echo <topic> <proto.full.Type>`（需要同时给 topic 和 type_name）
+   或看 `/readyz` 的 `age_seconds`。**据此判「没发布」会得到完全错误的结论。**
+2. **「能收到帧」不等于「被测实例在发」**。同一话题上随时可能有别的进程在发——
+   `deactivate` 之后仍收到 `DispatcherState`，一度被误判成 `Deactivate()` 没生效，
+   实际是容器里常驻的系统 `dispatcher_node` 在发。验证前必须用独立的
+   `ROS_DOMAIN_ID` 隔离，或先看 `ros2 topic info -v` 的 writer 清单。
+3. **新参数在节点构造期 `declare_parameter`，已运行的进程不认识它**。
+   改完配置不重启就去 `ros2 param get`，会得到 `Parameter not set`——
+   那是进程还是旧的，不是参数没配上。诊断顺序应先看启动日志的状态行。
 
 结论：**在拿到运维方「没有第三方订阅旧话题」的书面确认之前，不执行 4c。**
 这不是保守，是因为删除 `.msg` 会让 rosidl 话题名这个公开契约单方面失效，
