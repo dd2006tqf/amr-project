@@ -370,7 +370,121 @@ rest_gateway_node:
 
 告警规则样例见 `deploy/alerts/amr_dispatcher.rules.yml`。
 
-### 6.3 施工区 runbook：临时封路 / 单向 / 临时标石
+### 6.3 遥测切流 runbook：把发布端从 rosidl 切到 proto
+
+**这一节只在确认「没有第三方仍订阅旧 rosidl 话题」之后才执行。** 未确认就切，
+外部系统会静默失联：DDS 不会因为「话题没有发布者」而报错，订阅端也不会超时
+退出，只会一直等下去。这是本次迁移里唯一一个**不报错**的破坏性操作。
+
+#### 涉及的两个开关
+
+| 参数 | 控制 | 默认 | 影响的节点 |
+|---|---|---|---|
+| `proto_dual_publish` | **proto 侧**是否发布 | `true` | 五个节点 / 七条话题 |
+| `proto_rosidl_publish` | **rosidl 侧**是否发布 | `true` | 五个节点 / 七条话题 |
+
+七个双发点是：`/chassis/link_health`、`/tracking/error`、`/safety/state`、
+`/dispatcher/state`、`/dispatcher/events`、`/dispatcher/topology_state`、
+`/system/aggregated_link_health`（最后一条由 `link_health_publisher` 发布，
+注意它**不在** `full_system.launch.py` 里，只有 `launch/bringup.launch.py` 会起它——
+常驻系统里查不到它是正常的）。
+
+两者**相互独立**，四个组合都有明确语义（启动日志会逐条播报，不要凭猜测判断）：
+
+| `proto_dual_publish` | `proto_rosidl_publish` | 结果 | 日志 |
+|---|---|---|---|
+| `true` | `true` | 两侧都发（默认，现状） | `双发已启用：A + B` |
+| `false` | `true` | 只发 rosidl | `proto 侧已关闭，仅发布 rosidl 话题 A` |
+| `true` | `false` | **只发 proto（切流目标态）** | `rosidl 侧已关闭…` 为 `WARN` |
+| `false` | `false` | 一条都不发（**仅测试**） | `ERROR`，因为几乎一定是配错了 |
+
+> 切流的那条 `WARN` 是刻意的：切完之后如果还有订阅方盯着旧话题，日志里
+> 这句话是唯一能归因的线索。
+
+#### 不受该开关影响的发布器
+
+`dispatcher_node` 的 `/plan`（`nav_msgs::Path`）没有 proto 对应物，**始终**走
+rosidl，切流后依然存在。其它少量非迁移话题同理——判断依据是「有没有配对的
+`*_proto` 话题」，而不是「是不是这个节点发的」。
+
+#### 执行前必须逐条确认
+
+1. **消费者已全部切到 proto**：`proto_dual_subscribe: true` 且运行满一个版本周期。
+   ```bash
+   docker exec amr_dispatcher bash -lc '
+   source install/setup.bash
+   ros2 param get /dispatcher_node proto_dual_subscribe
+   ros2 param get /safety_gate_node proto_dual_subscribe'
+   ```
+2. **没有外部订阅方**。这条**无法用命令验证**：`ros2 topic info -v` 只能看到
+   本机 DDS 图，看不到「另一台上位机正在按旧话题名订阅」。必须由运维方
+   书面确认，或现场抓包。**不要用「topic info 里没有订阅者」代替这个确认。**
+3. **Web 控制台 / visualizer / 抓包工具**已确认走 proto 或不再需要：
+   `rest_gateway` 读的是反投影后的 rosidl 消息，它自身不受影响；但
+   `dispatcher_visualizer_node` 与现场 `ros2 topic echo` 脚本需要单独核对。
+
+#### 切流（按节点逐步，可逆）
+
+改 `config/` 下对应 yaml 的 `proto_rosidl_publish: false`，然后重启：
+
+```bash
+cd /home/ubuntu/amr_dispatcher
+C="docker compose -f docker/docker-compose.server.yml"
+# 先改 config/chassis.yaml → proto_rosidl_publish: false，其余保持 true
+$C restart
+```
+
+**验证切流真的生效**——不要用 `ros2 topic hz`，它靠 rosidl introspection，
+对 `*_proto` 话题架构性不可用，会报 `does not appear to be published yet`，
+那是工具的问题、不是没数据。用本项目自带的 `ros2 amr echo`：
+
+> ⚠ **改完参数必须重启，`ros2 param get` 才能读到新值。** 新参数是在节点
+> 构造期 `declare_parameter` 的，**已经跑着的进程不认识它**——重启前查询会得到
+> `Parameter not set`。这不是参数没配上，是进程还是旧的。诊断顺序永远是先看
+> 启动日志里 `双发已启用 / rosidl 侧已关闭` 那行，再看 `param get`。
+
+```bash
+docker exec amr_dispatcher bash -lc '
+source install/setup.bash
+
+# 1. rosidl 侧话题应完全消失（不是「没数据」，是 topic list 里就没有）
+ros2 topic list | grep -E "^/chassis/link_health$" || echo "  OK: rosidl 侧已消失"
+
+# 2. proto 侧仍有数据（--once 收到第一条就退出）
+timeout 10 ros2 amr echo /chassis/link_health_proto \
+  amr_dispatcher.proto.ChassisLinkHealth --once
+'
+```
+
+一键核对七个双发点两侧的当前状态：
+
+```bash
+docker exec amr_dispatcher bash -lc '
+source install/setup.bash
+for t in /chassis/link_health /tracking/error /safety/state \
+         /dispatcher/state /dispatcher/events /dispatcher/topology_state \
+         /system/aggregated_link_health; do
+  r=$(ros2 topic info "$t" -v 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
+  p=$(ros2 topic info "${t}_proto" -v 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
+  printf "%-32s rosidl=%-3s proto=%-3s\n" "$t" "${r:-0}" "${p:-0}"
+done'
+```
+
+#### 回滚
+
+把 `proto_rosidl_publish` 改回 `true` 并重启即可，**无需重新构建、无需回滚代码**。
+切流期间 rosidl 侧话题不受影响（只是没人发），订阅方不会因为切流而报错退出，
+所以回滚后它们会自然恢复接收——但**切流到回滚之间的数据是永久丢失的**。
+
+#### 下一步（4c）不要顺手做
+
+删除 `.msg` 与 rosidl 发布代码会让 rosidl 话题名这个公开契约**单方面失效**，
+回滚成本远高于多等一个版本周期。该动作的阻塞条件、连带影响（`registry/generated`
+的消息清单、`ProtoDualSubscriber` 的 `use_proto=false` 分支、
+`check_proto_dual_consistency.py` 的比对基准）见
+`PROTOBUF_MIGRATION_PLAN.md` 阶段 4。
+
+### 6.4 施工区 runbook：临时封路 / 单向 / 临时标石
 
 **不要**再进容器 `vim stations.yaml`：那既无连通性校验，也无在途车仲裁，
 而且 `map_ingest` / Web 地图上传会整份覆盖该文件，手改的管制会被静默抹掉。
