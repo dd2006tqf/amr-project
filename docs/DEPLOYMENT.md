@@ -429,13 +429,27 @@ done
 echo "  (无输出即正常)"
 
 echo "--- proto 话题的 writer 数（应当 > 0）---"
-# 必须加 --no-daemon：容器里 ros2 daemon 的图缓存会过期，不加时 topic info
-# 可能返回**空输出**，看起来像"话题不存在"，实际是查询走了旧缓存。
+# 两种查询模式**都会漏报**，原因不同，别指望换一种就万事大吉：
+#   · 不加 --no-daemon：容器里 ros2 daemon 的图缓存会过期，可能返回空输出，
+#     看起来像"话题不存在"，实际是走了旧缓存。
+#   · 加  --no-daemon：它每次调用新建一个临时 participant，只等一个很短的
+#     发现窗口，窗口内没发现完就返回 `Publisher count: 0`（实测同一活着的
+#     节点连查 5 次得到 1,0,1,1,1）。
+# 所以：轮询取最大值，见到 >=1 即停。判 0 之前至少查 3 次。
 for t in /dispatcher/state /dispatcher/events /dispatcher/topology_state \
          /safety/state /tracking/error /chassis/link_health; do
-  p=$(ros2 topic info "${t}_proto" --no-daemon 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
-  printf "  %-40s publishers=%s\n" "${t}_proto" "${p:-0}"
-done'
+  p=0
+  for i in 1 2 3 4 5; do
+    c=$(ros2 topic info "${t}_proto" --no-daemon 2>/dev/null \
+        | sed -n "s/^Publisher count: //p" | head -1)
+    [[ -n "$c" ]] && (( c > p )) && p=$c
+    (( p >= 1 )) && break
+    sleep 1
+  done
+  printf "  %-40s publishers=%s\n" "${t}_proto" "$p"
+done
+printf "  （注：这条脚本对 lifecycle 节点查不到 writer 是正常的——未 activate 时不发布）\n"'
+
 ```
 
 **不要用 `ros2 topic hz` 或 `ros2 topic echo` 判断 proto 话题有没有数据**——它们

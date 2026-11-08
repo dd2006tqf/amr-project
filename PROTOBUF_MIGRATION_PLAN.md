@@ -42,6 +42,7 @@
 | `ros2 topic echo` / RViz / rosbag | 不可用于 proto 话题 | **架构性**，替代工具是 `ros2 amr echo`，见 §5.2 |
 | `scripts/check_proto_dual_consistency.py` | 休眠 | 比对基准已随 4c 消失，保留作回滚路径的校验工具 |
 | 多车 per-vehicle 话题的 proto 链路 | **已实测通过**（2026-11-08） | 补测结论见下方注记 |
+| lifecycle 三路 proto 发布的 e2e 覆盖 | **已补**（2026-11-08） | e2e 阶段 5，见「补测：e2e 阶段 5」 |
 | 外部第三方订阅者是否受影响 | **未确认** | 保守 4c 并未解除此风险，它只降低了回滚成本 |
 
 若要把"完整 4c"也做掉（删 `.msg` 与反投影层），前置条件与连带影响见
@@ -61,8 +62,11 @@
 > 故保持现状。
 >
 > **另一个排查陷阱**：`ros2 topic info` / `ros2 node info` 在这个容器里
-> **不加 `--no-daemon` 会返回空输出**（daemon 缓存过期）。看到空输出时先加
-> `--no-daemon` 重试，不要据此判断"节点没有订阅"。
+> 会漏报，而且**两种模式漏报的原因不同**——不加 `--no-daemon` 是 daemon 图
+> 缓存陈旧，加了 `--no-daemon` 是它每次新建临时 participant、发现窗口太短
+> （实测同一活着的节点连查 5 次得到 `1,0,1,1,1`）。看到空输出时不能只靠
+> 换模式，要**连查 3 次以上**，或直接看节点启动日志里那行「发布 proto 话题」。
+> 详见「补测：e2e 阶段 5 与两处被推翻的判断」。
 
 ---
 
@@ -771,11 +775,76 @@ state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参�
 | 2 | `link_health_publisher` 日志出现「发布 proto 话题」 | 发布器没建起来 |
 | 3 | 消费者 `node info` 订阅 `*_proto` | **默认值没翻 = 全链路静默断流** |
 | 4 | `ros2 topic info` 的 `Publisher count > 0` | 有话题但没 writer |
+| 5 | dispatcher 三路 `_proto`：两路收到帧、events 有 writer | 生命周期发布路径不通 |
 
-阶段 4 只能用 `ros2 topic info`：`ros2 topic hz` / `echo` 对 proto 话题不可用
-（见上方三个坑的第 1 条）。
+阶段 4/5 只能用 `ros2 topic info` 与 `ros2 amr echo`：`ros2 topic hz` / `echo`
+对 proto 话题不可用（见上方三个坑的第 1 条）。
 
-#### `check_proto_dual_consistency.py` 的处置
+阶段 5 是 2026-11-08 补的，覆盖此前完全没有 e2e 覆盖的
+`ProtoLifecycleDualPublisher`（4c 里改动量最大、逻辑最微妙的一个类）。
+它的判据、以及一次被阴性测试推翻的错误假设，见下一节。
+
+#### 补测：e2e 阶段 5 与两处被推翻的判断（2026-11-08 下午）
+
+保守 4c 落地后做了一次覆盖度盘点，发现一个真实缺口并补上了，过程中推翻了
+两个我自己先写下的判断。两处都值得留在文档里，因为它们是「看起来对、
+实测不对」的典型。
+
+**缺口：`ProtoLifecycleDualPublisher` 零覆盖。** 它是 4c 里改动量最大的类
+（127 行 diff），但既没有单测、也不在 e2e 里——此前 e2e 只覆盖
+`link_health` 与 `aggregated_link_health` 这两条普通发布器路径。
+dispatcher 的三条 lifecycle 话题（`state` / `events` / `topology_state`）
+从未被任何自动化测试碰过。已补 e2e 阶段 5。
+
+**被推翻的判断一：`--no-daemon` 更可靠。**
+
+先前根据一次多车补测，记录过「`topic info` / `node info` 要加 `--no-daemon`，
+否则返回空输出」。补阶段 5 时发现反过来也会发生：
+
+- `--no-daemon` 每次调用新建一个临时 participant，**只等一个很短的发现窗口**，
+  窗口内没发现完就返回 `Publisher count: 0`。在同一个活着的 dispatcher 上
+  连查 5 次 `/dispatcher/events_proto` 得到 `1,0,1,1,1`。
+- daemon 模式同样 5 次是 `1,1,1,1,1`。
+
+两种模式漏报的**原因不同**——daemon 是图缓存陈旧，`--no-daemon` 是发现窗口
+太短——所以「换一种模式」只能覆盖一半情况。正确做法是**轮询取多次的最大值**
+（间隔 1s，5–6 次，见到 ≥1 即停）。脚本里所有「断言存在」的查询都已改成轮询；
+「断言不应存在」的方向相反（抖动只会造成假通过），但仍查 3 次压低概率。
+
+**被推翻的判断二：漏调 `Activate()` 会导致「有 writer 但没有帧」。**
+
+这曾是我写在脚本注释里的因果链，并用它作为阶段 5 的设计依据。做阴性测试
+（把 `on_activate()` 里的 `state_proto_pub_->Activate()` 注释掉、重新编译、
+重跑）时，**帧照样收得到，断言全绿**——因果链是错的，那条断言当时是空的。
+
+真实机制：`rclcpp_lifecycle::LifecycleNode::create_publisher()` 在
+`lifecycle_node_impl.hpp` 里除了建 `LifecyclePublisher`，还会调
+`this->add_managed_entity(pub)`。生命周期节点在状态迁移时自行驱动所有托管
+实体的 `on_activate()/on_deactivate()`。**框架已经自动激活了 publisher**，
+节点代码里那三行显式 `Activate()` 是冗余的（幂等、无害，但删掉也不会坏）。
+
+这个结论不改变阶段 5 的存在价值，但改变了它守什么。修正后：
+
+- 能抓到：发布器根本没建（configure 分支漏了 / `proto_dual_publish` 关掉）、
+  发布路径被 `IsActivated()` 守卫或定时器提前 return 挡住、proto 类型在 DDS
+  上不可达（有 writer 却解不出帧）。
+- 不能抓到：漏调那三行显式 `Activate()`——框架兜住了，不构成故障。
+
+判据因此从「查 writer 数」改成「**收帧**」：`ros2 amr echo <topic> <type> --once`
+带超时，收到即证明真的在发。理由独立于上面那条：`LifecyclePublisher` 在
+`create_publisher` 时就注册好了 DataWriter，激活与否只决定 `publish()` 发不发，
+所以 **writer 数在 activate 前后恒为 1**，对这条链路没有分辨力。
+
+三个话题不能一律用帧判据，是发布时机决定的：`state` 与 `topology_state` 都由
+`PublishState()` 的 500ms 定时器发出（2Hz），`events` 只在真有事件时才发
+（空闲零帧）。对 `events` 用帧判据必然超时，是假失败——它在那里退化为弱断言，
+只能抓「发布器没建」。
+
+**顺带修正的文档面**：`docs/DEPLOYMENT.md` §6.3 的运维审计片段原来写的是
+「必须加 `--no-daemon`」，并附一句「不加会返回空输出」。按上述结论，那段
+命令本身就会误报，已改成轮询版本，并把两种漏报的成因都写在注释里。
+
+
 
 该脚本（455 行）的前提是「同一份数据同时存在于 rosidl 与 proto 两条路上，
 逐字段比对」。4c 删掉发布端之后，**这个前提在物理上不再成立**，脚本已无法
