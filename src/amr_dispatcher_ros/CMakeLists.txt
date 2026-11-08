@@ -454,6 +454,7 @@ if(TARGET vda5050_gateway_node)
 endif()
 
 install(TARGETS
+  amr_dispatcher_proto_projection
   amr_chassis_hardware_interface
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
