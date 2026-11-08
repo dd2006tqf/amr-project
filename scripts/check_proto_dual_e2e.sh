@@ -124,7 +124,7 @@ sleep 3
 # 用 node info 判断订阅端落在哪个话题上——这是 4c 默认值翻对没翻对的唯一
 # 直接证据。若默认值仍是 false，这里会显示 /chassis/link_health（rosidl），
 # 而那侧现在已经没有发布者，链路静默断流。
-SUB_TOPICS="$(ros2 node info /lh_e2e_consumer 2>/dev/null || true)"
+SUB_TOPICS="$(ros2 node info /lh_e2e_consumer --no-daemon 2>/dev/null || true)"
 if printf '%s' "${SUB_TOPICS}" | grep -q '/chassis/link_health_proto'; then
   echo "  ✓ 消费者订阅 /chassis/link_health_proto（默认值已翻转为 proto）"
 else
@@ -140,7 +140,10 @@ echo
 echo "=== 阶段 4：proto 话题上确有 writer ==="
 # 注意：`ros2 topic info` 对 proto 话题可用（它只读 DDS 图，不做类型内省），
 # 但 `ros2 topic hz/echo` **不可用**——见 PROTOBUF_MIGRATION_PLAN.md 的陷阱记录。
-INFO="$(ros2 topic info /system/aggregated_link_health_proto 2>/dev/null || true)"
+#
+# `--no-daemon` 不是可选项：本脚本刚起进程 3–4 秒就查询，daemon 的图缓存可能
+# 还没跟上，不加会拿到**空输出**，表现为「话题不存在」的假失败。
+INFO="$(ros2 topic info /system/aggregated_link_health_proto --no-daemon 2>/dev/null || true)"
 if [[ -z "${INFO}" ]]; then
   echo "  ✗ /system/aggregated_link_health_proto 话题不存在"
   FAIL=1

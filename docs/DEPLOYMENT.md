@@ -429,9 +429,11 @@ done
 echo "  (无输出即正常)"
 
 echo "--- proto 话题的 writer 数（应当 > 0）---"
+# 必须加 --no-daemon：容器里 ros2 daemon 的图缓存会过期，不加时 topic info
+# 可能返回**空输出**，看起来像"话题不存在"，实际是查询走了旧缓存。
 for t in /dispatcher/state /dispatcher/events /dispatcher/topology_state \
          /safety/state /tracking/error /chassis/link_health; do
-  p=$(ros2 topic info "${t}_proto" -v 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
+  p=$(ros2 topic info "${t}_proto" --no-daemon 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
   printf "  %-40s publishers=%s\n" "${t}_proto" "${p:-0}"
 done'
 ```

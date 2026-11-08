@@ -21,6 +21,49 @@
 2. **`ros2 topic echo` / RViz / rosbag 回放不认**。已提供替代工具 `ros2 amr echo`，见 §5.2。
 3. **DDS 类型名变了**，与既有 rosidl 话题**不能直接互通**，只能双发过渡或全量切换，见 §4。
 
+### 完成度（2026-11-08）
+
+**话题层的迁移已完成；本计划没有被"完整执行"，剩余项是刻意保留的边界，不是欠账。**
+
+已落地：
+
+- 阶段 0–2：骨架 / 垂直切片 / 7 条遥测话题的 proto 双发
+- 阶段 3：全部消费者改读 proto（反投影，业务逻辑零改动）
+- 阶段 4c（保守方案）：发布端只发 proto，rosidl 发布器与 `proto_rosidl_publish`
+  参数已删除；`.msg` 与反投影层**刻意保留**以便回滚
+
+仍然存在的、需要如实知道的事：
+
+| 项 | 状态 | 性质 |
+|---|---|---|
+| `amr_dispatcher_interfaces/msg/` 的 7 个 `.msg` | 保留 | **刻意**：删除会让"切回 rosidl"无法回滚。前置条件是确认无第三方订阅旧话题，该确认未取得 |
+| 反投影层与 `ProtoDualSubscriber::use_proto=false` | 保留 | 同上，回滚路径的实现 |
+| 24 个服务 + 2 个动作 | 永久 rosidl | **架构性**，本方案只覆盖话题，见 §5.1 |
+| `ros2 topic echo` / RViz / rosbag | 不可用于 proto 话题 | **架构性**，替代工具是 `ros2 amr echo`，见 §5.2 |
+| `scripts/check_proto_dual_consistency.py` | 休眠 | 比对基准已随 4c 消失，保留作回滚路径的校验工具 |
+| 多车 per-vehicle 话题的 proto 链路 | **已实测通过**（2026-11-08） | 补测结论见下方注记 |
+| 外部第三方订阅者是否受影响 | **未确认** | 保守 4c 并未解除此风险，它只降低了回滚成本 |
+
+若要把"完整 4c"也做掉（删 `.msg` 与反投影层），前置条件与连带影响见
+「阶段 4 / 完整 4c 仍未做」。
+
+> **多车 per-vehicle 补测记录（2026-11-08）**：分别在 `ROS_DOMAIN_ID=76/77`
+> 起了 `vehicle_id:=amr01` 的 `chassis_driver_node` 与 `safety_gate_node`。
+> `ros2 topic info /chassis/link_health/amr01_proto --no-daemon` 得到
+> `Publisher count: 1` / `Subscription count: 1`，订阅端 `node info` 显示
+> `/chassis/link_health/amr01_proto: amr_dispatcher/proto/ChassisLinkHealth`——
+> 发布端与订阅端**派生出同一个名字**，链路通。
+>
+> 注意话题名的形状：是 `/chassis/link_health/amr01_proto`，不是
+> `/chassis/link_health_proto/amr01`。因为 `ResolveVehicleTopic` 先拼出
+> `/chassis/link_health/amr01`，`ProtoTopicName` 再在末尾追加 `_proto`。
+> 两侧派生顺序一致所以能通，但名字不好看；改它会同时动到已有话题契约，
+> 故保持现状。
+>
+> **另一个排查陷阱**：`ros2 topic info` / `ros2 node info` 在这个容器里
+> **不加 `--no-daemon` 会返回空输出**（daemon 缓存过期）。看到空输出时先加
+> `--no-daemon` 重试，不要据此判断"节点没有订阅"。
+
 ---
 
 ## 1. 动机
@@ -415,7 +458,7 @@ is_healthy: true
 `/dispatcher/topology_state`，以及多车模式下由 `ResolveVehicleTopic` 派生的
 同名 per-vehicle 话题。每条都在原话题名后追加 `_proto`。
 
-### 阶段 3：消费者迁移
+### 阶段 3：消费者迁移 ✅ 已完成
 
 **机制：反向投影 + 双订阅，业务代码零改动。**
 
@@ -565,7 +608,7 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
    已在 Dockerfile 里加构建期自检（`dpkg -s ... && ldconfig -p | grep -q`），
    包没装上就让构建失败，而不是产出一个跑不起来的镜像。
 
-### 阶段 4：清理
+### 阶段 4：清理 ⏳ 部分完成（保守 4c 已落地，完整 4c 未执行）
 
 **当前状态：4a / 4b 已完成（2026-11-07）；4c 的保守方案已落地（2026-11-08）。**
 
@@ -811,7 +854,7 @@ state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参�
 | `amr_dispatcher_proto_cli/echo.py` | raw 订阅 + 布局解析 + protobuf 反序列化 |
 | `amr_dispatcher_proto_cli/descriptor_pool.py` | 描述符池构建与缓存 |
 
-未提交到 git（按约定，先看结构再决定）。
+（该包已随 `3d01e24` 提交到 git，早期版本本节写的「未提交到 git」已过期。）
 
 ---
 
