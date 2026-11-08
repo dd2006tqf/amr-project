@@ -561,9 +561,12 @@ rosidl 与 `_proto` 话题上：
 proto 话题的内容只来自发布端的投影，第三方往 rosidl 侧直接注入不会镜像过去。
 现场排查时要知道这一点，否则会误判成「proto 订阅漏消息」。
 
-**尚未验证的（据实说明）**：`proto_dual_subscribe:=true` 下跑一整个版本周期
-的行为（长时间运行下的内存、QoS 突发丢帧、per-vehicle 多车模式的实际订阅名）。
-这几项都需要现场运行，不是代码变更能覆盖的；阶段 4a 正是为此留的观察窗口。
+**尚未验证的（据实说明）**：`proto_dual_subscribe:=true` 下跑一整个版本周期的
+行为（长时间运行下的内存增长、QoS 突发丢帧）。这几项都需要现场运行，不是代码变更
+能覆盖的；阶段 4a 正是为此留的观察窗口。
+
+> per-vehicle 多车模式的实际订阅名**当时未验证**，已于 2026-11-08 补测通过
+> （见 §0「完成度」的多车补测注记）。上面那行原本把它列在未验证里，此处据实更正。
 
 **阶段 4a 观察期记录（2026-11-07，消费者全量切到 proto 链路）**
 
@@ -585,9 +588,11 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 这不是「没数据」，只是工具不可用。判断 proto 话题有没有数据要用
 `ros2 amr echo` 或看 `/readyz` 的 `age_seconds`。
 
-**per-vehicle 多车模式的实际订阅名仍未验证**——本次是单车模式（`vehicle_id` 为空）。
-多车场景下 `ResolveVehicleTopic` 会派生 `/tracking/error/{vid}` 这类带车名的话题，
-其 `_proto` 配对名没有在真实多车环境下核过。这是个明确的待办，不能算已验证。
+**per-vehicle 多车模式的订阅名：已于 2026-11-08 补测通过。** 补测前本节写的是
+「本次是单车模式、多车未核过」。实际补测：`vehicle_id:=amr01` 的
+`chassis_driver_node` 与 `safety_gate_node` 在同一隔离域内派生出了**同一个**
+`/chassis/link_health/amr01_proto`，`topic info` 显示 writer=1 / subscriber=1。
+详见 §0「完成度」的补测注记。
 
 **观察期发现的真实缺陷（已修，两处）**
 
@@ -626,7 +631,7 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 - [x] 4b：发布端支持关闭 rosidl 侧（2026-11-07，见下节）
 - [x] 更新文档与运维手册（2026-11-07，`docs/DEPLOYMENT.md` §6.3 切流 runbook）
 - [x] 4c：删除旧 rosidl 话题**发布代码**（2026-11-08，保守方案，见下方"4c 已落地"）
-- [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`（**未执行**，见"4c 的边界"）
+- [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`（**未执行**，见「完整 4c 仍未做」）
 
 > **注意 4c 的生效方式与 4a/4b 不同**：4a/4b 是参数级开关，4c 之后
 > `proto_rosidl_publish` 这个参数**已从代码里删除**——它不再有任何意义
