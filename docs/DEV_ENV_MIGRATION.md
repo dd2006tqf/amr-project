@@ -13,8 +13,7 @@
 ```bash
 # 新虚拟机（Ubuntu 24.04 / x86_64）上：
 
-git clone -b feat/phase11-observability-topology \
-    https://github.com/dd2006tqf/amr-project.git
+git clone https://github.com/dd2006tqf/amr-project.git
 cd amr-project
 
 # 编译（二选一，推荐容器，见 §5）
@@ -388,13 +387,15 @@ battery_empty_voltage: 6.0     # 原 11.0
 ### 5.2 拉代码
 
 ```bash
-git clone -b feat/phase11-observability-topology \
-    https://github.com/dd2006tqf/amr-project.git
+git clone https://github.com/dd2006tqf/amr-project.git
 cd amr-project
 ```
 
-> **分支说明**：本次推送后，`feat/phase11-observability-topology` 是**唯一包含
-> `vendor/` 与 v4 硬件文档的分支**。`main` 落后 78 个提交，不要从 main 开始。
+> **分支说明（2026-11-08 更新）**：所有工作已合入 **`main`**（提交 `8c1aa71`）。
+> **直接 clone 默认的 `main` 即可**，不需要 `-b` 指定分支。
+>
+> 早期版本的本节让人 clone `feat/phase11-observability-topology`，那个分支
+> 已过期（停在 `0780690`，落后 main 3 个提交），**不要再使用**。
 
 **拉下来应该有什么**（用来核对完整性）：
 
@@ -427,54 +428,46 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 > **不要用 `colcon build` 编译 `vendor/`**：构建脚本全部走 `--base-paths src`，
 > `vendor/` 在仓库根目录，天然在范围外。这是刻意设计，不是巧合。
 
-### 5.3b ⚠️ 迁移时**没有**提交的 4 个文件（必读）
+### 5.3b 能还原到什么程度（2026-11-08 已全部入库）
 
-服务器上有 4 个文件有未提交改动，它们**属于其他并行的工作，不在本次提交范围**。
-服务器即将弃用，**这 4 个文件的改动不会通过 git 带到虚拟机**，需要单独处理。
+早先本节列了 4 个"未提交、需要手动带走"的文件。**已全部提交并推送到 `main`**：
 
-| 文件 | 改动规模 | 性质 | 建议 |
-| --- | --- | --- | --- |
-| `docs/BENCH_BRINGUP_RUNBOOK.md` | +110 / −9 | 新增「路线 B 成品底盘」章节与 v3 修订 | **值得保留**，见下 |
-| `docs/DEPLOYMENT.md` | +19 / −5 | 修正 `ros2 topic info` 的 `--no-daemon` 查询陷阱 | **值得保留**，见下 |
-| `scripts/check_proto_dual_e2e.sh` | +183 / −5 | 新增第 4 条断言（lifecycle Activate 静默失败） | **值得保留**，见下 |
-| `src/amr_dispatcher_ros/src/dispatcher_node.cpp` | +1 / −1 | **⚠️ 是一处故意的负面测试注入**，见下 | **不要提交** |
+| 文件 | 处理结果 |
+| --- | --- |
+| `docs/BENCH_BRINGUP_RUNBOOK.md` | ✅ 已提交（`8c1aa71`） |
+| `docs/DEPLOYMENT.md` | ✅ 已提交（`8c1aa71`） |
+| `scripts/check_proto_dual_e2e.sh` | ✅ 已提交（`8c1aa71`） |
+| `src/amr_dispatcher_ros/src/dispatcher_node.cpp` | ✅ **负面测试已还原**，库内是正确的 `Activate()` |
 
-#### 关于那个 `NEGATIVE-TEST`
+所以**不再需要手工搬运 patch**，`git clone` 就是全部源码。
 
-`dispatcher_node.cpp:616` 现在是：
+#### ✅ 能 100% 还原的
 
-```cpp
--  if (state_proto_pub_) state_proto_pub_->Activate();
-+  // NEGATIVE-TEST: state Activate() 故意注释
-```
+| 项 | 说明 |
+| --- | --- |
+| 全部源码 | `src/` 8 个包，100 个提交的历史完整 |
+| `vendor/` 4246 个文件 | 含之前漏掉的 `openni2_redist` 18 个 `.so`，已用 `git add -f` 入库 |
+| `config/`、`launch/`、`docs/` | 全部在库 |
+| 构建脚本、Docker 文件 | 全部在库 |
 
-这是**另一个会话为了验证 `check_proto_dual_e2e.sh` 第 4 条断言是否有效**而故意注入的缺陷
-（注释掉一行 `Activate()`，看测试能不能抓到）。它**不是要保留的改动**。
+#### ❌ 不能还原的（**这不是缺陷，是设计**）
 
-> **正确做法**：回到虚拟机上，先把 `check_proto_dual_e2e.sh` 的新版本带走并跑一次，
-> 确认它能抓到这个注入；**然后把这一行改回去**（恢复 `if (state_proto_pub_) state_proto_pub_->Activate();`），
-> 再重新编译。**不要让这行注释跟着代码走。**
+| 项 | 为什么 | 到虚拟机怎么办 |
+| --- | --- | --- |
+| `build/` `install/` `log/` | 编译产物，被 `.gitignore` 排除 | 重新 `colcon build` |
+| `micro_ros_dev/{build,install,log}` 4843 个文件 | cmake 中间产物，换机器必然重新生成 | 用时重新生成 |
+| `.ccache/` | 编译缓存 | 自动重建（首次编译会慢些） |
+| **本地分支**（6 个 feat/refactor） | git 只推 `main` | 不需要，都已合入 `main` |
+| **`机器人项目简历知识库.md`** | 被 `.gitignore` 排除 | ⚠️ **必须手工拷贝** |
+| **所有 `*.pdf`** | 被 `.gitignore` 排除 | ⚠️ **必须手工拷贝**（但 `vendor/` 里的原理图已放行，不受影响） |
+| **`~/.git-credentials` 里的 token** | 不在仓库 | 新机器上重新配认证 |
+| 运行时产物 `runtime/` | 被排除 | 重新生成 |
 
-#### 那 3 个值得保留的改动怎么带走
+#### 结论
 
-它们是**其他对话的成果但还没提交**。三个选择：
-
-```bash
-# 方案 A（推荐）：在服务器上存成 patch，带到虚拟机
-git diff docs/BENCH_BRINGUP_RUNBOOK.md docs/DEPLOYMENT.md \
-         scripts/check_proto_dual_e2e.sh > /tmp/other-work.patch
-# 把 /tmp/other-work.patch 拷到虚拟机后：
-git apply /tmp/other-work.patch
-
-# 方案 B：现在就单独提交这 3 个文件（不含 dispatcher_node.cpp）
-git add docs/BENCH_BRINGUP_RUNBOOK.md docs/DEPLOYMENT.md scripts/check_proto_dual_e2e.sh
-git commit -m "docs+test(proto): 成品底盘 runbook 与 proto 断言加固"
-
-# 方案 C：不带走，到了虚拟机上重做（最差，浪费已完成的验证工作）
-```
-
-> **方案 A 最稳**：不会把别人正在做的半成品混进历史，也不丢东西。
-> **绝不能** `git checkout` 掉这些改动——那是不可逆的（见 memory: 拆分工作树前必须备份 diff）。
+**代码层面：100% 可还原**（`git clone` 一条命令，含 `vendor/` 与全部文档）。
+**环境层面：需重编译**（几分钟到十几分钟，取决于机器）。
+**两个手工项：简历知识库、根目录的 PDF** —— 这两个不拷就真没了。
 
 ### 5.4 迁移后第一件事
 
