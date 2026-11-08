@@ -13,12 +13,50 @@
 | 目录 | 上游仓库 | 分支 | 作用 | 文件数 | 体积 |
 | --- | --- | --- | --- | --- | --- |
 | `leap_ros2/` | `leap_ros2` | `main` | **仅硬件**：主控板/图传板原理图、BOM、嘉立创工程、3D 打印外壳 | 13 | 3.1 MB |
-| `leap_ros_mcu_driver/` | `leap_ros_mcu_driver` | `main` | **ESP32-S3 下位机固件 v2.1**，两个 ESP 里"主控"的那颗 | 8470 | 78 MB |
+| `leap_ros_mcu_driver/` | `leap_ros_mcu_driver` | `main` | **ESP32-S3 下位机固件 v2.1**，两个 ESP 里"主控"的那颗 | 3623 | 62 MB |
 | `leap_ros_ws/` | `leap_ros_ws` | **`master`** | 上位机 ROS 2 工作空间（11 个包） | 398 | 38 MB |
 | `esp32_s3_wifi_camera/` | `esp32_s3_wifi_camera` | `main` | 图传固件，跑在**独立的第二颗 ESP32-S3** 上 | 181 | 2.5 MB |
 | `voice_assistant_client/` | `voice_assistant_client` | `main` | 语音助手（纯 Python 标准库，走 ros2-web HTTP） | 30 | 284 KB |
 
 引入提交：`dc86535`（2026-11-08）。**上游未打 tag，也没有 release 记录**，所以这里只能锁定到"某个时间点的 HEAD"，不是一个可复现的版本号。
+
+## 完整性：怎么核对"原样引入"这四个字
+
+**入库 4246 个文件 / 约 72 MB。** 工作树里 `vendor/` 占 121 MB，多出的 49 MB 全部是
+`micro_ros_espidf_component/micro_ros_dev/{build,install,log}` 的 4843 个 cmake 中间产物，
+**刻意排除**（换机器必然重新生成，且与 LEAP_ROS 固件无关）。
+
+随时可以这样验证（应当输出 `OK`）：
+
+```bash
+# 1) 没有被漏掉的文件：除了构建树，不应再有未跟踪文件
+git ls-files -o vendor | grep -v 'micro_ros_dev/\(build\|install\|log\)/'
+# 期望：无输出
+
+# 2) 与上游 tarball 逐文件比对（需要 /home/ubuntu/个人学习/leap_ros_vendor 原件）
+for d in leap_ros_vendor/*/; do
+  b=$(basename "$d")
+  comm -23 <(cd "$d" && find . -type f -not -path './.git/*' | sed 's|^\./||' | sort) \
+           <(cd "amr_dispatcher/vendor/$b" && find . -type f | sed 's|^\./||' | sort)
+done
+# 期望：无输出
+```
+
+### ⚠️ 一个真实的坑：根目录的 `!` 规则穿不透子目录 `.gitignore`
+
+`openni2_redist/{arm,arm64,x64}/` 里 18 个 `.so`/`.ini`（4.9 MB）**曾经被漏掉**。
+
+原因：根 `.gitignore` 里写了 `!vendor/.../openni2_redist/**`，看着像放行了，
+但 `ros2_astra_camera/.gitignore:400-404` 另有 `x64/`、`[Aa][Rr][Mm]/`、`[Aa][Rr][Mm]64/`
+三条**更深层**的规则。git 的规则是**最深配置文件优先**，根目录的否定规则根本穿不透。
+
+> **教训**：在 `vendor/` 里判断某文件会不会入库，**不要靠读 `.gitignore` 推断**，
+> 直接用 `git check-ignore -v <path>` 看命中的是哪一行；最终以
+> `git ls-files -o --exclude-standard vendor`（未被忽略的遗漏）为准。
+>
+> 修复方式用了 `git add -f`（文件一旦被跟踪，忽略规则不再作用），
+> 这样**不用修改上游的 `.gitignore`**，`vendor/` 与上游保持严格 1:1。
+> 根 `.gitignore` 里那两条失效规则保留在原地并加了警示注释，防止后人再踩。
 
 ## 刻意未纳入
 

@@ -31,7 +31,14 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 ## 2. `vendor/` 下的五个仓库是干什么的
 
 `vendor/` 是 **2026-11-08 引入的上游第三方源码**（提交 `dc86535`），
-共 5 个 Git 仓库、1195 个文件、约 121 MB。**原样引入，未做任何修改。**
+共 5 个 Git 仓库、**4246 个文件、约 72 MB（入库体积）**。**原样引入，未做任何修改。**
+
+> 📌 **两个数字不要搞混**（2026-11-08 审计修正）：
+> · **72 MB / 4246 文件** = 真正提交进 git 的内容，`git clone` 拿到的就是这些；
+> · **121 MB** = `vendor/` 在工作树里的磁盘占用，多出的 49 MB 是
+>   `micro_ros_dev/{build,install,log}` 这 4843 个 cmake 中间产物，**刻意排除、不入库**。
+> · 早先文档写的「1195 个文件」是错的 —— 漏算了 `!` 规则救回的大部分文件，
+>   且把待 add 的误当成已入库。以本页数字为准。
 
 > ⚠️ **首先澄清一个计数**：`vendor/` 下是 **5 个仓库文件夹 + 1 个 README.md**，
 > 不是 6 个仓库。README 是我写的索引文件，不是上游代码。
@@ -52,7 +59,7 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 | # | 目录 | 上游仓库 | 分支 | 一行说明 | 文件数 / 体积 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `leap_ros2/` | `leap_ros2` | `main` | **只有硬件资料**：原理图、BOM、嘉立创工程、3D 打印外壳 | 13 / 3.1 MB |
-| 2 | `leap_ros_mcu_driver/` | `leap_ros_mcu_driver` | `main` | **ESP32-S3 下位机固件**（两个 ESP 里"主控"的那颗） | 8470 / 78 MB |
+| 2 | `leap_ros_mcu_driver/` | `leap_ros_mcu_driver` | `main` | **ESP32-S3 下位机固件**（两个 ESP 里"主控"的那颗） | 3623 / 62 MB |
 | 3 | `leap_ros_ws/` | `leap_ros_ws` | **`master`** | **上位机 ROS 2 工作空间**（11 个包） | 398 / 38 MB |
 | 4 | `esp32_s3_wifi_camera/` | `esp32_s3_wifi_camera` | `main` | **图传固件**，跑在独立的第二颗 ESP32-S3 上 | 181 / 2.5 MB |
 | 5 | `voice_assistant_client/` | `voice_assistant_client` | `main` | **语音助手**，纯 Python 标准库，走 HTTP | 30 / 284 KB |
@@ -394,7 +401,7 @@ cd amr-project
 | 路径 | 应有内容 |
 | --- | --- |
 | `src/` | 8 个包（core / ros / bt / interfaces / proto / proto_bridge / proto_cli / tools） |
-| `vendor/` | 5 个仓库目录 + README.md，约 121 MB |
+| `vendor/` | 5 个仓库目录 + README.md，**4246 个文件 / 约 72 MB**（不是 121 MB，后者含未入库的构建树） |
 | `config/` | 9 个 yaml + `scenarios/` |
 | `docs/` | 8 份文档（含本文） |
 | `HARDWARE_INTEGRATION.md` | 约 1600 行，v4 |
