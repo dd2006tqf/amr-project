@@ -462,7 +462,7 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 | `build/` `install/` `log/` | 编译产物，被 `.gitignore` 排除 | 重新 `colcon build` |
 | `micro_ros_dev/{build,install,log}` 4841 个文件 / 13.2 MB | cmake 中间产物，换机器必然重新生成 | 用时重新生成 |
 | `.ccache/` | 编译缓存 | 自动重建（首次编译会慢些） |
-| **本地分支**（6 个 feat/refactor） | git 只推 `main` | 不需要，都已合入 `main` |
+| **本地分支**（5 个 feat/refactor，另有 `main`） | git 只推 `main` | 不需要，相对 `main` 独有提交均为 0 |
 | **`构建产物`**：`build/` `install/` `log/` `runtime/` | 全部被 `.gitignore` 排除 | 重新 `colcon build` / 重新生成 |
 | **`~/.git-credentials` 里的 token** | 不在仓库 | 新机器上重新配认证 |
 
