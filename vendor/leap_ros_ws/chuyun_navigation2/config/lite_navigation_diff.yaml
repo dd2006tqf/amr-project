@@ -1,0 +1,101 @@
+# Differential-drive base: vx + wz only; cmd_vel.linear.y is always zero.
+lite_navigation:
+  ros__parameters:
+    odom_topic: /odometry/filtered
+    scan_topic: /scan
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_footprint
+
+    control_frequency: 12.0
+    localization_frequency: 4.0
+    scan_timeout: 0.8
+    tf_lookup_timeout: 0.05
+    max_vx: 0.18
+    max_vy: 0.0
+    max_reverse_speed: 0.08
+    max_wz: 0.70
+    max_xy_speed: 0.18
+    max_ax: 0.35
+    max_ay: 0.0
+    max_aw: 1.00
+    linear_gain: 1.0
+    angular_gain: 0.9
+    lookahead_distance: 0.36
+    path_point_spacing: 0.06
+    path_smoothing_iterations: 2
+    rotate_before_translate_angle: 0.60
+    heading_deadband: 0.05
+    path_search_window: 80
+    goal_position_tolerance: 0.10
+    goal_yaw_tolerance: 0.12
+
+    inflation_radius: 0.24
+    nearest_free_radius: 0.60
+    dynamic_obstacle_radius: 0.38
+    dynamic_clearance_radius: 0.70
+    dynamic_clearance_cost_weight: 10.0
+    preferred_clearance: 0.40
+    clearance_cost_weight: 6.0
+
+    # Lightweight local trajectory planner. It samples short collision-free
+    # velocity trajectories and remembers the selected passing side.
+    local_robot_radius: 0.18
+    local_safety_margin: 0.03
+    local_activation_distance: 0.75
+    local_preferred_clearance: 0.22
+    local_prediction_horizon: 1.20
+    local_simulation_step: 0.12
+    local_braking_deceleration: 0.35
+    local_vx_samples: 5
+    local_vy_samples: 1
+    local_wz_samples: 7
+    local_target_weight: 3.0
+    # Differential drive must steer its chassis toward the path because
+    # lateral translation is disabled.
+    local_heading_weight: 2.0
+    local_clearance_weight: 1.2
+    local_desired_velocity_weight: 0.7
+    local_progress_weight: 2.0
+    local_change_weight: 0.55
+    local_hysteresis_weight: 0.80
+    local_avoidance_commitment_weight: 0.80
+    local_reverse_weight: 0.80
+    local_stalled_translation_penalty: 0.70
+    local_recovery_lateral_weight: 0.0
+    local_recovery_speed: 0.08
+    local_recovery_distance: 0.35
+    local_recovery_minimum_improvement: 0.03
+    local_recovery_direction_samples: 24
+
+    # Replan only after a continuous hard block. Static wall returns and scan
+    # points away from the remaining route are excluded from the temporary map.
+    dynamic_replan_delay: 1.5
+    dynamic_replan_cooldown: 8.0
+    dynamic_replan_obstacle_range: 2.5
+    dynamic_replan_path_corridor: 0.45
+    dynamic_replan_static_filter_distance: 0.18
+    dynamic_replan_equivalence_distance: 0.16
+    dynamic_replan_rearm_clear_time: 1.0
+    dynamic_replan_progress_distance: 0.10
+    dynamic_replan_goal_progress: 0.06
+    dynamic_replan_min_obstacle_points: 4
+
+    # Coarse-to-fine likelihood-field scan matching. These defaults require
+    # only odometry, a 2-D LaserScan and the static map.
+    likelihood_max_distance: 2.0
+    localization_laser_min_range: 0.10
+    localization_laser_max_range: 8.0
+    localization_search_xy: 0.20
+    localization_search_yaw: 0.16
+    localization_step_xy: 0.05
+    localization_step_yaw: 0.04
+    localization_fine_step_xy: 0.01
+    localization_fine_step_yaw: 0.01
+    localization_likelihood_sigma: 0.10
+    localization_min_score: 0.32
+    localization_min_valid_fraction: 0.45
+    localization_prior_weight: 0.025
+    localization_correction_gain: 0.35
+    localization_min_points: 25
+    localization_max_points: 160

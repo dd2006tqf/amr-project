@@ -1,0 +1,12 @@
+opencv_demo_node:
+  ros__parameters:
+    use_test_image: true
+    input_topic: ""
+    test_image_topic: /opencv/image_test
+    annotated_topic: /opencv/image_annotated
+    mask_topic: /opencv/color_mask
+    detections_topic: /opencv/detections
+    template_path: ""
+    publish_rate: 5.0
+    match_threshold: 0.80
+    min_contour_area: 150.0
