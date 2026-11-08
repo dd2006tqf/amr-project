@@ -32,12 +32,17 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 `vendor/` 是 **2026-11-08 引入的上游第三方源码**（提交 `dc86535`），
 共 5 个 Git 仓库、**4246 个文件、约 72 MB（入库体积）**。**原样引入，未做任何修改。**
 
-> 📌 **两个数字不要搞混**（2026-11-08 审计修正）：
-> · **72 MB / 4246 文件** = 真正提交进 git 的内容，`git clone` 拿到的就是这些；
-> · **121 MB** = `vendor/` 在工作树里的磁盘占用，多出的 49 MB 是
->   `micro_ros_dev/{build,install,log}` 这 4843 个 cmake 中间产物，**刻意排除、不入库**。
-> · 早先文档写的「1195 个文件」是错的 —— 漏算了 `!` 规则救回的大部分文件，
->   且把待 add 的误当成已入库。以本页数字为准。
+> 📌 **三个数字不要搞混**（2026-11-08 干净克隆实测修正）：
+> · **72.3 MB / 4246 文件** = 真正提交进 git 的内容（`git ls-tree` 逐文件字节求和），
+>   `git clone` 拿到的就是这些；
+> · **85.5 MB** = `vendor/` 工作树的真实字节数（`du -sb` = 89 704 427 B）；
+> · **121 MB** = 服务器上 `du -sh vendor/` 的**块占用**。它 = 入库内容 72.3 MiB
+>   + 未入库构建产物 13.2 MiB，**再加约 35 MB 的文件系统块粒度开销**（小文件多）。
+>   **不要用 `du -sh` 判断入库体积**，那个数字永远偏大。
+>
+> 其中 `micro_ros_dev/{build,install,log}` 是 **4841 个** cmake 中间产物，
+> 真实字节 **13.2 MB**（块占用约 35 MB），**刻意排除、不入库**。
+> 这三处早先文档分别写错过（「1195 个文件」「4843 个」「49 MB」），以本页为准。
 
 > ⚠️ **首先澄清一个计数**：`vendor/` 下是 **5 个仓库文件夹 + 1 个 README.md**，
 > 不是 6 个仓库。README 是我写的索引文件，不是上游代码。
@@ -395,15 +400,15 @@ cd amr-project
 > **直接 clone 默认的 `main` 即可**，不需要 `-b` 指定分支。
 >
 > 早期版本的本节让人 clone `feat/phase11-observability-topology`，那个分支
-> 已过期（停在 `0780690`，落后 main 3 个提交），**不要再使用**。
+> 已过期（停在 `0780690`，落后 main **4** 个提交），**不要再使用**。
 
 **拉下来应该有什么**（用来核对完整性）：
 
 | 路径 | 应有内容 |
 | --- | --- |
 | `src/` | 8 个包（core / ros / bt / interfaces / proto / proto_bridge / proto_cli / tools） |
-| `vendor/` | 5 个仓库目录 + README.md，**4246 个文件 / 约 72 MB**（不是 121 MB，后者含未入库的构建树） |
-| `config/` | 9 个 yaml + `scenarios/` |
+| `vendor/` | 5 个仓库目录 + README.md，**4246 个文件 / 72.3 MiB 入库内容**（`du -sh` 会显示 86 MB，那是块占用，不是入库体积） |
+| `config/` | 10 个顶层 yaml + `scenarios/`（其中 2 个场景 yaml） |
 | `docs/` | 8 份文档（含本文） |
 | `HARDWARE_INTEGRATION.md` | 约 1600 行，v4 |
 | `docker/Dockerfile.jazzy` | 容器构建入口 |
@@ -445,8 +450,8 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 
 | 项 | 说明 |
 | --- | --- |
-| 全部源码 | `src/` 8 个包，100 个提交的历史完整 |
-| `vendor/` 4246 个文件 | 含之前漏掉的 `openni2_redist` 18 个 `.so`，已用 `git add -f` 入库 |
+| 全部源码 | `src/` 8 个包，**176 个提交**的完整历史（其中 116 个触碰 `src/`） |
+| `vendor/` 4246 个文件 | 含之前漏掉的 `openni2_redist`（**18 个文件，其中 9 个 `.so`**），已用 `git add -f` 入库 |
 | `config/`、`launch/`、`docs/` | 全部在库 |
 | 构建脚本、Docker 文件 | 全部在库 |
 
@@ -455,19 +460,24 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 | 项 | 为什么 | 到虚拟机怎么办 |
 | --- | --- | --- |
 | `build/` `install/` `log/` | 编译产物，被 `.gitignore` 排除 | 重新 `colcon build` |
-| `micro_ros_dev/{build,install,log}` 4843 个文件 | cmake 中间产物，换机器必然重新生成 | 用时重新生成 |
+| `micro_ros_dev/{build,install,log}` 4841 个文件 / 13.2 MB | cmake 中间产物，换机器必然重新生成 | 用时重新生成 |
 | `.ccache/` | 编译缓存 | 自动重建（首次编译会慢些） |
 | **本地分支**（6 个 feat/refactor） | git 只推 `main` | 不需要，都已合入 `main` |
-| **`机器人项目简历知识库.md`** | 被 `.gitignore` 排除 | ⚠️ **必须手工拷贝** |
-| **所有 `*.pdf`** | 被 `.gitignore` 排除 | ⚠️ **必须手工拷贝**（但 `vendor/` 里的原理图已放行，不受影响） |
+| **`构建产物`**：`build/` `install/` `log/` `runtime/` | 全部被 `.gitignore` 排除 | 重新 `colcon build` / 重新生成 |
 | **`~/.git-credentials` 里的 token** | 不在仓库 | 新机器上重新配认证 |
-| 运行时产物 `runtime/` | 被排除 | 重新生成 |
+
+> **2026-11-08 变更**：`机器人项目简历知识库.md` 与 `docs/superpowers/`
+> 已从 `.gitignore` 移出并入库（用户明确要求），**不再是手工项**。
+> 仓库是 **public**，二者推上去即永久公开、无法真正撤回，这一点已确认接受。
+> 仍然排除的只剩 `*.pdf`（`vendor/` 下的原理图另有 `!` 规则放行）与构建产物。
 
 #### 结论
 
-**代码层面：100% 可还原**（`git clone` 一条命令，含 `vendor/` 与全部文档）。
+**代码层面：100% 可还原**（`git clone` 一条命令，含 `vendor/`、全部文档、
+简历知识库与 `docs/superpowers/` —— 已用干净克隆逐 blob 校验，4830 个文件全等）。
 **环境层面：需重编译**（几分钟到十几分钟，取决于机器）。
-**两个手工项：简历知识库、根目录的 PDF** —— 这两个不拷就真没了。
+**唯一的手工项：仓库外的 `*.pdf`** —— 若你本地还留着一份，拷过去即可；
+仓库内两份原理图已在库，不影响查引脚。
 
 ### 5.4 迁移后第一件事
 
@@ -507,12 +517,13 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
 | --- | --- | --- |
 | **GitHub 认证** | 服务器 `~/.git-credentials` 存的是 **OAuth token（`gho_...`）** | **不会跟随迁移**。新机器上用 SSH key 或 `gh auth login` 重新配置 |
 | SSH 私钥 | 只有 `id_board`（连开发板用的） | 需要为 GitHub 新建一对 key 并加到账号 |
-| `机器人项目简历知识库.md` | **被 `.gitignore` 排除**（`*简历知识库.md`） | 如果还要用，**必须手动拷过去**，`git clone` 拿不到 |
-| `*.pdf` | 被忽略 | 同上，手动拷 |
+| `机器人项目简历知识库.md` | ✅ **2026-11-08 已入库** | `git clone` 即可拿到 |
+| `docs/superpowers/` | ✅ **2026-11-08 已入库**（13 个文件 / 87 KB） | `git clone` 即可拿到 |
+| `*.pdf`（仓库外的） | 被 `.gitignore` 排除 | 若还需要，手动拷；仓库内原理图已在库 |
 | 阿里云百炼 API Key | 语音助手用，当前未接入 | 若将来要接，单独管理，不要提交 |
 
-> ⚠️ **`git clone` 拿不到的东西**：个人简历知识库、PDF、任何被 `.gitignore`
-> 排除的本地文件。**迁移前先在服务器上 `ls` 一遍确认哪些要手动带走。**
+> ⚠️ **`git clone` 拿不到的东西**：只剩 `*.pdf`（仓库外）、构建产物与
+> `~/.git-credentials` 里的 token。**迁移前先在服务器上 `ls` 一遍确认。**
 
 ---
 

@@ -13,12 +13,12 @@ log/
 # /workspace/.ccache，映射到宿主机的 <repo>/.ccache）。属本地产物，不入库。
 .ccache/
 
-# 个人简历等非项目文件，不应进入公开仓库
+# 个人 PDF 简历等非项目文件，不应进入公开仓库
+# 注意：2026-11-08 按用户决定放行 `机器人项目简历知识库.md` 与 `docs/superpowers/`，
+# 二者已入库；`*.pdf` 仍排除（vendor/ 下的原理图另有 `!` 规则放行）。
 *.pdf
-*简历知识库.md
 
-# 工作流计划与审查产物（不入库）
-docs/superpowers/
+# 工作流计划与审查产物：2026-11-08 起入库（docs/superpowers/ 曾在此排除）
 
 # check_all.sh 每次运行生成的测试矩阵（由脚本如实重写，只作本地产物）
 test_report_matrix.json
