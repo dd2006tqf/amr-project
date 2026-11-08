@@ -44,8 +44,10 @@ services:
 
     working_dir: /workspace
     volumes:
-      # 仓库根目录（compose 文件的上一级）挂载为 /workspace。
+      # 上位机工作区（compose 文件的上一级，即 upper/amr/）挂载为 /workspace。
       # 首次启动会在此生成 build/ install/ log/。
+      # 注意：不是仓库根目录 —— 仓库根还包含 lower/ 下位机固件与 hardware/ 硬件资料，
+      # 容器只需上位机这一层。
       - ../:/workspace
 
     ports:

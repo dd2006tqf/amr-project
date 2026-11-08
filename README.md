@@ -6,6 +6,28 @@ Developed with Modern C++17/C++20, ROS 2 Jazzy, and Clean Ports & Adapters Archi
 
 ---
 
+## 📁 Repository Layout
+
+This repository holds **both the upper layer (ROS 2 host) and the lower layer (ESP32-S3 firmware)**, split by layer:
+
+```
+upper/amr/                     Our own upper layer — the code in this README
+  src/  config/  launch/  test/  scripts/  docker/  tools/  deploy/
+upper/leap_ros_ws/             Upstream official ROS 2 workspace (reference only)
+upper/voice_assistant_client/  Upstream voice assistant (runs on the A7A board)
+lower/leap_ros_mcu_driver/     ESP32-S3 main-control firmware  ← the fusion target
+lower/esp32_s3_wifi_camera/    ESP32-S3 camera-stream firmware
+hardware/leap_ros2/            Hardware docs only (schematics / BOM / 3D) — no code
+```
+
+> **Nothing under `upper/leap_ros_ws/`, `lower/`, or `hardware/` is compiled by the ROS 2 build.**
+> Only `upper/amr/` participates. See `docs/UPSTREAM_VENDOR.md` for what each upstream tree is,
+> and `docs/DEV_ENV_MIGRATION.md` §0 for why the two layers are **not fused yet**.
+
+All commands below assume `cd upper/amr` first (it is the colcon workspace root).
+
+---
+
 ## 🌟 Core Highlights & Differentiators
 
 1. **Zero-ROS Core Architecture (`amr_dispatcher_core`)**:

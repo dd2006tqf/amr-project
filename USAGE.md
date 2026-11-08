@@ -79,10 +79,10 @@ python3 scripts/validate_config.py config/*.yaml config/scenarios/*.yaml
 ### 3.1 一键构建并启动全系统
 ```bash
 # 若镜像尚未构建
-docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+cd upper/amr && docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
 
 # 启动（在仓库根目录执行）
-docker compose -f docker/docker-compose.server.yml up -d
+cd upper/amr && docker compose -f docker/docker-compose.server.yml up -d
 ```
 容器启动后会自动编译全部 5 个 ROS 2 子包（首跳约 4–5 分钟），然后执行 `full_system.launch.py`，拉起以下 7 个核心节点：
 1. **`dispatcher_node`** (Lifecycle 节点)：处理任务优先级队列、资源互斥原子锁、死锁巡检，并提供 `/execute_mission` Action 动作服务。
@@ -338,7 +338,7 @@ ros2 service call /v2/validate_site_config amr_dispatcher_interfaces/srv/Validat
 ## 六、常见问题排查 (Troubleshooting)
 
 ### Q1: 在宿主机运行 `./scripts/build.sh` 提示没有 ROS 2 Jazzy？
-- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库。完整的 ROS 2 节点请通过 `docker compose -f docker/docker-compose.server.yml up -d` 运行（详见 `docs/DEPLOYMENT.md`）。
+- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库。完整的 ROS 2 节点请通过 `cd upper/amr && docker compose -f docker/docker-compose.server.yml up -d` 运行（详见 `docs/DEPLOYMENT.md`）。
 
 ### Q2: 真实小车连接后底盘驱动降级为 MockBackend？
 - 检查 `config/chassis.yaml` 中的 `serial_device` 设备权限（通常需要 `sudo chmod 666 /dev/ttyUSB0` 或加入 `dialout` 用户组）。

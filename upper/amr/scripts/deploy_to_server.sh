@@ -61,7 +61,7 @@ warn() { echo "[WARN] $*" >&2; }
 die()  { echo "[FAIL] $*" >&2; exit 1; }
 
 [ -n "$SERVER" ] || die "未指定服务器。请用 AMR_SERVER=ubuntu@<ip> 或位置参数传入。"
-[ -f "${REPO_ROOT}/docker/Dockerfile.jazzy" ] || die "找不到 docker/Dockerfile.jazzy，请在仓库根目录执行。"
+[ -f "${REPO_ROOT}/docker/Dockerfile.jazzy" ] || die "找不到 ${REPO_ROOT}/docker/Dockerfile.jazzy。"
 
 cd "$REPO_ROOT"
 
@@ -159,7 +159,7 @@ cat <<EOF
 后续操作：
 
   查看日志
-    ssh $SERVER 'docker compose -f $REPO_DIR/docker/docker-compose.server.yml logs -f'
+    ssh $SERVER 'docker compose -f $REPO_DIR/upper/amr/docker/docker-compose.server.yml logs -f'
 
   建 SSH 隧道后访问 Web 控制台
     AMR_SERVER=$SERVER ./scripts/tunnel.sh

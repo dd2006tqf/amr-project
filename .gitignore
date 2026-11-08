@@ -15,7 +15,7 @@ log/
 
 # 个人 PDF 简历等非项目文件，不应进入公开仓库
 # 注意：2026-11-08 按用户决定放行 `机器人项目简历知识库.md` 与 `docs/superpowers/`，
-# 二者已入库；`*.pdf` 仍排除（vendor/ 下的原理图另有 `!` 规则放行）。
+# 二者已入库；`*.pdf` 仍排除（hardware/ 下的原理图另有 `!` 规则放行）。
 *.pdf
 
 # 工作流计划与审查产物：2026-11-08 起入库（docs/superpowers/ 曾在此排除）
@@ -24,7 +24,8 @@ log/
 test_report_matrix.json
 
 # 地图导入引擎生成的拓扑站点文件（由 map_ingest_node 运行时生成）
-config/generated/
+# 注意：规则要能匹配 upper/amr/config/generated/，故用 **/ 前缀。
+**/config/generated/
 
 # check_web_console_e2e.sh 在容器内工作区留下的临时运行目录
 .wc_stamp/
@@ -44,10 +45,17 @@ runtime/
 *.png
 
 # ============================================================
-# vendor/ —— 上游第三方源码的放行规则
+# 分层后的上游第三方源码放行规则
+#   upper/amr/          自研上位机（本仓库主代码，全部跟踪）
+#   upper/leap_ros_ws/  上游官方上位机
+#   upper/voice_assistant_client/
+#   lower/leap_ros_mcu_driver/   下位机固件（ESP32-S3）
+#   lower/esp32_s3_wifi_camera/  图传固件
+#   hardware/leap_ros2/          硬件资料（原理图/BOM/3D）
+# 原目录名 vendor/ 已拆掉，名字本身不变，只改了层级。
 # ------------------------------------------------------------
 # 决策（2026-11-08）：
-#   · vendor 下上游自带的 21 个 .gitignore **保持原样不动**
+#   · 各上游仓库自带的 21 个 .gitignore **保持原样不动**
 #     （仓库存放的是上游发布物，不修改上游文件，便于日后 diff）；
 #   · 但上游规则会漏掉几类我们**真正需要**的文件，用下面的 `!` 规则救回；
 #   · 唯一主动排除的是 micro_ros_dev 的三个 cmake 构建目录。
@@ -57,23 +65,23 @@ runtime/
 #    经验证，靠下面的 `!` 规则 + 必要时 `git add -f` 已足够，
 #    **不需要、也不应该**去动上游文件。
 #
-# 为什么不能简单地写 `!vendor/**` 全量放行：
+# 为什么不能简单地写 `!upper/**` `!lower/**` 全量放行：
 #   那样会把 micro_ros_dev/build 与 install 里 4843 个 cmake 中间产物
 #   （.stamp / .make / CMakeCache / install 前缀，约 35 MB）一起吞进来，
 #   它们换一台机器必须重新生成，与 LEAP_ROS 固件无关。
 #   而 git 忽略规则「后写优先」+ 否定规则会抵消低优先级规则，
-#   一旦写了 `!vendor/**`，后面再排除 build/ 也无效（已实测确认）。
+#   一旦写了全量放行，后面再排除 build/ 也无效（已实测确认）。
 #
 # 所以这里采取「精确救回」：只放行会被上游规则误伤的关键资料。
 # ============================================================
 
-# --- 1. 原理图与整机照片 ---
+# --- 1. 原理图与整机照片（hardware/leap_ros2）---
 # 硬件/5.原理图/主控板.pdf 是查 GPIO 走线、确认 AT8236 的 ISEN/nFAULT
 # 是否接线的**唯一依据**（HARDWARE_INTEGRATION.md §3.2c G3）。
 # 根目录的 `*.pdf` / `*.png` 会把它排掉，必须显式放行。
-!vendor/leap_ros2/硬件/5.原理图/
-!vendor/leap_ros2/硬件/5.原理图/**
-!vendor/leap_ros2/leap_ros.png
+!hardware/leap_ros2/硬件/5.原理图/
+!hardware/leap_ros2/硬件/5.原理图/**
+!hardware/leap_ros2/leap_ros.png
 
 # --- 2. micro-ROS 预编译产物 ---
 # 这几项被 micro_ros_espidf_component/.gitignore 排除，但它们是
@@ -82,42 +90,42 @@ runtime/
 #   · include/           （2234 个预编译头，与 .a 配套）
 #   · esp32_toolchain.cmake（工具链定义）
 # 缺了它们 `idf.py build` 会直接失败。
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/libmicroros.a
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/include/
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/include/**
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/esp32_toolchain.cmake
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/.images/
-!vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/.images/**
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/libmicroros.a
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/include/
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/include/**
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/esp32_toolchain.cmake
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/.images/
+!lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/.images/**
 
 # --- 3. 其余仓库里被上游误伤的资料 ---
 # · openslam_gmapping/log/ 是**源码目录**（sensorstream.cpp 等），
 #   被根目录的 `log/` 规则误伤 —— 这是最隐蔽的一处。
 # · micro_ros_agent/bin/*.py 是 agent 的生成脚本。
 # · openni2_redist/ 里是相机驱动 .so 与 ini 配置。
-!vendor/leap_ros_ws/openslam_gmapping/log/
-!vendor/leap_ros_ws/openslam_gmapping/log/**
-!vendor/leap_ros_ws/openslam_gmapping/include/gmapping/log/
-!vendor/leap_ros_ws/openslam_gmapping/include/gmapping/log/**
-!vendor/leap_ros_ws/micro-ROS-Agent/micro_ros_agent/bin/
-!vendor/leap_ros_ws/micro-ROS-Agent/micro_ros_agent/bin/**
+!upper/leap_ros_ws/openslam_gmapping/log/
+!upper/leap_ros_ws/openslam_gmapping/log/**
+!upper/leap_ros_ws/openslam_gmapping/include/gmapping/log/
+!upper/leap_ros_ws/openslam_gmapping/include/gmapping/log/**
+!upper/leap_ros_ws/micro-ROS-Agent/micro_ros_agent/bin/
+!upper/leap_ros_ws/micro-ROS-Agent/micro_ros_agent/bin/**
 #
 # ⚠️ 下面两条 openni2 的 `!` 规则**实际不生效**，保留只为记录教训：
 #   ros2_astra_camera/.gitignore 里另有 [Aa][Rr][Mm]/、[Aa][Rr][Mm]64/、x64/
 #   三条**更深层**的规则，而 git 是「最深 .gitignore 优先」，根目录的
 #   否定规则穿不透子目录规则（2026-11-08 实测确认，见下方第 5 节）。
 #   那 18 个 .so/.ini（4.9 MB）最终是用 `git add -f` 强制入库的。
-!vendor/leap_ros_ws/ros2_astra_camera/astra_camera/openni2_redist/
-!vendor/leap_ros_ws/ros2_astra_camera/astra_camera/openni2_redist/**
-!vendor/voice_assistant_client/tests/mcp_test.png
+!upper/leap_ros_ws/ros2_astra_camera/astra_camera/openni2_redist/
+!upper/leap_ros_ws/ros2_astra_camera/astra_camera/openni2_redist/**
+!upper/voice_assistant_client/tests/mcp_test.png
 # 上游自带的 IDE 配置（132 B），被根目录 `.vscode/` 规则误伤。
-# 放行以保持 vendor/ 与上游 tarball 严格 1:1，便于日后核对。
-!vendor/esp32_s3_wifi_camera/.vscode/
-!vendor/esp32_s3_wifi_camera/.vscode/**
+# 放行以保持上游目录与 tarball 严格 1:1，便于日后核对。
+!lower/esp32_s3_wifi_camera/.vscode/
+!lower/esp32_s3_wifi_camera/.vscode/**
 
 # --- 4. 唯一主动排除：micro_ros_dev 的 cmake 构建树 ---
 # 这三个目录是 micro-ROS 自己开发源码的构建输出，不是 LEAP_ROS 固件依赖。
 # 约 35 MB / 4843 个文件，换机器必然重新生成。
 # 同级的 src/ 是源码，**不排除**。
-vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/build/
-vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/install/
-vendor/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/log/
+lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/build/
+lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/install/
+lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/log/

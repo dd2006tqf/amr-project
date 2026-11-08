@@ -12,6 +12,9 @@ jobs:
   # （零 ROS 依赖，可脱离 ROS 环境独立编译测试）。
   build-and-test-core:
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: upper/amr
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +36,7 @@ jobs:
           # 并发度走统一推导脚本（与 scripts/build.sh 同一份实现）。CI 上
           # 16 GB / 4 vCPU 仍会算出 4，与原来的 -j$(nproc) 等价；改成推导的
           # 目的是让「改并发策略」只有一处，避免 CI 与本地/部署三套行为分叉。
-          source "${GITHUB_WORKSPACE}/scripts/lib/build_workers.sh"
+          source "${GITHUB_WORKSPACE}/upper/amr/scripts/lib/build_workers.sh"
           cmake --build build/core -j"$(build_workers)"
 
       - name: Run Core Tests
@@ -61,6 +64,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ros:jazzy-ros-base
+    defaults:
+      run:
+        working-directory: upper/amr
     steps:
       - uses: actions/checkout@v4
 
@@ -221,6 +227,9 @@ jobs:
     # 且超时时会明确失败而不是被"还没跑完"静默截断。
     timeout-minutes: 40
     needs: build-ros2-jazzy
+    defaults:
+      run:
+        working-directory: upper/amr
     steps:
       - uses: actions/checkout@v4
 

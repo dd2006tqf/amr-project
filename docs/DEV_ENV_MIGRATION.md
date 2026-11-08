@@ -74,7 +74,7 @@
 # 新虚拟机（Ubuntu 24.04 / x86_64）上：
 
 git clone https://github.com/dd2006tqf/amr-project.git
-cd amr-project
+cd amr-project/upper/amr          # ← colcon 工作区根在这一层
 
 # 编译（二选一，推荐容器，见 §5）
 docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
@@ -82,15 +82,28 @@ docker run --rm -v "$PWD":/workspace -w /workspace amr-dispatcher:jazzy \
     bash -lc 'source /opt/ros/jazzy/setup.bash && colcon build --base-paths src'
 ```
 
+> ⚠️ **2026-11-08 起仓库分为 `upper/` `lower/` `hardware/` 三层**，`vendor/` 已拆掉。
+> 上位机的所有命令都要在 `upper/amr/` 下执行；在仓库根执行 `colcon build` 会发现 0 个包。
+> 分层说明见 `docs/UPSTREAM_VENDOR.md`。
+
 **不需要**在虚拟机上准备的东西：`build/`、`install/`、`log/` 全部被 `.gitignore` 排除，
 拉下来是干净的源码树，重新编译即可。
 
 ---
 
-## 2. `vendor/` 下的五个仓库是干什么的
+## 2. 上游第三方源码是干什么的（原 `vendor/`，2026-11-08 已拆为三层）
 
-`vendor/` 是 **2026-11-08 引入的上游第三方源码**（提交 `dc86535`），
-共 5 个 Git 仓库、**4246 个文件、约 72 MB（入库体积）**。**原样引入，未做任何修改。**
+这 5 个 Git 仓库、**4246 个文件、约 72 MB（入库体积）** 于 **2026-11-08 引入**（提交 `dc86535`），
+**原样引入，未做任何修改**。原目录名 `vendor/` 已拆除，**名字一个没改，只改了层级**：
+
+| 原位置 | 新位置 | 理由 |
+| --- | --- | --- |
+| `vendor/leap_ros_mcu_driver/` | `lower/leap_ros_mcu_driver/` | 下位机固件 |
+| `vendor/esp32_s3_wifi_camera/` | `lower/esp32_s3_wifi_camera/` | 下位机图传固件 |
+| `vendor/leap_ros_ws/` | `upper/leap_ros_ws/` | 上游官方上位机 |
+| `vendor/voice_assistant_client/` | `upper/voice_assistant_client/` | 上位机附加应用 |
+| `vendor/leap_ros2/` | `hardware/leap_ros2/` | 纯硬件资料，无代码 |
+| `vendor/README.md` | `docs/UPSTREAM_VENDOR.md` | 由目录说明改为文档 |
 
 > 📌 **三个数字不要搞混**（2026-11-08 干净克隆实测修正）：
 > · **72.3 MB / 4246 文件** = 真正提交进 git 的内容（`git ls-tree` 逐文件字节求和），
