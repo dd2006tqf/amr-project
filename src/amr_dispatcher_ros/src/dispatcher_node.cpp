@@ -94,29 +94,25 @@ DispatcherNode::DispatcherNode(const rclcpp::NodeOptions& options)
   declare_parameter("auto_charging_critical_threshold_percent", 15.0);
   declare_parameter("auto_charging_opportunity_priority", 0);
   declare_parameter("auto_charging_critical_priority", 5);
-  // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧：state / events / topology
-  // 三条 proto 话题都不会被创建，rosidl 侧逐位不变。
+  // 阶段 4c：rosidl 侧已删除。proto 发布总开关（默认开），关闭后
+  // state / events / topology 三条都不发（仅用于测试/压测）。
+  // plan_pub_（nav_msgs::Path，无 proto 对应物）不受影响。
   declare_parameter("proto_dual_publish", true);
-  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后 state / events / topology
-  // 三条只发 *_proto，DDS 里不再出现对应的 rosidl 话题。
+  // 阶段 3 双订阅总开关，**阶段 4c 起默认 true**（原默认 false）。
+  // /tracking/error 与 /tracking/error/{vid} 从 *_proto 读取，适配器内部
+  // 反投影回 rosidl，到达判定逻辑（TrackingErrorCb / TrackingErrorCbForVehicle）
+  // 一字未改。
   //
-  // 本节点自己是 lifecycle 的，这条开关与激活态无关：双发器在 on_configure
-  // 时就建好（或干脆不建）发布器，Activate()/Deactivate() 仍成对跟随。
-  // plan_pub_（nav_msgs::Path，无 proto 对应物）不受此开关影响。
-  declare_parameter("proto_rosidl_publish", true);
-  // 阶段 3 双订阅总开关（默认关）。开启后 /tracking/error 与
-  // /tracking/error/{vid} 改从 *_proto 读取，适配器内部反投影回 rosidl，
-  // 到达判定逻辑（TrackingErrorCb / TrackingErrorCbForVehicle）一字未改。
-  //
-  // 默认关是刻意的：发布端 path_tracker 的 proto_dual_publish 必须先开着，
-  // 否则订阅端会「订阅成功但永远收不到」——DDS 不报错，只是没有匹配发布者。
-  declare_parameter("proto_dual_subscribe", false);
+  // 默认翻成 true 是 4c 的必要配套：发布端 path_tracker 已删除 rosidl 侧，
+  // 默认 false 会让本节点订阅一条永远没人发布的话题——DDS 不报错，只是
+  // 数据永久静止。保留开关是为了仍能读「别人发的 rosidl」（旧版本节点、
+  // 第三方发布者），或在本仓库回滚发布端代码后切回。
+  declare_parameter("proto_dual_subscribe", true);
 
   recovery_dock_station_ = get_parameter("recovery_dock_station").as_string();
   planner_type_ = get_parameter("planner_type").as_string();
   expected_map_hash_ = get_parameter("expected_map_hash").as_string();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
-  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
   proto_dual_subscribe_ = get_parameter("proto_dual_subscribe").as_bool();
 }
 
@@ -254,35 +250,34 @@ CallbackReturn DispatcherNode::on_configure(const rclcpp_lifecycle::State& /*sta
   }
 
   // plan_pub_ 没有 proto 对应物（nav_msgs::Path 不在迁移范围内），
-  // 因此它仍由节点自己持有，也不受 proto_rosidl_publish 影响。
+  // 因此它仍由节点自己持有。
   plan_pub_ = create_publisher<nav_msgs::msg::Path>("/plan", 1);
 
-  // ---- 阶段 2 双发 + 阶段 4b 收口：三条 rosidl 发布器全部收进双发器 ----
+  // ---- 阶段 4c：三条 proto 发布器 ----
   //
-  // 此前这里是「create_publisher 建三份 rosidl + 三份双发器只管 proto」，
-  // 共六个句柄指向三条话题。后果是「只发一侧」根本无法用参数表达：
-  // 删掉双发器里的 rosidl 行也没用，节点自己那份照样在发。
-  // 现在每条话题只有一个 owner，PublishAll 负责两侧投递。
+  // 阶段 4b 之前这里是「create_publisher 建三份 rosidl + 三份双发器只管 proto」，
+  // 共六个句柄指向三条话题。4b 把 rosidl 侧收进双发器，4c 直接删除了它们：
+  // 现在每条话题只有一个发布器，且只发 *_proto。
   //
-  // 建在 on_configure 而不是构造函数里，是为了与 rosidl 侧同生命周期：
+  // 建在 on_configure 而不是构造函数里，是为了与节点生命周期对齐：
   // on_cleanup 会把它们一起 reset，重新 configure 时重建，不会留下悬挂的发布器。
   //
-  // QoS 深度保持旧值（10 / 20 / 10）：深度不一致时突发丢帧会被误判成消息不一致。
+  // QoS 深度保持旧值（10 / 20 / 10）。
   state_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
       amr_dispatcher_interfaces::msg::DispatcherState,
       amr_dispatcher::proto::DispatcherState>>(
-      this, "/dispatcher/state", 10, proto_dual_publish_, proto_rosidl_publish_);
+      this, "/dispatcher/state", 10, proto_dual_publish_);
   event_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
       amr_dispatcher_interfaces::msg::MissionEvent,
       amr_dispatcher::proto::MissionEvent>>(
-      this, "/dispatcher/events", 20, proto_dual_publish_, proto_rosidl_publish_);
+      this, "/dispatcher/events", 20, proto_dual_publish_);
   // 拓扑状态：safety_gate（deadlock_active_）与 visualizer（绿锁边/红警戒柱）的死锁输入
   topology_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<
       amr_dispatcher_interfaces::msg::TopologyState,
       amr_dispatcher::proto::TopologyState>>(
-      this, "/dispatcher/topology_state", 10, proto_dual_publish_, proto_rosidl_publish_);
-  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
-  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+      this, "/dispatcher/topology_state", 10, proto_dual_publish_);
+  // 状态播报收在发布器里：关闭时 ERROR、正常时 INFO，
+  // 不会出现「实际不发却报『已发布』」这种误导（见 LogStatus）。
   // 三条各播一次，而不是在这里另写一份合并文案——那样 dispatcher 的
   // 判定逻辑会与另外四个节点分叉，正是本项目反复踩过的漂移模式。
   if (state_proto_pub_) state_proto_pub_->LogStatus(get_logger());

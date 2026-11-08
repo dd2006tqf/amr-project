@@ -31,17 +31,17 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   declare_parameter("manual_takeover_topic", "");
   declare_parameter("link_health_topic", "");
   declare_parameter("safety_state_topic", "");
-  // 阶段 2 双发总开关（默认开）。关闭只停 proto 侧，门控行为不变。
+  // 阶段 4c：rosidl 侧已删除。proto 发布总开关（默认开），关闭后本节点
+  // 不发 /safety/state_proto。
   declare_parameter("proto_dual_publish", true);
-  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后只发 /safety/state_proto。
-  // 注意本节点自己**不订阅** /safety/state，所以关掉 rosidl 侧不影响门控判定；
-  // 但外部仪表盘/上层如果还在读 rosidl 话题，会静默收不到。
-  declare_parameter("proto_rosidl_publish", true);
-  // 阶段 3 双订阅总开关（默认关）。开启后 link_health 与 topology_state
-  // 改从 *_proto 读取，适配器内部反投影回 rosidl——门控判定逻辑一字未改。
-  // 默认关是刻意的：发布端必须先开着（proto_dual_publish=true）才有配对话题，
-  // 否则订阅会静默收不到任何消息（DDS 不报错）。
-  declare_parameter("proto_dual_subscribe", false);
+  // 订阅侧话题选择：link_health 与 topology_state 从 *_proto 读取，
+  // 适配器内部反投影回 rosidl——门控判定逻辑一字未改。
+  //
+  // **阶段 4c 起默认 true**（原默认 false）。发布端已删除 rosidl 侧，
+  // 默认 false 会让本节点订阅永远不会有人发布的话题，静默收不到数据。
+  // 保留开关是为了仍能读「别人发的 rosidl」（旧版本节点/第三方发布者），
+  // 或在本仓库回滚发布端代码后一键切回。
+  declare_parameter("proto_dual_subscribe", true);
 
   // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
   // 周期路径（10Hz/50Hz）不再重复 get_parameter。
@@ -49,7 +49,6 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
       std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
   degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
-  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
   proto_dual_subscribe_ = get_parameter("proto_dual_subscribe").as_bool();
 
   // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
@@ -193,13 +192,15 @@ SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
   // 此前这里是 create_publisher 建 safety_state_pub_ + 双发器只管 proto，
   // 两套句柄让「只发一侧」无法用参数表达；且两个发布器同时指向
   // /safety/state 时，DDS 会合并成同一话题的多个 writer，出问题极难定位。
+  // 阶段 4c：rosidl 侧已删除，本节点只发 /safety/state_proto。
+  // 注意本节点自己**不订阅** /safety/state，所以这不影响门控判定；
   // QoS 深度与旧值一致（10）。
   safety_state_proto_pub_ = std::make_unique<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::SafetyState,
       amr_dispatcher::proto::SafetyState>>(
-      this, safety_state_topic_, 10, proto_dual_publish_, proto_rosidl_publish_);
-  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
-  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+      this, safety_state_topic_, 10, proto_dual_publish_);
+  // 状态播报收在双发器里：关闭时 ERROR、正常时 INFO，
+  // 不会出现「实际不发却报『已发布』」这种误导（见 LogStatus）。
   safety_state_proto_pub_->LogStatus(get_logger());
 
   watchdog_timer_ = create_wall_timer(

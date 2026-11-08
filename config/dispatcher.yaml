@@ -49,23 +49,17 @@ dispatcher_node:
     # 允许"车辆可能正压在被封边上"时仍提交（该边的锁留给在途车，等它自行驶离）。
     # 默认 false = 严格拒绝（409 edge_occupied_in_flight）。单向反转不受此参数影响。
     topology_allow_edge_under_vehicle: false
-    # 阶段 2 双发：/dispatcher/state_proto、/dispatcher/events_proto、
+    # 阶段 2 proto 发布开关：/dispatcher/state_proto、/dispatcher/events_proto、
     # /dispatcher/topology_state_proto 三条一起开关。
     # dispatcher 是 lifecycle 节点，proto 侧跟随 on_activate/on_deactivate ——
-    # 节点 inactive 时两侧同时静默，不会出现单侧有数据流的假象。
+    # 节点 inactive 时静默，不会在 deactivate 后继续发热数据。
+    #
+    # 阶段 4c：rosidl 侧已删除，三条只发 *_proto。plan_pub_（nav_msgs::Path，
+    # 无 proto 对应物）不受影响。
     proto_dual_publish: true
-    # 阶段 3 双订阅：/tracking/error 与 /tracking/error/{vid} 改从 *_proto 读取
+    # 阶段 3 双订阅：/tracking/error 与 /tracking/error/{vid} 从 *_proto 读取
     # （适配器内部反投影回 rosidl，TrackingErrorCb 的到达判定一字未改）。
     #
-    # 前提：path_tracker 的 proto_dual_publish 必须为 true（launch 里已默认开）。
-    # 打开后 dispatcher 不再依赖 path_tracker 的 rosidl 发布侧。
-    proto_dual_subscribe: false
-    # 阶段 4b 切流：rosidl 侧开关（默认 true = 行为与改动前逐位一致）。
-    # false 时 /dispatcher/state、/dispatcher/events、/dispatcher/topology_state
-    # 三条**同时**只发 *_proto，DDS 里不再有对应的 rosidl 话题。
-    # plan_pub_（nav_msgs::Path，无 proto 对应物）不受此开关影响。
-    #
-    # 切流前必须确认：safety_gate 的 proto_dual_subscribe 已打开（否则它读的
-    # /dispatcher/topology_state 会静默断流），Web 控制台与 visualizer 也已
-    # 迁到 *_proto。DDS 不会因为发布者消失而报错。
-    proto_rosidl_publish: true
+    # **阶段 4c 起默认 true**：发布端 path_tracker 已删除 rosidl 侧，默认 false
+    # 会让 dispatcher 订阅永远不会有人发布的话题——DDS 不报错，数据永久静止。
+    proto_dual_subscribe: true

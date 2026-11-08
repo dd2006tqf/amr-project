@@ -405,8 +405,8 @@ is_healthy: true
 | `src/amr_dispatcher_ros/include/amr_dispatcher_ros/proto_dual_publisher.hpp` | 普通节点双发器 + `ProtoTopicName` + 投影分派 |
 | `src/amr_dispatcher_ros/include/amr_dispatcher_ros/proto_lifecycle_dual_publisher.hpp` | lifecycle 节点双发器 |
 | `src/amr_dispatcher_ros/test/test_proto_projection.cpp` | 17 个单测：字段完整性 + 哨兵/枚举/重复字段语义 |
-| `scripts/check_proto_dual_consistency.py` | 独立解码器 + 逐字段比对（不复用 echo 的解码路径） |
-| `scripts/check_proto_dual_e2e.sh` | 真进程双发一致性 e2e，已接入 CI |
+| `scripts/check_proto_dual_consistency.py` | 独立解码器 + 逐字段比对（不复用 echo 的解码路径）。**4c 之后休眠**，见阶段 4 |
+| `scripts/check_proto_dual_e2e.sh` | 真进程 e2e。4c 前守双发一致性，4c 后守「rosidl 已停发 + proto 有数据 + 消费者默认在 proto」 |
 
 **双发的话题（8 条）**
 
@@ -567,7 +567,7 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 
 ### 阶段 4：清理
 
-**当前状态：4b 已完成（2026-11-07）；4c 仍待运维方确认。**
+**当前状态：4a / 4b 已完成（2026-11-07）；4c 的保守方案已落地（2026-11-08）。**
 
 阶段 3 的双订阅结构使清理可以分三步走，每步都可独立回滚：
 
@@ -575,15 +575,20 @@ introspection，§5.2 已说明不可用），会报「does not appear to be pub
 |---|---|---|
 | 4a | 消费者侧 `proto_dual_subscribe:=true`，观察 | 改回 `false`，无需重新构建 |
 | 4b | 发布端 `proto_rosidl_publish:=false`，只留 proto 侧 | 改回 `true`，无需重新构建 |
-| 4c | 删除 rosidl 发布代码与 `.msg` | 需要回滚代码（不可一键） |
+| 4c | 删除 rosidl **发布端**代码（`.msg` 与反投影层保留） | 需要回滚代码（不可一键） |
 
 4a / 4b 是**参数级**切换，不涉及代码；4c 才是真正的破坏性变更。
 
 - [x] 4a：消费者侧切 proto 并观察（2026-11-07，见上方观察期记录）
 - [x] 4b：发布端支持关闭 rosidl 侧（2026-11-07，见下节）
 - [x] 更新文档与运维手册（2026-11-07，`docs/DEPLOYMENT.md` §6.3 切流 runbook）
-- [ ] 4c：删除旧 rosidl 话题发布代码
-- [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`
+- [x] 4c：删除旧 rosidl 话题**发布代码**（2026-11-08，保守方案，见下方"4c 已落地"）
+- [ ] 删除 `amr_dispatcher_interfaces/msg/` 下已迁的 `.msg`（**未执行**，见"4c 的边界"）
+
+> **注意 4c 的生效方式与 4a/4b 不同**：4a/4b 是参数级开关，4c 之后
+> `proto_rosidl_publish` 这个参数**已从代码里删除**——它不再有任何意义
+> （没有 rosidl 发布器可供关闭）。运维手册里的相关操作已同步失效，见
+> `docs/DEPLOYMENT.md` §6.3 改写说明。
 
 #### 4b 已落地：`proto_rosidl_publish`
 
@@ -632,14 +637,6 @@ state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参�
   开关互不牵连。
 - 两个都关：两侧 writer 均为 0，日志报 `ERROR` 而不是谎称「仅发布 proto」。
 
-**4c 的阻塞条件没有变化**：
-
-- 这台机器上跑的是完整系统，但它是**单车、且没有第三方订阅者**的实验环境。
-  `ros2 topic info -v` 只能看到本机 DDS 图，看不到「某台上位机正在按旧话题名
-  订阅」这类外部意图。
-- 观察期还发现 `docs/DEPLOYMENT.md` 里过期的「正常必须是 5 个包」这类文档漂移，
-  说明「删除前先对齐文档」这一步不能省。
-
 **4b 验证过程中踩到的三个坑**（写下来是因为 4c 的验收会以更严的方式重复遇到）：
 
 1. **`ros2 topic hz` 读不到 `*_proto` 话题**，报 `does not appear to be published yet`。
@@ -654,18 +651,108 @@ state_proto_pub_->PublishAll(msg);   // 两侧同时投递，开关在构造参�
    改完配置不重启就去 `ros2 param get`，会得到 `Parameter not set`——
    那是进程还是旧的，不是参数没配上。诊断顺序应先看启动日志的状态行。
 
-结论：**在拿到运维方「没有第三方订阅旧话题」的书面确认之前，不执行 4c。**
-这不是保守，是因为删除 `.msg` 会让 rosidl 话题名这个公开契约单方面失效，
-回滚成本远高于多等一个版本周期。
+#### 4c 已落地：保守方案（2026-11-08）
+
+**执行的是保守 4c，不是完整 4c。** 两者的差别是整个阶段 4 里最关键的一句话：
+
+| | 保守 4c（已执行） | 完整 4c（未执行） |
+|---|---|---|
+| rosidl **发布端**代码 | 删除 | 删除 |
+| `proto_rosidl_publish` 参数 | 删除（已无意义） | 删除 |
+| `.msg` 定义 | **保留** | 删除 |
+| 反投影层（`proto_bridge`） | **保留** | 删除 |
+| `ProtoDualSubscriber::use_proto=false` | **保留** | 删除 |
+| 回滚方式 | 回滚代码即可，`.msg` 还在 | 需重写 `.msg` 与反投影 |
+
+保留 `.msg` 与反投影层的**唯一理由是可回滚**：反投影函数签名依赖 rosidl 类型，
+删掉 `.msg` 等于把「切回 rosidl」这条路彻底焊死。代价是仓库里留着一批
+「只被测试和反投影引用、不再上链路」的消息定义——这是刻意接受的成本。
+
+**四项改动**（缺任何一项都会交付一个静默坏掉的默认配置）：
+
+1. **删除双发器的 rosidl 发布器**。`ProtoDualPublisher` 与
+   `ProtoLifecycleDualPublisher` 现在只持有 proto 侧的一个 `Publisher<ProtoT>`。
+   构造函数从 5 参降为 4 参（去掉 `rosidl_publish`）：
+
+   ```cpp
+   // 4c 之后：唯一出口，rosidl 侧没有句柄可发
+   state_proto_pub_ = std::make_unique<ProtoLifecycleDualPublisher<...>>(
+       this, "/dispatcher/state", 10, proto_dual_publish_);
+   state_proto_pub_->PublishAll(msg);
+   ```
+
+   `PublishAll()` 这个**名字**保留（它现在等价于 `Publish()`），因为 5 个节点
+   的调用点不必改动；真正的语义变化在头部注释里写明了。
+2. **删除 `proto_rosidl_publish` 参数**。5 个节点里的 `declare_parameter` /
+   `get_parameter` / 成员变量全部移除。这个参数在 4c 之后**没有任何合法取值**：
+   没有 rosidl 发布器可供它关闭。
+3. **`proto_dual_subscribe` 默认值从 `false` 翻转为 `true`（8 个消费者全部）**。
+   这是保守 4c 的**必要配套**，不是顺手优化：发布端不再产生 rosidl 话题，
+   若订阅端仍默认 `false`，两边各自的日志都正常，链路却永远静默——
+   DDS 不会因为「话题没有发布者」而报错，订阅端只会一直等下去。
+4. **改写 e2e 与运维文档**。`scripts/check_proto_dual_e2e.sh` 原先以「rosidl 与
+   proto 逐字段比对」为核心断言，4c 之后**比对基准在物理上不存在了**，
+   该脚本已按新语义重写（见下）。
+
+**类名为什么还叫 `ProtoDualPublisher`**：改名要动 5 个节点的类型别名、注释与
+测试，语义上零收益。头文件里已注明「Dual」是 4b 的遗留命名，现在它只发一路。
+
+**`proto_rosidl_publish` 时代的四个组合日志表已作废**。`LogStatus()` 现在是两态：
+
+- 正常：`发布 proto 话题 X（旧话题 Y 已于阶段 4c 停止发布）` —— `INFO`
+- `proto_dual_publish:=false`：`proto 侧已关闭：本节点不发布 X…` —— `ERROR`
+
+**验证**（2026-11-08，容器内真进程 + 独立 `ROS_DOMAIN_ID=73`）：
+
+- 默认参数起 `link_health_publisher`：域内只有
+  `/system/aggregated_link_health_proto`，7 条受管 rosidl 话题**一条都不存在**。
+- `safety_gate_node` 默认参数：发布 `/safety/state_proto`，看门狗时序不受影响。
+- 消费端 `ros2 node info` 的 `Subscribers` 显示
+  `/chassis/link_health_proto: amr_dispatcher/proto/ChassisLinkHealth`——
+  这是默认值翻转生效的直接证据。
+- `colcon test --base-paths src`：1252 个测试 0 失败。
+- **反证也做了**：把某个消费者的默认值临时改回 `false` 后重跑 e2e，
+  脚本在阶段 3 失败（退出码 1）并打印出该消费者仍订阅 `/chassis/link_health`。
+  这说明 e2e 不是恒绿的摆设。
+
+**e2e 的新断言结构**（`scripts/check_proto_dual_e2e.sh`，仍是 CI 的一环）：
+
+| 阶段 | 断言 | 守的是什么失效模式 |
+|---|---|---|
+| 1 | 7 条 rosidl 话题在空域里不存在 | 4c 没做完（发布端还留着 rosidl） |
+| 2 | `link_health_publisher` 日志出现「发布 proto 话题」 | 发布器没建起来 |
+| 3 | 消费者 `node info` 订阅 `*_proto` | **默认值没翻 = 全链路静默断流** |
+| 4 | `ros2 topic info` 的 `Publisher count > 0` | 有话题但没 writer |
+
+阶段 4 只能用 `ros2 topic info`：`ros2 topic hz` / `echo` 对 proto 话题不可用
+（见上方三个坑的第 1 条）。
+
+#### `check_proto_dual_consistency.py` 的处置
+
+该脚本（455 行）的前提是「同一份数据同时存在于 rosidl 与 proto 两条路上，
+逐字段比对」。4c 删掉发布端之后，**这个前提在物理上不再成立**，脚本已无法
+产出任何有意义结论，也已被新 e2e 从调用链里摘除（CI 只引用
+`check_proto_dual_e2e.sh`）。
+
+**保留而不删除**，理由与保留 `.msg` 相同：它是回滚路径上的校验工具。
+若将来回滚到 4b 状态（恢复 rosidl 发布端），这个脚本立刻重新可用，
+且它是唯一一个不走 C++ 投影代码的**独立第二意见**（自己从 DDS 取原始字节解码）。
+文件头已加注「4c 之后处于休眠状态」，避免被误当成在跑的门禁。
+
+#### 完整 4c 仍未做：删除 `.msg` 的前置条件没有变化
+
+以下判断与 4c 落地前**完全一致**，保守方案刻意绕开了它们：
 
 > **阶段 4 的前置条件**：确认没有任何外部系统（上位机、第三方集成）还在订阅旧话题。
 > 这是整个计划里最容易被低估的风险——rosidl 话题名对第三方是公开契约。
 
-**为什么 4c 不在本次落地**：该前置条件无法由代码库自身验证——要么做现场
-broker 抓包（ros2 topic info 只能看到本机 DDS 图，看不到第三方订阅意图），
-要么由运维方书面确认。在拿到这个结论之前删除 `.msg`，等于单方面毁约。
+保守 4c **并没有解除**这个风险，它只是把回滚代价从「重写 `.msg`」降成
+「回滚代码」：对外部订阅者而言，rosidl 话题**照样会停止发布**，行为上同样是
+静默失联。因此本次落地的前提假设是「当前没有第三方订阅旧话题」——
+若该假设不成立，需要先回滚本次提交（`.msg` 与反投影层都还在，成本低），
+而不是继续往下删。
 
-**若确认可以删除时，需要注意的连带影响**：
+**若将来确认可以删除 `.msg`，连带影响**：
 
 - `amr_dispatcher_interfaces` 的 7 个 `.msg` 被 `registry/generated` 的消息
   类型清单引用；删 `.msg` 要同步删对应 proto 反向依赖（`proto_bridge` 的反投影
@@ -673,8 +760,8 @@ broker 抓包（ros2 topic info 只能看到本机 DDS 图，看不到第三方�
 - `ProtoDualSubscriber` 的 `use_proto=false` 分支会失去编译依据——该分支
   正是「可一键切回」的实现，删除 rosidl 后双订阅器本身就没有存在意义了，
   应当整体退化为 `create_subscription<ProtoT>` + 反投影。
-- `scripts/check_proto_dual_consistency.py` 的比对基准（rosidl 侧）消失，
-  一致性校验脚本需要改成「只校验 proto 侧解码」或一并删除。
+- `scripts/check_proto_dual_consistency.py` 届时可以直接删除（它服务的回滚
+  路径同时消失），当前只是休眠。
 
 ---
 

@@ -44,7 +44,7 @@ NavigateSequenceBridgeNode::NavigateSequenceBridgeNode(const rclcpp::NodeOptions
 
   plan_pub_ = create_publisher<nav_msgs::msg::Path>(plan_topic_, 1);
   // 阶段 3：到达信号可走 proto 话题。默认 false，行为与迁移前一致。
-  declare_parameter("proto_dual_subscribe", false);
+  declare_parameter("proto_dual_subscribe", true);
   tracking_error_sub_ =
       amr_dispatcher_proto_bridge::ProtoDualSubscriber<
           amr_dispatcher_interfaces::msg::TrackingError,

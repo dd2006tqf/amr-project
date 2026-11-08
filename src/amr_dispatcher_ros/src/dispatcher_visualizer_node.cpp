@@ -36,7 +36,7 @@ class DispatcherVisualizerNode : public rclcpp::Node {
     declare_parameter("marker_topic", "/dispatcher/markers");
     declare_parameter("stations_file", "config/stations.yaml");
     // 阶段 3：拓扑来源可切到 proto 话题。默认 false，保持原有行为。
-    declare_parameter("proto_dual_subscribe", false);
+    declare_parameter("proto_dual_subscribe", true);
 
     frame_id_ = get_parameter("frame_id").as_string();
     marker_topic_ = get_parameter("marker_topic").as_string();

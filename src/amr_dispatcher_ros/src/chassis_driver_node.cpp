@@ -42,12 +42,9 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   declare_parameter("link_health_topic", "");
   declare_parameter("heartbeat_topic", "");
   declare_parameter("battery_topic", "");
-  // 阶段 2 双发总开关（默认开）。关掉只停 proto 侧，rosidl 侧不受影响，
+  // 阶段 2：proto 发布总开关（默认开）。关闭后本节点不发 *_proto，
   // 因此这是安全可回滚的运维开关：新话题没人消费时可随时关闭以省带宽。
   declare_parameter("proto_dual_publish", true);
-  // 阶段 4b：rosidl 侧开关（默认开）。设为 false 后本节点只发布 *_proto，
-  // DDS 里不再出现 /chassis/link_health。与 proto_dual_publish 相互独立。
-  declare_parameter("proto_rosidl_publish", true);
   // 电压 -> 百分比映射端点：12V 台架 12.6/11.0，24V 整车 25.2/21.0。
   // 直接报电压会让下游 percent 阈值（min_battery_percent / auto_charging_*）永远不生效。
   declare_parameter("battery_full_voltage", 12.6);
@@ -82,10 +79,8 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
     binary_protocol_ = false;
   }
 
-  // 阶段 2 双发开关。先读出来，下面创建发布器时要用。
+  // 阶段 2 proto 发布开关。先读出来，下面创建发布器时要用。
   proto_dual_publish_ = get_parameter("proto_dual_publish").as_bool();
-  // 阶段 4b：rosidl 侧开关，同样先读出来。
-  proto_rosidl_publish_ = get_parameter("proto_rosidl_publish").as_bool();
 
   // ---- P0.6 / A4：解析 vehicle_id 与最终话题名 ----
   vehicle_id_ = get_parameter("vehicle_id").as_string();
@@ -156,15 +151,15 @@ ChassisDriverNode::ChassisDriverNode(const rclcpp::NodeOptions& options)
   // 现在一并交给双发器——这样「只发 proto」才能用参数表达（否则关掉 proto
   // 之外还得再删一处 rosidl 创建，运维上没有可操作的手段）。
   //
-  // QoS 深度必须与旧值一致（10），否则突发时两侧丢帧点不同，
-  // 一致性检查器会把「深度差导致的丢帧」误报成「消息不一致」。
+  // 阶段 4c：rosidl 侧已删除，本节点只发 *_proto。
+  // QoS 深度与旧值一致（10），否则突发时的丢帧行为会与迁移前不同。
   // 话题名传 link_health_topic_（已含 per-vehicle 派生），内部只追加 _proto 后缀。
   health_proto_pub_ = std::make_unique<ProtoDualPublisher<
       amr_dispatcher_interfaces::msg::ChassisLinkHealth,
       amr_dispatcher::proto::ChassisLinkHealth>>(
-      this, link_health_topic_, 10, proto_dual_publish_, proto_rosidl_publish_);
-  // 状态播报收在双发器里：四类开关组合各有一句准确说法，
-  // 不会出现「两侧都关却报『仅发布 proto』」这种误导（见 LogStatus）。
+      this, link_health_topic_, 10, proto_dual_publish_);
+  // 状态播报收在双发器里：关闭时 ERROR、正常时 INFO，
+  // 不会出现「实际不发却报『已发布』」这种误导（见 LogStatus）。
   health_proto_pub_->LogStatus(get_logger());
 
   // B1：心跳分源，只喂 chassis_driver 自己的看门狗通道
@@ -532,9 +527,9 @@ void ChassisDriverNode::PublishHealth() {
       msg.tier = "UNKNOWN";
       break;
   }
-  // 阶段 2 双发 + 阶段 4b 收口：两侧都从**同一个 msg** 投递，
-  // 因此内容由构造方式保证同源。不是「再拼一次数据」——那样两份代码会在
-  // 字段增减时漂移。PublishAll 内部按构造参数决定是否发 rosidl。
+  // 阶段 4c：投影并发布到 /chassis/link_health_proto。
+  // 从**同一个 msg** 投影，因此内容由构造方式保证同源，不存在「再拼一次
+  // 数据」导致字段增减时漂移的问题。PublishAll 内部按构造参数决定是否发。
   if (health_proto_pub_) {
     health_proto_pub_->PublishAll(msg);
   }

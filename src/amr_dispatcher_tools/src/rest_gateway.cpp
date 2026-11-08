@@ -276,7 +276,7 @@ class RestGatewayNode : public rclcpp::Node {
     //
     // 注意 /dispatcher/events 的 QoS 是 20（不是 10），这里必须原样传下去：
     // proto 侧深度更小会在突发时先丢事件帧，表现为「网关偶尔少一条事件」。
-    declare_parameter("proto_dual_subscribe", false);
+    declare_parameter("proto_dual_subscribe", true);
     declare_parameter("alert_probe_period_ms", 1000);
     declare_parameter("alert_not_ready_threshold", 3);
     declare_parameter("alert_safety_critical_sec", 30);

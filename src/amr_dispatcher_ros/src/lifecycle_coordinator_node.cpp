@@ -53,7 +53,7 @@ class LifecycleCoordinatorNode : public rclcpp::Node {
     // 阶段 3：安全状态可走 proto 话题。默认 false，行为与迁移前逐字相同；
     // 置 true 时订阅 /safety/state_proto 并在适配器内部反投影回 rosidl，
     // 下面这个回调（以及整个就绪判定逻辑）完全不用改。
-    declare_parameter("proto_dual_subscribe", false);
+    declare_parameter("proto_dual_subscribe", true);
     const bool use_proto = get_parameter("proto_dual_subscribe").as_bool();
 
     safety_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<

@@ -653,22 +653,22 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>::SharedPtr validate_site_srv_;
 
   // 阶段 4b：原先这里还有 state_pub_ / event_pub_ / topology_pub_ 三个
-  // 节点自建的 rosidl LifecyclePublisher。已全部删除并收进下面三个双发器——
-  // 留着它们就会出现两份 rosidl 发布器指向同一话题，而「只发 proto」的开关
-  // 也就随之失效（删掉双发器里的 rosidl 行，节点自己那份照样在发）。
+  // 节点自建的 rosidl LifecyclePublisher。已全部删除并收进下面三个发布器。
   //
   // plan_pub_ 是唯一保留的：nav_msgs::Path 没有 proto 对应物，不在迁移范围内，
-  // 因此它仍由节点自己持有，也不受 proto_rosidl_publish 影响。
+  // 因此它仍由节点自己持有。
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_pub_;
 
-  // ---- 阶段 2 双发 + 阶段 4b 收口：两侧发布器的唯一 owner ----
+  // ---- 阶段 4c：proto 发布器的唯一 owner ----
   //
-  // 用 ProtoLifecycleDualPublisher —— dispatcher_node 是 lifecycle 节点，两侧
-  // 必须同生共死：未激活时一起静默，避免「rosidl 不发、proto 照发」的假数据流，
-  // 那会让一致性检查器与订阅方误判调度器在正常工作。
+  // 用 ProtoLifecycleDualPublisher —— dispatcher_node 是 lifecycle 节点，
+  // proto 侧必须跟随激活态：未激活时静默，避免节点已 deactivate
+  // 却仍在发热数据，那会让订阅方误判调度器在正常工作。
   //
-  // 三者的 QoS 深度必须与历史 rosidl 侧逐一对齐（10 / 20 / 10）：
-  // 深度不一致时突发丢帧会被误判成「消息不一致」。
+  // 阶段 4c 已删除 rosidl 侧；类型名沿用 4b（见 proto_dual_publisher.hpp 头部说明）。
+  //
+  // 三者的 QoS 深度必须与历史值逐一对齐（10 / 20 / 10）：
+  // 深度变化会改变突发时的丢帧行为，与迁移前不再等价。
   std::unique_ptr<ProtoLifecycleDualPublisher<
       amr_dispatcher_interfaces::msg::DispatcherState,
       amr_dispatcher::proto::DispatcherState>>
@@ -682,16 +682,15 @@ class DispatcherNode : public rclcpp_lifecycle::LifecycleNode {
       amr_dispatcher::proto::TopologyState>>
       topology_proto_pub_;
 
-  // 阶段 2 双发总开关（参数 proto_dual_publish，默认开）
+  // 阶段 2：proto 发布总开关（参数 proto_dual_publish，默认开）
   bool proto_dual_publish_{true};
-  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
-  // false = state / events / topology 三条只发 *_proto。plan_pub_ 不受影响。
-  bool proto_rosidl_publish_{true};
-  // 阶段 3：双订阅总开关。与 proto_dual_publish_ 独立——发布端与订阅端
-  // 可以分批上线（先发布侧开着观察，再逐节点打开订阅侧）。
-  bool proto_dual_subscribe_{false};
+  // 阶段 3：双订阅总开关，**阶段 4c 起默认 true**（原默认 false）。
+  // 发布端已删除 rosidl 侧，默认 false 会让本节点订阅永远不会有人发布的
+  // 话题——DDS 不报错，只是数据永久静止。与 proto_dual_publish_ 独立，
+  // 仍可单独关闭以读「别人发的 rosidl」或回滚发布端后切回。
+  bool proto_dual_subscribe_{true};
 
-  // MissionEvent 双发的统一出口。
+  // MissionEvent 发布的统一出口。
   //
   // 全文件有 18 处事件发布点，每处都是「构造 msg -> PublishMissionEvent(msg)」。
   // 把双发放进这个函数而不是在每个调用点加第三行，是因为漏加一处就是一条

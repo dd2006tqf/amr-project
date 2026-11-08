@@ -115,12 +115,9 @@ class ChassisDriverNode : public rclcpp::Node {
   std::string battery_topic_{"/battery_state"};
   std::string heartbeat_topic_{"/safety/heartbeat/chassis_driver"};
 
-  // 阶段 2：proto 双发总开关（参数 proto_dual_publish）。
-  // 在构造函数最前面声明并读出，后续所有双发器都引用它。
+  // 阶段 2：proto 发布总开关（参数 proto_dual_publish）。
+  // 在构造函数最前面声明并读出，后续所有发布器都引用它。
   bool proto_dual_publish_{true};
-  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
-  // false = 只发 *_proto，DDS 里不再有 /chassis/link_health。
-  bool proto_rosidl_publish_{true};
 };
 
 }  // namespace amr_dispatcher_ros

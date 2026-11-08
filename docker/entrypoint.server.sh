@@ -42,8 +42,10 @@
 #   AMR_TOPOLOGY_OVERLAY_FILE 运行时拓扑叠加层文件绝对路径（默认
 #                            /workspace/config/generated/topology_overlay.yaml）。
 #                            显式设为空串 = 关闭在线拓扑热生效（写操作回 501）。
-#   AMR_PROTO_DUAL_SUBSCRIBE 消费者是否改读 *_proto 话题（阶段 4a，默认不传 =
-#                            用 launch 默认值 false）。空串同样表示"不传"。
+#   AMR_PROTO_DUAL_SUBSCRIBE 消费者是否从 *_proto 读取（空串/不传 = 用 launch
+#                            默认值 true）。**阶段 4c 起默认已是 true**，通常
+#                            不需要传；显式设为 false 只用于临时改读 rosidl
+#                            （旧版本发布端 / 第三方发布者 / 回滚代码后）。
 #                            **前置条件**：发布端 proto_dual_publish 必须为 true
 #                            （默认即 true）。只开订阅、发布端关掉的话，消费者会
 #                            「订阅成功但永远收不到」——DDS 不报错，没有任何匹配
@@ -240,8 +242,8 @@ ODOM_ORIGIN_Y="${AMR_ODOM_ORIGIN_Y:-}"
 ODOM_ORIGIN_YAW="${AMR_ODOM_ORIGIN_YAW:-}"
 GOAL_TOLERANCE="${AMR_GOAL_TOLERANCE:-}"
 PUBLISH_MAP_TO_ODOM="${AMR_PUBLISH_MAP_TO_ODOM:-}"
-# 阶段 4a：消费者侧切换开关。默认空串 = 不传 = 用 launch 默认值 false，
-# 因此不加这个变量时行为与迁移前完全一致。
+# 阶段 4a：消费者侧切换开关。阶段 4c 起 launch 默认值已翻转为 true，
+# 所以这里留空 = 继承默认 true（读 *_proto）。设为 false 才改读 rosidl。
 PROTO_DUAL_SUBSCRIBE="${AMR_PROTO_DUAL_SUBSCRIBE:-}"
 MOCK_PID=""
 

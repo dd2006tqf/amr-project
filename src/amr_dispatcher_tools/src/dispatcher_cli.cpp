@@ -30,7 +30,7 @@ class DispatcherCliClient {
     // `ros2 topic echo` 对照排查）；--ros-args -p proto_dual_subscribe:=true
     // 可切到 *_proto。注意 node 上尚未声明该参数时不可直接 get_parameter，
     // 因此这里显式声明一次默认值。
-    node_->declare_parameter("proto_dual_subscribe", false);
+    node_->declare_parameter("proto_dual_subscribe", true);
     state_sub_ = amr_dispatcher_proto_bridge::ProtoDualSubscriber<
         amr_dispatcher_interfaces::msg::DispatcherState,
         amr_dispatcher::proto::DispatcherState>(

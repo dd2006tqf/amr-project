@@ -1,10 +1,21 @@
-// 双发发布器（普通节点版）：一次调用同时发布 rosidl 与 protobuf 两路话题。
+// proto 发布器（普通节点版）：从 rosidl 消息投影并发布到 `*_proto` 话题。
 //
 // ============================================================================
-// 为什么需要这个封装，而不是在每个节点里写两个 publish
+// 阶段 4c 之后这个类为什么还叫 DualPublisher
 // ============================================================================
-// 双发不是「多写一行 publish」那么简单，它有三个每次都必须处理对的细节：
+// 阶段 4b 之前它确实是「双发」：同一个 rosidl 消息同时投递到 rosidl 话题和
+// proto 话题。阶段 4c 移除了 rosidl 侧发布器，本类现在**只发 proto**。
 //
+// 名字保留是为了两件事：
+//   1. 调用点与历史提交可对照。改名的收益只是措辞，代价是 5 个节点里所有
+//      类型别名、unique_ptr 声明、注释引用全部要跟着动——真正的语义差别
+//      在构造参数与 Publish() 的行为，看代码即可，不需要靠名字区分。
+//   2. rosidl 话题名仍然是本类的必要输入：proto 话题名由它派生
+//      （`ProtoTopicName`），日志也要靠它指出「这条 _proto 对应的旧名字」。
+//
+// ============================================================================
+// 为什么需要这个封装，而不是在每个节点里写一行 publish
+// ============================================================================
 //   1. 话题名派生。既有代码用 ResolveVehicleTopic 做 per-vehicle 派生，
 //      proto 话题必须走同一套规则，否则多车场景下 __proto 只发全局名，
 //      订阅方按车拿不到。这里统一交给调用方传「已解析好的 rosidl 话题名」，
@@ -12,12 +23,10 @@
 //
 //   2. lifecycle 发布器的激活态。dispatcher_node 用的是
 //      rclcpp_lifecycle::LifecyclePublisher，未激活时 publish 是静默空操作。
-//      rosidl 侧靠 on_activate/on_deactivate 管理，proto 侧若不同步处理，
-//      就会出现「节点 active 了但 proto 话题没数据」这种只在运行时可见的偏差。
-//      ——这一半不在本文件里，见 proto_lifecycle_dual_publisher.hpp。
+//      普通节点版不涉及，见 proto_lifecycle_dual_publisher.hpp。
 //
-//   3. 总开关。过渡期必须能一键关掉 proto 侧（回滚、压测、排查），
-//      而不必改代码或重新构建。开关做成构造参数，由节点参数注入。
+//   3. 总开关。必须能一键关掉 proto 侧（压测、排查），而不必改代码或重新构建。
+//      开关做成构造参数，由节点参数注入。
 //
 // ============================================================================
 // 为什么拆成两个头文件 / 两个类
@@ -116,10 +125,13 @@ void ProjectRosidlToProto(const RosidlMsgT & in, ProtoT * out)
   }
 }
 
-/// 双发器：持有 proto 发布器，提供从 rosidl 消息投影并发布的单一入口。
+/// 发布器：持有 proto 发布器，提供从 rosidl 消息投影并发布的单一入口。
 ///
 /// 模板参数 ProtoT 必须是已在 register_all_types.hpp 注册过的类型。
 /// 普通 rclcpp::Node 用本类；lifecycle 节点用 ProtoLifecycleDualPublisher。
+///
+/// 阶段 4c：rosidl 侧发布器已移除。`rosidl_name` 仍然必填——它是 proto 话题名
+/// 的派生源，也是日志里指认「这条 _proto 的旧名字」的唯一依据。
 template<typename RosidlMsgT, typename ProtoT>
 class ProtoDualPublisher
 {
@@ -128,29 +140,15 @@ public:
   ///
   /// \param node        宿主节点（用于 create_publisher 与日志）
   /// \param rosidl_name 已解析的 rosidl 话题名（proto 名由它派生）
-  /// \param qos_depth   QoS 深度。两侧必须一致：若 proto 侧深度更小，
-  ///                    突发时会先丢 proto 帧，一致性检查器会报「proto 缺帧」
-  ///                    而不是「消息不一致」，掩盖真正的问题。
-  /// \param enabled     proto 侧总开关。false 时完全不创建 proto 发布器，
+  /// \param qos_depth   QoS 深度
+  /// \param enabled     proto 侧总开关。false 时完全不创建发布器，
   ///                    因此也不会在 DDS 里留下一个空话题。
-  /// \param rosidl_enabled rosidl 侧开关（阶段 4b）。
-  ///                    **默认 true**，所以既有调用点的行为逐位不变。
-  ///                    设为 false 时连 rosidl 发布器都不创建——这是「只留 proto」
-  ///                    的唯一实现方式：DDS 里不会存在一个没人订阅的 rosidl 话题。
   ProtoDualPublisher(
-    rclcpp::Node * node, const std::string & rosidl_name, std::size_t qos_depth, bool enabled,
-    bool rosidl_enabled = true)
+    rclcpp::Node * node, const std::string & rosidl_name, std::size_t qos_depth, bool enabled)
   : rosidl_topic_(rosidl_name),
-    proto_topic_(ProtoTopicName(rosidl_name)),
-    enabled_(enabled),
-    rosidl_enabled_(rosidl_enabled)
+    proto_topic_(ProtoTopicName(rosidl_name))
   {
-    // rosidl 侧：阶段 4b 之前由各节点自己 create_publisher，现在收进来，
-    // 让「发不发 rosidl」成为一个参数而不是散落在 7 个节点里的 if。
-    if (rosidl_enabled_) {
-      rosidl_pub_ = node->create_publisher<RosidlMsgT>(rosidl_topic_, rclcpp::QoS(qos_depth));
-    }
-    if (!enabled_) {
+    if (!enabled) {
       return;
     }
     pub_ = node->create_publisher<ProtoT>(proto_topic_, rclcpp::QoS(qos_depth));
@@ -159,61 +157,40 @@ public:
   /// 是否真正启用了 proto 侧。调用方用它决定是否值得构造 proto 消息。
   bool enabled() const {return static_cast<bool>(pub_);}
 
-  /// rosidl 侧是否在发布（阶段 4b）。false 表示「只留 proto」。
-  bool rosidl_enabled() const {return static_cast<bool>(rosidl_pub_);}
-
-  /// 打一行启动状态。四类组合各有明确说法，**不能**只判断 rosidl 一侧：
-  /// 两个开关都关时沿用「仅发布 proto」的文案，会让运维以为还有数据流，
-  /// 而实际这个节点一条消息都不发——这类误导性日志比沉默更难排查。
+  /// 打一行启动状态。
   ///
-  /// 放在双发器里而不是各节点各写一份，是因为文案会随开关语义变化，
-  /// 分散在 4 个节点里必然漂移（本项目已有过同类先例）。
+  /// 阶段 4c 之后只剩两种状态，但**不能**把「关闭」写成一句平淡的 INFO：
+  /// `proto_dual_publish=false` 意味着这个节点一条消息都不发，DDS 里也看不到
+  /// 任何话题。运维若把它当成正常启动，会花很久才能定位「为什么没有数据」。
+  ///
+  /// 放在这里而不是各节点各写一份，是因为文案会随开关语义变化，
+  /// 分散在 5 个节点里必然漂移（本项目已有过同类先例）。
   void LogStatus(const rclcpp::Logger & logger) const
   {
-    if (pub_ && rosidl_pub_) {
-      RCLCPP_INFO(logger, "双发已启用：%s + %s",
-        rosidl_topic_.c_str(), proto_topic_.c_str());
-      return;
-    }
-    if (!pub_ && !rosidl_pub_) {
+    if (!pub_) {
       RCLCPP_ERROR(logger,
-        "两侧都已关闭：本节点既不发布 %s 也不发布 %s。"
-        "此组合仅用于测试，请检查 proto_dual_publish / proto_rosidl_publish",
-        rosidl_topic_.c_str(), proto_topic_.c_str());
+        "proto 侧已关闭：本节点不发布 %s（对应旧话题 %s 也已随阶段 4c 移除）。"
+        "proto_dual_publish=false 仅用于测试/压测",
+        proto_topic_.c_str(), rosidl_topic_.c_str());
       return;
     }
-    if (rosidl_pub_) {
-      RCLCPP_INFO(logger, "proto 侧已关闭，仅发布 rosidl 话题 %s",
-        rosidl_topic_.c_str());
-      return;
-    }
-    // 只剩 proto：切流后的正常态。第三方若还订阅着 rosidl 话题就是静默失联，
-    // DDS 不报错、订阅端也不超时退出，因此这条 WARN 是唯一的归因线索。
-    RCLCPP_WARN(logger,
-      "rosidl 侧已关闭，仅发布 proto 话题 %s；请确认没有订阅方仍依赖 %s",
+    RCLCPP_INFO(logger, "发布 proto 话题 %s（旧话题 %s 已于阶段 4c 停止发布）",
       proto_topic_.c_str(), rosidl_topic_.c_str());
   }
 
   const std::string & proto_topic() const {return proto_topic_;}
   const std::string & rosidl_topic() const {return rosidl_topic_;}
 
-  /// 同时发布两侧。这是过渡期结束后各节点应当使用的**唯一**入口。
+  /// 发布入口。名字沿用 4b（当时是「两侧都投」），现在是「投 proto 侧」。
   ///
-  /// 与旧的两行写法（先 `rosidl_pub_->publish(msg)` 再 `Publish(msg)`）相比，
-  /// 这里的好处是「发不发 rosidl」由构造参数统一决定，节点侧不再出现
-  /// `if (rosidl_enabled_) rosidl_pub_->publish(...)` 这类重复判断。
+  /// **保留这个名字而不是改成 Publish()**：5 个调用点、脚本与文档都用它，
+  /// 而语义差别只在「另一侧已不存在」，改名纯属增加 diff。若将来需要重新
+  /// 引入 rosidl 侧，这里也是唯一需要加回的出口。
+  ///
+  /// 返回是否真的投递到底层发布器。
   bool PublishAll(const RosidlMsgT & msg)
   {
-    bool published = false;
-    if (rosidl_pub_) {
-      rosidl_pub_->publish(msg);
-      published = true;
-    }
-    // Publish() 自身会判空，这里不重复判断，避免出现「两处判断不一致」。
-    if (Publish(msg)) {
-      published = true;
-    }
-    return published;
+    return Publish(msg);
   }
 
   /// 从 rosidl 消息投影并发布。未启用时为空操作。
@@ -233,11 +210,7 @@ public:
 private:
   std::string rosidl_topic_;
   std::string proto_topic_;
-  bool enabled_{false};
-  bool rosidl_enabled_{true};
   typename rclcpp::Publisher<ProtoT>::SharedPtr pub_;
-  /// rosidl 侧发布器。仅在 rosidl_enabled 为 true 时创建。
-  typename rclcpp::Publisher<RosidlMsgT>::SharedPtr rosidl_pub_;
 };
 
 }  // namespace amr_dispatcher_ros

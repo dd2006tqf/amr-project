@@ -370,119 +370,109 @@ rest_gateway_node:
 
 告警规则样例见 `deploy/alerts/amr_dispatcher.rules.yml`。
 
-### 6.3 遥测切流 runbook：把发布端从 rosidl 切到 proto
+### 6.3 遥测链路现状：rosidl 已停发，proto 是唯一通路
 
-**这一节只在确认「没有第三方仍订阅旧 rosidl 话题」之后才执行。** 未确认就切，
-外部系统会静默失联：DDS 不会因为「话题没有发布者」而报错，订阅端也不会超时
-退出，只会一直等下去。这是本次迁移里唯一一个**不报错**的破坏性操作。
+> **本节已随阶段 4c 改写（2026-11-08）。** 旧版本是一个「把发布端从 rosidl
+> 切到 proto」的 runbook，教运维去改 `proto_rosidl_publish`。**那个参数已经
+> 从代码里删除**，切流动作已在 2026-11-08 一次性执行完毕。现在没有「切」这一步。
 
-#### 涉及的两个开关
+#### 现在的状态
 
-| 参数 | 控制 | 默认 | 影响的节点 |
+发布端**只发** `*_proto`，**不发**旧 rosidl 话题。7 条受管话题全部如此：
+
+| 旧话题（已停发） | 现在唯一存在的话题 |
+|---|---|
+| `/chassis/link_health` | `/chassis/link_health_proto` |
+| `/tracking/error` | `/tracking/error_proto` |
+| `/safety/state` | `/safety/state_proto` |
+| `/dispatcher/state` | `/dispatcher/state_proto` |
+| `/dispatcher/events` | `/dispatcher/events_proto` |
+| `/dispatcher/topology_state` | `/dispatcher/topology_state_proto` |
+| `/system/aggregated_link_health` | `/system/aggregated_link_health_proto` |
+
+`/system/aggregated_link_health*` 由 `link_health_publisher` 发布，注意它
+**不在** `full_system.launch.py` 里，只有 `launch/bringup.launch.py` 会起它——
+常驻系统里查不到它是正常的。
+
+#### 剩下的唯一开关
+
+| 参数 | 控制 | 默认 | 备注 |
 |---|---|---|---|
-| `proto_dual_publish` | **proto 侧**是否发布 | `true` | 五个节点 / 七条话题 |
-| `proto_rosidl_publish` | **rosidl 侧**是否发布 | `true` | 五个节点 / 七条话题 |
+| `proto_dual_publish` | **proto 侧**是否发布 | `true` | 关掉 = 这条话题一条都不发 |
+| `proto_dual_subscribe` | 消费者读 `*_proto` 还是旧 rosidl | `true`（4c 起翻转） | 见下方回滚说明 |
 
-七个双发点是：`/chassis/link_health`、`/tracking/error`、`/safety/state`、
-`/dispatcher/state`、`/dispatcher/events`、`/dispatcher/topology_state`、
-`/system/aggregated_link_health`（最后一条由 `link_health_publisher` 发布，
-注意它**不在** `full_system.launch.py` 里，只有 `launch/bringup.launch.py` 会起它——
-常驻系统里查不到它是正常的）。
+启动日志是两态，不要凭猜测判断：
 
-两者**相互独立**，四个组合都有明确语义（启动日志会逐条播报，不要凭猜测判断）：
+| 情况 | 日志 | 级别 |
+|---|---|---|
+| 正常 | `发布 proto 话题 X（旧话题 Y 已于阶段 4c 停止发布）` | `INFO` |
+| `proto_dual_publish:=false` | `proto 侧已关闭：本节点不发布 X（对应旧话题 Y 也已随阶段 4c 移除）` | `ERROR` |
 
-| `proto_dual_publish` | `proto_rosidl_publish` | 结果 | 日志 |
-|---|---|---|---|
-| `true` | `true` | 两侧都发（默认，现状） | `双发已启用：A + B` |
-| `false` | `true` | 只发 rosidl | `proto 侧已关闭，仅发布 rosidl 话题 A` |
-| `true` | `false` | **只发 proto（切流目标态）** | `rosidl 侧已关闭…` 为 `WARN` |
-| `false` | `false` | 一条都不发（**仅测试**） | `ERROR`，因为几乎一定是配错了 |
+> **`proto_dual_publish` 关掉不是「切回 rosidl」，而是「彻底不发布」。**
+> 4c 之前这两个方向是两个独立开关；现在只有「发 proto」和「什么都不发」。
+> 把它当切流开关用会直接造成静默断流。
 
-> 切流的那条 `WARN` 是刻意的：切完之后如果还有订阅方盯着旧话题，日志里
-> 这句话是唯一能归因的线索。
+#### 日常核对（替代旧版的两侧对照表）
 
-#### 不受该开关影响的发布器
-
-`dispatcher_node` 的 `/plan`（`nav_msgs::Path`）没有 proto 对应物，**始终**走
-rosidl，切流后依然存在。其它少量非迁移话题同理——判断依据是「有没有配对的
-`*_proto` 话题」，而不是「是不是这个节点发的」。
-
-#### 执行前必须逐条确认
-
-1. **消费者已全部切到 proto**：`proto_dual_subscribe: true` 且运行满一个版本周期。
-   ```bash
-   docker exec amr_dispatcher bash -lc '
-   source install/setup.bash
-   ros2 param get /dispatcher_node proto_dual_subscribe
-   ros2 param get /safety_gate_node proto_dual_subscribe'
-   ```
-2. **没有外部订阅方**。这条**无法用命令验证**：`ros2 topic info -v` 只能看到
-   本机 DDS 图，看不到「另一台上位机正在按旧话题名订阅」。必须由运维方
-   书面确认，或现场抓包。**不要用「topic info 里没有订阅者」代替这个确认。**
-3. **Web 控制台 / visualizer / 抓包工具**已确认走 proto 或不再需要：
-   `rest_gateway` 读的是反投影后的 rosidl 消息，它自身不受影响；但
-   `dispatcher_visualizer_node` 与现场 `ros2 topic echo` 脚本需要单独核对。
-
-#### 切流（按节点逐步，可逆）
-
-改 `config/` 下对应 yaml 的 `proto_rosidl_publish: false`，然后重启：
-
-```bash
-cd /home/ubuntu/amr_dispatcher
-C="docker compose -f docker/docker-compose.server.yml"
-# 先改 config/chassis.yaml → proto_rosidl_publish: false，其余保持 true
-$C restart
-```
-
-**验证切流真的生效**——不要用 `ros2 topic hz`，它靠 rosidl introspection，
-对 `*_proto` 话题架构性不可用，会报 `does not appear to be published yet`，
-那是工具的问题、不是没数据。用本项目自带的 `ros2 amr echo`：
-
-> ⚠ **改完参数必须重启，`ros2 param get` 才能读到新值。** 新参数是在节点
-> 构造期 `declare_parameter` 的，**已经跑着的进程不认识它**——重启前查询会得到
-> `Parameter not set`。这不是参数没配上，是进程还是旧的。诊断顺序永远是先看
-> 启动日志里 `双发已启用 / rosidl 侧已关闭` 那行，再看 `param get`。
+旧版本让你比对 `rosidl=N proto=M`。现在 rosidl 侧应当**根本不存在**，
+所以正确的判据是「旧话题缺席、proto 话题有 writer」：
 
 ```bash
 docker exec amr_dispatcher bash -lc '
 source install/setup.bash
-
-# 1. rosidl 侧话题应完全消失（不是「没数据」，是 topic list 里就没有）
-ros2 topic list | grep -E "^/chassis/link_health$" || echo "  OK: rosidl 侧已消失"
-
-# 2. proto 侧仍有数据（--once 收到第一条就退出）
-timeout 10 ros2 amr echo /chassis/link_health_proto \
-  amr_dispatcher.proto.ChassisLinkHealth --once
-'
-```
-
-一键核对七个双发点两侧的当前状态：
-
-```bash
-docker exec amr_dispatcher bash -lc '
-source install/setup.bash
+echo "--- 旧 rosidl 话题（应当一条都没有）---"
 for t in /chassis/link_health /tracking/error /safety/state \
          /dispatcher/state /dispatcher/events /dispatcher/topology_state \
          /system/aggregated_link_health; do
-  r=$(ros2 topic info "$t" -v 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
+  ros2 topic list | grep -qx "$t" && echo "  ✗ $t 仍存在（4c 未生效？）"
+done
+echo "  (无输出即正常)"
+
+echo "--- proto 话题的 writer 数（应当 > 0）---"
+for t in /dispatcher/state /dispatcher/events /dispatcher/topology_state \
+         /safety/state /tracking/error /chassis/link_health; do
   p=$(ros2 topic info "${t}_proto" -v 2>/dev/null | sed -n "s/^Publisher count: //p" | head -1)
-  printf "%-32s rosidl=%-3s proto=%-3s\n" "$t" "${r:-0}" "${p:-0}"
+  printf "  %-40s publishers=%s\n" "${t}_proto" "${p:-0}"
 done'
 ```
 
-#### 回滚
+**不要用 `ros2 topic hz` 或 `ros2 topic echo` 判断 proto 话题有没有数据**——它们
+靠 rosidl introspection，对 proto 类型架构性不可用，会报
+`does not appear to be published yet`。那是工具的问题、不是没数据。
+要确认「真的有帧」，用本项目自带的 `ros2 amr echo`：
 
-把 `proto_rosidl_publish` 改回 `true` 并重启即可，**无需重新构建、无需回滚代码**。
-切流期间 rosidl 侧话题不受影响（只是没人发），订阅方不会因为切流而报错退出，
-所以回滚后它们会自然恢复接收——但**切流到回滚之间的数据是永久丢失的**。
+```bash
+docker exec amr_dispatcher bash -lc '
+source install/setup.bash
+timeout 10 ros2 amr echo /chassis/link_health_proto \
+  amr_dispatcher.proto.ChassisLinkHealth --once'
+```
 
-#### 下一步（4c）不要顺手做
+#### 改参数必须重启
 
-删除 `.msg` 与 rosidl 发布代码会让 rosidl 话题名这个公开契约**单方面失效**，
-回滚成本远高于多等一个版本周期。该动作的阻塞条件、连带影响（`registry/generated`
-的消息清单、`ProtoDualSubscriber` 的 `use_proto=false` 分支、
-`check_proto_dual_consistency.py` 的比对基准）见
-`PROTOBUF_MIGRATION_PLAN.md` 阶段 4。
+新参数是在节点构造期 `declare_parameter` 的，**已经跑着的进程不认识它**。
+改完配置不重启就去 `ros2 param get`，会得到 `Parameter not set`——那不是参数
+没配上，是进程还是旧的。诊断顺序永远是：先看启动日志的状态行，再看 `param get`。
+
+#### 回滚：从 4c 退回 4b
+
+4c 是**代码级**变更，不是参数级。回滚方式：
+
+1. `git revert` 或 `git checkout` 到 4c 之前的提交，重新构建。
+   `.msg` 定义与反投影层都还在仓库里，因此不需要重写任何消息定义——
+   这正是「保守 4c」刻意保留它们的唯一理由。
+2. 若只是想临时恢复到「消费者读旧话题」，且环境里**确有**旧版/第三方节点
+   仍在发 rosidl：把 `proto_dual_subscribe` 设为 `false` 即可，不需重建。
+   注意本仓库自己的节点在 4c 之后**不会**再发 rosidl，所以这个选项只在
+   「别人还在发 rosidl」时有意义。
+
+回滚期间的数据丢失照旧：切流那段时间没发出去的就是丢了。
+
+#### 完整 4c 不要顺手做
+
+删除 `.msg` 与反投影层会让「切回 rosidl」这条路彻底焊死，回滚成本从
+「回滚代码」跳到「重写消息定义」。其前置条件（确认无第三方订阅旧话题）与
+连带影响见 `PROTOBUF_MIGRATION_PLAN.md` 阶段 4。
 
 ### 6.4 施工区 runbook：临时封路 / 单向 / 临时标石
 

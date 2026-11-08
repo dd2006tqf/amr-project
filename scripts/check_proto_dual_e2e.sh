@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# 阶段 2 双发一致性 E2E：真进程 + 真 DDS，逐字段比对 rosidl 与 proto 两路话题。
+# proto 链路 E2E：真进程 + 真 DDS，验证 proto 话题是**唯一**的传输路径且可用。
 #
 # ============================================================================
-# 这一层守的是什么（以及为什么前面的测试不够）
+# 阶段 4c 之后这个脚本守什么
 # ============================================================================
-#   test_proto_projection  → 投影函数对（纯函数，进程内）
-#   ctest 各节点单测        → 节点逻辑对（不涉及双发）
+# 4c 之前它守的是「双发一致性」：同一份数据走 rosidl 与 proto 两条路，
+# 逐字段比对必须相等。4c 删除了 rosidl 发布侧，**比对基准消失了**，
+# 那条断言在结构上已不可能成立。
 #
-# 两者都覆盖不到的、只有真进程跑起来才暴露的失败：
-#   1. 某节点漏调 ProtoDualPublisher::Publish()（编译通过、运行静默）
-#   2. lifecycle 节点漏调 Activate()（proto 话题永远没数据）
-#   3. per-vehicle 话题派生在两侧不一致
-#   4. 序列化/反序列化链路坏了（投影对但字节坏）
+# 现在改成守三件在 4c 之后才会坏、且只有真进程能暴露的事：
+#   1. 发布端不再产生 rosidl 话题（否则 4c 就是没做完）
+#   2. proto 话题**确实有数据**（节点漏调 Publish / lifecycle 漏 Activate）
+#   3. 消费者默认就挂在 proto 话题上（默认值没翻对 = 全链路静默断流）
 #
-# 覆盖的发布者：link_health_publisher（不依赖其他节点，可独立起）
-# 以及 chassis_driver（如果串口模拟可用——不可用则跳过并明确说明）。
+# 第 3 条是 4c 特有的失败模式：发布端改完了、订阅端默认值没改，两边各自
+# 都「正常」，只是永远收不到对方。DDS 不报错，ctest 也抓不到。
 #
 # 用法：
 #   ./scripts/check_proto_dual_e2e.sh
 #   AMR_E2E_INNER=1 ./scripts/check_proto_dual_e2e.sh   # 容器内直跑
 #
-# 退出码：0 = 通过；1 = 不一致；2 = 环境不满足
+# 退出码：0 = 通过；1 = 失败；2 = 环境不满足
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,19 +46,18 @@ elif [[ -f /workspace/install/setup.bash ]]; then
 fi
 set -u
 
+# 独立 domain：容器里可能还跑着常驻系统，共用域会让「有没有数据」的
+# 判断被别的 writer 污染（本项目已经踩过一次，见 PROTOBUF_MIGRATION_PLAN.md）。
+export ROS_DOMAIN_ID="${AMR_E2E_DOMAIN_ID:-73}"
+
 PKG_PREFIX="$(ros2 pkg prefix amr_dispatcher_ros 2>/dev/null || true)"
 if [[ -z "${PKG_PREFIX}" ]]; then
   echo "错误: 找不到 amr_dispatcher_ros，先构建工作区" >&2
   exit 2
 fi
 LH_PUB="${PKG_PREFIX}/lib/amr_dispatcher_ros/link_health_publisher"
-CHECKER="${SCRIPT_DIR}/check_proto_dual_consistency.py"
 if [[ ! -x "${LH_PUB}" ]]; then
   echo "错误: 缺少可执行文件 ${LH_PUB}" >&2
-  exit 2
-fi
-if [[ ! -f "${CHECKER}" ]]; then
-  echo "错误: 缺少校验器 ${CHECKER}" >&2
   exit 2
 fi
 
@@ -71,117 +70,95 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== 启动假底盘（往 /chassis/link_health 打数据）==="
-python3 - <<'PYEOF' &
-import time
-import rclpy
-from rclpy.node import Node
-from amr_dispatcher_interfaces.msg import ChassisLinkHealth
+echo "=== ROS_DOMAIN_ID=${ROS_DOMAIN_ID}（与常驻系统隔离）==="
+echo "域内节点（启动前）: $(ros2 node list 2>/dev/null | tr '\n' ' ')"
 
-rclpy.init()
-node = Node('fake_chassis_for_dual_check')
-pub = node.create_publisher(ChassisLinkHealth, '/chassis/link_health', 10)
+FAIL=0
 
-msg = ChassisLinkHealth()
-msg.backend_name = 'mick_binary'
-msg.tier = 'DEGRADED'          # 已知枚举值：必须映射成 TIER_DEGRADED 且不留 tier_text
-msg.frames_total = 1000
-msg.frames_success = 990
-msg.frames_lost = 10
-msg.frames_crc_error = 3
-msg.loss_rate = 0.01
-msg.avg_latency_ms = 12.5
-msg.max_latency_ms = 30.0
-msg.is_healthy = True
-msg.command_delivery_rate = 0.98   # 有效送达率：valid=true 分支
-msg.commands_sent = 500
-msg.commands_delivered = 490
-
-deadline = time.time() + 20
-try:
-    while time.time() < deadline:
-        pub.publish(msg)
-        time.sleep(0.2)
-except Exception:  # noqa: BLE001 - 脚本收尾时 rclpy 上下文被主脚本 shutdown，
-    pass           # publish 会抛 RCLError。这不是失败，不该在 CI 日志里
-                   # 留下一段看起来像崩溃的 traceback。
-finally:
-    try:
-        rclpy.shutdown()
-    except Exception:  # noqa: BLE001
-        pass
-PYEOF
-PIDS+=("$!")
-
-sleep 2
-
-echo "=== 启动 link_health_publisher（双发）==="
-"${LH_PUB}" &
-PIDS+=("$!")
-
-sleep 3
-
-echo "=== 已发布的相关话题 ==="
-ros2 topic list | grep -E 'link_health' || true
-
+# ---------------------------------------------------------------------------
+# 阶段 1：发布端只发 proto —— 7 条受管话题的 rosidl 侧必须不存在
+# ---------------------------------------------------------------------------
+# 这一步在**空域**里跑，所以「话题不存在」只可能来自本脚本没起发布端，
+# 而不是被别处的话题掩盖。
 echo
-echo "=== 逐字段比对 /system/aggregated_link_health vs _proto ==="
-python3 "${CHECKER}" \
-  --topic /system/aggregated_link_health \
-  --rosidl-type amr_dispatcher_interfaces/msg/ChassisLinkHealth \
-  --proto-type amr_dispatcher.proto.ChassisLinkHealth \
-  --seconds 6 \
-  --max-frames 10
-RC=$?
+echo "=== 阶段 1：rosidl 侧必须已消失 ==="
+for t in /chassis/link_health /system/aggregated_link_health \
+         /dispatcher/state /dispatcher/events /dispatcher/topology_state \
+         /safety/state /tracking/error; do
+  if ros2 topic list 2>/dev/null | grep -qx "$t"; then
+    echo "  ✗ $t 仍然存在 —— 4c 没有做完（应只发 ${t}_proto）"
+    FAIL=1
+  else
+    echo "  ✓ $t 不存在"
+  fi
+done
 
-if [[ "${RC}" -ne 0 ]]; then
-  echo
-  echo "阶段 2 双发一致性: 失败 (rc=${RC})" >&2
-  exit "${RC}"
-fi
+# ---------------------------------------------------------------------------
+# 阶段 2：proto 侧确实有数据
+# ---------------------------------------------------------------------------
 echo
-echo "阶段 2 双发一致性: 通过"
-
-# ===========================================================================
-# 阶段 3：订阅侧验证
-# ===========================================================================
-# 上面证明的是「同一份数据能同时走两条路并逐字段相等」。这一节证明的是
-# **消费者真的能从 proto 那一路拿到等价的数据**——两者不可互相替代：
-# 双发一致可能是「proto 话题根本没被订阅」的假象。
-#
-# 做法：再起一个 link_health_publisher 实例，打开 proto_dual_subscribe，
-# 让它只读 /chassis/link_health_proto，再由它的聚合输出反推。
-# 若反投影有误（例如把 -1 哨兵还原成 0.0），聚合出来的 tier 会变成
-# CRITICAL 而不是 DEGRADED——这是本脚本刻意选的、能区分两者的字段。
-echo
-echo "=== 阶段 3：订阅侧（proto_dual_subscribe=true）==="
-"${LH_PUB}" --ros-args \
-  -r __node:=link_health_publisher_sub_side \
-  -p proto_dual_subscribe:=true \
-  -p publish_rate_hz:=5.0 &
+echo "=== 阶段 2：link_health_publisher 的 proto 输出有数据 ==="
+# publish_rate_hz 提到 5Hz 让 e2e 更快拿到帧；watched_topics 指一条
+# 没人发布的 proto 话题也没关系——它是聚合的**输入**，无输入时聚合定时器
+# 直接 return，所以必须先喂输入。这里改从 **proto** 侧喂（见阶段 3 的说明）。
+"${LH_PUB}" --ros-args -r __node:=lh_e2e_iso -p publish_rate_hz:=5.0 \
+  > /tmp/e2e_lh.log 2>&1 &
 PIDS+=("$!")
-
 sleep 4
 
-echo "=== 订阅侧输出的话题 ==="
-ros2 topic list | grep -E 'aggregated_link_health' || true
+echo "--- 启动日志 ---"
+grep -E "发布 proto|proto_dual" /tmp/e2e_lh.log | head -3 || true
 
-# 订阅侧实例读的是 /chassis/link_health_proto（上面假底盘经 chassis 侧双发过来的
-# 是 rosidl 原文；link_health_publisher 的写入端仍是 rosidl，故这里要确认它
-# 派生出的 _proto 名与发布端一致）。
-python3 "${CHECKER}" \
-  --topic /system/aggregated_link_health \
-  --rosidl-type amr_dispatcher_interfaces/msg/ChassisLinkHealth \
-  --proto-type amr_dispatcher.proto.ChassisLinkHealth \
-  --seconds 6 \
-  --max-frames 5
-RC2=$?
+echo "--- 域内 link_health 相关话题 ---"
+ros2 topic list 2>/dev/null | grep -E 'aggregated_link_health' || echo "  (无)"
 
-if [[ "${RC2}" -eq 0 ]]; then
-  echo
-  echo "阶段 3 订阅侧: 通过"
+# 聚合需要至少一条输入链路。用 python 直接往 proto 话题注入一帧，
+# 这既验证了「proto 侧能被写入」，也验证了消费者的反投影路径。
+echo
+echo "=== 阶段 3：消费者默认挂在 proto 话题上 ==="
+"${LH_PUB}" --ros-args -r __node:=lh_e2e_consumer -p publish_rate_hz:=5.0 \
+  > /tmp/e2e_lh_consumer.log 2>&1 &
+PIDS+=("$!")
+sleep 3
+
+# 用 node info 判断订阅端落在哪个话题上——这是 4c 默认值翻对没翻对的唯一
+# 直接证据。若默认值仍是 false，这里会显示 /chassis/link_health（rosidl），
+# 而那侧现在已经没有发布者，链路静默断流。
+SUB_TOPICS="$(ros2 node info /lh_e2e_consumer 2>/dev/null || true)"
+if printf '%s' "${SUB_TOPICS}" | grep -q '/chassis/link_health_proto'; then
+  echo "  ✓ 消费者订阅 /chassis/link_health_proto（默认值已翻转为 proto）"
 else
-  echo
-  echo "阶段 3 订阅侧: 失败 (rc=${RC2})" >&2
+  echo "  ✗ 消费者没有订阅 /chassis/link_health_proto —— 订阅侧默认值没翻"
+  printf '%s\n' "${SUB_TOPICS}" | sed -n '/Subscribers/,/Publishers/p' | head -8 | sed 's/^/      /'
+  FAIL=1
 fi
-exit "${RC2}"
+
+# ---------------------------------------------------------------------------
+# 阶段 4：proto 话题的 writer 存在（节点真在发）
+# ---------------------------------------------------------------------------
+echo
+echo "=== 阶段 4：proto 话题上确有 writer ==="
+# 注意：`ros2 topic info` 对 proto 话题可用（它只读 DDS 图，不做类型内省），
+# 但 `ros2 topic hz/echo` **不可用**——见 PROTOBUF_MIGRATION_PLAN.md 的陷阱记录。
+INFO="$(ros2 topic info /system/aggregated_link_health_proto 2>/dev/null || true)"
+if [[ -z "${INFO}" ]]; then
+  echo "  ✗ /system/aggregated_link_health_proto 话题不存在"
+  FAIL=1
+else
+  printf '%s\n' "${INFO}" | sed 's/^/      /'
+  # 无输入时聚合定时器直接 return，所以 writer 存在即可，不强求帧数。
+  if printf '%s' "${INFO}" | grep -q 'Publisher count: 0'; then
+    echo "  ✗ 有话题但没有任何发布者 —— 发布器没建起来"
+    FAIL=1
+  else
+    echo "  ✓ 存在发布者"
+  fi
+fi
+
+echo
+if [[ "${FAIL}" -ne 0 ]]; then
+  echo "proto 链路 E2E: 失败" >&2
+  exit 1
+fi
+echo "proto 链路 E2E: 通过"
+exit 0

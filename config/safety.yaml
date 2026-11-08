@@ -10,19 +10,15 @@ safety_gate_node:
     soft_timeout_ms: 2000
     # M5：Fault Supervisor 降级限速（kClampSpeed）时的线速度阈值
     degraded_max_linear_x_mps: 0.2
-    # 阶段 2 双发：/safety/state_proto（10Hz+50Hz 兜底，安全消息迁移期间的最大带宽项）。
-    # 关闭只停 proto 侧：门控行为、状态播报口径全部来自 rosidl 侧，逐位不变。
+    # 阶段 2 proto 发布开关：/safety/state_proto（10Hz+50Hz 兜底，安全消息迁移期间的最大带宽项）。
+    # 关闭后本节点不发安全状态。
+    #
+    # 阶段 4c：rosidl 侧已删除，本节点只发 /safety/state_proto。
+    # 注意本节点**不订阅**自己的这条状态话题，所以这不影响门控判定。
     proto_dual_publish: true
-    # 阶段 3 双订阅：link_health 与 topology_state 改从 *_proto 读取
+    # 阶段 3 双订阅：link_health 与 topology_state 从 *_proto 读取
     # （适配器内部反投影回 rosidl，门控判定逻辑一字未改）。
     #
-    # 前提：对应发布端必须开着 proto_dual_publish（chassis.yaml / dispatcher.yaml）。
-    # 只在发布端已经切到 proto 之后才打开这里——订阅一条没人发布的
-    # *_proto 话题时 DDS 不报错，只是永远收不到消息。
-    proto_dual_subscribe: false
-    # 阶段 4b 切流：rosidl 侧开关（默认 true = 行为与改动前逐位一致）。
-    # false 时本节点只发 /safety/state_proto，DDS 里不再有 /safety/state。
-    #
-    # 注意本节点**不订阅**自己的这条状态话题，所以关掉不影响门控判定；
-    # 但 Web 控制台 / 仪表盘 / 现场记录工具若还在读 rosidl 侧就是静默失联。
-    proto_rosidl_publish: true
+    # **阶段 4c 起默认 true**：发布端已删除 rosidl 侧，默认 false 会让本节点
+    # 订阅永远不会有人发布的话题——DDS 不报错，只是永久收不到消息。
+    proto_dual_subscribe: true

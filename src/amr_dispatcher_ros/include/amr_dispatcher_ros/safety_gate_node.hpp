@@ -133,12 +133,9 @@ class SafetyGateNode : public rclcpp::Node {
   bool subscribe_global_estop_ = true;
   bool subscribe_global_bumper_ = true;
 
-  // 阶段 2：proto 双发总开关（参数 proto_dual_publish）
+  // 阶段 2：proto 发布总开关（参数 proto_dual_publish）
   bool proto_dual_publish_{true};
-  // 阶段 4b：rosidl 侧开关（参数 proto_rosidl_publish，默认开）。
-  // false = 只发 /safety/state_proto，DDS 里不再有 /safety/state。
-  bool proto_rosidl_publish_{true};
-  bool proto_dual_subscribe_{false};
+  bool proto_dual_subscribe_{true};
 };
 
 }  // namespace amr_dispatcher_ros
