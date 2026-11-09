@@ -8,15 +8,21 @@ metadata:
   modified: 2026-11-09T05:18:02.690Z
 ---
 
-下位机固件（`lower/leap_ros_mcu_driver/`，ESP32-S3）编译环境。**2026-11-09 已在本机完整构建成功**，`leap_ros.bin` 1107456 字节（0x10e600），单条 `idf.py build` 约 83–86 秒。
+下位机固件（`lower/leap_ros_mcu_driver/`，ESP32-S3）编译环境。**2026-11-09 已在两台机器上完整构建成功**，`leap_ros.bin` 1107456 字节（0x10e600），单条 `idf.py build` 即可。
 
 **正确构建命令（一条即可，不用手动 set-target）**：
 ```bash
 export IDF_SKIP_CHECK_SUBMODULES=1
-export CMAKE_BUILD_PARALLEL_LEVEL=1
-source /home/ubuntu/esp/esp-idf/export.sh
+export CMAKE_BUILD_PARALLEL_LEVEL=1     # 内存 < 8 GB 必须；见 [[low-memory-build-constraints]]
+source <IDF 路径>/export.sh
 cd lower/leap_ros_mcu_driver && idf.py build
 ```
+
+**IDF 根目录随机器不同，不要写死**：
+- 旧机器（`ubuntu@…`，4 核 / 3.7 GB）：`/home/ubuntu/esp/esp-idf`，干净构建 83–86 秒
+- 本机 VMware `dev-cloud-m1`（CentOS Stream 10，2 vCPU / 7.5 GiB）：`/home/tanqf/esp/esp-idf`，干净构建 **388–467 秒**，no-op 增量 4 秒、改 1 个 TU 约 51 秒
+
+耗时差 4.5 倍纯由核数决定，不是配置问题。**不要把这组速度数字当成通用基线。**
 
 ## 五个坑（全部已修，修法已入库）
 
