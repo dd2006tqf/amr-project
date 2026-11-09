@@ -64,31 +64,46 @@ foreach(package ${PACKAGES})
     string(APPEND IDF_INCLUDES "${${package}_includes_string}")
 endforeach()
 
-execute_process(
-    WORKING_DIRECTORY ${COMPONENT_DIR}
-    RESULT_VARIABLE libmicroros_ret
-    COMMAND
-        ${submake} -j -f libmicroros.mk
-                X_CC=${CMAKE_C_COMPILER}
-                X_AR=${CMAKE_AR}
-                X_CXX=${CMAKE_CXX_COMPILER}
-                C_STANDARD=${CMAKE_C_STANDARD}
-                MIDDLEWARE=${MIDDLEWARE}
-                BUILD_DIR=${CMAKE_BINARY_DIR}
-                IDF_INCLUDES=${IDF_INCLUDES}
-                IDF_PATH=${IDF_PATH}
-                IDF_TARGET=${IDF_TARGET}
-                APP_COLCON_META=${APP_COLCON_META}
-                EXTRA_ROS_PACKAGES=${EXTRA_ROS_PACKAGES}
-)
-if(libmicroros_ret AND NOT libmicroros_ret EQUAL 0)
-  message(FATAL_ERROR "FAILED: ${libmicroros_ret}")
+# NOTE(amr): Upstream unconditionally re-runs `make -f libmicroros.mk`, which
+# clones the whole micro-ROS source tree and rebuilds libmicroros.a with colcon.
+# That path is unreachable here: colcon is not installed, and the checked-in
+# micro_ros_dev/install colcon scripts hardcode an absolute build-time prefix
+# (/root/maturo_project/...) that does not exist on this machine.
+# When the prebuilt artifacts are already present we reuse them as-is and skip
+# the rebuild entirely -- nothing else in this file needs micro_ros_dev/.
+if(EXISTS "${COMPONENT_DIR}/libmicroros.a" AND IS_DIRECTORY "${COMPONENT_DIR}/include")
+    message(STATUS "Reusing prebuilt libmicroros.a and include/ (skipping colcon rebuild)")
+else()
+    execute_process(
+        WORKING_DIRECTORY ${COMPONENT_DIR}
+        RESULT_VARIABLE libmicroros_ret
+        COMMAND
+            ${submake} -j -f libmicroros.mk
+                    X_CC=${CMAKE_C_COMPILER}
+                    X_AR=${CMAKE_AR}
+                    X_CXX=${CMAKE_CXX_COMPILER}
+                    C_STANDARD=${CMAKE_C_STANDARD}
+                    MIDDLEWARE=${MIDDLEWARE}
+                    BUILD_DIR=${CMAKE_BINARY_DIR}
+                    IDF_INCLUDES=${IDF_INCLUDES}
+                    IDF_PATH=${IDF_PATH}
+                    IDF_TARGET=${IDF_TARGET}
+                    APP_COLCON_META=${APP_COLCON_META}
+                    EXTRA_ROS_PACKAGES=${EXTRA_ROS_PACKAGES}
+    )
+    if(libmicroros_ret AND NOT libmicroros_ret EQUAL 0)
+      message(FATAL_ERROR "FAILED: ${libmicroros_ret}")
+    endif()
 endif()
 
 add_prebuilt_library(libmicroros-prebuilt ""
                      REQUIRES lwip)
 
-add_dependencies(libmicroros-prebuilt libmicroros_project)
+# NOTE(amr): upstream leaves this line in, but `libmicroros_project` is never
+# defined anywhere in this component. It only stays harmless because CMake does
+# not resolve add_dependencies() on IMPORTED targets until build time. Dropped
+# here since the rebuild path that would have created it is skipped above.
+# add_dependencies(libmicroros-prebuilt libmicroros_project)
 
 set_target_properties(libmicroros-prebuilt PROPERTIES IMPORTED_LOCATION ${COMPONENT_DIR}/libmicroros.a)
 target_include_directories(libmicroros-prebuilt INTERFACE ${COMPONENT_DIR}/include)

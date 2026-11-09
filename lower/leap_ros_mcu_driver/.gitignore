@@ -4,8 +4,20 @@
 .agents/
 
 build/
+sdkconfig
 sdkconfig.old
 *.log
+
+# idf-component-manager 每次配置都会重写这份 lock，并把 local 依赖的 path
+# 写成**当前机器的绝对路径**。上游提交的那份里是
+#   /root/maturo_project/leap_ros/managed_components/micro_ros_espidf_component
+# 在本机不可读（/root 是 drwx------），组件管理器 stat() 时直接抛
+#   PermissionError: [Errno 13] Permission denied
+# 让 set-target/build 全盘失败。反过来，把它改成任何人本机的绝对路径提交上去
+# 同样没有意义。既然 main/idf_component.yml 已经用相对路径声明了同一个依赖
+# （path: ../managed_components/micro_ros_espidf_component），lock 属于纯本地
+# 解析缓存，不入库即可 —— 缺失时组件管理器会按 manifest 重新生成。
+dependencies.lock
 
 *.swp
 *.swo
