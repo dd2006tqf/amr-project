@@ -5,11 +5,21 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 ROOT_DIR="$DIR/.."
 
 # 并发度按**内存**推导，不再用 $(nproc)：见 scripts/lib/build_workers.sh 里的
-# 完整说明（3.7 GB 机器上 -j4 会让整机进 swap 颠簸，SSH 直接卡死）。
-# shellcheck source=lib/build_workers.sh
-# shellcheck disable=SC1091
-source "$DIR/lib/build_workers.sh"
-WORKERS="${AMR_COLCON_WORKERS:-$(build_workers)}"
+# 完整说明（3.7 GB 机器上 -j4 会让整机进 swap 颠簸、SSH 直接卡死）。
+#
+# ⚠️ lib/build_workers.sh 是**可执行脚本**（stdout 输出一个整数），不是
+# shell 函数库，所以必须「执行」它并读 stdout，不能 `source` 后调函数。
+# 之前的写法是 `source ...; $(build_workers)`，函数并不存在 → WORKERS 为空
+# → CMAKE_BUILD_PARALLEL_LEVEL="" → cmake/ninja 视为**不限并发**，
+# 「两级限并发」实际上完全没生效（2026-11-09 发现并修复）。
+# 同样重要的是：执行失败时必须回退到 1，绝不能让空值漏进 -j。
+WORKERS="${AMR_COLCON_WORKERS:-}"
+if [ -z "$WORKERS" ]; then
+  WORKERS="$(bash "$DIR/lib/build_workers.sh" 2>/dev/null)" || WORKERS=""
+fi
+case "$WORKERS" in
+  '' | *[!0-9]*) WORKERS=1 ;;
+esac
 
 # colcon 的 --parallel-workers 只管**包级**并发，包内部的 make/ninja 仍按
 # CPU 数开 -j。不设这个变量的话，`--parallel-workers 1` 在 4 核机器上依然

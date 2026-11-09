@@ -28,10 +28,17 @@ IMAGE="${AMR_IMAGE:-amr-dispatcher:jazzy}"
 # 而宿主机侧推导能在 `docker run` 之前就把值算好并写进命令行，不依赖
 # 镜像里有没有脚本。若将来给容器加了 --memory，请同时把该限额也传给
 # 这里的推导（否则宿主机会按物理内存算出偏大的并发）。
-# shellcheck source=lib/build_workers.sh
-# shellcheck disable=SC1091
-source "$DIR/lib/build_workers.sh"
-WORKERS="${AMR_COLCON_WORKERS:-$(build_workers)}"
+# ⚠️ lib/build_workers.sh 是**可执行脚本**（stdout 输出一个整数），不是
+# shell 函数库。必须「执行」它并读 stdout；`source` 后调 $(build_workers)
+# 会因函数不存在而得到空值 → CMAKE_BUILD_PARALLEL_LEVEL="" → 不限并发。
+# 执行失败时回退到 1，绝不能把空值传下去（2026-11-09 修复）。
+WORKERS="${AMR_COLCON_WORKERS:-}"
+if [ -z "$WORKERS" ]; then
+  WORKERS="$(bash "$DIR/lib/build_workers.sh" 2>/dev/null)" || WORKERS=""
+fi
+case "$WORKERS" in
+  '' | *[!0-9]*) WORKERS=1 ;;
+esac
 
 # 两级并发都要限：colcon 的 --parallel-workers 只管包级，包内部的 make/ninja
 # 仍按 CPU 数开 -j（详见 build_workers.sh 的说明）。
