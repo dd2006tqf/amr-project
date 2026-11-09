@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""查 HID 设备的 modalias，确定 udev 规则的精确匹配条件。
+
+关键问题：modalias 里的 `g` 字段是不是 HID group？
+若是，就能用 g0002 / g0004 精确匹配多点触控设备，
+避免「插键鼠也加载 hid-multitouch」。
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, "/tmp")
+import probe_mt
+
+
+def show(tag, hiddev):
+    base = "/sys/bus/hid/devices/%s" % hiddev
+    mod = os.path.join(base, "modalias")
+    d = {}
+    for k in ("modalias", "country", "hid_name", "report_descriptor"):
+        pass
+    print("  [%s] %s" % (tag, hiddev))
+    for f in os.listdir(base):
+        if f in ("modalias", "country", "hid_name"):
+            try:
+                with open(os.path.join(base, f)) as fh:
+                    print("      %-12s = %s" % (f, fh.read().strip()))
+            except OSError as e:
+                print("      %-12s ! %s" % (f, e))
+    print("      绑定驱动      = %s" % (probe_mt.driver_of(hiddev) or "<未绑定>"))
+
+
+def main():
+    if os.geteuid() != 0:
+        print("需要 root")
+        return 5
+
+    uhid = os.open(probe_mt.UHID_DEV, os.O_RDWR)
+    before = probe_mt.hid_devices()
+    try:
+        os.write(uhid, probe_mt.build_create2(
+            "weaknet-modalias-probe", "uhid/modalias", "weaknet",
+            probe_mt.REPORT_DESCRIPTOR, probe_mt.BUS_USB, 0x222A, 0x0003, 0x0100))
+        time.sleep(0.8)
+        new = sorted(probe_mt.hid_devices() - before)
+        if not new:
+            print("设备未创建")
+            return 2
+        print("=== 多点触控设备（Digitizer/Touch Screen）===")
+        show("MT", new[0])
+        print()
+        print("=== 对照：板上已有 HID 设备 ===")
+        for d in sorted(before):
+            show("OTHER", d)
+        return 0
+    finally:
+        try:
+            os.write(uhid, probe_mt.build_destroy())
+        except OSError:
+            pass
+        os.close(uhid)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""决定性实验：设备先被 hid-generic 绑定，之后再加载 hid-multitouch，能否自动接管？
+
+不调用任何 bind/unbind/new_id —— 只看内核自己会不会重绑。
+这决定 udev 规则要不要额外写重绑逻辑。
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, "/tmp")
+import probe_mt  # 有 __main__ 守卫，import 不会跑 main()
+
+
+def drv(hiddev):
+    return probe_mt.driver_of(hiddev)
+
+
+def main():
+    if os.geteuid() != 0:
+        print("需要 root")
+        return 5
+
+    before = probe_mt.hid_devices()
+    uhid = os.open(probe_mt.UHID_DEV, os.O_RDWR)
+    try:
+        print("=== 步骤 1: 在 hid-multitouch 未加载的情况下创建设备 ===")
+        print("  当前 hid_multitouch 是否已加载:", os.path.exists(
+            "/sys/bus/hid/drivers/hid-multitouch"))
+        os.write(uhid, probe_mt.build_create2(
+            "weaknet-rebind-test", "uhid/rebind", "weaknet",
+            probe_mt.REPORT_DESCRIPTOR, probe_mt.BUS_USB, 0x222A, 0x0002, 0x0100))
+        time.sleep(0.8)
+
+        new = sorted(probe_mt.hid_devices() - before)
+        if not new:
+            print("  !! 设备未创建")
+            return 2
+        hiddev = new[0]
+        print("  HID 设备:", hiddev)
+
+        d1 = drv(hiddev)
+        print("  首次绑定驱动:", d1 or "<未绑定>")
+        if d1 != "hid-generic":
+            print("  注意: 预期是 hid-generic，实际是 %s" % d1)
+
+        print()
+        print("=== 步骤 2: 加载 hid-multitouch（不做任何 bind 操作）===")
+        rc = os.system("insmod /tmp/mtx.ko 2>&1")
+        print("  insmod rc =", rc >> 8)
+        time.sleep(1.0)
+
+        d2 = drv(hiddev)
+        print("  加载后绑定驱动:", d2 or "<未绑定>")
+
+        print()
+        print("=== 结论 ===")
+        if d2 == "hid-multitouch":
+            print("  ✅ 自动接管成功：加载模块即可，udev 规则无需重绑")
+        elif d2 == d1:
+            print("  ❌ 未自动接管：仍绑在 %s —— udev 规则必须显式重绑" % d2)
+        else:
+            print("  ? 驱动变更为 %s" % d2)
+        return 0
+    finally:
+        try:
+            os.write(uhid, probe_mt.build_destroy())
+        except OSError:
+            pass
+        os.close(uhid)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

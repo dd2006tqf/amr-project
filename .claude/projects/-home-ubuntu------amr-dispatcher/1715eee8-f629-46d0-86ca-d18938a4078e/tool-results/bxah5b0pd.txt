@@ -1,0 +1,611 @@
+Starting >>> amr_dispatcher_workspace
+[Processing: amr_dispatcher_workspace]
+[Processing: amr_dispatcher_workspace]
+[Processing: amr_dispatcher_workspace]
+Finished <<< amr_dispatcher_workspace [1min 34s]
+--- stderr: amr_dispatcher_workspace
+/workspace/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_RejectsDuplicateAndFull_Test::TestBody()’:
+/workspace/test/unit/test_mission_queue.cpp:42:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   42 |   MissionQueue q{{.max_size = 2, .comparator = "priority_fifo"}};
+      |                   ^
+/workspace/test/unit/test_mission_queue.cpp:42:34: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   42 |   MissionQueue q{{.max_size = 2, .comparator = "priority_fifo"}};
+      |                                  ^
+/workspace/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_DeadlineComparator_Test::TestBody()’:
+/workspace/test/unit/test_mission_queue.cpp:55:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   55 |   MissionQueue q{{.max_size = 16, .comparator = "earliest_deadline"}};
+      |                   ^
+/workspace/test/unit/test_mission_queue.cpp:55:35: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   55 |   MissionQueue q{{.max_size = 16, .comparator = "earliest_deadline"}};
+      |                                   ^
+/workspace/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_RejectUnknownComparatorFallsBack_Test::TestBody()’:
+/workspace/test/unit/test_mission_queue.cpp:102:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  102 |   MissionQueue q{{.comparator = "nonsense"}};
+      |                   ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_AllSuccessBecomesHealthy_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:17:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   17 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:17:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   17 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:17:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   17 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:18:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   18 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_CrcErrorCountsAsLost_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:30:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   30 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:30:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   30 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:30:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   30 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:31:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   31 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_HighLossTriggersCritical_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:46:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   46 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:46:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   46 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:46:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   46 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:47:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   47 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_RecoverySignalFiresAfterThreshold_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:58:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   58 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:58:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   58 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:58:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   58 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:59:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   59 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_WindowedLossDetectsBurstAfterLongHealthy_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:93:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   93 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:93:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   93 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:93:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   93 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:94:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   94 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_SlidingWindowRecoversWithoutReset_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:109:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  109 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:109:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  109 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:109:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  109 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:110:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  110 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_ZeroWindowSizeClampsToSingleSample_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:126:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  126 |   LinkQualityMonitor q({.window_size = 0, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:126:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  126 |   LinkQualityMonitor q({.window_size = 0, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:126:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  126 |   LinkQualityMonitor q({.window_size = 0, .success_threshold = 4, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:127:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  127 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_RecoverySignalFiresOnceOverHundredSuccesses_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:138:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  138 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:138:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  138 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:138:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  138 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:139:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  139 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_NewLossClearsPendingRecoverySignal_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:154:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  154 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:154:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  154 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                           ^
+/workspace/test/unit/test_link_quality.cpp:154:67: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  154 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 5, .healthy_loss_rate = 0.02,
+      |                                                                   ^
+/workspace/test/unit/test_link_quality.cpp:155:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  155 |                         .degraded_loss_rate = 0.15});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp: In member function ‘virtual void LinkQualityTest_RecordCrcErrorRefreshesLastSeen_Test::TestBody()’:
+/workspace/test/unit/test_link_quality.cpp:175:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  175 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4});
+      |                         ^
+/workspace/test/unit/test_link_quality.cpp:175:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  175 |   LinkQualityMonitor q({.window_size = 8, .success_threshold = 4});
+      |                                           ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_IdleToWaitingOnFirstTick_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:9:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+    9 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:9:51: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+    9 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                                                   ^
+/workspace/test/unit/test_link_recovery.cpp:10:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   10 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:10:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   10 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:11:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   11 |                         .max_attempts = 3, .open_timeout = 10ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:11:44: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   11 |                         .max_attempts = 3, .open_timeout = 10ms,
+      |                                            ^
+/workspace/test/unit/test_link_recovery.cpp:12:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   12 |                         .open_attempt = [] { return true; }});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_ExponentialBackoffSequence_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:20:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   20 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:20:51: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   20 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                                                   ^
+/workspace/test/unit/test_link_recovery.cpp:21:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:21:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:22:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   22 |                         .max_attempts = 10});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:22:44: warning: missing initializer for member ‘amr_dispatcher_core::chassis::LinkRecoveryConfig::open_attempt’ [-Wmissing-field-initializers]
+   22 |                         .max_attempts = 10});
+      |                                            ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_BackoffCappedAtMax_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:35:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   35 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 250ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:35:51: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   35 |   LinkRecoveryPolicy p({.initial_backoff = 100ms, .max_backoff = 250ms,
+      |                                                   ^
+/workspace/test/unit/test_link_recovery.cpp:36:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   36 |                         .backoff_multiplier = 10.0, .jitter_ratio = 0.0});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:36:53: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   36 |                         .backoff_multiplier = 10.0, .jitter_ratio = 0.0});
+      |                                                     ^
+/workspace/test/unit/test_link_recovery.cpp:36:73: warning: missing initializer for member ‘amr_dispatcher_core::chassis::LinkRecoveryConfig::open_attempt’ [-Wmissing-field-initializers]
+   36 |                         .backoff_multiplier = 10.0, .jitter_ratio = 0.0});
+      |                                                                         ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_AttemptSuccessGoesToConnected_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:46:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   46 |   LinkRecoveryPolicy p({.initial_backoff = 50ms, .max_backoff = 1000ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:46:50: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   46 |   LinkRecoveryPolicy p({.initial_backoff = 50ms, .max_backoff = 1000ms,
+      |                                                  ^
+/workspace/test/unit/test_link_recovery.cpp:47:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   47 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:47:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   47 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:48:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   48 |                         .max_attempts = 5,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:49:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   49 |                         .open_attempt = [] { return true; }});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_MaxAttemptsExhausts_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:60:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   60 |   LinkRecoveryPolicy p({.initial_backoff = 10ms, .max_backoff = 100ms,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:60:50: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   60 |   LinkRecoveryPolicy p({.initial_backoff = 10ms, .max_backoff = 100ms,
+      |                                                  ^
+/workspace/test/unit/test_link_recovery.cpp:61:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   61 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:61:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   61 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:62:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   62 |                         .max_attempts = 2,
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:63:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   63 |                         .open_attempt = [&n] { ++n; return false; }});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_NotifyFailedAfterConnectedResumes_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:71:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   71 |   LinkRecoveryPolicy p({.initial_backoff = 50ms, .open_attempt = [] { return true; }});
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:71:50: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   71 |   LinkRecoveryPolicy p({.initial_backoff = 50ms, .open_attempt = [] { return true; }});
+      |                                                  ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_DecideBackoffIsPureFunction_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:82:26: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   82 |   LinkRecoveryConfig cfg{.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                          ^
+/workspace/test/unit/test_link_recovery.cpp:82:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   82 |   LinkRecoveryConfig cfg{.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:83:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   83 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0};
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:83:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   83 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0};
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:83:71: warning: missing initializer for member ‘amr_dispatcher_core::chassis::LinkRecoveryConfig::open_attempt’ [-Wmissing-field-initializers]
+   83 |                         .backoff_multiplier = 2.0, .jitter_ratio = 0.0};
+      |                                                                       ^
+/workspace/test/unit/test_link_recovery.cpp: In member function ‘virtual void LinkRecoveryTest_DecideBackoffWithJitterRange_Test::TestBody()’:
+/workspace/test/unit/test_link_recovery.cpp:91:26: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   91 |   LinkRecoveryConfig cfg{.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                          ^
+/workspace/test/unit/test_link_recovery.cpp:91:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   91 |   LinkRecoveryConfig cfg{.initial_backoff = 100ms, .max_backoff = 1000ms,
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:92:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   92 |                         .backoff_multiplier = 1.0, .jitter_ratio = 0.5};
+      |                         ^
+/workspace/test/unit/test_link_recovery.cpp:92:52: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   92 |                         .backoff_multiplier = 1.0, .jitter_ratio = 0.5};
+      |                                                    ^
+/workspace/test/unit/test_link_recovery.cpp:92:71: warning: missing initializer for member ‘amr_dispatcher_core::chassis::LinkRecoveryConfig::open_attempt’ [-Wmissing-field-initializers]
+   92 |                         .backoff_multiplier = 1.0, .jitter_ratio = 0.5};
+      |                                                                       ^
+/workspace/test/unit/test_backend_degradation.cpp: In constructor ‘{anonymous}::StubBackend::StubBackend(std::string, std::shared_ptr<bool>)’:
+/workspace/test/unit/test_backend_degradation.cpp:30:15: warning: ‘{anonymous}::StubBackend::name_’ will be initialized after [-Wreorder]
+   30 |   std::string name_;
+      |               ^~~~~
+/workspace/test/unit/test_backend_degradation.cpp:27:25: warning:   ‘std::shared_ptr<bool> {anonymous}::StubBackend::open_flag_’ [-Wreorder]
+   27 |   std::shared_ptr<bool> open_flag_;
+      |                         ^~~~~~~~~~
+/workspace/test/unit/test_backend_degradation.cpp:15:12: warning:   when initialized here [-Wreorder]
+   15 |   explicit StubBackend(std::string name, std::shared_ptr<bool> open_flag = nullptr)
+      |            ^~~~~~~~~~~
+/workspace/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_HighLossRateTriggersDemotion_Test::TestBody()’:
+/workspace/test/unit/test_backend_degradation.cpp:53:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/workspace/test/unit/test_backend_degradation.cpp:53:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/workspace/test/unit/test_backend_degradation.cpp:53:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/workspace/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_CooldownPreventsRapidFlip_Test::TestBody()’:
+/workspace/test/unit/test_backend_degradation.cpp:74:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |        ^
+/workspace/test/unit/test_backend_degradation.cpp:74:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |                             ^
+/workspace/test/unit/test_backend_degradation.cpp:74:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |                                                      ^
+/workspace/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackToPreferredAfterRecoverySignal_Test::TestBody()’:
+/workspace/test/unit/test_backend_degradation.cpp:120:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/workspace/test/unit/test_backend_degradation.cpp:120:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/workspace/test/unit/test_backend_degradation.cpp:120:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/workspace/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackBlockedDuringCooldown_Test::TestBody()’:
+/workspace/test/unit/test_backend_degradation.cpp:142:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |        ^
+/workspace/test/unit/test_backend_degradation.cpp:142:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |                             ^
+/workspace/test/unit/test_backend_degradation.cpp:142:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |                                                      ^
+/workspace/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackOpenFailureKeepsCurrentBackend_Test::TestBody()’:
+/workspace/test/unit/test_backend_degradation.cpp:193:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/workspace/test/unit/test_backend_degradation.cpp:193:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/workspace/test/unit/test_backend_degradation.cpp:193:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/workspace/test/unit/test_serial_udp_backend.cpp: In function ‘int {anonymous}::OpenLoopbackReceiver(sockaddr_in*)’:
+/workspace/test/unit/test_serial_udp_backend.cpp:97:14: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   97 |   timeval tv{.tv_sec = 1, .tv_usec = 0};
+      |              ^
+/workspace/test/unit/test_serial_udp_backend.cpp:97:27: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   97 |   timeval tv{.tv_sec = 1, .tv_usec = 0};
+      |                           ^
+/workspace/test/unit/test_serial_udp_backend.cpp: In member function ‘virtual void SerialBackendTest_WriteCommandDeliversFullLineToMaster_Test::TestBody()’:
+/workspace/test/unit/test_serial_udp_backend.cpp:131:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  131 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                      ^
+/workspace/test/unit/test_serial_udp_backend.cpp:131:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  131 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                                           ^
+/workspace/test/unit/test_serial_udp_backend.cpp:131:65: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  131 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                                                                 ^
+/workspace/test/unit/test_serial_udp_backend.cpp: In member function ‘virtual void SerialBackendTest_WouldBlockReturnsFalse_Test::TestBody()’:
+/workspace/test/unit/test_serial_udp_backend.cpp:152:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  152 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = 0.0, .angular_z_radps = 0.25};
+      |                      ^
+/workspace/test/unit/test_serial_udp_backend.cpp:152:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  152 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = 0.0, .angular_z_radps = 0.25};
+      |                                           ^
+/workspace/test/unit/test_serial_udp_backend.cpp:152:64: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  152 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = 0.0, .angular_z_radps = 0.25};
+      |                                                                ^
+/workspace/test/unit/test_serial_udp_backend.cpp: In member function ‘virtual void UdpBackendTest_WriteCommandDeliversFullDatagram_Test::TestBody()’:
+/workspace/test/unit/test_serial_udp_backend.cpp:194:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  194 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                      ^
+/workspace/test/unit/test_serial_udp_backend.cpp:194:43: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  194 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                                           ^
+/workspace/test/unit/test_serial_udp_backend.cpp:194:65: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  194 |   ChassisCommand cmd{.linear_x_mps = 1.5, .linear_y_mps = -0.5, .angular_z_radps = 0.25};
+      |                                                                 ^
+/workspace/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_IdleActiveWithRetriesLeftPicksRetry_Test::TestBody()’:
+/workspace/test/unit/test_recovery_policy.cpp:21:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |   RecoveryPolicy p({.max_retries = 3, .auto_cancel_on_exhausted = true});
+      |                     ^
+/workspace/test/unit/test_recovery_policy.cpp:21:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |   RecoveryPolicy p({.max_retries = 3, .auto_cancel_on_exhausted = true});
+      |                                       ^
+/workspace/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_IdleActiveExhaustedCancels_Test::TestBody()’:
+/workspace/test/unit/test_recovery_policy.cpp:29:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   29 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = true});
+      |                     ^
+/workspace/test/unit/test_recovery_policy.cpp:29:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   29 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = true});
+      |                                       ^
+/workspace/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_ExhaustedWithoutAutoCancelPauses_Test::TestBody()’:
+/workspace/test/unit/test_recovery_policy.cpp:37:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   37 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = false});
+      |                     ^
+/workspace/test/unit/test_recovery_policy.cpp:37:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   37 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = false});
+      |                                       ^
+/workspace/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_LongHoldRetryWhenBudgetLeft_Test::TestBody()’:
+/workspace/test/unit/test_recovery_policy.cpp:75:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   75 |   RecoveryPolicy p({.max_retries = 2});
+      |                     ^
+/workspace/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_TooManyActiveMissions_Test::TestBody()’:
+/workspace/test/unit/test_deadlock_detector.cpp:120:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |   DeadlockDetector d({.max_active_missions = 2});
+      |                       ^
+/workspace/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_IdleActiveDetected_Test::TestBody()’:
+/workspace/test/unit/test_deadlock_detector.cpp:131:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  131 |   DeadlockDetector d({.max_active_missions = 100,
+      |                       ^
+/workspace/test/unit/test_deadlock_detector.cpp:132:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  132 |                      .active_idle_threshold = 100ms});
+      |                      ^
+/workspace/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_LongReservationHoldDetected_Test::TestBody()’:
+/workspace/test/unit/test_deadlock_detector.cpp:143:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  143 |   DeadlockDetector d({.max_active_missions = 100,
+      |                       ^
+/workspace/test/unit/test_deadlock_detector.cpp:144:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  144 |                      .reservation_hold_threshold = 100ms});
+      |                      ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_AllowsCmdUnderLimits_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:13:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   13 |   CmdVelCommand cmd{.linear_x_mps = 0.5, .linear_y_mps = 0.3, .angular_z_radps = 0.4};
+      |                     ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:13:42: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   13 |   CmdVelCommand cmd{.linear_x_mps = 0.5, .linear_y_mps = 0.3, .angular_z_radps = 0.4};
+      |                                          ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:13:63: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   13 |   CmdVelCommand cmd{.linear_x_mps = 0.5, .linear_y_mps = 0.3, .angular_z_radps = 0.4};
+      |                                                               ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_ClampsOverSpeed_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:22:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   22 |   CmdVelCommand cmd{.linear_x_mps = 5.0, .linear_y_mps = 0.0, .angular_z_radps = 5.0};
+      |                     ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:22:42: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   22 |   CmdVelCommand cmd{.linear_x_mps = 5.0, .linear_y_mps = 0.0, .angular_z_radps = 5.0};
+      |                                          ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:22:63: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   22 |   CmdVelCommand cmd{.linear_x_mps = 5.0, .linear_y_mps = 0.0, .angular_z_radps = 5.0};
+      |                                                               ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_CriticalEventStopsMotion_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:29:20: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   29 |   CmdVelGate gate({.source_blocked = [](const std::string& src) {
+      |                    ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:33:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   33 |   CmdVelCommand cmd{.linear_x_mps = 0.5};
+      |                     ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_WarnEventReducesSpeed_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:44:33: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   44 |   const auto d = gate.Evaluate({.linear_x_mps = 1.0});
+      |                                 ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_CriticalWithoutSourceBlockIgnored_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:53:33: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |   const auto d = gate.Evaluate({.linear_x_mps = 0.5});
+      |                                 ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_EventHistoryBounded_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:59:20: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   59 |   CmdVelGate gate({.event_history_capacity = 3});
+      |                    ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:59:48: warning: missing initializer for member ‘amr_dispatcher_core::safety::CmdVelGateConfig::source_blocked’ [-Wmissing-field-initializers]
+   59 |   CmdVelGate gate({.event_history_capacity = 3});
+      |                                                ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_CriticalEventExpiresAfterTtl_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:76:20: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   76 |   CmdVelGate gate({.source_blocked = [](const std::string& src) {
+      |                    ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:81:27: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   81 |   const CmdVelCommand cmd{.linear_x_mps = 0.5};
+      |                           ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_WarnEventExpiresAfterTtl_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:99:37: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   99 |   const auto after = gate.Evaluate({.linear_x_mps = 1.0}, stamp + 2000ms + 1ms);
+      |                                     ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_ScaleNanBecomesZero_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:108:33: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  108 |   const auto d = gate.Evaluate({.linear_x_mps = std::numeric_limits<double>::quiet_NaN(),
+      |                                 ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:109:33: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  109 |                                 .linear_y_mps = std::numeric_limits<double>::quiet_NaN(),
+      |                                 ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:110:33: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  110 |                                 .angular_z_radps = std::numeric_limits<double>::quiet_NaN()});
+      |                                 ^
+/workspace/test/unit/test_cmd_vel_gate.cpp: In member function ‘virtual void CmdVelGateTest_ScaleInfClampsToLimit_Test::TestBody()’:
+/workspace/test/unit/test_cmd_vel_gate.cpp:122:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  122 |       {.linear_x_mps = std::numeric_limits<double>::infinity(),
+      |        ^
+/workspace/test/unit/test_cmd_vel_gate.cpp:123:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  123 |        .angular_z_radps = -std::numeric_limits<double>::infinity()});
+      |        ^
+/workspace/test/unit/test_watchdog.cpp: In member function ‘virtual void WatchdogTest_HealthyNodesProduceNoEvents_Test::TestBody()’:
+/workspace/test/unit/test_watchdog.cpp:10:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   10 |   SafetyWatchdog w({.heartbeat_timeout = 100ms, .soft_timeout = 500ms});
+      |                     ^
+/workspace/test/unit/test_watchdog.cpp:10:49: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   10 |   SafetyWatchdog w({.heartbeat_timeout = 100ms, .soft_timeout = 500ms});
+      |                                                 ^
+/workspace/test/unit/test_watchdog.cpp: In member function ‘virtual void WatchdogTest_HeartbeatTimeoutEmitsWarn_Test::TestBody()’:
+/workspace/test/unit/test_watchdog.cpp:17:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   17 |   SafetyWatchdog w({.heartbeat_timeout = 50ms, .soft_timeout = 500ms});
+      |                     ^
+/workspace/test/unit/test_watchdog.cpp:17:48: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   17 |   SafetyWatchdog w({.heartbeat_timeout = 50ms, .soft_timeout = 500ms});
+      |                                                ^
+/workspace/test/unit/test_watchdog.cpp: In member function ‘virtual void WatchdogTest_SoftTimeoutEmitsCritical_Test::TestBody()’:
+/workspace/test/unit/test_watchdog.cpp:26:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   26 |   SafetyWatchdog w({.heartbeat_timeout = 50ms, .soft_timeout = 80ms});
+      |                     ^
+/workspace/test/unit/test_watchdog.cpp:26:48: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   26 |   SafetyWatchdog w({.heartbeat_timeout = 50ms, .soft_timeout = 80ms});
+      |                                                ^
+/workspace/test/unit/test_config_loader.cpp: In member function ‘virtual void ConfigLoaderTest_LoadFromStringBasic_Test::TestBody()’:
+/workspace/test/unit/test_config_loader.cpp:25:18: warning: missing initializer for member ‘amr_dispatcher_core::config::ConfigLoader::FieldSchema::default_value’ [-Wmissing-field-initializers]
+   25 |   l.RegisterField({"chassis.serial_device", "string", true});
+      |   ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/workspace/test/unit/test_config_loader.cpp: In member function ‘virtual void ConfigLoaderTest_MissingRequiredThrows_Test::TestBody()’:
+/workspace/test/unit/test_config_loader.cpp:34:18: warning: missing initializer for member ‘amr_dispatcher_core::config::ConfigLoader::FieldSchema::default_value’ [-Wmissing-field-initializers]
+   34 |   l.RegisterField({"must.have", "string", true});
+      |   ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/workspace/test/unit/test_config_loader.cpp: In member function ‘virtual void ConfigLoaderTest_TypeMismatchThrows_Test::TestBody()’:
+/workspace/test/unit/test_config_loader.cpp:47:18: warning: missing initializer for member ‘amr_dispatcher_core::config::ConfigLoader::FieldSchema::default_value’ [-Wmissing-field-initializers]
+   47 |   l.RegisterField({"x", "int", true});
+      |   ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+/workspace/test/unit/test_config_loader.cpp: In member function ‘virtual void ConfigLoaderTest_LoadFromFileHappy_Test::TestBody()’:
+/workspace/test/unit/test_config_loader.cpp:72:18: warning: missing initializer for member ‘amr_dispatcher_core::config::ConfigLoader::FieldSchema::default_value’ [-Wmissing-field-initializers]
+   72 |   l.RegisterField({"x", "int", true});
+      |   ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+/workspace/test/unit/test_logger.cpp: In member function ‘virtual void AsyncLoggerTest_FlushesOnDestroy_Test::TestBody()’:
+/workspace/test/unit/test_logger.cpp:62:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   62 |     AsyncLogger logger({.path = path, .queue_capacity = 1024,
+      |                         ^
+/workspace/test/unit/test_logger.cpp:62:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   62 |     AsyncLogger logger({.path = path, .queue_capacity = 1024,
+      |                                       ^
+/workspace/test/unit/test_logger.cpp:63:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   63 |                         .flush_interval = std::chrono::milliseconds(20)});
+      |                         ^
+/workspace/test/unit/test_logger.cpp: In member function ‘virtual void AsyncLoggerTest_BelowMinLevelDropped_Test::TestBody()’:
+/workspace/test/unit/test_logger.cpp:76:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   76 |   AsyncLogger logger({.path = path, .min_level = LogLevel::kWarn,
+      |                       ^
+/workspace/test/unit/test_logger.cpp:76:37: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   76 |   AsyncLogger logger({.path = path, .min_level = LogLevel::kWarn,
+      |                                     ^
+/workspace/test/unit/test_logger.cpp:77:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   77 |                       .queue_capacity = 64, .flush_interval = std::chrono::milliseconds(20)});
+      |                       ^
+/workspace/test/unit/test_logger.cpp:77:45: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   77 |                       .queue_capacity = 64, .flush_interval = std::chrono::milliseconds(20)});
+      |                                             ^
+/workspace/test/unit/test_logger.cpp: In member function ‘virtual void AsyncLoggerTest_ConcurrentProducersLoseNothingWhenCapacitySufficient_Test::TestBody()’:
+/workspace/test/unit/test_logger.cpp:112:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  112 |     AsyncLogger logger({.path = path, .queue_capacity = 65536,
+      |                         ^
+/workspace/test/unit/test_logger.cpp:112:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  112 |     AsyncLogger logger({.path = path, .queue_capacity = 65536,
+      |                                       ^
+/workspace/test/unit/test_logger.cpp:113:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  113 |                         .flush_interval = std::chrono::milliseconds(10)});
+      |                         ^
+/workspace/test/unit/test_logger.cpp: In member function ‘virtual void AsyncLoggerTest_DroppedCountIsExactUnderOverflow_Test::TestBody()’:
+/workspace/test/unit/test_logger.cpp:148:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  148 |     AsyncLogger logger({.path = path, .queue_capacity = 0,
+      |                         ^
+/workspace/test/unit/test_logger.cpp:148:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  148 |     AsyncLogger logger({.path = path, .queue_capacity = 0,
+      |                                       ^
+/workspace/test/unit/test_logger.cpp:149:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  149 |                         .flush_interval = std::chrono::milliseconds(10)});
+      |                         ^
+/workspace/test/unit/test_logger.cpp: In member function ‘virtual void AsyncLoggerTest_FlushGuaranteesRecordsOnDisk_Test::TestBody()’:
+/workspace/test/unit/test_logger.cpp:174:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  174 |     AsyncLogger logger({.path = path, .queue_capacity = 65536,
+      |                         ^
+/workspace/test/unit/test_logger.cpp:174:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  174 |     AsyncLogger logger({.path = path, .queue_capacity = 65536,
+      |                                       ^
+/workspace/test/unit/test_logger.cpp:175:25: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  175 |                         .flush_interval = std::chrono::milliseconds(10)});
+      |                         ^
+/usr/bin/ld: CMakeFiles/test_config_loader.dir/__/__/test/unit/test_config_loader.cpp.o: in function `(anonymous namespace)::WriteTemp(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)':
+test_config_loader.cpp:(.text+0x43): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+/usr/bin/ld: CMakeFiles/test_logger.dir/__/__/test/unit/test_logger.cpp.o: in function `SyncLoggerTest_WritesFormattedRecords_Test::TestBody()':
+test_logger.cpp:(.text+0x28a): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+/workspace/test/unit/test_scenario_catalog.cpp: In function ‘amr_dispatcher_core::catalog::ScenarioCatalog amr_dispatcher_core::workflow::{anonymous}::Catalog()’:
+/workspace/test/unit/test_scenario_catalog.cpp:12:77: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::station_sequence_ids’ [-Wmissing-field-initializers]
+   12 |       "warehouse", "pickup", "", "station_transport", "receiving", "packing"});
+      |                                                                             ^
+/workspace/test/unit/test_scenario_catalog.cpp:12:77: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::resource_id’ [-Wmissing-field-initializers]
+/workspace/test/unit/test_scenario_catalog.cpp:12:77: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::resource_type’ [-Wmissing-field-initializers]
+/workspace/test/unit/test_scenario_catalog.cpp:12:77: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::action’ [-Wmissing-field-initializers]
+/workspace/test/unit/test_scenario_catalog.cpp:14:76: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::station_sequence_ids’ [-Wmissing-field-initializers]
+   14 |       "warehouse", "dropoff", "", "station_transport", "packing", "storage"});
+      |                                                                            ^
+/workspace/test/unit/test_scenario_catalog.cpp:14:76: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::resource_id’ [-Wmissing-field-initializers]
+/workspace/test/unit/test_scenario_catalog.cpp:14:76: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::resource_type’ [-Wmissing-field-initializers]
+/workspace/test/unit/test_scenario_catalog.cpp:14:76: warning: missing initializer for member ‘amr_dispatcher_core::catalog::ScenarioTask::action’ [-Wmissing-field-initializers]
+/usr/bin/ld: CMakeFiles/test_station_catalog.dir/__/__/test/unit/test_station_catalog.cpp.o: in function `(anonymous namespace)::WriteCatalogTemp(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)':
+test_station_catalog.cpp:(.text+0x2262): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+/workspace/test/unit/test_conflict_based_search.cpp:32:3: warning: multi-line comment [-Wcomment]
+   32 |   //     /    \
+      |   ^
+/workspace/test/unit/test_prioritized_planning.cpp:18:3: warning: multi-line comment [-Wcomment]
+   18 |   //     /    \
+      |   ^
+---
+
+Summary: 1 package finished [1min 37s]
+  1 package had stderr output: amr_dispatcher_workspace

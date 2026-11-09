@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""最近两天的 token 用量：按会话文件细分，并区分真实请求/合成消息。"""
+import json
+import os
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+ROOT = os.path.expanduser("~/.claude/projects")
+TZ = timezone(timedelta(hours=8))
+TARGET_DAYS = {"2026-10-30", "2026-10-31"}
+
+per = defaultdict(lambda: defaultdict(lambda: {"n": 0, "inp": 0, "cc": 0, "cr": 0, "out": 0}))
+anomaly = []
+
+for dirpath, _d, filenames in os.walk(ROOT):
+    for fn in filenames:
+        if not fn.endswith(".jsonl"):
+            continue
+        path = os.path.join(dirpath, fn)
+        proj = os.path.basename(dirpath)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "assistant":
+                    continue
+                usage = (rec.get("message") or {}).get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                ts = rec.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    day = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(TZ).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+                if day not in TARGET_DAYS:
+                    continue
+                inp = usage.get("input_tokens") or 0
+                cc = usage.get("cache_creation_input_tokens") or 0
+                cr = usage.get("cache_read_input_tokens") or 0
+                out = usage.get("output_tokens") or 0
+                s = per[day][proj + "/" + fn]
+                s["n"] += 1
+                s["inp"] += inp
+                s["cc"] += cc
+                s["cr"] += cr
+                s["out"] += out
+                if inp == 0 and cc == 0 and cr == 0 and out > 0:
+                    anomaly.append((day, proj, fn, out, rec.get("message", {}).get("model")))
+
+for day in sorted(per):
+    print("=" * 96)
+    print(f"日期 {day}")
+    print("=" * 96)
+    print(f"{'会话文件':<44}{'请求':>6}{'输入(新)':>13}{'缓存写':>10}{'缓存读':>13}{'输出':>10}{'小计':>13}")
+    tot = {"n": 0, "inp": 0, "cc": 0, "cr": 0, "out": 0}
+    for name in sorted(per[day], key=lambda k: -(sum(per[day][k][x] for x in ("inp", "cc", "cr", "out")))):
+        s = per[day][name]
+        sub = s["inp"] + s["cc"] + s["cr"] + s["out"]
+        short = name if len(name) <= 43 else "…" + name[-42:]
+        print(f"{short:<44}{s['n']:>6}{s['inp']:>13,}{s['cc']:>10,}{s['cr']:>13,}{s['out']:>10,}{sub:>13,}")
+        for k in tot:
+            tot[k] += s[k]
+    g = tot["inp"] + tot["cc"] + tot["cr"] + tot["out"]
+    print("-" * 96)
+    print(f"{'合计':<44}{tot['n']:>6}{tot['inp']:>13,}{tot['cc']:>10,}{tot['cr']:>13,}{tot['out']:>10,}{g:>13,}")
+    print()
+
+print("=" * 96)
+print(f"异常记录（仅有输出、无任何输入计数）共 {len(anomaly)} 条")
+seen = defaultdict(int)
+for day, proj, fn, out, model in anomaly:
+    seen[(day, model, out)] += 1
+for (day, model, out), c in sorted(seen.items())[:10]:
+    print(f"  {day}  model={model}  output={out}  x{c}")

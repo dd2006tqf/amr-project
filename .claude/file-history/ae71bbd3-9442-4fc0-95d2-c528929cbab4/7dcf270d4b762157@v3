@@ -1,0 +1,60 @@
+#include "sync/sync_monitor.h"
+#include <cmath>
+
+namespace xgrids {
+
+SyncMonitor::SyncMonitor(Config cfg, AlertCallback cb)
+    : cfg_(cfg), on_alert_(std::move(cb)) {}
+
+void SyncMonitor::on_frame(const FrameMeta& f) {
+    if (f.channel_id < 0 || f.channel_id >= 4) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& st = ch_[f.channel_id];
+    st.frame_count++;
+    st.total_bytes += f.bytes;
+
+    // 帧号连续性：seq 跳变 → 丢帧计数并告警
+    if (st.last_seq >= 0 && f.seq > (uint32_t)st.last_seq + 1) {
+        uint64_t lost = f.seq - st.last_seq - 1;
+        st.dropped_seq += lost;
+        gap_cnt_++;
+        if (on_alert_) on_alert_(f.channel_id, "frame_gap", f.ts_us);
+    }
+    st.last_seq = f.seq;
+
+    // 帧间隔抖动：与 EMA 显著偏离
+    if (st.last_ts_us >= 0) {
+        int64_t dt = f.ts_us - st.last_ts_us;
+        if (st.ema_interval_us > 0) {
+            double dev = std::abs((double)dt - st.ema_interval_us);
+            if (dev > st.ema_interval_us * 0.5) {   // 偏离 50% 视为抖动
+                st.jitter_violations++;
+                if (on_alert_) on_alert_(f.channel_id, "jitter", f.ts_us);
+            }
+        }
+        const double a = 0.1;
+        st.ema_interval_us = (st.ema_interval_us <= 0)
+            ? (double)dt
+            : a * dt + (1 - a) * st.ema_interval_us;
+    }
+    st.last_ts_us = f.ts_us;
+}
+
+void SyncMonitor::on_sync_group(const SyncGroup& g) {
+    group_cnt_++;
+    if (!g.complete || g.max_skew_us > cfg_.max_skew_us) {
+        skew_violations_++;
+        if (on_alert_) {
+            int ch = -1;
+            for (int i = 0; i < 4; ++i) if (g.valid[i]) { ch = i; break; }
+            on_alert_(ch, g.complete ? "skew_exceed" : "incomplete_group", g.anchor_ts_us);
+        }
+    }
+}
+
+std::array<ChannelStats, 4> SyncMonitor::stats() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return ch_;
+}
+
+}  // namespace xgrids

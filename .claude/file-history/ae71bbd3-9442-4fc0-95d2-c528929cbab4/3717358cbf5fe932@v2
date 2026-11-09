@@ -1,0 +1,77 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+// ============================================================
+// 多路传感器时间对齐
+// 3DGS 重建要求四路相机曝光对齐在毫秒级；LiDAR 帧要与最近的相机组对齐
+// 供 IMU/位姿插值；GNSS/RTK 时间戳要对齐到同一时基才能算绝对精度
+// ============================================================
+
+// 四相机同步组：四路在同一时间窗内各出一帧
+struct SyncGroup {
+    int64_t anchor_ts_us = 0;
+    std::array<FrameMeta, 4> frames;
+    std::array<bool, 4> valid;
+    int64_t max_skew_us = 0;
+    bool complete = false;   // 四路齐全
+    uint64_t group_seq = 0;  // 输出序号，供下游对账
+};
+
+// 对齐结果：把异构传感器帧按时间窗聚成一个"时间切片"输出
+struct AlignedSlice {
+    int64_t t_us = 0;
+    SyncGroup cams;
+    LidarFrame lidar;
+    std::vector<ImuPacket> imu_in_slice;
+    GnssFix nearest_gnss;
+    bool has_gnss = false;
+};
+
+// 时基对齐器：
+//  输入：各路 SensorEvent 流（ts 已经是同一 MonotonicClock 时基）
+//  输出：周期性的 AlignedSlice（按相机节拍切分）
+class TimeAligner {
+public:
+    struct Config {
+        int64_t cam_window_us = 5000;   // 四路对齐窗口
+        int64_t lidar_slack_us = 20000; // LiDAR 与相机组最大偏移
+        int64_t gnss_slack_us = 500000; // GNSS 取最近一条（500ms）
+    };
+
+    explicit TimeAligner(Config cfg) : cfg_(cfg) {}
+
+    // 喂入一帧（线程安全：内部锁），返回是否产生了一个完整切片
+    bool on_event(const SensorEvent& e, AlignedSlice& out);
+
+    // 扫描结束，把窗口里剩余的拼一个残切片
+    bool flush(AlignedSlice& out);
+
+private:
+    void fill_slice(int64_t t0, int64_t t1, AlignedSlice& out);
+
+    Config cfg_;
+    std::mutex mu_;
+
+    // 相机组状态
+    int64_t cam_anchor_ = -1;
+    std::array<FrameMeta, 4> cam_pending_;
+    std::array<bool, 4> cam_have_{};
+    int cam_cnt_ = 0;
+    uint64_t group_seq_ = 0;
+
+    // 待对齐的其他传感器缓存
+    std::vector<LidarFrame> lidar_q_;
+    std::vector<ImuPacket> imu_q_;
+    std::vector<GnssFix> gnss_q_;
+
+    int64_t last_slice_t_ = -1;
+};
+
+}  // namespace xgrids

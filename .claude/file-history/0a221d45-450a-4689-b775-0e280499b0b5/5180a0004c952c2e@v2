@@ -1,0 +1,31 @@
+import urllib.request, re
+
+def get(url, timeout=90):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+s = get('https://raw.githubusercontent.com/radxa/allwinner-device/device-a733-v1.4.6/configs/cubie_a7a/linux-5.15/board.dts')
+print('=== &msgbox 段 ===')
+for m in re.finditer(r'&msgbox\s*\{[^}]*\}', s):
+    print(m.group(0))
+print('\n=== &hwspinlock 段 ===')
+for m in re.finditer(r'&hwspinlock\s*\{[^}]*\}', s):
+    print(m.group(0))
+print('\n=== arisc_config 段 ===')
+for m in re.finditer(r'arisc_config:\s*arisc_config\s*\{.*?\n\t\};', s, re.S):
+    print(m.group(0)[:1200])
+print('\n=== reserved-memory 里是否有 shm/rpmsg ===')
+for kw in ('reserved-memory', 'shm', 'rpmsg', 'rproc', 'firmware-name'):
+    lines = [l for l in s.splitlines() if kw in l.lower()]
+    print(f'[{kw}]', lines[:5])
+
+print('\n=== 同时看 linux-6.6 版 board.dts ===')
+try:
+    s2 = get('https://raw.githubusercontent.com/radxa/allwinner-device/device-a733-v1.4.6/configs/cubie_a7a/linux-6.6/board.dts')
+    print('bytes:', len(s2))
+    for kw in ('msgbox', 'remoteproc', 'rpmsg', 'e902'):
+        lines = [l.strip() for l in s2.splitlines() if kw in l.lower()]
+        print(f'  [{kw}] {len(lines)}', lines[:3])
+except Exception as e:
+    print('ERR', e)

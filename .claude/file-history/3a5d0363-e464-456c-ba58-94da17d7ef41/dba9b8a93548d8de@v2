@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# 切流后 lifecycle 节点仍要正常发布 proto 数据（阶段 4b 验收）。
+#
+# 必须用 ros2 amr echo 而不是 ros2 topic hz：
+# topic hz 靠 rosidl introspection，对 proto 类型架构性不可用，
+# 会报 "does not appear to be published yet" —— 那是工具的问题，不是没数据。
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+DISP="$PKG/lib/amr_dispatcher_ros/dispatcher_node"
+TYPE=amr_dispatcher.proto.DispatcherState
+
+"$DISP" --ros-args -r __node:=disp_cut_flow -p proto_rosidl_publish:=false \
+  > /tmp/disp_cut_flow.log 2>&1 &
+PID=$!
+sleep 4
+ros2 lifecycle set /disp_cut_flow configure > /dev/null 2>&1
+sleep 2
+ros2 lifecycle set /disp_cut_flow activate > /dev/null 2>&1
+sleep 2
+
+echo "=== lifecycle 状态（应为 active）==="
+ros2 lifecycle get /disp_cut_flow 2>/dev/null
+
+echo
+echo "=== 激活后：/dispatcher/state_proto 应能收到帧（--once）==="
+if timeout 12 ros2 amr echo /dispatcher/state_proto "$TYPE" --once 2>&1 | head -8; then
+  echo "  ^ 收到帧 = 切流后 proto 侧正常发布"
+else
+  echo "  失败：切流后 proto 侧没有数据" >&2
+fi
+
+echo
+echo "=== 该实例创建的 rosidl 话题（应全为 0）==="
+for t in /dispatcher/state /dispatcher/events /dispatcher/topology_state; do
+  n=$(ros2 topic info "$t" -v 2>/dev/null | grep -c 'disp_cut_flow' || true)
+  echo "  $t -> disp_cut_flow writer 数: $n"
+done
+
+echo
+echo "=== deactivate 后：proto 话题应无数据 ==="
+ros2 lifecycle set /disp_cut_flow deactivate > /dev/null 2>&1
+sleep 2
+out=$(timeout 6 ros2 amr echo /dispatcher/state_proto "$TYPE" --once 2>&1)
+if printf '%s' "$out" | grep -qiE '超时|timeout|没有|no message'; then
+  echo "  (超时无帧 — 符合预期，说明 Deactivate() 也作用于 proto 侧)"
+else
+  echo "  意外收到数据:"
+  printf '%s\n' "$out" | head -5 | sed 's/^/    /'
+fi
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true

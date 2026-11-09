@@ -1,0 +1,166 @@
+# Prometheus 告警规则 —— amr_dispatcher 生产可观测性
+#
+# 设计原则（与 docs/DEPLOYMENT.md §6.1 一致）：
+#   * 这里只做"让人知道"，不做"替人决策"。没有任何规则触发自动重启：
+#     /readyz 为 503 可能是"健康但安全锁存"（急停未解除），重启会拆掉
+#     整套栈并丢失调度队列与路权状态。
+#   * 每条规则都指向一个**具体的排查动作**（见 annotations.runbook）。
+#   * 阈值来自实测发布频率：/dispatcher/state 2Hz、/safety/state 10–50Hz、
+#     /system/ready_flag 2Hz。给到数拍以上，避免一次调度抖动就告警。
+groups:
+  - name: amr_dispatcher.availability
+    interval: 15s
+    rules:
+      - alert: AmrNotReady
+        # 连续 2 分钟不就绪。1 分钟太短：dispatcher 重启后协调器重新提拉
+        # 本身就要几秒，加上冷启动的队列恢复，1 分钟内回到 READY 是正常的。
+        expr: max_over_time(amr_ready[2m]) == 0 and amr_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: gateway
+        annotations:
+          summary: "AMR 车队持续不就绪（amr_ready=0）"
+          description: >-
+            网关已连续 2 分钟上报 amr_ready=0，且这 2 分钟内一次都没有就绪过。
+            看 /readyz 的 components[].reason 定位是哪一组：
+            never_seen（从未收到，节点没起来）/ stale（收到过但过期，进程可能死了）/
+            unhealthy（新鲜但语义不健康，如急停或底盘故障）。
+          runbook: "docs/DEPLOYMENT.md §6.1 探针与自愈 → reason 排查表"
+
+      - alert: AmrDispatcherStateStale
+        # 直接看 dispatcher 这一个组件，比 amr_ready 更能指向具体病根。
+        # 这是"容器 Up 8 days、dispatcher 死 8 天"那次事故的直接检测手段。
+        expr: amr_dispatcher_state_age_seconds > 10
+        for: 1m
+        labels:
+          severity: critical
+          component: dispatcher
+        annotations:
+          summary: "dispatcher_node 已 {{ $value | printf \"%.1f\" }}s 未发 /dispatcher/state"
+          description: >-
+            /dispatcher/state 是 2Hz 发布的。超过 10s 没有新状态说明 dispatcher
+            进程已死或卡死（DDS 阻塞）。注意：respawn 会拉起进程，但重启后的
+            dispatcher 是 unconfigured，需要 lifecycle_coordinator_node 重新提拉；
+            协调器若也死了，就只剩容器级重启。
+          runbook: "docs/DEPLOYMENT.md §6.1 探针与自愈"
+
+      - alert: AmrDispatcherStateNeverSeen
+        # 冷启动 3 分钟内还没收到任何状态 = 启动链路有问题（不是抖动）
+        expr: amr_dispatcher_state_age_seconds < 0
+        for: 3m
+        labels:
+          severity: warning
+          component: dispatcher
+        annotations:
+          summary: "dispatcher_node 从未上报状态（age=-1）"
+          description: >-
+            网关进程起来超过 3 分钟仍没收到任何 /dispatcher/state。
+            先确认 dispatcher_node 是否在跑、ROS_DOMAIN_ID 是否与网关一致、
+            lifecycle 是否卡在 unconfigured（协调器 auto_bringup 是否关掉了）。
+          runbook: "docs/DEPLOYMENT.md §6.1 → never_seen"
+
+  - name: amr_dispatcher.safety
+    interval: 15s
+    rules:
+      - alert: AmrSafetyCriticalLatched
+        # 急停是常驻状态：瞬时出现不该吵醒人，但锁存住就必须有人到场。
+        # 5 分钟给现场留出"按一下复位"的时间。
+        expr: amr_safety_critical == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: safety
+        annotations:
+          summary: "安全门已锁存 CRITICAL 超过 5 分钟（amr_safety_critical=1）"
+          description: >-
+            车辆已被熔断停止，且在 5 分钟内没有恢复。检查急停按钮是否仍按下、
+            安全门是否收到上游心跳丢失事件、是否有 bumper/人工接管触发。
+            **不要**为了消除告警而重启容器：重启会让安全状态归零，
+            掩盖真实的物理原因。
+          runbook: "docs/DEPLOYMENT.md §6.1 + 安全门话题 /safety/state 的 blocked_by"
+
+      - alert: AmrSafetyStateNeverSeen
+        expr: amr_safety_severity_level < 0
+        for: 3m
+        labels:
+          severity: warning
+          component: safety
+        annotations:
+          summary: "从未收到安全门状态（amr_safety_severity_level=-1）"
+          description: >-
+            safety_gate_node 没起来或话题名/域 ID 不匹配。安全门缺席时
+            /readyz 的 safety 组件会永远报 never_seen，就绪门禁会一直拦着派单。
+          runbook: "docs/DEPLOYMENT.md §6.1 → never_seen"
+
+  - name: amr_dispatcher.channels
+    interval: 30s
+    rules:
+      - alert: AmrAlertChannelBroken
+        # 告警通道自身的可用性。这条规则的意义在于：如果它也被送到
+        # 同一个已经坏掉的 webhook，那就什么都发不出去 —— 所以抓取侧
+        # （Prometheus/Alertmanager）必须能看到这个计数。
+        expr: increase(amr_alert_webhook_failures_total[15m]) > 0
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "15 分钟内有 {{ $value }} 条告警投递失败"
+          description: >-
+            webhook 不可达或超时。发送失败**不重试**（过时的告警不如新的有用），
+            所以这些事件不会补发。检查 alert_webhook_url 是否可达、
+            是否误用了 https://（本构建不含 TLS，启动时会 ERROR 并禁用）。
+          runbook: "docs/DEPLOYMENT.md §6.2 主动告警"
+
+      - alert: AmrAlertQueueSaturated
+        expr: increase(amr_alert_dropped_total[15m]) > 0
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "告警队列溢出，15 分钟丢弃了 {{ $value }} 条"
+          description: >-
+            队列满时丢**最旧**的（过时的 "not ready" 不如刚发生的新故障有用）。
+            持续的丢弃说明 webhook 长时间不可用，或发生了风暴。
+          runbook: "docs/DEPLOYMENT.md §6.2 主动告警"
+
+  - name: amr_dispatcher.topology
+    interval: 60s
+    rules:
+      - alert: AmrTopologyOverlayActive
+        # 临时改道变永久了 —— 这是"施工区忘了撤"最常见的现场事故。
+        # 4 小时：一个班次内没有处理就提醒。
+        expr: amr_topology_overlay_active == 1
+        for: 4h
+        labels:
+          severity: warning
+          component: dispatcher
+        annotations:
+          summary: "临时拓扑管制已生效超过 4 小时"
+          description: >-
+            /api/v1/topology/overlay 显示仍有生效的临时管制
+            （当前 amr_topology_overlay_active={{ $value }}）。
+            `GET /api/v1/topology/overlay` 能拿到 revision 与具体被封的边。
+            请核对现场：施工是否已完成？若已完成，用
+            POST /api/v1/topology/unblock_edge 或 hot_update {clear:true} 清空。
+            留着会让绕行变成"新常态"，并在下一次基础地图换版时被静默归档
+            （叠加层整体失效，见 docs/API.md §5.5 第 4 条）。
+          runbook: "docs/DEPLOYMENT.md §6.3 施工区 runbook"
+
+  - name: amr_dispatcher.vehicles
+    interval: 30s
+    rules:
+      - alert: AmrVehicleQuarantined
+        # 隔离态的车不参与自动分配，会一直"静默"少一台运力。
+        expr: amr_vehicle_quarantined > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: dispatcher
+        annotations:
+          summary: "{{ $value }} 台车处于隔离态超过 30 分钟"
+          description: >-
+            隔离来自操作员强清离线链路（ForceClearVda5050Link）。恢复需要
+            /dispatcher/restore_vda5050_link 且操作员确认车辆物理位置。
+            长时间隔离通常意味着现场没人处理，运力在悄悄减少。
+          runbook: "docs/API.md → /dispatcher/restore_vda5050_link"

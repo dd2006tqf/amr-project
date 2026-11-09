@@ -1,0 +1,11 @@
+
+# 开发板：经板端 cloud-tunnel.service 建立的反向隧道（board:22 -> cloud:2222）
+Host board
+    LogLevel ERROR
+    HostName 127.0.0.1
+    Port 2223
+    User radxa
+    IdentityFile ~/.ssh/id_board
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    ServerAliveInterval 30

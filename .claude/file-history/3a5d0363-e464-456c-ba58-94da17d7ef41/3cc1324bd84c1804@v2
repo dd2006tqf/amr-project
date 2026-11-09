@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# 诊断：deactivate 后 proto 侧仍有数据，到底是谁在发？
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+echo "=== 当前系统里的节点 ==="
+ros2 node list 2>/dev/null
+
+echo
+echo "=== /dispatcher/state_proto 的 writer 清单 ==="
+ros2 topic info /dispatcher/state_proto -v 2>/dev/null || echo "(话题不存在)"
+
+echo
+echo "=== /dispatcher/state 的 writer 清单 ==="
+ros2 topic info /dispatcher/state -v 2>/dev/null || echo "(话题不存在)"
+
+echo
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+DISP="$PKG/lib/amr_dispatcher_ros/dispatcher_node"
+TYPE=amr_dispatcher.proto.DispatcherState
+
+"$DISP" --ros-args -r __node:=disp_diag -p proto_rosidl_publish:=false \
+  > /tmp/disp_diag.log 2>&1 &
+PID=$!
+sleep 4
+
+echo "=== 只起 disp_diag（未 configure）时 /dispatcher/state_proto 的 writer ==="
+ros2 topic info /dispatcher/state_proto -v 2>/dev/null | grep -E 'Publisher count|Node name' || echo "(无)"
+
+ros2 lifecycle set /disp_diag configure > /dev/null 2>&1
+sleep 2
+ros2 lifecycle set /disp_diag activate > /dev/null 2>&1
+sleep 2
+
+echo
+echo "=== activate 后 writer ==="
+ros2 topic info /dispatcher/state_proto -v 2>/dev/null | grep -E 'Publisher count|Node name' || echo "(无)"
+
+echo
+echo "=== 执行 deactivate 并捕获返回值 ==="
+ros2 lifecycle set /disp_diag deactivate 2>&1 | tail -3
+sleep 2
+echo "--- 状态: $(ros2 lifecycle get /disp_diag 2>/dev/null) ---"
+
+echo
+echo "=== deactivate 后 writer ==="
+ros2 topic info /dispatcher/state_proto -v 2>/dev/null | grep -E 'Publisher count|Node name' || echo "(无)"
+
+echo
+echo "=== deactivate 后 3s 内是否还有帧（--once）==="
+timeout 8 ros2 amr echo /dispatcher/state_proto "$TYPE" --once 2>&1 | head -6
+echo "--- echo rc=$? ---"
+
+echo
+echo "=== 节点日志尾部（找 deactivate 相关）==="
+grep -iE 'deactivat|DispatcherNode deactivated' /tmp/disp_diag.log | tail -5 || tail -10 /tmp/disp_diag.log
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true

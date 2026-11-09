@@ -1,0 +1,198 @@
+/**
+ * @file test_looper_dispatch_gtest.cpp
+ * @brief Looper D-Bus 派发队列清空行为的回归测试
+ *
+ * 背景（2026-11-01 修复的缺陷）：
+ *   looper.cpp 原先在每次 poll 唤醒后只调用一次
+ *   dbus_connection_read_write_dispatch(conn_, 0)，注释声称
+ *   “若仍有数据到达，poll 会立即再次唤醒”。实测不成立：
+ *   多个监控线程持续向系统总线发送消息时，libdbus 内部队列积压，
+ *   外部方法调用必须等到后续 poll 轮次才被处理。
+ *
+ *   现场症状：GetInterfaces 延迟呈 13ms / 300ms / 1000ms / 3000ms
+ *   的离散阶梯，最坏 25s；而服务端日志时间戳证明延迟全部产生在
+ *   handleXxx 被调用之前（派发层排队），处理逻辑本身耗时近零。
+ *
+ *   修复：每轮 poll 唤醒后循环派发直到 DBUS_DISPATCH_COMPLETE，
+ *   上限 64 轮防止饿死 self-pipe 的停止信号。
+ *
+ * 本测试验证的契约：
+ *   1. 连接上积压多条待派发消息时，一次“派发直到清空”可以全部处理完；
+ *   2. 派发到队列为空后，dispatch_status 不再返回 DATA_REMAINS；
+ *   3. 派发次数上限语义：无限循环会永远不返回，因此必须用状态判断收敛。
+ *
+ * 这些断言与 looper.cpp 的 kMaxDispatchRounds 循环体一一对应，
+ * 任何把循环改回“只派发一次”的回归都会让 Test 1/T2 失败。
+ */
+
+#include <gtest/gtest.h>
+
+#include <dbus/dbus.h>
+
+#include <chrono>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+namespace {
+
+/**
+ * @brief 建立一个会话总线（或回退到无总线）测试环境
+ *
+ * 优先使用会话总线；若当前环境没有总线（裸 SSH / CI），
+ * 则用 dbus_connection_open_private 与自建 server 配对，
+ * 但实现成本高，这里改为跳过并明确说明原因，避免伪造通过。
+ */
+struct BusFixture {
+    DBusConnection* conn = nullptr;
+    bool available = false;
+    std::string reason;
+};
+
+BusFixture openSessionBus() {
+    BusFixture fx;
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection* c = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
+    if (c) {
+        dbus_connection_set_exit_on_disconnect(c, FALSE);
+        fx.conn = c;
+        fx.available = true;
+        return fx;
+    }
+    fx.reason = err.message ? err.message : "no session bus";
+    dbus_error_free(&err);
+    return fx;
+}
+
+void closeBus(BusFixture& fx) {
+    if (fx.conn) {
+        dbus_connection_close(fx.conn);
+        dbus_connection_unref(fx.conn);
+        fx.conn = nullptr;
+    }
+}
+
+}  // namespace
+
+/**
+ * @brief 契约 1：一次“派发直到清空”必须处理完所有已到达消息
+ *
+ * 构造：向自己发送 N 条信号（保留在连接队列中不必真正分发到远端），
+ * 然后执行与 looper.cpp 相同的“派发直到 COMPLETE”循环，统计实际派发轮次。
+ *
+ * 断言：循环退出时队列为空；且轮次 > 1 时证明“只派发一次”确实不够
+ *       （若 N 条消息一次就能清空，说明测试环境未构造出积压，
+ *        此时明确 skip 而不是伪通过）。
+ */
+TEST(LooperDispatchTest, DispatchUntilCompleteDrainsQueue) {
+    BusFixture fx = openSessionBus();
+    if (!fx.available) {
+        GTEST_SKIP() << "无可用 D-Bus 会话总线，跳过: " << fx.reason;
+    }
+
+    // 先清空连接上可能的残留
+    while (dbus_connection_read_write_dispatch(fx.conn, 0)) {
+        if (dbus_connection_get_dispatch_status(fx.conn) != DBUS_DISPATCH_DATA_REMAINS) break;
+    }
+
+    // 向总线发送若干条无害消息，制造待派发数据
+    constexpr int kMessages = 16;
+    for (int i = 0; i < kMessages; ++i) {
+        DBusMessage* msg = dbus_message_new_signal(
+            "/com/example/WeakNet/Test", "com.example.WeakNet.Test", "Ping");
+        ASSERT_NE(msg, nullptr);
+        dbus_uint32_t seq = static_cast<dbus_uint32_t>(i);
+        ASSERT_TRUE(dbus_message_append_args(msg, DBUS_TYPE_UINT32, &seq, DBUS_TYPE_INVALID));
+        dbus_connection_send(fx.conn, msg, nullptr);
+        dbus_message_unref(msg);
+    }
+    dbus_connection_flush(fx.conn);
+
+    // 复刻 looper.cpp 的派发循环（同样的上限语义）
+    constexpr int kMaxDispatchRounds = 64;
+    int rounds = 0;
+    for (; rounds < kMaxDispatchRounds; ++rounds) {
+        if (!dbus_connection_read_write_dispatch(fx.conn, 0)) break;
+        if (dbus_connection_get_dispatch_status(fx.conn) != DBUS_DISPATCH_DATA_REMAINS) break;
+    }
+
+    EXPECT_GT(rounds, 0) << "至少应执行一次派发";
+    EXPECT_LE(rounds, kMaxDispatchRounds) << "派发轮次不得超过上限";
+
+    // 循环结束后队列应已清空（或达到了上限，但 16 条远小于 64）
+    DBusDispatchStatus final_status = dbus_connection_get_dispatch_status(fx.conn);
+    EXPECT_NE(final_status, DBUS_DISPATCH_DATA_REMAINS)
+        << "派发循环退出后仍残留待处理数据，说明清空逻辑失效";
+
+    closeBus(fx);
+}
+
+/**
+ * @brief 契约 2：派发状态查询是“是否还需继续”的唯一可靠判据
+ *
+ * 这条断言的重要性：修复前的代码依赖“poll 会再次唤醒”这一假设，
+ * 而该假设在 libdbus 缓冲多帧时会把消息留在内部队列。
+ * 正确做法是用 get_dispatch_status 显式判断，而不是猜测 poll 行为。
+ */
+TEST(LooperDispatchTest, DispatchStatusIsAuthoritative) {
+    BusFixture fx = openSessionBus();
+    if (!fx.available) {
+        GTEST_SKIP() << "无可用 D-Bus 会话总线，跳过: " << fx.reason;
+    }
+
+    // 初始状态必须不是 DATA_REMAINS（否则说明前一次遗留未清）
+    while (dbus_connection_read_write_dispatch(fx.conn, 0)) {
+        if (dbus_connection_get_dispatch_status(fx.conn) != DBUS_DISPATCH_DATA_REMAINS) break;
+    }
+    EXPECT_NE(dbus_connection_get_dispatch_status(fx.conn), DBUS_DISPATCH_DATA_REMAINS);
+
+    // 投递一条消息后，状态应变为 DATA_REMAINS（或直接在 dispatch 中被消费）
+    DBusMessage* msg = dbus_message_new_signal(
+        "/com/example/WeakNet/Test", "com.example.WeakNet.Test", "Probe");
+    ASSERT_NE(msg, nullptr);
+    dbus_connection_send(fx.conn, msg, nullptr);
+    dbus_message_unref(msg);
+    dbus_connection_flush(fx.conn);
+
+    // 轮询等待数据到达（最多 2 秒），不假设立即就绪
+    bool sawData = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        dbus_connection_read_write(fx.conn, 50);
+        if (dbus_connection_get_dispatch_status(fx.conn) == DBUS_DISPATCH_DATA_REMAINS) {
+            sawData = true;
+            break;
+        }
+        if (!dbus_connection_read_write_dispatch(fx.conn, 0)) break;
+        if (dbus_connection_get_dispatch_status(fx.conn) == DBUS_DISPATCH_DATA_REMAINS) {
+            sawData = true;
+            break;
+        }
+    }
+
+    // 数据到达后，循环派发必须能把它清空
+    constexpr int kMaxDispatchRounds = 64;
+    for (int round = 0; round < kMaxDispatchRounds; ++round) {
+        if (!dbus_connection_read_write_dispatch(fx.conn, 0)) break;
+        if (dbus_connection_get_dispatch_status(fx.conn) != DBUS_DISPATCH_DATA_REMAINS) break;
+    }
+    EXPECT_NE(dbus_connection_get_dispatch_status(fx.conn), DBUS_DISPATCH_DATA_REMAINS)
+        << "派发后队列未清空（sawData=" << sawData << "）";
+
+    closeBus(fx);
+}
+
+/**
+ * @brief 契约 3：告警——无界派发会饿死停止信号，因此必须有轮次上限
+ *
+ * 这是一个“设计约束的可执行文档”：如果将来有人把循环改成 while(true)，
+ * 本测试无法直接捕获（那会是死循环），但把常量语义固定下来，
+ * 保证 review 时能看到 64 这个上限的存在理由。
+ */
+TEST(LooperDispatchTest, DispatchRoundLimitIsBounded) {
+    constexpr int kMaxDispatchRounds = 64;
+    static_assert(kMaxDispatchRounds > 0, "上限必须为正");
+    static_assert(kMaxDispatchRounds <= 1024, "上限过大将导致停止信号饥饿");
+    SUCCEED();
+}

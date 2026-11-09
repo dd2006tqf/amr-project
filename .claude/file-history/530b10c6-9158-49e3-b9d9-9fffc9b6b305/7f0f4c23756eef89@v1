@@ -1,0 +1,134 @@
+# /etc/weaknet/config.yaml
+# WeakNet 运行时配置（所有键均有内置默认值，缺省即可运行）
+# 支持注释、两层缩进、时长后缀（ms/s/m），例如 "10s" "500ms" "2m"
+#
+# eBPF Map 容量定标（扁平三键，需 RestartMonitor 生效）：
+#   map_sizing_mode:          auto | fixed（缺省 auto）
+#   map_sizing_entries:       fixed 模式的目标条数
+#   map_sizing_ram_budget_bp: auto 模式预算，物理内存的万分之几（50 = 0.5%）
+# 缺省（auto 且 RAM 不可用）时逐一回落各 map 的 v1 编译期常量，行为零变化。
+
+server:
+  data_dir: /home/radxa/weaknet/data    # 空则回落 WEAKNET_DATA_DIR / 默认路径
+  log_level: info                       # info / warning / error / fatal
+
+monitors:
+  rtt:
+    enabled: true
+    target: 223.5.5.5
+    interval_ms: 10000
+    timeout_ms: 800
+    window_size: 30
+
+  rssi:
+    enabled: true
+    interval_ms: 10000
+
+  tcp_loss:
+    enabled: true
+    interval_ms: 10000
+
+  traffic:
+    enabled: true
+    interval_ms: 10000
+
+  quality:
+    enabled: true
+    interval_ms: 15000
+
+  bluetooth:
+    enabled: true
+    interval_ms: 3000
+    bpf_obj: build/a2dp_media.bpf.o
+    events_bpf_obj: build/bt_events.bpf.o   # Phase 1 设备事件采集（ringbuf，断连原因）
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    # ---- Phase 3a 区域关联阈值（SiteIncident）----
+    # 双门槛：受影响设备数 ≥ min_devices **且** 受影响比例 ≥ min_ratio_bp。
+    # 改动后需 `weaknet-cli monitor restart bt_events` 生效（关联器构造期读入；
+    # 重启回放会恢复既有事故，不丢状态）。
+    incident_min_devices: 2        # 绝对门槛（≥2：单台设备坏了不是区域事故）
+    incident_min_ratio_bp: 3000    # 比例门槛，万分比（3000 = 30%，分母=窗口内活跃设备）
+    incident_window: 60s           # 关联窗口：窗口内累计合格异常判同一事故
+    incident_quiet_window: 60s     # 静默窗口：安静这么久 → RESOLVED
+    incident_active_window: 60s    # 活跃设备记忆：动态分母只统计这段时间内被观测到的设备
+
+  dns:
+    enabled: true
+    bpf_obj: build/dns_monitor.bpf.o
+    interval_ms: 10000
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+
+  wifi_loss:
+    enabled: true
+    bpf_obj: build/wifi_packet_loss.bpf.o
+    interval_ms: 10000
+
+  http_latency:
+    enabled: true
+    bpf_obj: build/http_latency.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 10000
+
+  process_profiler:
+    enabled: true
+    bpf_obj: build/flow_rate.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 15000
+
+  tcp_retrans:
+    enabled: true
+    bpf_obj: build/tcp_retransmit.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 10000
+
+  tcp_conn:
+    enabled: true
+    bpf_obj: build/tcp_conn_stats.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 10000
+
+  skb_drop:
+    enabled: true
+    bpf_obj: build/skb_drop.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 5000
+
+  tcp_connect:
+    enabled: true
+    bpf_obj: build/tcp_connect.bpf.o
+    interval_ms: 10000
+    capture_pages: 64
+
+  active_probe:
+    enabled: true
+    interval_ms: 30000
+    timeout_ms: 3000
+    targets: "baidu|www.baidu.com|443|baidu,alibaba|www.taobao.com|443|alibaba,apple|www.apple.com|443|apple"
+    https_enabled: true
+    portal_check_enabled: true
+    portal_targets: "fx|detectportal.firefox.com|80|mozilla|/success.txt|success,ap|captive.apple.com|80|apple|/hotspot-detect.html|Success,gs|connectivitycheck.gstatic.com|80|google|/generate_204|,ms|www.msftconnecttest.com|80|microsoft|/connecttest.txt|Microsoft Connect Test"
+    portal_path: "/success.txt"
+    portal_expect_body: "success"
+
+edge:
+  enabled: true
+  url: "http://127.0.0.1:8000/api/v1/network/edge/telemetry"
+  tenant: "tenant-m1-demo"
+  device_id: "radxa-cubie-a7a"
+  # 现场标识（多网关部署时同一现场的多台网关填同一个值）。
+  # 留空 = 回落 device_id，即单网关 "1 Gateway = 1 Site" 行为不变。
+  site_id: ""
+  # 预共享上行令牌（X-Edge-Token）。仓库内只保留空占位，真实值由 tools/ci.sh
+  # 部署时从不入库的 secrets/edge_token 注入板端 /etc/weaknet/config.yaml（0600），
+  # 云端对应值在 Large-Model-Application/.env 的 REHEARSAL_EDGE_TOKEN（同不入库）。
+  token: ""
+  key_id: "weaknet-edge-telemetry-v1"
+  private_key_path: "/home/radxa/weaknet/config/edge_priv.pem"
+  interval_ms: 10000

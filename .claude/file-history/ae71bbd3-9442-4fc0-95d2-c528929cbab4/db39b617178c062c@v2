@@ -1,0 +1,115 @@
+#pragma once
+
+#include <cstdint>
+#include <atomic>
+#include <thread>
+#include <vector>
+#include <memory>
+#include <string>
+#include <functional>
+
+#include "common/ring_buffer.h"
+#include "common/async_logger.h"
+#include "sensors/sensor_drivers.h"
+#include "sync/time_aligner.h"
+#include "sync/sync_monitor.h"
+#include "manifest/manifest_recorder.h"
+#include "quality/quality_feedback.h"
+#include "backend/storage_backend.h"
+#include "backend/uploader.h"
+
+namespace xgrids {
+
+// ============================================================
+// 采集会话：应用层对"一次扫描任务"的完整生命周期封装
+//   idle -> capturing -> finishing -> done/failed
+// 职责：
+//   1) 拉起四个相机 + LiDAR + IMU + GNSS 的模拟驱动
+//   2) 把各路帧喂给 TimeAligner / SyncMonitor / ManifestRecorder
+//   3) 对齐切片经编码线程写入 StorageBackend
+//   4) QualityFeedback 周期性向 UI 上报提示
+//   5) 结束扫描：manifest 落盘、数据包进上传队列
+// ============================================================
+
+enum class SessionState { kIdle, kCapturing, kFinishing, kDone, kFailed };
+
+struct SessionReport {
+    SessionState state;
+    std::string scan_id;
+    ScanManifest manifest;
+    QualityLevel quality;
+    uint64_t uploaded_bytes;
+    std::vector<std::string> notes;
+};
+
+class CaptureSession {
+public:
+    struct Config {
+        std::string data_root = "/tmp/xgrids";
+        int cam_fps = 20;
+        int64_t sync_window_us = 5000;
+        size_t write_queue_cap = 512;
+        int num_camera_channels = 4;
+    };
+
+    using UiCb = std::function<void(const QualityReport&)>;
+    using DoneCb = std::function<void(const SessionReport&)>;
+
+    CaptureSession(Config cfg, UiCb ui_cb, DoneCb done_cb);
+    ~CaptureSession();
+
+    bool start(const std::string& scan_id);
+    SessionReport stop();    // 停止采集、收尾、返回报告
+
+    SessionState state() const { return state_.load(); }
+
+    // 故障注入入口（测试用）
+    void inject_camera_drop(int ch, int n);
+    void inject_rtk_loss(int ms);
+    void inject_cpu_heat(int temp_x10);
+
+private:
+    void camera_loop(int ch);
+    void writer_loop();      // 编码+落盘
+    void aligner_loop();     // 时间对齐
+    void quality_loop();     // 2Hz 质量反馈
+    void process_event(const SensorEvent& e);
+
+    Config cfg_;
+    UiCb ui_cb_;
+    DoneCb done_cb_;
+    std::atomic<SessionState> state_{SessionState::kIdle};
+    std::atomic<bool> running_{false};
+
+    // 子模块
+    TimeAligner aligner_;
+    SyncMonitor monitor_;
+    ManifestRecorder manifest_;
+    QualityFeedback quality_;
+    StorageBackend storage_;
+    std::unique_ptr<Uploader> uploader_;
+
+    // 驱动仿真
+    std::vector<std::unique_ptr<CameraSim>> cams_;
+    std::unique_ptr<LidarSim> lidar_;
+    std::unique_ptr<ImuSim> imu_;
+    std::unique_ptr<GnssSim> gnss_;
+
+    // 线程
+    std::vector<std::thread> cam_threads_;
+    std::thread writer_th_, align_th_, quality_th_;
+
+    // 队列：驱动 -> 对齐器（轻事件），对齐器 -> 写盘线程（重载荷）
+    RingBuffer<SensorEvent> event_q_{4096};
+    RingBuffer<AlignedSlice> write_q_{cfg_.write_queue_cap};
+
+    // 运行时状态
+    std::string scan_id_;
+    int64_t scan_start_us_ = -1;
+    std::atomic<int> cpu_temp_x10_{250};
+    std::atomic<double> motion_speed_{0.5};
+    std::atomic<double> ambient_lux_{300.0};
+    std::atomic<bool> rtk_locked_{true};
+};
+
+}  // namespace xgrids

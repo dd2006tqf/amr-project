@@ -1,0 +1,87 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_idle.h"
+
+#include "controller/config_manager.h"
+#include "controller/resume_manager.h"
+#include "ins_base/log.h"
+#include "state_machine/live_state_prepare.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStateIdle"
+}  // namespace
+
+LiveStateIdle::LiveStateIdle() : LiveStateMachine(LiveBroadcastState::kIdle) {}
+
+void LiveStateIdle::OnEntry() {
+  ILOGS_I << "Entering Idle state";
+  // 重载直播模块配置
+  if (config_manager_) {
+    config_manager_->OnConfigChanged(LiveBroadcastState::kIdle);
+  }
+}
+
+void LiveStateIdle::OnExit() { ILOGS_I << "Exiting Idle state"; }
+
+void LiveStateIdle::OnEvent(const EventPrepareRequest& event) {
+  ILOGS_I << "Received EventPrepareRequest in Idle state";
+
+  // 转换到Prepare状态
+  ChangeState<LiveStatePrepare>();
+  static_cast<void>(event);
+}
+
+void LiveStateIdle::OnEvent(const EventResume& event) {
+  ILOGS_I << "Received EventResume in Idle state";
+
+  // 检查是否有续播记录
+  if (!resume_manager_) {
+    ILOGS_E << "ResumeManager not set";
+    return;
+  }
+
+  // 无异常中断遗留的续播现场：直接忽略（正常停播/已放弃续播）
+  if (!resume_manager_->HasResumeRecord()) {
+    ILOGS_W << "No resume record, ignore EventResume";
+    return;
+  }
+
+  // 加载上次配置：直播参数（RTMP地址、编码参数等）的唯一数据源是
+  // configd，ConfigManager启动/回Idle时已重载（OnConfigChanged），
+  // ResumeManager记录只承载"是否异常中断 + 时长/时间"哨兵语义，
+  // 故此处无需逐字段拷贝，直接进入Prepare按正常流程校验WiFi/URL
+  if (config_manager_) {
+    config_manager_->OnConfigChanged(LiveBroadcastState::kIdle);
+  }
+  ILOGS_I << "Resume record found, restoring session";
+
+  // 转换到Prepare状态
+  ChangeState<LiveStatePrepare>();
+  static_cast<void>(event);
+}
+
+void LiveStateIdle::OnEvent(const EventDiscardResume& event) {
+  ILOGS_I << "Received EventDiscardResume in Idle state";
+
+  // 清除续播记录（写回哨兵kUserStop，下次HasResumeRecord严格为false）
+  if (resume_manager_) {
+    const InsErrorCode ret = resume_manager_->ClearResumeRecord();
+    if (ret != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "ClearResumeRecord failed";
+    }
+  } else {
+    ILOGS_E << "ResumeManager not set, cannot clear resume record";
+  }
+
+  // 保持在Idle状态
+  static_cast<void>(event);
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

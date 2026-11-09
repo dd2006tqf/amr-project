@@ -1,0 +1,52 @@
+#include "testing/fault_injector.h"
+#include <sstream>
+#include <regex>
+#include <algorithm>
+#include <cctype>
+
+namespace xgrids {
+
+// 解析一行："at: 2.0  action: cam_drop  channel: 0  count: 3"
+// 简化解析：key: value 对，空格分隔
+static bool parse_line(const std::string& line, FaultAction& a) {
+    std::smatch m;
+    static const std::regex kv(R"((\w+)\s*:\s*([^\s]+))");
+    bool has_at = false, has_act = false;
+    for (std::sregex_iterator it(line.begin(), line.end(), kv), end;
+         it != end; ++it) {
+        std::string k = (*it)[1], v = (*it)[2];
+        // 去掉尾部单位（如 "2.0s" -> 2.0, "800ms" -> 800）
+        auto strip_num = [](const std::string& s) {
+            size_t end = 0;
+            while (end < s.size() &&
+                   (std::isdigit(s[end]) || s[end] == '.' || s[end] == '-'))
+                ++end;
+            return std::stod(s.substr(0, end));
+        };
+        if (k == "at")          { a.t_s = strip_num(v); has_at = true; }
+        else if (k == "action") { a.action = v; has_act = true; }
+        else if (k == "channel") a.channel = (int)strip_num(v);
+        else if (k == "count")   a.count = (int)strip_num(v);
+        else if (k == "temp_x10")a.temp_x10 = (int)strip_num(v);
+        else if (k == "duration_ms") a.duration_ms = (int)strip_num(v);
+        else if (k == "factor")  a.factor = strip_num(v);
+        else if (k == "jitter_us") a.jitter_us = (int64_t)strip_num(v);
+    }
+    return has_at && has_act;
+}
+
+FaultScenario FaultScenario::parse(const std::string& text) {
+    FaultScenario s;
+    std::istringstream is(text);
+    std::string line;
+    while (std::getline(is, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        FaultAction a;
+        if (parse_line(line, a)) s.actions_.push_back(a);
+    }
+    std::sort(s.actions_.begin(), s.actions_.end(),
+              [](const FaultAction& a, const FaultAction& b){ return a.t_s < b.t_s; });
+    return s;
+}
+
+}  // namespace xgrids

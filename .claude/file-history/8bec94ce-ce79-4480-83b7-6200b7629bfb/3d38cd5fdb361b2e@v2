@@ -1,0 +1,57 @@
+// 验证：protobuf 类型能否直接作为 create_publisher<T> 的类型参数。
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "spike/telemetry_typesupport.hpp"
+
+using namespace std::chrono_literals;
+
+namespace
+{
+
+class ProtoTalker : public rclcpp::Node
+{
+public:
+  explicit ProtoTalker(const rclcpp::NodeOptions & options)
+  : rclcpp::Node("proto_talker", options)
+  {
+    pub_ = this->create_publisher<amr_dispatcher::proto::FleetTelemetry>(
+      "spike_telemetry", rclcpp::QoS(10));
+
+    timer_ = this->create_wall_timer(200ms, [this]() { this->tick(); });
+  }
+
+private:
+  void tick()
+  {
+    amr_dispatcher::proto::FleetTelemetry msg;
+    msg.set_stamp_ns(this->get_clock()->now().nanoseconds());
+    msg.set_vehicle_id("amr-01");
+    msg.set_x_m(1.5);
+    msg.set_y_m(2.5);
+    msg.set_yaw_rad(0.25);
+    msg.set_sequence(count_++);
+    msg.set_payload(std::string(64, 'x'));
+
+    pub_->publish(msg);
+    RCLCPP_INFO(
+      this->get_logger(), "published seq=%llu bytes=%zu",
+      static_cast<unsigned long long>(msg.sequence()), msg.ByteSizeLong());
+  }
+
+  std::size_t count_{0};
+  rclcpp::Publisher<amr_dispatcher::proto::FleetTelemetry>::SharedPtr pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<ProtoTalker>(rclcpp::NodeOptions{}));
+  rclcpp::shutdown();
+  return 0;
+}

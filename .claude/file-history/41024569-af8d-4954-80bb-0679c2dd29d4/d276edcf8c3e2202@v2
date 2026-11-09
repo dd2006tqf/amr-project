@@ -1,0 +1,29 @@
+feat(qt): 打通 Qt 看板完整调用链并完成本机编译验证
+
+新增独立目录 qt_dashboard/（16 文件 / 2988 行），未接入根构建，
+不改动 client/、scripts/ 或任何既有文件，对主项目零影响。
+
+调用链：
+  main.cpp -> MainWindow -> DataFetchThread(QThread)
+           -> DataSource -> weaknet_get_*() (client/weaknet_client.h)
+
+设计要点：
+- 复用现有 C API，不重写 D-Bus；服务端零改动
+- 同步 D-Bus 调用全部挪到后台线程，避免界面冻结
+- QPainter 自绘折线图，不依赖板端缺失的 Qt5Charts
+- 缓冲区自动扩容，截断 JSON 一律视为失败
+- 单独处理 schema v2 的降级形状（无 overall 对象）
+
+本机验证（无 Qt 开发包环境，deb 解压方案）：
+- 数据层单测 30/30 通过
+- moc 3/3、编译零警告、链接成功（365 KB，无 undefined reference）
+- offscreen 下启动正常，--help 输出正确
+
+编译过程中抓到 3 个真实 bug（缺 QTimer 头、两处 std::string 到 QString
+隐式转换）并纠正了枚举与 JSON 字段的臆断（HEALTHY 改为 GOOD/DEGRADED/
+BAD/UNKNOWN、FULL 改为 FULL_FOR_PROFILE 等），测试样本现已逐字取自
+服务端序列化代码并标注行号。
+
+未完成：ARM64 交叉编译、板端运行、真实 D-Bus 取数验证。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

@@ -1,0 +1,770 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+#include "manager/live_broadcast_manager.h"
+
+#include <algorithm>
+#include <chrono>
+#include <thread>
+
+#include "camera_live_broadcast/camera_live_broadcast_publish.h"
+#include "controller/config_manager.h"
+#include "controller/network_controller.h"
+#include "controller/resume_manager.h"
+#include "controller/stream_controller.h"
+#include "ins_base/log.h"
+#include "ins_base/mutex.h"
+#include "ins_base/time/time_types.h"
+#include "ins_base/time/time_utility.h"
+#include "ins_error_code/ins_errorcode.h"
+#include "ins_error_code_string.h"
+#include "ins_share_state/live_broadcast_share_status.h"
+#include "magic_enum/magic_enum.hpp"
+#include "manager/message_ids.h"
+#include "monitor/live_monitor.h"
+#include "rtmp/rtmp_pusher.h"
+#include "service/live_broadcast_types.h"
+#include "state_machine/live_state_base.h"
+#include "state_machine/live_state_idle.h"
+#include "stream/stream_reader.h"
+#include "timer/duration_timer.h"
+// 直播任务只能有一个，不存在并发的场景，所以如果当前有其他任务，则说明已经处于非idle状态，直接抛弃新任务
+FSM_INITIAL_STATE(ins::live_broadcast::LiveStateMachine,
+                  ins::live_broadcast::LiveStateIdle)
+
+namespace ins {
+namespace live_broadcast {
+
+/** 异步连接/开流结果，由连接线程投递到工作线程 */
+struct StartResultPayload {
+  uint64_t attempt_id = 0;
+  InsErrorCode err = kInsErrorCode_Comm_Success;
+  std::string message;
+};
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveBroadcastManager"
+}  // namespace
+
+LiveBroadcastManager::LiveBroadcastManager(
+    const std::shared_ptr<ins::base::MsgLooper>& main_msglooper,
+    std::shared_ptr<ins::base::ThreadPool> thread_pool)
+    : main_msg_looper_(main_msglooper),
+      work_msg_looper_(
+          std::make_shared<ins::base::MsgLooper>("LiveBroadcastWork")),
+      thread_pool_(std::move(thread_pool)),
+      current_state_(LiveBroadcastState::kIdle) {
+  ILOGS_I << "LiveBroadcastManager created";
+}
+
+InsErrorCode LiveBroadcastManager::StartLiveBroadcastManager() {
+  ILOGS_I << "Starting LiveBroadcastManager";
+
+  // 先复位Hook，保证幂等性（防止重复Start时残留旧回调）
+  LiveStateMachine::SetStateChangeHook(nullptr);
+
+  // 设置状态变化Hook，使用weak_ptr保护生命周期
+  LiveStateMachine::SetStateChangeHook(
+      [weak = weak_from_this()](LiveBroadcastState state) {
+        if (auto self = weak.lock()) {
+          self->HandleStateChange(state);
+        }
+      });
+
+  // 注册状态机启动事件
+  InsErrorCode reg_ret = work_msg_looper_->RegisterHandler<void, int32_t>(
+      MessageIds::kStateMachineStart,  // 状态机启动事件ID
+      &LiveBroadcastManager::OnStateMachineStart, this);
+  if (reg_ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to register handler: "
+            << ins::errc::GetInsErrorCodeString(reg_ret) << " (" << reg_ret
+            << ")";
+    return reg_ret;
+  }
+
+  // 注册 RPC 触发的状态机派发事件（带响应：在工作线程内做状态判定并返回
+  // InsErrorCode）
+  auto reg_dispatch_resp = [this](int32_t id,
+                                  InsErrorCode (LiveBroadcastManager::*handler)(
+                                      const int32_t&)) -> bool {
+    InsErrorCode ec = work_msg_looper_->RegisterHandler<InsErrorCode, int32_t>(
+        id, handler, this);
+    if (ec != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "Failed to register dispatch response handler id=" << id;
+      return false;
+    }
+    return true;
+  };
+  if (!reg_dispatch_resp(MessageIds::kDispatchPrepare,
+                         &LiveBroadcastManager::OnDispatchPrepare) ||
+      !reg_dispatch_resp(MessageIds::kDispatchStart,
+                         &LiveBroadcastManager::OnDispatchStart) ||
+      !reg_dispatch_resp(MessageIds::kDispatchStop,
+                         &LiveBroadcastManager::OnDispatchStop) ||
+      !reg_dispatch_resp(MessageIds::kDispatchResume,
+                         &LiveBroadcastManager::OnDispatchResume) ||
+      !reg_dispatch_resp(MessageIds::kDispatchDiscardResume,
+                         &LiveBroadcastManager::OnDispatchDiscardResume)) {
+    return kInsErrorCode_Comm_Einval;
+  }
+  // 仅内部使用的 void 派发（WIFI 连接成功等）
+  InsErrorCode prep_complete_ec =
+      work_msg_looper_->RegisterHandler<void, int32_t>(
+          MessageIds::kDispatchPrepareComplete,
+          &LiveBroadcastManager::OnDispatchPrepareComplete, this);
+  if (prep_complete_ec != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to register kDispatchPrepareComplete handler";
+    return kInsErrorCode_Comm_Einval;
+  }
+  InsErrorCode start_result_ec =
+      work_msg_looper_->RegisterHandler<void, StartResultPayload>(
+          MessageIds::kDispatchStartResult,
+          &LiveBroadcastManager::OnDispatchStartResult, this);
+  if (start_result_ec != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to register kDispatchStartResult handler";
+    return kInsErrorCode_Comm_Einval;
+  }
+
+  // 同步初始化状态机依赖，失败则直接返回，避免半初始化状态
+  InsErrorCode init_ret = InitStateMachineDependencies();
+  if (init_ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to init state machine dependencies: "
+            << ins::errc::GetInsErrorCodeString(init_ret) << " (" << init_ret
+            << ")";
+    return init_ret;
+  }
+
+  // 启动工作MsgLooper
+  InsErrorCode start_ret = work_msg_looper_->Start();
+  if (start_ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to start work_msg_looper: "
+            << ins::errc::GetInsErrorCodeString(start_ret) << " (" << start_ret
+            << ")";
+    ClearStateMachineStaticRefs();
+    return start_ret;
+  }
+
+  // 投递状态机启动事件（仅启动状态机，依赖已在上面完成）
+  InsErrorCode post_ret =
+      work_msg_looper_->Post<void>(MessageIds::kStateMachineStart, 0);
+  if (post_ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to post start event: "
+            << ins::errc::GetInsErrorCodeString(post_ret) << " (" << post_ret
+            << ")";
+    InsErrorCode stop_ret = work_msg_looper_->Stop();
+    if (stop_ret != kInsErrorCode_Comm_Success &&
+        stop_ret != kInsErrorCode_Comm_Edeadlk) {
+      ILOGS_E << "Failed to stop work_msg_looper after post failure: "
+              << ins::errc::GetInsErrorCodeString(stop_ret);
+    }
+    ClearStateMachineStaticRefs();
+    return post_ret;
+  }
+
+  ILOGS_I << "LiveBroadcastManager started";
+  return kInsErrorCode_Comm_Success;
+}
+
+void LiveBroadcastManager::RequestGoToIdleAndWait(uint32_t timeout_ms) {
+  if (GetCurrentState() == LiveBroadcastState::kIdle) {
+    return;
+  }
+  const auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchStop,
+      static_cast<int32_t>(LiveBroadcastStopReason::kUserStop));
+  if (!result.has_value()) {
+    ILOGS_W << "PostAndWaitResponse(Stop) failed or "
+               "timed out";
+  }
+  const std::chrono::milliseconds poll_interval(100);
+  const std::chrono::milliseconds total(timeout_ms);
+  auto elapsed = std::chrono::milliseconds(0);
+  while (elapsed < total) {
+    if (GetCurrentState() == LiveBroadcastState::kIdle) {
+      ILOGS_I << "state reached Idle";
+      return;
+    }
+    std::this_thread::sleep_for(poll_interval);
+    elapsed += poll_interval;
+  }
+  ILOGS_W << "timed out after " << timeout_ms << " ms without reaching Idle";
+}
+
+void LiveBroadcastManager::StopLiveBroadcastManager() {
+  ILOGS_I << "Stopping LiveBroadcastManager";
+  LiveStateMachine::Stop();
+  LiveStateMachine::SetStateChangeHook(nullptr);
+  const InsErrorCode stop_ret = work_msg_looper_->Stop();
+  if (stop_ret != kInsErrorCode_Comm_Success &&
+      stop_ret != kInsErrorCode_Comm_Edeadlk) {
+    ILOGS_E << "work_msg_looper_ Stop() returned: "
+            << ins::errc::GetInsErrorCodeString(stop_ret) << " (" << stop_ret
+            << ")";
+  }
+  // 若连接线程未被 Stopping 状态清理（异常路径），在此统一 Detach 并释放，
+  // 避免析构时 joinable 导致阻塞。
+  if (connect_thread_) {
+    const InsErrorCode detach_ret = connect_thread_->Detach();
+    if (detach_ret != kInsErrorCode_Comm_Success) {
+      ILOGS_W << "Connect thread Detach in StopManager returned: "
+              << ins::errc::GetInsErrorCodeString(detach_ret);
+    }
+    connect_thread_.reset();
+  }
+  ClearStateMachineStaticRefs();
+  ILOGS_I << "LiveBroadcastManager stopped";
+}
+
+void LiveBroadcastManager::ClearStateMachineStaticRefs() {
+  LiveStateMachine::SetManager(nullptr);
+  LiveStateMachine::SetResumeManager(nullptr);
+  LiveStateMachine::SetConfigManager(nullptr);
+  LiveStateMachine::SetNetworkController(nullptr);
+  LiveStateMachine::SetStreamController(nullptr);
+}
+
+namespace {
+constexpr int64_t kShutdownConnectWaitSec = 15;
+constexpr ins::base::Stdns_t kShutdownConnectWaitNs(kShutdownConnectWaitSec *
+                                                    1000000000LL);
+}  // namespace
+
+LiveBroadcastState LiveBroadcastManager::GetCurrentState() const {
+  ins::base::AutoMutex lock(state_mutex_);
+  return current_state_;
+}
+
+void LiveBroadcastManager::OnStateMachineStart(const int32_t& req) {
+  static_cast<void>(req);
+  ILOGS_I << "Starting state machine (dependencies already initialized)";
+
+  // 依赖已在 StartLiveBroadcastManager() 中同步初始化，此处仅启动状态机
+  LiveStateMachine::Start();
+
+  ILOGS_I << "State machine started";
+}
+
+InsErrorCode LiveBroadcastManager::InitStateMachineDependencies() {
+  stream_controller_ = std::make_shared<StreamController>();
+  InsErrorCode ret = stream_controller_->Initialize();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "StreamController Initialize failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    stream_controller_.reset();
+    return ret;
+  }
+  LiveStateMachine::SetStreamController(stream_controller_);
+
+  network_controller_ = std::make_shared<NetworkController>();
+  ret = network_controller_->Initialize();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "NetworkController Initialize failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    LiveStateMachine::SetStreamController(nullptr);
+    stream_controller_.reset();
+    network_controller_.reset();
+    return ret;
+  }
+  LiveStateMachine::SetNetworkController(network_controller_);
+
+  config_manager_ = std::make_shared<ConfigManager>();
+  ret = config_manager_->Initialize();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "ConfigManager Initialize failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    LiveStateMachine::SetNetworkController(nullptr);
+    LiveStateMachine::SetStreamController(nullptr);
+    network_controller_.reset();
+    stream_controller_.reset();
+    config_manager_.reset();
+    return ret;
+  }
+  LiveStateMachine::SetConfigManager(config_manager_);
+  stream_controller_->SetConfigManager(config_manager_);
+
+  resume_manager_ = std::make_shared<ResumeManager>();
+  ret = resume_manager_->Initialize();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "ResumeManager Initialize failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    LiveStateMachine::SetConfigManager(nullptr);
+    LiveStateMachine::SetNetworkController(nullptr);
+    LiveStateMachine::SetStreamController(nullptr);
+    config_manager_.reset();
+    network_controller_.reset();
+    stream_controller_.reset();
+    resume_manager_.reset();
+    return ret;
+  }
+  LiveStateMachine::SetResumeManager(resume_manager_);
+
+  LiveStateMachine::SetManager(shared_from_this());
+  ILOGS_I << "State machine dependencies initialized";
+  return kInsErrorCode_Comm_Success;
+}
+
+void LiveBroadcastManager::HandleStateChange(LiveBroadcastState state) {
+  {
+    ins::base::AutoMutex lock(state_mutex_);
+    ILOGS_I << "HandleStateChange: " << magic_enum::enum_name(current_state_)
+            << " -> " << magic_enum::enum_name(state);
+
+    // 成功进入 Prepare（新一次准备）或 Running（启动成功）时重置最近错误码，与
+    // Topic 语义一致
+    if (state == LiveBroadcastState::kPrepare ||
+        state == LiveBroadcastState::kRunning) {
+      current_error_.store(LiveBroadcastErrorCode::kNone);
+    }
+
+    // 更新本地状态快照
+    current_state_ = state;
+  }
+
+  // 1. 更新ShareState（实时同步）
+  UpdateShareState(state);
+
+  // 2. 发布ibus Topic（线程安全）
+  PublishStateChanged(state);
+
+  // 3. 通知主线程（如果需要）
+  NotifyMainLooper(state);
+}
+
+void LiveBroadcastManager::UpdateShareState(LiveBroadcastState state) {
+  // 更新ShareState（实时同步到共享内存）
+  int32_t ret = ins::share_state::LiveBroadcastSsMgr::GetInstance()
+                    .SetLiveBroadcastSharedStatus(
+                        [state](auto& live) { live.broadcast_state = state; });
+
+  if (ret != 0) {
+    ILOGS_E << "Failed to update ShareState: segment="
+            << typeid(ins::share_state::LiveBroadcastSsWrapper).name()
+            << ", error_code=" << ret
+            << " (check /proc/[pid]/comm matches 'ins_livecast' and write "
+               "permission)";
+  } else {
+    ILOGS_D << "Updated ShareState to: " << magic_enum::enum_name(state);
+  }
+}
+
+void LiveBroadcastManager::PublishStateChanged(LiveBroadcastState state) {
+  ins::ibus::camera::live_broadcast::LiveBroadcastPublishService::GetInstance()
+      .PublishLiveBroadcastStateChanged(state);
+
+  ILOGS_I << "Published StateChanged topic: " << magic_enum::enum_name(state);
+}
+void LiveBroadcastManager::PublishError(LiveBroadcastErrorCode error_code) {
+  ins::ibus::camera::live_broadcast::LiveBroadcastPublishService::GetInstance()
+      .PublishLiveBroadcastError(error_code);
+
+  ILOGS_I << "Published Error topic: " << magic_enum::enum_name(error_code);
+}
+
+void LiveBroadcastManager::PublishDurationUpdate(uint32_t duration_seconds) {
+  ins::ibus::camera::live_broadcast::LiveBroadcastPublishService::GetInstance()
+      .PublishLiveBroadcastDurationUpdate(duration_seconds);
+
+  ILOGS_D << "Published DurationUpdate topic: " << duration_seconds
+          << " seconds";
+}
+
+void LiveBroadcastManager::ReportLiveBroadcastErrorCode(
+    LiveBroadcastErrorCode error_code) {
+  ILOGS_W << "ReportLiveBroadcastErrorCode: "
+          << magic_enum::enum_name(error_code);
+  current_error_.store(error_code);
+  PublishError(error_code);
+}
+
+void LiveBroadcastManager::StartLiveBroadcastDurationTimer() {
+  if (!duration_timer_) {
+    duration_timer_ = DurationTimer::Create(
+        [weak = weak_from_this()](uint32_t duration_seconds) {
+          if (auto self = weak.lock()) {
+            self->PublishDurationUpdate(duration_seconds);
+          }
+        });
+  }
+
+  InsErrorCode ret = duration_timer_->Start();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to start duration timer: "
+            << ins::errc::GetInsErrorCodeString(ret);
+  } else {
+    ILOGS_I << "Duration timer started";
+  }
+}
+
+void LiveBroadcastManager::StopLiveBroadcastDurationTimer() {
+  if (duration_timer_) {
+    duration_timer_->Stop();
+    ILOGS_I << "Duration timer stopped";
+  }
+}
+
+void LiveBroadcastManager::StartLiveBroadcastMonitor() {
+  if (live_monitor_) {
+    live_monitor_->Start();
+    ILOGS_I << "Live monitor started";
+  }
+}
+
+void LiveBroadcastManager::StopLiveBroadcastMonitor() {
+  if (live_monitor_) {
+    live_monitor_->Stop();
+    ILOGS_I << "Live monitor stopped";
+  }
+}
+
+void LiveBroadcastManager::NotifyMainLooper(LiveBroadcastState state) {
+  // TODO(yinjun|2025-12-30): 投递状态变化事件到主线程（如果需要）
+  // auto result = main_msg_looper_->Post<void>(
+  //     static_cast<int32_t>(LiveBroadcastEvent::kStateChanged),
+  //     state);
+  // if (result != 0) {
+  //   ILOGS_E << "Failed to post state changed event: " << result;
+  // }
+
+  ILOGS_D << "Notified main looper of state change to: "
+          << magic_enum::enum_name(state);
+  static_cast<void>(state);
+}
+
+void LiveBroadcastManager::SetLiveBroadcastRtmpPusher(
+    const std::shared_ptr<RtmpPusher>& pusher) {
+  rtmp_pusher_ = pusher;
+}
+
+std::shared_ptr<RtmpPusher> LiveBroadcastManager::GetLiveBroadcastRtmpPusher()
+    const {
+  return rtmp_pusher_;
+}
+/*连接线程（StartConnectThread 启动的线程）与 Stop/Shutdown 路径对同一
+RtmpPusher/RtmpSession 不存在并发变更 先 RequestCancelConnect()，再
+WaitConnectThreadFinished()；只有在线程已结束时才会执行
+pusher->Stop()/Disconnect()，而超时分支不会再触碰 pusher，只做
+SetLiveBroadcastRtmpPusher(nullptr)。
+*/
+bool LiveBroadcastManager::StartConnectThread(std::function<void()> task) {
+  std::function<void()> t = std::move(task);
+  auto thread =
+      std::make_shared<ins::base::Thread>("LiveBroadcastConnect", [t]() {
+        t();
+        return false;  // 单次执行后退出循环
+      });
+  const InsErrorCode ret = thread->Start();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to start connect thread: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    return false;
+  }
+  connect_thread_ = std::move(thread);
+  return true;
+}
+
+bool LiveBroadcastManager::WaitConnectThreadFinished(int64_t timeout_ms) {
+  if (!connect_thread_) {
+    return true;
+  }
+  // 不将 connect_thread_ 移到局部变量：否则超时分支返回时局部 Thread 析构会
+  // 隐式 Join，导致超时上限失效并可能死等。超时时对 connect_thread_ 显式
+  // Detach 后再 reset，保证在给定 timeout_ms 内返回。
+  const InsErrorCode ret =
+      connect_thread_->JoinFor(ins::base::ms2ns(ins::base::stdms(timeout_ms)));
+  if (ret == kInsErrorCode_Comm_Success) {
+    connect_thread_.reset();
+    return true;
+  }
+  if (ret != kInsErrorCode_Comm_Etimedout) {
+    ILOGS_W << "Connect thread JoinFor returned: "
+            << ins::errc::GetInsErrorCodeString(ret);
+  }
+  if (ret == kInsErrorCode_Comm_Etimedout) {
+    ILOGS_W << "Connect thread wait timed out, detach and continue with stop";
+  }
+  // 超时或其它失败：Detach 后 reset，避免析构时隐式 Join 阻塞。
+  const InsErrorCode detach_ret = connect_thread_->Detach();
+  if (detach_ret != kInsErrorCode_Comm_Success) {
+    ILOGS_W << "Connect thread Detach returned: "
+            << ins::errc::GetInsErrorCodeString(detach_ret);
+  }
+  connect_thread_.reset();
+  return false;
+}
+
+// ========== RPC
+// 触发的接口实现（PostAndWaitResponse：状态判定在工作线程内完成） ==========
+
+uint64_t LiveBroadcastManager::BeginStartAttempt() {
+  const uint64_t attempt_id =
+      start_attempt_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
+  active_start_attempt_.store(attempt_id, std::memory_order_release);
+  return attempt_id;
+}
+
+InsErrorCode LiveBroadcastManager::LiveBroadcastPrepare() {
+  auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchPrepare, 0);
+  if (!result.has_value()) {
+    ILOGS_E << "PostAndWaitResponse failed: "
+            << ins::errc::GetInsErrorCodeString(result.error());
+    return result.error();
+  }
+  return result.value();
+}
+
+InsErrorCode LiveBroadcastManager::LiveBroadcastRequestStart() {
+  auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchStart, 0);
+  if (!result.has_value()) {
+    ILOGS_E << "PostAndWaitResponse failed: "
+            << ins::errc::GetInsErrorCodeString(result.error());
+    return result.error();
+  }
+  return result.value();
+}
+
+InsErrorCode LiveBroadcastManager::LiveBroadcastRequestStop(
+    LiveBroadcastStopReason stop_reason) {
+  auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchStop, static_cast<int32_t>(stop_reason));
+  if (!result.has_value()) {
+    ILOGS_E << "PostAndWaitResponse failed: "
+            << ins::errc::GetInsErrorCodeString(result.error());
+    return result.error();
+  }
+  return result.value();
+}
+
+void LiveBroadcastManager::GetLiveBroadcastState(
+    ::ins::ibus::camera::live_broadcast::LiveBroadcastStateInfo& state_info)
+    const {
+  ins::base::AutoMutex lock(state_mutex_);
+  state_info.state = current_state_;
+  state_info.error_code = current_error_.load();
+}
+
+InsErrorCode LiveBroadcastManager::LiveBroadcastRequestResume() {
+  auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchResume, 0);
+  if (!result.has_value()) {
+    ILOGS_E << "PostAndWaitResponse failed: "
+            << ins::errc::GetInsErrorCodeString(result.error());
+    return result.error();
+  }
+  return result.value();
+}
+
+InsErrorCode LiveBroadcastManager::LiveBroadcastRequestDiscardResume() {
+  auto result = work_msg_looper_->PostAndWaitResponse<InsErrorCode>(
+      MessageIds::kDispatchDiscardResume, 0);
+  if (!result.has_value()) {
+    ILOGS_E << " failed: " << ins::errc::GetInsErrorCodeString(result.error());
+    return result.error();
+  }
+  return result.value();
+}
+
+InsErrorCode LiveBroadcastManager::OnDispatchPrepare(const int32_t& req) {
+  static_cast<void>(req);
+  const LiveBroadcastState state = GetCurrentState();
+  if (state != LiveBroadcastState::kIdle &&
+      state != LiveBroadcastState::kPrepare) {
+    ILOGS_W << "Prepare rejected on work thread: invalid state "
+            << static_cast<int32_t>(state);
+    return kInsErrorCode_Comm_Einval;
+  }
+  LiveStateMachine::DispatchEvent(EventPrepareRequest{});
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastManager::OnDispatchStart(const int32_t& req) {
+  static_cast<void>(req);
+  if (GetCurrentState() != LiveBroadcastState::kPrepare) {
+    ILOGS_W << "RequestStart rejected on work thread: not in Prepare (current "
+            << static_cast<int32_t>(GetCurrentState()) << ")";
+    return kInsErrorCode_Comm_Einval;
+  }
+  EventStartRequest evt;
+  evt.rtmp_url = config_manager_->GetRtmpUrl();
+  LiveStateMachine::DispatchEvent(evt);
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastManager::OnDispatchStop(const int32_t& req) {
+  const LiveBroadcastState state = GetCurrentState();
+  if (state == LiveBroadcastState::kIdle) {
+    ILOGS_W << "StopBroadcast rejected on work thread: already Idle";
+    return kInsErrorCode_Comm_Einval;
+  }
+  if (state == LiveBroadcastState::kStopping) {
+    ILOGS_W << "StopBroadcast rejected on work thread: already Stopping";
+    return kInsErrorCode_Comm_Ealready;
+  }
+  EventStopRequest evt;
+  evt.reason = static_cast<LiveBroadcastStopReason>(req);
+  LiveStateMachine::DispatchEvent(evt);
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastManager::OnDispatchResume(const int32_t& req) {
+  static_cast<void>(req);
+  if (GetCurrentState() != LiveBroadcastState::kIdle) {
+    ILOGS_W << "Resume rejected on work thread: not in Idle (current "
+            << static_cast<int32_t>(GetCurrentState()) << ")";
+    return kInsErrorCode_Comm_Einval;
+  }
+  LiveStateMachine::DispatchEvent(EventResume{});
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastManager::OnDispatchDiscardResume(const int32_t& req) {
+  static_cast<void>(req);
+  if (GetCurrentState() != LiveBroadcastState::kIdle) {
+    ILOGS_W << "DiscardResume rejected on work thread: not in Idle (current "
+            << static_cast<int32_t>(GetCurrentState()) << ")";
+    return kInsErrorCode_Comm_Einval;
+  }
+  LiveStateMachine::DispatchEvent(EventDiscardResume{});
+  return kInsErrorCode_Comm_Success;
+}
+
+void LiveBroadcastManager::OnDispatchPrepareComplete(const int32_t& req) {
+  static_cast<void>(req);
+  LiveStateMachine::DispatchEvent(EventPrepareComplete{});
+}
+
+void LiveBroadcastManager::PostStartResult(uint64_t attempt_id,
+                                           InsErrorCode err,
+                                           const std::string& message) {
+  StartResultPayload payload;
+  payload.attempt_id = attempt_id;
+  payload.err = err;
+  payload.message = message;
+  InsErrorCode ret = work_msg_looper_->Post<void, StartResultPayload>(
+      MessageIds::kDispatchStartResult, std::move(payload));
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "failed: " << ins::errc::GetInsErrorCodeString(ret);
+  }
+}
+
+void LiveBroadcastManager::OnDispatchStartResult(StartResultPayload& payload) {
+  const uint64_t active_attempt =
+      active_start_attempt_.load(std::memory_order_acquire);
+  if (payload.attempt_id != active_attempt) {
+    ILOGS_W << "Ignore stale start result, payload attempt="
+            << payload.attempt_id << ", active attempt=" << active_attempt;
+    return;
+  }
+
+  if (GetCurrentState() != LiveBroadcastState::kStarting) {
+    ILOGS_W << "current state is not Starting";
+    return;  // 忽略过期结果（如已转 Stopping）
+  }
+  // TODO(lianxingwang|2026-03-18):  把明确属于网络/传输的问题映射为
+  // kNetworkError，把配置/参数/资源（如 InvalidUrl / OutOfMemory /
+  // StartFailed）映射为 kSystemError 或新增更细粒度的错误码；
+  if (payload.err != kInsErrorCode_Comm_Success) {
+    LiveBroadcastErrorCode report_code =
+        (payload.err >= kInsErrorCode_Range_MediadMin &&
+         payload.err <= kInsErrorCode_Range_MediadMax)
+            ? LiveBroadcastErrorCode::kSystemError
+            : LiveBroadcastErrorCode::kNetworkError;
+    ReportLiveBroadcastErrorCode(report_code);
+    std::shared_ptr<RtmpPusher> pusher = GetLiveBroadcastRtmpPusher();
+    if (pusher) {
+      pusher->Disconnect();
+    }
+    SetLiveBroadcastRtmpPusher(nullptr);
+    LiveStateMachine::DispatchEvent(
+        EventStartFailed{{}, report_code, payload.message});
+    return;
+  }
+  std::shared_ptr<RtmpPusher> pusher = GetLiveBroadcastRtmpPusher();
+  if (!pusher) {
+    ILOGS_E << "pusher is null after connect success";
+    return;
+  }
+  InsErrorCode start_ret = pusher->Start();
+  if (start_ret != kInsErrorCode_Comm_Success) {
+    LiveBroadcastErrorCode report_code =
+        (start_ret >= kInsErrorCode_Range_MediadMin &&
+         start_ret <= kInsErrorCode_Range_MediadMax)
+            ? LiveBroadcastErrorCode::kSystemError
+            : LiveBroadcastErrorCode::kNetworkError;
+    ILOGS_E << "RTMP Start failed: "
+            << ins::errc::GetInsErrorCodeString(start_ret);
+    ReportLiveBroadcastErrorCode(report_code);
+    pusher->Disconnect();
+    SetLiveBroadcastRtmpPusher(nullptr);
+    LiveStateMachine::DispatchEvent(EventStartFailed{
+        {}, report_code, ins::errc::GetInsErrorCodeString(start_ret)});
+    return;
+  }
+  LiveStateMachine::DispatchEvent(EventStartSuccess{});
+}
+
+// ========== 订阅者回调实现（暂为桩，后续委托给 Controller） ==========
+
+void LiveBroadcastManager::OnConfigUpdate(
+    const std::vector<::ins::config::ConfigKey>& changed_configs) {
+  const bool has_live_broadcast =
+      std::find(changed_configs.begin(), changed_configs.end(),
+                ::ins::config::ConfigKey::kLiveBroadcast) !=
+      changed_configs.end();
+  if (has_live_broadcast && config_manager_) {
+    config_manager_->OnConfigChanged(GetCurrentState());
+  }
+  ILOGS_D << "OnConfigUpdate, count=" << changed_configs.size();
+}
+
+void LiveBroadcastManager::OnWifiStaOn(
+    ::ins::ibus::common::netd::WifiConnectionResult error_code,
+    const ::ins::ibus::common::netd::WifiInfo& wifi_info) {
+  static_cast<void>(wifi_info);
+  ILOGS_D << "OnWifiStaOn, error_code=" << static_cast<int32_t>(error_code);
+  // WIFI 连接成功时投递 EventPrepareComplete 到状态机，由 Prepare 切换到
+  // Starting
+  if (error_code ==
+      ::ins::ibus::common::netd::WifiConnectionResult::kConnectSuccess) {
+    InsErrorCode ret =
+        work_msg_looper_->Post<void>(MessageIds::kDispatchPrepareComplete, 0);
+    if (ret != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "Post PrepareComplete failed: "
+              << ins::errc::GetInsErrorCodeString(ret);
+    }
+  }
+}
+
+void LiveBroadcastManager::OnWifiStaConnect(
+    int32_t error_code, const ::ins::ibus::common::netd::WifiInfo& wifi_info) {
+  static_cast<void>(wifi_info);
+  ILOGS_D << "OnWifiStaConnect, error_code=" << error_code;
+}
+
+void LiveBroadcastManager::OnRecordState(
+    ::ins::ibus::camera::mediad::RecordStatus record_status) {
+  ILOGS_D << "OnRecordState, status=" << static_cast<int32_t>(record_status);
+}
+
+void LiveBroadcastManager::OnRecordAbnormal(
+    ::ins::system::SysAbnormalType abnormal_reason) {
+  ILOGS_D << "OnRecordAbnormal, reason="
+          << static_cast<int32_t>(abnormal_reason);
+}
+
+void LiveBroadcastManager::SaveConnectedWifiSsid() {
+  if (!config_manager_) {
+    ILOGS_E << "config_manager_ is nullptr";
+    return;
+  }
+  InsErrorCode ret = config_manager_->SaveConnectedWifiSsid();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Save Connected WifiSsid failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+  }
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

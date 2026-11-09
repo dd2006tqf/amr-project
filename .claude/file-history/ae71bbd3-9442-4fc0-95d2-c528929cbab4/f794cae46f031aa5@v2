@@ -1,0 +1,56 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <array>
+#include <map>
+#include <cstdint>
+
+namespace xgrids {
+
+// ============================================================
+// 数据包回放/维测：读取一次扫描产出的包目录，重建四路时间线
+// 支持：
+//   - 解析 manifest.json 拿到丢帧区间与重扫建议
+//   - 解析 ch{n}.bin / lidar.bin / imu.bin 二进制帧流
+//   - 输出时间线、通道覆盖、对齐质量统计
+// ============================================================
+
+class PacketReader {
+public:
+    explicit PacketReader(std::string scan_dir);
+
+    // 解析 manifest.json（简单解析，无第三方库）
+    bool load_manifest();
+
+    // 读某通道全部帧头（ts, seq, offset, len）
+    struct FrameHead { int64_t ts_us; uint32_t seq; int64_t offset; uint32_t len; };
+    std::vector<FrameHead> channel_frames(int ch) const;
+
+    // 重建对齐质量：四路两两 offset 分布、组 skew 直方图
+    void print_sync_report() const;
+
+    // 打印时间线：每 50ms 一行四路帧计数，标出缺口
+    void print_timeline(int64_t step_us = 50'000) const;
+
+    // 打印"需重扫窗口"（manifest.rescan_windows 映射到采集时刻）
+    void print_rescan_windows() const;
+
+    struct ChannelSummary {
+        uint64_t frames = 0, lost = 0, bytes = 0;
+        int64_t first_ts = -1, last_ts = -1;
+        double coverage_pct = 0;   // (last-first)/总时长
+        std::vector<std::pair<int64_t,int64_t>> gaps;
+    };
+
+    const ChannelSummary& channel_summary(int ch) const { return summaries_[ch]; }
+    int64_t scan_duration_us() const { return end_us_ - start_us_; }
+
+private:
+    std::string dir_;
+    int64_t start_us_ = -1, end_us_ = -1;
+    std::array<ChannelSummary, 5> summaries_;
+    std::vector<std::pair<int64_t,int64_t>> rescan_;
+};
+
+}  // namespace xgrids

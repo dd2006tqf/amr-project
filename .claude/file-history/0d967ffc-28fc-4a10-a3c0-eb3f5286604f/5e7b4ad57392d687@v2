@@ -1,0 +1,64 @@
+# 基于 ROS 2 Jazzy 的仓储 AMR 调度基础设施平台
+
+**技术栈**：C++11/17、ROS 2 Jazzy、ros2_control、GoogleTest、CMake/colcon、Docker
+
+**项目简介**：基于 ROS 2 中间件实现智能仓储 AMR 调度基础设施平台，支持多后端底盘通信容灾与分层故障注入验证。
+
+## 项目主要内容
+
+1. **实现任务调度核心库与中间件解耦的任务调度框架。** 将队列调度、时空资源互斥与死锁自愈抽离为纯 C++ 核心库，不依赖 ROS 组件；引入行为树实现订单路由、出队派发与恢复策略编排。
+
+2. **构建多级安全熔断与底盘通信容灾机制。** 抽象串口与 UDP 网络统一底层驱动，编写 ros2_control 硬件接口插件；基于滑窗监控链路质量，丢包超限即逐级降级并执行冷却保护，链路恢复后直接重连并自动回切。
+
+3. **设计 ROS 2 接口包与轻量 REST 网关。** 调度节点基于 rclcpp_lifecycle 实现受控生命周期，暴露多组 Service 覆盖任务、交通与设施管理；原生编写轻量 HTTP 网关，桥接外部请求并实现幂等提单。
+
+4. **搭建配置驱动的目录管理与业务工作流体系。** 统一维护路网、设施与车队等 YAML 目录，基于文件 mtime 轮询实现参数在线热重载；设施资源基于状态机支持独占与会话管理，车队按能力标签与路线成本匹配最优车辆。
+
+5. **搭建分层自动化故障注入验证流水线。** 串联单元测试、极限压测与故障演练，分别模拟看门狗急停、底盘通信降级与死锁自愈场景；经实测，高频任务队列入队吞吐达 4.5 万次/秒，异步日志入队吞吐达 140 万次/秒。
+
+---
+
+## 核对备注（供面试问答参考）
+
+### 第 1 条：核心库解耦 + 行为树编排
+
+- **"纯 C++ 核心库"**：`src/amr_dispatcher_core/`，CMake 强制 `CMAKE_CXX_STANDARD 17`，不 `find_package(rclcpp)`；ROS 侧 `amr_dispatcher_ros` 只是薄壳。简历栈写 "C++11/17"，实际构建基线是 **C++17**（四个包的 CMakeLists 一致），面试以 C++17 为准讲解。
+- **"时空资源互斥"的出处**：`dispatcher/traffic_reservation.hpp` —— `TimeInterval [start, end]` + `ReserveTimeSpace()`，允许多车**时间窗不重叠时错峰并行**预约同一路段（Time-Space Reservation）；另有静态原子排他预留 `Reserve()`，多资源预占失败时整体回滚保持原子性。
+- **"死锁自愈"**：`deadlock_detector.hpp`（配置 10s/30s 阈值，节点内 1Hz `DeadlockTick` 巡检）+ `recovery_policy.hpp` 恢复决策；演练脚本 `scripts/check_deadlock_resolution.sh`。
+- **"订单路由"**：`catalog/business_order_catalog.hpp` 的 `BusinessOrderSubmitDecision` 按 business_type → `routed_service/routed_scenario_id/routed_workflow_id` 映射（业务类型→场景→工作流的路由表）。
+- **行为树实现**：BehaviorTree.CPP 4，`src/amr_dispatcher_bt/` 共 10 棵树，XML 内嵌源码（`BTCPP_format="4"`）：`submit_order`（订单提交路由）、`queued_mission_start`（出队派发）、`mission_recovery`（恢复策略）、`mission_resource_cleanup`（资源清理）、`mission_queue`、`facility`、`docking` 等。栈里虽未列 BT，被问到时说"行为树用 BehaviorTree.CPP"。
+
+### 第 2 条：安全熔断与底盘容灾
+
+- **统一驱动抽象**：`chassis_driver_node.cpp` 同时声明 `serial_device/serial_baud` 与 `udp_host/udp_port` 参数，串口与 UDP 两个后端走同一套链路质量统计与降级逻辑。
+- **ros2_control 插件**：`chassis_hardware_interface.cpp` 中 `ChassisHardwareInterface : public hardware_interface::SystemInterface`（`on_init` 等回调），以标准硬件接口插件接入 ros2_control 生态。
+- **滑窗降级准确语义**：滑动窗口（64 样本）统计丢包率/CRC/RTT；丢包率超 **30%** 触发降级判定，**30 秒**是降级后的冷却观察窗，期间指标恢复才回切——不是"先等 30 秒再降级"。见 `backend_degradation.hpp:17-18`。
+- **降级链终点是 mock**（串口 → UDP → 本地模拟），mock 是开发/测试兜底而非真实底盘；恢复后直接重连并自动回切首选后端。
+- **看门狗急停**：链路看门狗超时立即触发零速停车（`safety_gate_node`），演练脚本 `scripts/check_watchdog_estop.sh`；通信降级/回切演练 `scripts/check_hardware_failover.sh`。
+
+### 第 3 条：接口包 + rclcpp_lifecycle + REST 网关
+
+- **接口规模**：`src/amr_dispatcher_interfaces/` 共 **19 srv + 2 action + 6 msg**，`rosidl_generate_interfaces` 生成。
+- **受控生命周期**：`dispatcher_node.hpp:70` `DispatcherNode : rclcpp_lifecycle::LifecycleNode`；`on_configure` 分配队列/预留表并注册全部 **18 个 Service**，`on_activate` 激活 3 个 LifecyclePublisher 并开 3 个定时器（10Hz 调度 / 1Hz 死锁巡检 / 500ms 状态广播），`on_deactivate` **先停定时器再关发布器**，`on_cleanup` 将 18 服务 + 3 发布器 + 核心结构全部 `reset()`。
+- **多组 Service 分组**：
+  - 任务管理 `/dispatcher/*`（submit_order、cancel_order、pause/resume、reserve/release_resource）+ `/v2/*`（enqueue、cancel_queued、preempt、reprioritize、estimate_cost）；
+  - 交通管理（block_station_route、detect_traffic_deadlock、list_traffic_reservations）；
+  - 设施与运维（reserve_facility_resource、list_stations、get_operator_snapshot、validate_site_config）。
+- **协调器**：`lifecycle_coordinator_node.cpp` 轮询 `/dispatcher_node/get_state` 自动级联 `unconfigured→configure→inactive→activate`，汇总 `/safety/state` 提供 `/system/ready` 就绪探针；网关探活未就绪时 HTTP 503 拒单。协调器用"异步发 + 每拍轮询 shared_future"避免单线程 executor 嵌套等待死锁。
+- **"原生编写"**：`amr_dispatcher_tools/src/rest_gateway.cpp` 用裸 POSIX socket（`socket/bind/listen/accept/read/write` + `htons/SO_REUSEADDR`），**零第三方 HTTP 库**；手写 `Content-Length` 循环补读长请求体，手拼 HTTP 响应（含 CORS `*` 与 `Connection: close`）。
+- **幂等提单**：查询参数 `idempotency_key` → `std::unordered_set<std::string> seen_idempotency_keys_`，**先记账再发 ROS Service**，重复 key 直接返回 `{"status":"ignored","reason":"idempotent_duplicate"}`。**已知局限（别说错）**：key 纯内存、网关重启即失效、无 TTL——面试如被追问，主动说是简化实现，生产级应加过期/落盘。
+- **状态共享模型**：spin 主线程（ROS 订阅回调写 `latest_state_` 等缓存）与独立 HTTP 服务器线程之间用 `data_mutex_` 保护；幂等集合仅服务器线程访问故不加锁。HTTP 侧超时映射：Service 等不到 → 504，服务未就绪 → 503，缺参 → 400。
+- **HTTP 端点**（文档 `docs/API.md`）：`GET /api/v1/state`（快照）、`POST /api/v1/orders`（幂等提单）、`POST /api/v1/cancel`、`POST /api/operator/estop`、`GET /api/system/ready`。
+
+### 第 4 条：目录管理与业务工作流
+
+- **mtime 热重载**：`config/config_loader.hpp:64` `HotReloadWatcher` —— 周期性比对 `std::filesystem::last_write_time`，文件变化时回调 `on_reload(root)` 重新解析 YAML（`config_loader.cpp` 同名实现；异步日志器也复用该机制）。
+- **YAML 目录按域拆分**：站点路网、设施、车队、业务订单、语义区，另有底盘/安全/调度器/场景配置；跨目录引用校验脚本 `scripts/validate_config.py`。
+- **设施状态机（独占 + 会话）**：`facility/facility_reservation.hpp` 以 `holder_id` 为中心做持有者预留（`ReserveFacilityResource.srv` 含 `release_existing_for_holder`）；电梯类设施有**会话**管理，BT 侧对应 `facility_behavior_tree.cpp` 的 `LiftSessionBehaviorTree`，状态投影 `FacilityResourceStateProjection`。
+- **车队匹配**：`fleet/fleet_catalog.hpp` `RobotHasCapability()` 按能力标签过滤 + 按 pickup/dropoff 路线成本选最优车（函数签名含 `required_capability, pickup_station, dropoff_station`）。
+
+### 第 5 条：故障注入流水线与实测数字
+
+- **三层串联**：50 项单元测试（`test/unit/`，50 个 .cpp；另有 BT 包独立测试与 1 个端到端集成测试）→ 极限压测 `scripts/benchmark.sh` → 三项故障演练（`check_watchdog_estop.sh` 看门狗急停、`check_hardware_failover.sh` 通信降级/回切、`check_deadlock_resolution.sh` 死锁自愈）。
+- **吞吐差异原因（必问点）**：任务队列是带优先级排序与并发锁的竞争队列（每次 Push 维持堆序），异步日志是单生产者追加 + 后台批量落盘，两者设计目标不同，吞吐差 ~30 倍属正常。
+- **数字均为本机实测**：`benchmark.sh`（10000 任务 / 50000 日志样本）可直接复跑，三次结果 Push ≈ 4.3–4.7 万 ops/s，日志入队 ≈ 130–155 万 ops/s；简历取保守值 **4.5 万 / 140 万**。

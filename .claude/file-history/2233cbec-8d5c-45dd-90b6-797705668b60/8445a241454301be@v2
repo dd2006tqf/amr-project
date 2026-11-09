@@ -1,0 +1,57 @@
+[Unit]
+Description=WeakNet OTA Boot Recovery Service (P0-B)
+# 关键：恢复服务**不能**依赖被恢复的对象。
+#
+# 不写 Requires=weaknet-server.service，也不写 After=weaknet-server.service
+# 的强依赖——那会让 weaknet-server 起不来时恢复服务也起不来，正好把
+# "独立于被升级对象"的设计意图毁掉。
+#
+# 只在网络就绪后启动（隧道与 SSH 救援入口需要网络），但**不**等待
+# weaknet-server：它可能正是起不来的那个。
+After=network-online.target
+Wants=network-online.target
+# 真正的收敛靠 TRIAL 计数 +「次数耗尽就回滚」，不靠重启限流。
+# 注意 StartLimitIntervalSec 属于 **[Unit]** 段——写进 [Service] 会被 systemd
+# 当作 Unknown key name 静默忽略（`systemd-analyze verify` 只给一行 warning，
+# 运行时毫无提示）。P0-C1 那次 ConditionPathExists 写错段位就是同类陷阱。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# 与 weaknet-server 同为 root：需要读 /var/lib/weaknet-ota（0600 root）、
+# 翻 $ROOT/current 软链、systemctl stop/mask 服务。
+User=root
+Group=root
+WorkingDirectory=/
+# 恢复器装在 $ROOT 之外（/usr/local/lib/weaknet/），不随 OTA 制品变化：
+# 升级包被解包失败或版本目录被写坏时，恢复器本身仍然可用。
+ExecStart=/usr/bin/python3 /usr/local/lib/weaknet/weaknet-ota-recover \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    --ctl /usr/local/lib/weaknet/weaknet-ota-ctl
+Restart=on-failure
+RestartSec=10
+# 退出码 75 = 本次开机的健康窗口耗尽但还有剩余尝试次数 → 主动重启，
+# 开启下一轮试运行。
+#
+# **必须是 RestartForceExitStatus，不能是 SuccessExitStatus**（P0-C1 评审缺陷 C1）：
+#   * SuccessExitStatus=75 告诉 systemd「75 是干净退出」→ `Restart=on-failure`
+#     不重启 → 恢复服务静默死亡，设备停在未验证候选上，既不推进也不回滚。
+#   * RestartForceExitStatus=75 把它声明为「即使按 Restart= 不该重启，也要重启」。
+#     实测（systemd 255）：on-failure + RestartForceExitStatus=75 → NRestarts 递增、
+#     unit 保持在 activating/active 之间，不会变成 success/inactive。
+# 计数不依赖 boot_id：恢复器在退出前调 `bump-trial-round` 持久化消耗一次机会
+# 并重置窗口起点，因此每次重启都换来一个真实的新窗口，不会空转。
+#
+# StartLimitBurst 给个上限只是最后一道保险：真正的收敛由 TRIAL 计数 +
+# 「次数耗尽就回滚」的判定保证，不该靠限流。
+RestartForceExitStatus=75
+# 恢复期间不因自身异常拖垮系统
+TimeoutStopSec=30
+KillMode=control-group
+# 不需要 eBPF 能力：恢复器只做指针与事务操作
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

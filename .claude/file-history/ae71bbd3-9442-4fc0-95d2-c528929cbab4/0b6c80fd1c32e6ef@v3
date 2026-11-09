@@ -1,0 +1,70 @@
+#include "common/async_logger.h"
+#include "common/monotonic_clock.h"
+#include <cstdio>
+
+namespace xgrids {
+
+AsyncLogger& AsyncLogger::instance() {
+    static AsyncLogger inst;
+    return inst;
+}
+
+AsyncLogger::~AsyncLogger() { shutdown(); }
+
+void AsyncLogger::init(const std::string& log_path, size_t queue_cap) {
+    queue_cap_ = queue_cap;
+    file_.open(log_path, std::ios::app);
+    running_.store(true);
+    writer_ = std::thread(&AsyncLogger::writer_loop, this);
+}
+
+void AsyncLogger::shutdown() {
+    if (!running_.exchange(false)) return;
+    cv_.notify_all();
+    if (writer_.joinable()) writer_.join();
+    if (file_.is_open()) file_.close();
+}
+
+void AsyncLogger::log(Level lvl, const std::string& tag, const std::string& msg) {
+    if (lvl < min_level_.load()) return;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        // 队列满时丢弃 debug/info 保 warn/error
+        if (queue_.size() >= queue_cap_ && lvl < Level::kWarn) {
+            dropped_logs_.fetch_add(1);
+            return;
+        }
+        queue_.push(Entry{MonotonicClock::now_us(), lvl, tag, msg});
+    }
+    cv_.notify_one();
+}
+
+size_t AsyncLogger::pending() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return queue_.size();
+}
+
+void AsyncLogger::writer_loop() {
+    static const char* names[] = {"DBG", "INF", "WRN", "ERR"};
+    while (true) {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return !queue_.empty() || !running_.load(); });
+        while (!queue_.empty()) {
+            auto e = std::move(queue_.front());
+            queue_.pop();
+            lk.unlock();
+            if (file_.is_open()) {
+                char line[1024];
+                int n = std::snprintf(line, sizeof(line),
+                    "[%lld] %-3s %s: %s\n",
+                    (long long)e.ts_us, names[(int)e.lvl],
+                    e.tag.c_str(), e.msg.c_str());
+                file_.write(line, n);
+            }
+            lk.lock();
+        }
+        if (!running_.load()) break;
+    }
+}
+
+}  // namespace xgrids

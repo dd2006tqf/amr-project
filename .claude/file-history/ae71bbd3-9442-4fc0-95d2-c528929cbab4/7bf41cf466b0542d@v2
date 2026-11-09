@@ -1,0 +1,4 @@
+#include "common/monotonic_clock.h"
+
+// MonotonicClock 为纯静态工具，实现在头文件内。
+// 此文件保留，便于后续扩展（如加 NTP/PTP 校准、时间戳回卷处理）。

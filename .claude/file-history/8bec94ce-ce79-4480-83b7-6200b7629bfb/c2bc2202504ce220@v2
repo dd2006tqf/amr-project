@@ -1,0 +1,33 @@
+"""导出单帧 DDS 原始载荷，确认长度前缀假设是否成立。"""
+import struct
+import sys
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile
+
+from amr_dispatcher_proto_cli.echo import _make_rclpy_msg_type
+
+rclpy.init()
+node = Node('raw_dump')
+state = {'done': False}
+
+
+def cb(raw):
+    if state['done']:
+        return
+    state['done'] = True
+    b = bytes(raw)
+    print('len =', len(b))
+    print('hex =', b.hex())
+    print('first4_le =', struct.unpack_from('<I', b, 0)[0])
+    print('first4_be =', struct.unpack_from('>I', b, 0)[0])
+    print('last4 =', b[-4:].hex())
+    sys.stdout.flush()
+    rclpy.shutdown()
+
+
+msg_type = _make_rclpy_msg_type('amr_dispatcher.proto.ChassisLinkHealth')
+node.create_subscription(msg_type(), '/proto_smoke', cb, QoSProfile(depth=10), raw=True)
+rclpy.spin(node)
+print('no message received')

@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# check_state_persistence_e2e.sh - 调度状态持久化与审计落盘验收
+#
+# 断言（对应批次 2 的验收标准）：
+#   1. 提交 3 单 -> 触发落盘 -> kill -9 调度器 -> 重启 -> 队列仍在
+#   2. next_sequence 不回退（重启后新任务序号 > 已见最大序号）
+#   3. 暂停订单的暂停标记跨重启保留（暂停单不出队、不丢单）
+#   4. 隔离车辆跨重启保留（重启后仍是隔离态，不参与自动分配）
+#   5. 审计文件包含强清记录（operator_id / reason / released_resources）
+#   6. map_hash 不匹配时**拒绝恢复**（不允许拿旧拓扑的队列去派发）
+#
+# 环境隔离：ROS_DOMAIN_ID=87 / REST 18098 / MQTT 18891，与生产（域 42 / 8080）
+#           及其它 e2e（77/78/80/82/86/88）完全隔离。
+#
+# 退出码：0 = 全部断言通过；非 0 = 有断言失败（现场保留在容器 /tmp 便于排查）
+# ==============================================================================
+set -eo pipefail
+set -E
+trap 'echo "[PERS-FATAL] line=${LINENO} status=$? cmd=${BASH_COMMAND}" >&2' ERR
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CONTAINER="${AMR_PERS_CONTAINER:-amr_dispatcher}"
+PERS_DOMAIN_ID="${AMR_PERS_DOMAIN_ID:-87}"
+PERS_REST_PORT="${AMR_PERS_REST_PORT:-18098}"
+PERS_MQTT_PORT="${AMR_PERS_MQTT_PORT:-18891}"
+CONTAINER_WORKDIR="${AMR_PERS_WORKDIR:-/workspace}"
+STAMP_DIR="${CONTAINER_WORKDIR}/.pers_stamp"
+
+PERS_FAILED=0
+
+for tool in docker python3; do
+    command -v "${tool}" >/dev/null 2>&1 || {
+        echo "[PERS-FAIL] 宿主机缺少必需工具: ${tool}" >&2
+        exit 2
+    }
+done
+docker ps --format '{{.Names}}' | grep -qx "${CONTAINER}" || {
+    echo "[PERS-FAIL] 容器 ${CONTAINER} 未运行" >&2
+    exit 2
+}
+
+fail() {
+    echo ""
+    echo "[PERS-FAIL] 验收失败: $1"
+    echo "--- [LOG TAIL: dispatcher] ---"
+    docker exec "${CONTAINER}" bash -c "tail -n 60 '${STAMP_DIR}/dispatcher.log' 2>/dev/null" || echo "(no log)"
+    echo "--- [SNAPSHOT] ---"
+    docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/dispatch_state.yaml' 2>/dev/null" || echo "(no snapshot)"
+    echo "--- [AUDIT] ---"
+    docker exec "${CONTAINER}" bash -c "tail -n 20 '${STAMP_DIR}/audit.jsonl' 2>/dev/null" || echo "(no audit)"
+    PERS_FAILED=1
+    exit 1
+}
+
+cleanup() {
+    local exit_code=$?
+    echo ""
+    echo "[PERS] 正在清理..."
+    docker exec "${CONTAINER}" bash -c "
+        for envf in /proc/[0-9]*/environ; do
+            pid=\"\${envf#/proc/}\"; pid=\"\${pid%/environ}\"
+            [ -r \"\${envf}\" ] || continue
+            if tr '\\0' '\\n' 2>/dev/null < \"\${envf}\" | grep -qx 'ROS_DOMAIN_ID=${PERS_DOMAIN_ID}'; then
+                kill -9 \"\${pid}\" 2>/dev/null || true
+            fi
+        done
+        pkill -9 -f '[r]est_gateway.*port:=${PERS_REST_PORT}' 2>/dev/null || true
+        pkill -9 -f '[m]osquitto -c ${CONTAINER_WORKDIR}/.pers_stamp/mosquitto.conf' 2>/dev/null || true
+        pkill -9 -f '[m]ock_vda5050_vehicle.py --host 127.0.0.1 --port ${PERS_MQTT_PORT}' 2>/dev/null || true
+        ROS_DOMAIN_ID=${PERS_DOMAIN_ID} bash -c 'source /opt/ros/jazzy/setup.bash >/dev/null 2>&1; ros2 daemon stop >/dev/null 2>&1' || true
+    " >/dev/null 2>&1 || true
+    if [ ${exit_code} -eq 0 ] && [ ${PERS_FAILED} -eq 0 ]; then
+        docker exec "${CONTAINER}" bash -c "rm -rf '${STAMP_DIR}'" >/dev/null 2>&1 || true
+        echo "[PERS] 全部通过，已清理临时现场"
+    else
+        echo "[PERS][WARN] 验收未全部成功，现场保留在容器内: ${STAMP_DIR}"
+    fi
+    exit ${exit_code}
+}
+trap cleanup EXIT INT TERM
+
+STATIONS_YAML="${CONTAINER_WORKDIR}/config/generated/stations.yaml"
+docker exec "${CONTAINER}" bash -c "test -f '${STATIONS_YAML}'" \
+    || fail "容器内缺少 ${STATIONS_YAML}（先跑 check_map_ingest_e2e.sh 生成拓扑）"
+MAP_HASH="$(docker exec "${CONTAINER}" bash -c "grep -oE 'fnv1a64_[0-9a-f]+' '${STATIONS_YAML}' | head -1" | tr -d '\r')"
+[ -n "${MAP_HASH}" ] || fail "无法从 stations.yaml 提取 map_hash"
+
+docker exec "${CONTAINER}" bash -c "rm -rf '${STAMP_DIR}' && mkdir -p '${STAMP_DIR}'"
+
+echo "======================================================================"
+echo " Dispatch State Persistence End-to-End Acceptance"
+echo " ROS_DOMAIN_ID: ${PERS_DOMAIN_ID}  REST: ${PERS_REST_PORT}  MQTT: ${PERS_MQTT_PORT}"
+echo " map_hash: ${MAP_HASH}"
+echo "======================================================================"
+
+# ---------------------------------------------------------------------------
+# 容器内栈脚本：mosquitto + dispatcher(开启持久化) + gateway + rest + mock 车
+# 参数 $1 = 快照/审计路径前缀（不同轮次用不同文件）
+# ---------------------------------------------------------------------------
+write_stack_script() {
+    local snapshot_extra="$1"   # 追加的 -p 参数（如 expected_map_hash 覆盖）
+    cat > /tmp/pers_stack.sh <<INNER
+set -eo pipefail
+cd "${CONTAINER_WORKDIR}"
+source /opt/ros/jazzy/setup.bash
+source "${CONTAINER_WORKDIR}/install/setup.bash"
+export ROS_DOMAIN_ID=${PERS_DOMAIN_ID}
+export PYTHONUNBUFFERED=1
+STAMP="${STAMP_DIR}"
+
+cat > "\${STAMP}/mosquitto.conf" <<EOF
+listener ${PERS_MQTT_PORT} 127.0.0.1
+allow_anonymous true
+EOF
+mosquitto -c "\${STAMP}/mosquitto.conf" -v > "\${STAMP}/mosq.log" 2>&1 &
+sleep 1
+
+ros2 run amr_dispatcher_ros dispatcher_node --ros-args \\
+    -p stations_file:="${STATIONS_YAML}" \\
+    -p planner_type:=skeleton \\
+    -p expected_map_hash:="${MAP_HASH}" \\
+    -p vda5050_vehicles:=pers_amr_01 \\
+    -p vda5050_state_stale_sec:=5.0 \\
+    -p state_snapshot_file:="\${STAMP}/dispatch_state.yaml" \\
+    -p state_snapshot_debounce_sec:=0.5 \\
+    -p audit_log_file:="\${STAMP}/audit.jsonl" \\
+    ${snapshot_extra} \\
+    > "\${STAMP}/dispatcher.log" 2>&1 &
+
+for ((i = 0; i < 200; i++)); do
+    if ros2 node list 2>/dev/null | grep -q "/dispatcher_node"; then break; fi
+    sleep 0.1
+done
+ros2 lifecycle set /dispatcher_node configure >/dev/null 2>&1
+ros2 lifecycle set /dispatcher_node activate >/dev/null 2>&1
+
+ros2 run amr_dispatcher_ros vda5050_gateway_node --ros-args \\
+    -p use_vda5050:=true \\
+    -p mqtt_broker_host:=127.0.0.1 \\
+    -p mqtt_port:="${PERS_MQTT_PORT}" \\
+    -p manufacturer:=RobotManufacturer \\
+    -p serial_number:=pers_gateway \\
+    -p protocol_version:=v2 \\
+    -p heartbeat_ms:=5000 \\
+    > "\${STAMP}/gateway.log" 2>&1 &
+
+ros2 run amr_dispatcher_tools rest_gateway --ros-args \\
+    -p port:="${PERS_REST_PORT}" \\
+    -p idempotency_store_file:="\${STAMP}/idempotency.txt" \\
+    -p html_path:="${CONTAINER_WORKDIR}/tools/operator_console.html" \\
+    > "\${STAMP}/rest.log" 2>&1 &
+
+for ((i = 0; i < 200; i++)); do
+    if bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${PERS_REST_PORT}" 2>/dev/null; then
+        echo READY > "\${STAMP}/READY"
+        break
+    fi
+    sleep 0.1
+done
+sleep 3600
+INNER
+}
+
+start_stack() {
+    local extra="$1"
+    write_stack_script "${extra}"
+    docker exec "${CONTAINER}" bash -c "rm -f '${STAMP_DIR}/READY'"
+    docker cp /tmp/pers_stack.sh "${CONTAINER}:${STAMP_DIR}/stack.sh" >/dev/null
+    docker exec -d "${CONTAINER}" bash "${STAMP_DIR}/stack.sh" >/dev/null 2>&1
+    local ready=0
+    for ((i = 0; i < 250; i++)); do
+        if docker exec "${CONTAINER}" bash -c "test -f '${STAMP_DIR}/READY'" 2>/dev/null; then
+            ready=1
+            break
+        fi
+        sleep 0.2
+    done
+    [ "${ready}" -eq 1 ] || fail "调度栈未在预期时间内就绪"
+}
+
+# 只起 mock 车（车不参与状态持久化断言，但受管清单里有它，网关才能建链）
+start_vehicle() {
+    docker exec -d "${CONTAINER}" bash -c "
+        source /opt/ros/jazzy/setup.bash >/dev/null 2>&1
+        cd ${CONTAINER_WORKDIR}
+        exec python3 scripts/mock_vda5050_vehicle.py --host 127.0.0.1 --port ${PERS_MQTT_PORT} \
+            --manufacturer RobotManufacturer --serial pers_amr_01 --speed 0.6 --battery 90 \
+            > ${STAMP_DIR}/vehicle.log 2>&1
+    "
+}
+
+REST="http://127.0.0.1:${PERS_REST_PORT}"
+
+submit_order() {
+    local mid="$1" from="$2" to="$3"
+    docker exec "${CONTAINER}" python3 - "${REST}" "${mid}" "${from}" "${to}" <<'PY'
+import sys, time, urllib.request
+base, mid, frm, to = sys.argv[1:5]
+url = "%s/api/v1/orders?id=%s&from=%s&to=%s&prio=5" % (base, mid, frm, to)
+deadline = time.time() + 30
+last = ""
+while time.time() < deadline:
+    req = urllib.request.Request(url, method="POST", data=b"")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            body = r.read().decode()
+        if '"accepted":true' in body:
+            print(body)
+            sys.exit(0)
+        last = body
+    except Exception as e:  # noqa: BLE001
+        last = str(e)
+    time.sleep(1)
+print(last, file=sys.stderr)
+sys.exit(1)
+PY
+}
+
+# ---------------------------------------------------------------------------
+# 轮次 1：起栈 -> 提 3 单（其中 1 单暂停）-> 隔离车辆 -> 落盘 -> kill -9
+# ---------------------------------------------------------------------------
+echo ""
+echo "[Stage 1] 启动调度栈（开启状态持久化 + 审计落盘）..."
+start_stack ""
+start_vehicle
+for ((i = 0; i < 150; i++)); do
+    if docker exec "${CONTAINER}" bash -c "grep -q 'pers_amr_01' '${STAMP_DIR}/gateway.log'" 2>/dev/null; then
+        break
+    fi
+    sleep 0.2
+done
+echo "[Stage 1] 调度栈就绪 (PASS)"
+
+echo "[Stage 2] 提交 3 单并暂停其中 1 单的订单..."
+submit_order pers_m1 station_pickup_A station_dropoff_B >/dev/null || fail "pers_m1 提交失败"
+submit_order pers_m2 station_pickup_A station_dropoff_B >/dev/null || fail "pers_m2 提交失败"
+submit_order pers_m3 station_pickup_A station_dropoff_B >/dev/null || fail "pers_m3 提交失败"
+
+# 暂停 pers_m2 所属订单（StopMission 语义：该单不再参与出队，但不得丢单）
+docker exec "${CONTAINER}" bash -c "
+    source /opt/ros/jazzy/setup.bash >/dev/null 2>&1
+    source ${CONTAINER_WORKDIR}/install/setup.bash >/dev/null 2>&1
+    export ROS_DOMAIN_ID=${PERS_DOMAIN_ID}
+    ros2 service call /dispatcher/pause_mission amr_dispatcher_interfaces/srv/PauseMission \
+        '{mission_id: \"ord_pers_m2\", reason: \"persistence e2e\"}' >/dev/null 2>&1
+" || fail "pause_mission 调用失败"
+echo "[Stage 2] 3 单已入队，ord_pers_m2 已暂停 (PASS)"
+
+echo "[Stage 3] 等快照落盘（防抖窗口 0.5s）..."
+sleep 3
+SNAPSHOT_TEXT="$(docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/dispatch_state.yaml' 2>/dev/null" | tr -d '\r')"
+[ -n "${SNAPSHOT_TEXT}" ] || fail "快照文件未生成"
+echo "${SNAPSHOT_TEXT}" | grep -q "pers_m1" || fail "快照里没有 pers_m1"
+echo "${SNAPSHOT_TEXT}" | grep -q "pers_m2" || fail "快照里没有 pers_m2"
+echo "${SNAPSHOT_TEXT}" | grep -q "pers_m3" || fail "快照里没有 pers_m3"
+echo "${SNAPSHOT_TEXT}" | grep -q "ord_pers_m2" || fail "快照里没有暂停订单标记"
+SNAPSHOT_MAP_HASH="$(echo "${SNAPSHOT_TEXT}" | grep -E "^\s*map_hash:" | head -1 | sed 's/.*map_hash:[[:space:]]*//' | tr -d '"' | tr -d ' ')"
+[ "${SNAPSHOT_MAP_HASH}" = "${MAP_HASH}" ] || fail "快照 map_hash=${SNAPSHOT_MAP_HASH} 与拓扑 ${MAP_HASH} 不一致"
+echo "[Stage 3] 快照已落盘且含 3 单 + 暂停标记 + 正确 map_hash (PASS)"
+
+echo "[Stage 4] 隔离车辆（离线 + 强清）-> 快照应记录隔离态..."
+VEHICLE_PID="$(docker exec "${CONTAINER}" bash -c "pgrep -f 'mock_vda5050_vehicle.py --host 127.0.0.1 --port ${PERS_MQTT_PORT}' | head -1" | tr -d '\r')"
+[ -n "${VEHICLE_PID}" ] || fail "未找到 mock 车进程"
+docker exec "${CONTAINER}" bash -c "kill -9 ${VEHICLE_PID}" >/dev/null 2>&1 || true
+for ((i = 0; i < 150; i++)); do
+    if docker exec "${CONTAINER}" bash -c "curl -s --max-time 3 '${REST}/api/v1/vehicle_links'" 2>/dev/null | grep -q '"online":false'; then
+        break
+    fi
+    sleep 0.2
+done
+FORCE_BODY='{"vehicle_id":"pers_amr_01","confirm_vehicle_id":"pers_amr_01","operator_id":"operator_pers","reason":"persistence e2e: vehicle scrapped"}'
+FORCE_RESP="$(docker exec "${CONTAINER}" bash -c "curl -s --max-time 5 -X POST -H 'Content-Type: application/json' -d '${FORCE_BODY}' '${REST}/api/v1/force_clear_link'" | tr -d '\r')"
+echo "${FORCE_RESP}" | grep -q '"quarantined":true' || fail "强清未受理: ${FORCE_RESP}"
+sleep 3
+SNAPSHOT_TEXT="$(docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/dispatch_state.yaml'" | tr -d '\r')"
+echo "${SNAPSHOT_TEXT}" | grep -q "pers_amr_01" || fail "快照未记录隔离车辆 pers_amr_01"
+AUDIT_TEXT="$(docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/audit.jsonl' 2>/dev/null" | tr -d '\r')"
+[ -n "${AUDIT_TEXT}" ] || fail "审计文件为空（强清必须落审计）"
+echo "${AUDIT_TEXT}" | grep -q '"action":"force_clear"' || fail "审计缺少 force_clear 记录: ${AUDIT_TEXT}"
+echo "${AUDIT_TEXT}" | grep -q '"operator_id":"operator_pers"' || fail "审计缺少 operator_id"
+echo "${AUDIT_TEXT}" | grep -q 'persistence e2e: vehicle scrapped' || fail "审计缺少 reason"
+echo "[Stage 4] 隔离态与审计记录均已落盘 (PASS)"
+
+echo "[Stage 5] kill -9 调度器（模拟进程崩溃，不给优雅退出机会）..."
+DISP_PID="$(docker exec "${CONTAINER}" bash -c "pgrep -f 'dispatcher_node --ros-args' | head -1" | tr -d '\r')"
+[ -n "${DISP_PID}" ] || fail "未找到 dispatcher 进程"
+docker exec "${CONTAINER}" bash -c "kill -9 ${DISP_PID}" >/dev/null 2>&1 || true
+sleep 1
+# 快照必须已经在磁盘上（kill -9 不会触发 on_shutdown，靠的是 debounce 写盘）
+docker exec "${CONTAINER}" bash -c "test -s '${STAMP_DIR}/dispatch_state.yaml'" || fail "kill -9 后快照文件缺失"
+echo "[Stage 5] 调度器已被 kill -9，快照仍在磁盘上 (PASS)"
+
+# 清掉 rest / gateway（它们还挂在旧 dispatcher 上），只重启 dispatcher
+docker exec "${CONTAINER}" bash -c "
+    pkill -9 -f '[r]est_gateway.*port:=${PERS_REST_PORT}' 2>/dev/null || true
+    pkill -9 -f '[r]os2 run amr_dispatcher_ros dispatcher_node' 2>/dev/null || true
+    for envf in /proc/[0-9]*/environ; do
+        pid=\"\${envf#/proc/}\"; pid=\"\${pid%/environ}\"
+        [ -r \"\${envf}\" ] || continue
+        if tr '\\0' '\\n' 2>/dev/null < \"\${envf}\" | grep -qx 'ROS_DOMAIN_ID=${PERS_DOMAIN_ID}'; then
+            kill -9 \"\${pid}\" 2>/dev/null || true
+        fi
+    done
+" >/dev/null 2>&1 || true
+sleep 1
+
+echo "[Stage 6] 重启调度栈 -> 断言状态恢复..."
+start_stack ""
+sleep 2
+RESTART_LOG="$(docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/dispatcher.log'" | tr -d '\r')"
+echo "${RESTART_LOG}" | grep -q "Restored dispatch state from" || fail "重启日志里没有恢复记录: ${RESTART_LOG}"
+echo "${RESTART_LOG}" | grep -qE "3 queued|restored 3" || fail "恢复条数不是 3: $(echo "${RESTART_LOG}" | grep 'Restored dispatch state')"
+echo "[Stage 6] 队列已从快照恢复 (PASS)"
+
+echo "[Stage 7] 断言暂停标记与隔离态跨重启保留..."
+STATE_JSON="$(docker exec "${CONTAINER}" bash -c "curl -s --max-time 3 '${REST}/api/v1/state'" | tr -d '\r')"
+echo "${STATE_JSON}" | grep -q '"queue_size":3' || fail "恢复后 queue_size 不是 3: ${STATE_JSON}"
+LINKS_JSON="$(docker exec "${CONTAINER}" bash -c "curl -s --max-time 3 '${REST}/api/v1/vehicle_links'" | tr -d '\r')"
+echo "${LINKS_JSON}" | grep -q '"quarantined":true' || fail "隔离态未跨重启保留: ${LINKS_JSON}"
+echo "[Stage 7] 队列 3 单 / 隔离态保留 (PASS)"
+
+echo "[Stage 8] 断言 next_sequence 不回退..."
+# 新任务必须拿到比历史更大的序号；用 m_ 前缀自动 id 观察
+NEW_RESP="$(docker exec "${CONTAINER}" python3 - "${REST}" <<'PY'
+import sys, time, urllib.request, json
+base = sys.argv[1]
+url = "%s/api/v1/orders?id=&from=station_pickup_A&to=station_dropoff_B&prio=5" % base
+deadline = time.time() + 20
+while time.time() < deadline:
+    try:
+        req = urllib.request.Request(url, method="POST", data=b"")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            print(r.read().decode())
+            sys.exit(0)
+    except Exception:  # noqa: BLE001
+        time.sleep(1)
+sys.exit(1)
+PY
+)"
+echo "${NEW_RESP}" | grep -q '"accepted":true' || fail "恢复后新任务提交失败: ${NEW_RESP}"
+NEW_MID="$(echo "${NEW_RESP}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission_id"])')"
+NEW_SEQ="${NEW_MID#m_}"
+case "${NEW_SEQ}" in
+    ''|*[!0-9]*) fail "新任务 id 不是 m_<n> 形式: ${NEW_MID}" ;;
+esac
+# 快照里历史最大 sequence 是 3（pers_m1..m3 占 1..3），恢复后至少是 4
+if [ "${NEW_SEQ}" -lt 4 ]; then
+    fail "next_sequence 回退了：新任务 ${NEW_MID}（应 >= m_4）"
+fi
+echo "[Stage 8] next_sequence 未回退（新任务 ${NEW_MID}） (PASS)"
+
+echo "[Stage 9] 断言 map_hash 不匹配时拒绝恢复..."
+# 停栈 -> 把快照的 map_hash 改坏 -> 重启 -> 队列必须为空
+docker exec "${CONTAINER}" bash -c "
+    for envf in /proc/[0-9]*/environ; do
+        pid=\"\${envf#/proc/}\"; pid=\"\${pid%/environ}\"
+        [ -r \"\${envf}\" ] || continue
+        if tr '\\0' '\\n' 2>/dev/null < \"\${envf}\" | grep -qx 'ROS_DOMAIN_ID=${PERS_DOMAIN_ID}'; then
+            kill -9 \"\${pid}\" 2>/dev/null || true
+        fi
+    done
+    pkill -9 -f '[r]est_gateway.*port:=${PERS_REST_PORT}' 2>/dev/null || true
+" >/dev/null 2>&1 || true
+sleep 1
+docker exec "${CONTAINER}" bash -c "
+    sed -i 's/^map_hash:.*/map_hash: fnv1a64_0000000000000000/' '${STAMP_DIR}/dispatch_state.yaml'
+    grep -E '^map_hash:' '${STAMP_DIR}/dispatch_state.yaml'
+" || fail "无法改写快照 map_hash"
+start_stack ""
+sleep 2
+REJECT_LOG="$(docker exec "${CONTAINER}" bash -c "cat '${STAMP_DIR}/dispatcher.log'" | tr -d '\r')"
+echo "${REJECT_LOG}" | grep -q "Refusing to restore dispatch state" || fail "map_hash 不匹配时没有拒绝恢复"
+REJECT_STATE="$(docker exec "${CONTAINER}" bash -c "curl -s --max-time 3 '${REST}/api/v1/state'" | tr -d '\r')"
+echo "${REJECT_STATE}" | grep -q '"queue_size":0' || fail "拒绝恢复后队列应为空: ${REJECT_STATE}"
+echo "[Stage 9] map_hash 不匹配 -> 拒绝恢复，队列为空 (PASS)"
+
+echo ""
+echo "======================================================================"
+echo " [PASS] 调度状态持久化验收全部通过:"
+echo "         - 3 单 + 暂停标记 + 隔离态跨 kill -9 重启保留"
+echo "         - next_sequence 不回退"
+echo "         - 强清审计（operator_id / reason）落盘"
+echo "         - map_hash 不匹配时拒绝恢复（不拿旧拓扑派发）"
+echo "======================================================================"
+exit 0

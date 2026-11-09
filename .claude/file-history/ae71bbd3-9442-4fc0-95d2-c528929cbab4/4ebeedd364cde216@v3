@@ -1,0 +1,60 @@
+cmake_minimum_required(VERSION 3.16)
+project(xgrids_capture_sim CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-Wall -Wextra -pthread)
+
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# 公共库
+add_library(capture_common STATIC
+    src/common/ring_buffer.cpp
+    src/common/monotonic_clock.cpp
+    src/common/async_logger.cpp
+)
+
+# 传感器驱动仿真
+add_library(capture_sensors STATIC
+    src/sensors/sensor_drivers.cpp
+)
+
+# 同步：时间对齐器 + 同步监控
+add_library(capture_sync STATIC
+    src/sync/time_aligner.cpp
+    src/sync/sync_monitor.cpp
+)
+
+# 数据完整性 manifest
+add_library(capture_manifest STATIC
+    src/manifest/manifest_recorder.cpp
+    src/manifest/manifest_writer.cpp
+)
+
+# 质量反馈
+add_library(capture_quality STATIC
+    src/quality/quality_feedback.cpp
+)
+
+# 存储 + 上传
+add_library(capture_backend STATIC
+    src/backend/storage_backend.cpp
+    src/backend/uploader.cpp
+)
+
+# 会话层：生命周期编排
+add_library(capture_session STATIC src/capture_session.cpp)
+target_link_libraries(capture_session
+    capture_common capture_sensors capture_sync capture_manifest
+    capture_quality capture_backend pthread)
+
+# 主程序：一次扫描端到端演示
+add_executable(capture_app src/main.cpp)
+target_link_libraries(capture_app capture_session)
+
+# 维测工具：数据包回放
+add_executable(packet_replay tools_src/packet_replay.cpp)
+target_link_libraries(packet_replay capture_common)
+
+enable_testing()
+add_subdirectory(tests)

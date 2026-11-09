@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""一次性 PNG 检查器：验证看板截图渲染内容。用完即删。"""
+import struct
+import sys
+import zlib
+from collections import Counter
+
+
+def read_png(path):
+    data = open(path, "rb").read()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos = 8
+    width = height = bitdepth = colortype = None
+    idat = b""
+    while pos < len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        ctype = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            width, height, bitdepth, colortype, _, _, interlace = struct.unpack(
+                ">IIBBBBB", chunk)
+            assert interlace == 0
+        elif ctype == b"IDAT":
+            idat += chunk
+        elif ctype == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colortype]
+    assert bitdepth == 8
+    stride = width * channels
+    out = bytearray(width * height * channels)
+    prev = bytearray(stride)
+    p = 0
+    for y in range(height):
+        f = raw[p]
+        p += 1
+        line = bytearray(raw[p:p + stride])
+        p += stride
+        if f == 1:
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 0xFF
+        elif f == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 0xFF
+        elif f == 3:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                line[i] = (line[i] + ((a + prev[i]) >> 1)) & 0xFF
+        elif f == 4:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = prev[i]
+                c = prev[i - channels] if i >= channels else 0
+                pp = a + b - c
+                pa, pb, pc = abs(pp - a), abs(pp - b), abs(pp - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = (line[i] + pr) & 0xFF
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    return width, height, channels, bytes(out)
+
+
+def main(path):
+    w, h, ch, px = read_png(path)
+    print(f"尺寸: {w}x{h}, 通道: {ch}")
+
+    def rgb(x, y):
+        o = (y * w + x) * ch
+        return px[o], px[o + 1], px[o + 2]
+
+    colors = Counter()
+    for y in range(0, h, 3):
+        for x in range(0, w, 3):
+            colors[rgb(x, y)] += 1
+    total = sum(colors.values())
+    top_share = colors.most_common(1)[0][1] * 100.0 / total
+    print(f"[1] 非空白: 最高占比 {top_share:.1f}% -> "
+          f"{'PASS' if top_share < 99 else 'FAIL'}")
+
+    # 折线颜色 #2E7D32 的连续段
+    def near(c, t, tol=40):
+        return all(abs(c[i] - t[i]) <= tol for i in range(3))
+
+    # 扫描所有行，找出最长的那条 #2E7D32 连续横向段（折线主体）
+    best = (0, 0, 0)  # (length, y, x_start)
+    for y in range(h):
+        start = None
+        for x in range(w):
+            hit = near(rgb(x, y), (0x2E, 0x7D, 0x32))
+            if hit and start is None:
+                start = x
+            if not hit and start is not None:
+                if x - start > best[0]:
+                    best = (x - start, y, start)
+                start = None
+        if start is not None and w - start > best[0]:
+            best = (w - start, y, start)
+    length, by, bx = best
+    print(f"[2] 最长折线段: y={by} x={bx}..{bx + length - 1} 长度 {length} -> "
+          f"{'PASS' if length > 500 else 'FAIL'}")
+    # 折线的纵向跨度（说明它随数据变化，不是一条死线）
+    ys = [y for y in range(h) for x in range(0, w, 2)
+          if near(rgb(x, y), (0x2E, 0x7D, 0x32))]
+    if ys:
+        print(f"    折线纵向范围: y={min(ys)}..{max(ys)} 跨度 {max(ys) - min(ys)}")
+
+    # 状态色
+    targets = {
+        "GOOD 绿": (0x2E, 0x7D, 0x32),
+        "DEGRADED 黄": (0xF9, 0xA8, 0x25),
+        "BAD 红": (0xC6, 0x28, 0x28),
+        "灰": (0x9E, 0x9E, 0x9E),
+    }
+    for name, t in targets.items():
+        n = sum(cnt for c, cnt in colors.items() if near(c, t))
+        print(f"[3] {name} #{t[0]:02X}{t[1]:02X}{t[2]:02X}: {n} 采样点")
+
+    # 图表中心不应有"暂无历史数据"
+    cnt = 0
+    for y in range(330, 360):
+        for x in range(600, 760):
+            r, g, b = rgb(x, y)
+            if abs(r - 0x99) < 25 and abs(g - 0x99) < 25 and abs(b - 0x99) < 25:
+                cnt += 1
+    print(f"[4] 图表中心灰色提示文字: {cnt} px -> "
+          f"{'PASS(无提示=有数据)' if cnt < 50 else 'FAIL(显示暂无数据)'}")
+
+    # 顶栏与底栏内容
+    top = sum(1 for y in range(0, 60, 2) for x in range(0, w, 2)
+              if sum(rgb(x, y)) < 720)
+    bot = sum(1 for y in range(h - 60, h, 2) for x in range(0, w, 2)
+              if sum(rgb(x, y)) < 720)
+    print(f"[5] 顶栏内容像素: {top} -> {'PASS' if top > 50 else 'FAIL'}")
+    print(f"[6] 底栏诊断文字像素: {bot} -> {'PASS' if bot > 50 else 'FAIL'}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "/tmp/verify.png")

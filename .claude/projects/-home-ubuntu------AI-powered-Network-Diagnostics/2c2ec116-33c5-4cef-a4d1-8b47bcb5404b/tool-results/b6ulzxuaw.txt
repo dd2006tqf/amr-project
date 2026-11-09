@@ -1,0 +1,359 @@
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/customer_notifications.py:35:@router.post("/{provider}", response_model=CustomerNotificationReceiptEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/procurement.py:53:@router.post("/{provider}", response_model=PurchaseRequestReceiptEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:98:@router.get("", response_model=SupplierCollaborationListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:134:@router.post("", response_model=SupplierCollaborationEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:165:@router.get("/{collaboration_id}", response_model=SupplierCollaborationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:187:@router.post("/{collaboration_id}/dispatch", response_model=SupplierCollaborationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:214:@router.post("/{collaboration_id}/refresh", response_model=SupplierCollaborationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:241:@router.post("/{collaboration_id}/cancel", response_model=SupplierCollaborationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/collaborations.py:268:@router.post("/{collaboration_id}/reviews", response_model=SupplierCollaborationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:153:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:180:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:219:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:242:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:266:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:296:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:328:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:371:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/expert_collaborations.py:404:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:332:@router.get("", response_model=GraphReleaseListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:356:@router.post("", response_model=GraphReleaseEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:382:@router.get("/{graph_release_id}", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:406:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:460:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:486:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:509:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:546:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:578:@router.post("/{graph_release_id}/nodes", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:598:@router.post("/{graph_release_id}/edges", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:618:@router.post("/{graph_release_id}/sync", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:637:@router.post("/{graph_release_id}/evaluations", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:657:@router.post("/{graph_release_id}/activate", response_model=GraphReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_graph.py:676:@router.post("/query", response_model=GraphPathEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_lifecycle.py:53:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_lifecycle.py:117:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_lifecycle.py:140:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:235:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:264:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:307:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:345:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:384:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:419:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:464:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:512:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:573:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:639:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:694:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:742:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:801:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:849:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:887:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/enterprise_assets.py:926:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:231:@router.get("/cases", response_model=CustomerCasesEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:262:@router.get("/cases/{incident_id}", response_model=CustomerCaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:284:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:309:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:342:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/portal.py:417:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/execution_reconciliations.py:83:@router.get("", response_model=ExecutionReconciliationListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/execution_reconciliations.py:108:@router.get("/{reconciliation_id}", response_model=ExecutionReconciliationDetailEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/execution_reconciliations.py:135:@router.post("/{reconciliation_id}/check", response_model=ExecutionReconciliationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/execution_reconciliations.py:163:@router.post("/{reconciliation_id}/escalate", response_model=ExecutionReconciliationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:329:@router.post("/experiments", response_model=ExperimentEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:360:@router.get("/experiments", response_model=ExperimentListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:430:@router.get("/experiments/{experiment_id}", response_model=ExperimentEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:451:@router.post("/experiments/{experiment_id}/start", response_model=ExperimentEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:482:@router.post("/experiments/{experiment_id}/results", response_model=ExperimentEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:519:@router.post("/evaluation-suites", response_model=EvaluationSuiteEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:547:@router.get("/evaluation-suites", response_model=EvaluationSuiteListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:579:@router.post("/evaluation-policies", response_model=EvaluationPolicyEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:607:@router.get("/evaluation-policies", response_model=EvaluationPolicyListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:639:@router.post("/model-evaluation-jobs", response_model=EvaluationJobEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:669:@router.get("/model-evaluation-jobs", response_model=EvaluationJobListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:744:@router.get("/model-evaluations", response_model=ModelEvaluationListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:818:@router.get("/model-evaluations/{evaluation_id}", response_model=ModelEvaluationEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/experiments.py:842:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:267:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:328:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:385:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:424:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:445:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:473:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:493:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:515:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:556:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:594:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:614:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:635:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:690:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:729:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:826:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:873:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:923:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:977:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1005:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1153:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1178:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1253:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1341:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1379:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/network_assurance.py:1411:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:360:@router.get("/predictive-maintenance/overview", response_model=OverviewEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:384:@router.post("/telemetry/events", response_model=TelemetryEventEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:424:@router.post("/telemetry/windows", response_model=TelemetryWindowEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:458:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:512:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:566:@router.post("/telemetry/windows/{window_id}/detect", response_model=DetectionEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:596:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:635:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:672:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:721:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/predictive_maintenance.py:762:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/refunds.py:36:@router.post("/{provider}", response_model=RefundRequestReceiptEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/trace_operations.py:105:@router.get("/operations/traces", response_model=TraceListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/trace_operations.py:132:@router.get("/operations/traces/{agent_run_id}", response_model=TraceDetailEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/cost_operations.py:235:@router.get("/operations/cost", response_model=CostOperationsEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/cost_operations.py:263:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/cost_operations.py:325:@router.put("/operations/cost/policy", response_model=CostPolicyEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1025:@router.get("/dispatch/work-orders", response_model=DispatchWorkOrdersEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1078:@router.get("/work-orders", response_model=WorkOrdersEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1121:@router.get("/field/work-orders", response_model=WorkOrdersEnvelope, tags=["field-service"])
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1164:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1190:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1216:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1242:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1298:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1325:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1420:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1465:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1496:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1533:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1575:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1613:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1641:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1676:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1703:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1768:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1835:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1869:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1908:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:1975:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2001:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2032:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2061:@router.get("/work-orders/{work_order_id}", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2079:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2116:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2161:@router.post("/work-orders/{work_order_id}/assign", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2185:@router.post("/work-orders/{work_order_id}/hold", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2210:@router.post("/work-orders/{work_order_id}/resume", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2234:@router.post("/work-orders/{work_order_id}/escalate", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2260:@router.post("/work-orders/{work_order_id}/replan", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2289:@router.post("/work-orders/{work_order_id}/reschedule", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2317:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2354:@router.post("/work-orders/{work_order_id}/accept", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2376:@router.post("/work-orders/{work_order_id}/start", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2398:@router.post("/work-orders/{work_order_id}/complete", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2427:@router.post("/work-orders/{work_order_id}/verify", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/workorders.py:2452:@router.post("/work-orders/{work_order_id}/close", response_model=WorkOrderEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:150:@router.get("", response_model=TenantOverviewEnvelope, responses=STANDARD_ERROR_RESPONSES)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:173:@router.get("/members", response_model=TenantMembersEnvelope, responses=STANDARD_ERROR_RESPONSES)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:203:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:248:@router.put(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:288:@router.put(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tenant_administration.py:323:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning.py:130:@router.get("", response_model=MaintenancePlanningListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning.py:153:@router.post("", response_model=MaintenancePlanningEnvelope, status_code=202)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning.py:197:@router.get("/{council_id}", response_model=MaintenancePlanningEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning.py:217:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning.py:254:@router.post("/{council_id}/review", response_model=MaintenancePlanningEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:319:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:390:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:482:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:535:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:595:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:627:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:673:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:728:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnoses.py:754:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assets.py:119:@router.get("", response_model=AssetListEnvelope, responses=STANDARD_ERROR_RESPONSES)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assets.py:137:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:406:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:481:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:520:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:656:@router.get("/curation-runs/{run_id}", response_model=CurationRunEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:677:@router.get("/curation-runs", response_model=CurationRunListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:737:@router.get("/dataset-snapshots", response_model=DatasetSnapshotListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:823:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:853:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:924:@router.get("/dataset-snapshots/{snapshot_id}/manifest")
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:1020:@router.get("/data-lineage/{lineage_run_id}", response_model=DataLineageEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:1066:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:1106:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:1141:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/data_feedback.py:1190:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:226:@router.get("/assurance/overview", response_model=AssuranceOverviewEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:247:@router.post("/security-exercises", response_model=ExerciseEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:276:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:319:@router.post("/production-defects/{defect_id}/close", response_model=DefectEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:346:@router.post("/production-acceptances", response_model=AcceptanceEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/assurance.py:373:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/device_families.py:93:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/device_families.py:120:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/device_families.py:165:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/device_families.py:189:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/device_families.py:215:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_gateway.py:181:@router.get("/model-gateway/runtime-status", response_model=ModelRuntimeStatusEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_gateway.py:217:@router.get("/model-gateway/routes", response_model=ModelRouteListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_gateway.py:236:@router.get("/model-gateway/inferences", response_model=ModelInferenceListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_gateway.py:256:@router.put("/model-gateway/routes/{alias_name}/quota", response_model=ModelRouteEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:324:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:362:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:410:@router.put(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:467:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:491:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:544:@router.post("/knowledge/documents", response_model=KnowledgeVersionEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:574:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:607:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:656:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:678:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:702:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:743:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:782:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:821:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:844:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:879:@router.post("/knowledge/index-releases", response_model=KnowledgeReleaseEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:901:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:947:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:969:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:1012:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:1039:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge.py:1075:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/tool_governance.py:137:@router.get("/operations/tools/governance", response_model=ToolGovernanceEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnosis_feedback.py:101:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/diagnosis_feedback.py:144:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/memories.py:90:@router.get("/memories", response_model=GovernedMemoryListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/memories.py:131:@router.post("/memories", response_model=GovernedMemoryEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/memories.py:162:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:140:@router.get("", response_model=IncidentQueueEnvelope, responses=STANDARD_ERROR_RESPONSES)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:167:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:189:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:215:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:242:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:270:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:294:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:323:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:350:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:376:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:404:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incident_operations.py:431:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:127:@router.get("/prompt-bundles", response_model=PromptBundleListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:159:@router.get("/prompt-bundles/{prompt_bundle_id}", response_model=PromptBundleEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:181:@router.post("/prompt-bundles", response_model=PromptBundleEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:210:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:243:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/prompt_governance.py:279:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recovery.py:165:@router.get("/recovery/overview", response_model=RecoveryOverviewEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recovery.py:188:@router.post("/recovery/evidence", response_model=RecoveryEvidenceEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recovery.py:223:@router.post("/recovery/drills", response_model=RecoveryDrillEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recovery.py:252:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/service_entitlements.py:89:@router.get("/lookup", response_model=ServiceEntitlementEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/security.py:60:@router.get("/security/audit-events", response_model=SecurityAuditListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/security.py:98:@router.get("/security/summary", response_model=SecurityAuditSummaryEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recognition.py:244:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recognition.py:301:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recognition.py:326:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recognition.py:349:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/recognition.py:385:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/me.py:26:@router.get("/me", response_model=IdentityResponse)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/fsm_assignments.py:35:@router.post("/{provider}", response_model=FsmAssignmentReceiptEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/equipment_control_handoffs.py:66:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/equipment_control_handoffs.py:110:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_deployments.py:140:@router.get("/model-deployments", response_model=ModelDeploymentListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_deployments.py:170:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_deployments.py:190:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_deployments.py:219:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_deployments.py:266:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/agent_events.py:126:@router.get("/agent-runs/{agent_run_id}/events")
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/agent_events.py:155:@router.get("/agent-runs/{agent_run_id}/ag-ui/events")
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/agent_events.py:191:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:139:@router.post("/model-releases", response_model=ModelReleaseEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:168:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:202:@router.get("/model-releases", response_model=ModelReleaseListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:229:@router.get("/model-releases/{release_id}", response_model=ModelReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:249:@router.post("/model-releases/{release_id}/validate", response_model=ModelReleaseEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:273:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/model_releases.py:302:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/supply_chain.py:56:@router.get("/supply-chain/evidence", response_model=SupplyChainEvidenceListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:218:@router.get("", response_model=SearchProfileListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:239:@router.post("", response_model=SearchProfileEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:261:@router.get("/rebuilds", response_model=SearchProfileRebuildListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:286:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:337:@router.get("/rebuilds/{rebuild_job_id}", response_model=SearchProfileRebuildEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:357:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:403:@router.get("/{search_profile_id}", response_model=SearchProfileEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:423:@router.post("/{search_profile_id}/sync", response_model=SearchProfileEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:441:@router.post("/{search_profile_id}/evaluations", response_model=SearchProfileEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:471:@router.post("/{search_profile_id}/activate-shadow", response_model=SearchProfileEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:489:@router.post("/{search_profile_id}/deactivate-shadow", response_model=SearchProfileEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/knowledge_search.py:507:@router.post("/query", response_model=SearchResultEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/operations.py:150:@router.get("/operations/overview", response_model=OperationsOverviewEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/operations.py:178:@router.get("/operations/gpu", response_model=GpuOperationsEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:334:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:372:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:438:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:478:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:531:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:815:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:871:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:912:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:960:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1003:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1069:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1143:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1227:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1253:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1334:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1363:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1424:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1468:@router.get("/approvals", response_model=ApprovalListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1485:@router.get("/approvals/{approval_id}", response_model=ApprovalEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1513:@router.post("/approvals/{approval_id}/decisions", response_model=ApprovalEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/approvals.py:1557:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:125:@router.get("/policy", response_model=ExternalSearchPolicyEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:143:@router.put("/policy", response_model=ExternalSearchPolicyEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:168:@router.post("/queries", response_model=ExternalSearchQueryEnvelope, status_code=201)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:191:@router.get("/queries", response_model=ExternalSearchQueryListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:214:@router.get("/queries/{external_search_id}", response_model=ExternalSearchQueryEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/external_search.py:234:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/uploads.py:53:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/uploads.py:95:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:149:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:179:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:220:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:247:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:303:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:353:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:387:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:414:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/realtime.py:441:@router.delete(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/speech.py:84:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/speech.py:136:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/speech.py:205:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incidents.py:71:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incidents.py:111:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incidents.py:131:@router.patch(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/incidents.py:168:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/service_performance.py:182:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/service_performance.py:207:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/service_performance.py:249:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/service_performance.py:293:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/parts.py:81:@router.get("/lookup", response_model=PartsLookupEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning_activations.py:92:@router.get("", response_model=MaintenancePlanningActivationListEnvelope)
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning_activations.py:122:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning_activations.py:160:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning_activations.py:187:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/maintenance_planning_activations.py:219:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/emergency_access.py:92:@router.get(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/emergency_access.py:119:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/emergency_access.py:151:@router.post(
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/src/industrial_ops_agent/api/routes/emergency_access.py:185:@router.post(

@@ -1,0 +1,48 @@
+#!/bin/bash
+# 统计 Claude Code 各会话 token 用量（按本地时区 +0800 归日）
+# 数据源：~/.claude/projects/*/*.jsonl 里每条 assistant 消息的 usage 字段
+
+cd /home/ubuntu/.claude/projects || exit 1
+
+echo "=== 按日期汇总（本地时间 Asia/Shanghai）==="
+for f in */*.jsonl; do
+  jq -r --arg file "$f" '
+    select(.type=="assistant" and .message.usage != null) |
+    [
+      (.timestamp // ""),
+      ($file),
+      ((.message.usage.input_tokens // 0)),
+      ((.message.usage.cache_creation_input_tokens // 0)),
+      ((.message.usage.cache_read_input_tokens // 0)),
+      ((.message.usage.output_tokens // 0))
+    ] | @tsv
+  ' "$f" 2>/dev/null
+done | awk -F'\t' '
+  {
+    ts=$1; file=$2; in_tok=$3+0; cc=$4+0; cr=$5+0; out=$6+0
+    if (ts == "") next
+    # 把 2026-10-30T14:47:58Z 转成 epoch，再 +8h 得到本地日期
+    gsub(/[-:TZ]/, " ", ts)
+    split(ts, a, " ")
+    # a[1]=YYYY a[2]=MM a[3]=DD a[4]=HH a[5]=MI a[6]=SS
+    cmd = "date -u -d \"" a[1] "-" a[2] "-" a[3] " " a[4] ":" a[5] ":" a[6] " +8 hours\" +%Y-%m-%d"
+    cmd | getline day
+    close(cmd)
+    key = day
+    n[key]++
+    I[key] += in_tok
+    C[key] += cc
+    R[key] += cr
+    O[key] += out
+    T[key] += in_tok + cc + cr + out
+    F[key "|" file] = 1
+  }
+  END {
+    printf "%-12s %8s %12s %14s %12s %12s %14s\n", "日期", "请求数", "输入(新)", "缓存写入", "缓存命中", "输出", "合计"
+    for (k in n) {
+      printf "%-12s %8d %12d %14d %12d %12d %14d\n", k, n[k], I[k], C[k], R[k], O[k], T[k]
+      total_n += n[k]; total_I += I[k]; total_C += C[k]; total_R += R[k]; total_O += O[k]; total_T += T[k]
+    }
+    printf "%-12s %8d %12d %14d %12d %12d %14d\n", "总计", total_n, total_I, total_C, total_R, total_O, total_T
+  }
+'

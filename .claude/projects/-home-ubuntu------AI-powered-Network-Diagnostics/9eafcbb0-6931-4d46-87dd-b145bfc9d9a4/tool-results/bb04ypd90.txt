@@ -1,0 +1,1327 @@
+=============== docs/网络体验评价体系.md ===============
+# WeakNet 网络体验评价体系
+
+> 本文档是 WeakNet 评价模型的正式说明。阈值与判定逻辑**以代码为准**，文档描述当前实现状态；标注「待补」的部分属于后续增量。
+>
+> 最近更新：2026-09-12
+
+## 一、这份文档要回答什么
+
+WeakNet 的交付物不是一堆 eBPF 探针，而是一套评价体系。它要回答用户真正关心的三个问题：
+
+> **现在网络能不能正常用？**
+> **如果不能用，问题出在哪一层？**
+> **系统有什么真实证据证明这个结论？**
+
+反面例子：`网络质量：68 分`。这种输出既无法解释，也无法定位。
+
+正面例子：
+
+```text
+Internet Access: BAD
+Primary Issue: DNS resolution failure
+
+Evidence:
+  ✓ Wi-Fi link healthy
+  ✓ IP gateway reachable
+  ✓ RTT median 21 ms
+  ✓ TCP retransmission 0.4%
+  ✗ DNS transactions timed out (3 consecutive, no success interleaved)
+  ✓ Observer healthy, no capture loss
+
+Conclusion: 基础网络正常，当前故障位于 DNS 服务层。
+```
+
+## 二、模型结构
+
+```text
+                       Raw Evidence
+    Ping / eBPF / nl80211 / Netlink / DNS
+                              │
+                              ▼
+                    Evidence Capture
+                              │
+                              ▼
+                【Evidence Quality】          ← 本增量新增的关键一层
+                              │
+                              ▼
+                  Metrics / Transactions
+                              │
+             ┌────────────────┼────────────────┐
+             ▼                ▼                ▼
+      Core Network SLE   Service SLE      Advisory SLE
+             │                │                │
+      Reachability           DNS              RF Health
+      Responsiveness     TCP Connect      共存干扰
+      Reliability        HTTP Access
+                           Captive Portal
+             └────────────────┼────────────────┘
+                              ▼
+                   OverallPolicy(profile)
+                              │
+                  Coverage / Applicability
+                              ▼
+                     StateStabilizer
+                              ▼
+       ┌──────────────────────┼──────────────────────┐
+       ▼                      ▼                      ▼
+  Overall State         Primary Issue          Evidence
+  BAD/DEGRADED/GOOD     根因定位               证据链
+       │
+       ▼
+  display_score / legacy 0~4   （仅兼容投影）
+```
+
+**核心转变**：不再有公式把 RTT、RSSI、丢包、DNS 加权混成一个总分——那样一个维度的好会掩盖另一个维度的严重故障。状态与证据是内部真值。
+
+## 三、SLE 三层分类
+
+| 层级 | SLE | 回答的问题 | 权重语义 |
+|---|---|---|---|
+| **Core Network** | IP Reachability | 网络通不通 | 参与 Overall 决策 |
+| **Core Network** | Responsiveness | 快不快、稳不稳 | 参与 Overall 决策 |
+| **Core Network** | Reliability | 有没有真实传输损伤 | 参与 Overall 决策 |
+| **Service** | DNS Service | DNS 事务是否可靠完成 | 凭 Profile 决定是否 required |
+| **Service** | TCP Connect | DNS 解析出地址后能否建立连接 | 同上 |
+| **Service** | HTTP/HTTPS Access | 应用层能否得到有效响应 | 同上 |
+| **Service** | Captive Portal | 是否被认证门户拦截 | 同上（确定性事实，不参与 coverage 投票） |
+| **Advisory** | RF Health | 射频环境如何 | **不 vote、不罚 Coverage**，仅 warning |
+
+> **术语约定**：RF Health 是 **Advisory**，不是 Core。DNS 是 **Service**，只有在 `INTERNET_ACCESS` Profile 下才成为该 Profile 的 required service。
+
+### Active Probe 自身流量必须排除出 Passive pipeline
+
+**这是一个真实修复的漏洞，不是理论担忧。**
+
+主动探测与 passive capture 运行在同一进程内。实测（`/etc/weaknet.conf`
+仅开 active_probe、无任何用户流量）：
+
+```text
+探测关闭 60s  →  被动 DNS 捕获  0 → 0
+仅开探测 70s  →  被动 DNS 捕获  1 → 15   ← 探测流量全部进入 passive 窗口
+```
+
+危害不只是"计数被污染"：探测目标都是**应稳定可达**的，长期每 30s 注入
+"已知良好"样本，会**人为改善** passive 指标、掩盖真实业务失败 ——
+恰好破坏刚建立的 Active/Passive 证据边界。
+
+**修复分两步，因为两个方向的上下文不同**：
+
+| 方向 | 上下文 | `bpf_get_current_pid_tgid()` | 可用手段 |
+|---|---|---|---|
+| egress（query） | 系统调用 | = 服务端 PID ✅ | PID 过滤 |
+| ingress（response） | **softirq** | 内核软中断上下文，非服务端 PID ❌ | socket cookie |
+
+因此 ingress 无法靠 PID 排除（实测 PID 过滤后 `queue_emitted` 仍 1→13）。
+最终方案：egress 侧（PID 有效）记录该 socket 的 `bpf_get_socket_cookie()`，
+ingress 侧按同一 cookie 排除 —— cookie 在两方向一致，可桥接上下文差异。
+
+**验证结果**：
+
+```text
+修复后  仅开探测 70s → queue_emitted 93 → 93（增长 0）  ✅
+                     send_emitted 恒为 0
+```
+
+排查要点：只加 PID 过滤会得到一个"看起来修好了"的假象
+（query 归零但 response 仍在污染），必须同时对两个方向验证。
+
+### 受控主动探测（Active Connectivity Probe）
+
+被动证据只能描述"观察到了什么"；唯有**目标由我们选定**的受控探测才能回答
+"本机当前是否具备上网能力"。因此 Active Probe 是判定 INTERNET_ACCESS 的
+唯一服务层证据来源。
+
+**配置**（`monitors.active_probe`，默认**关闭**）：
+
+```yaml
+active_probe:
+  enabled: false            # 默认关闭
+  interval_ms: 30000        # 30s 工程初值
+  timeout_ms: 3000
+  targets: ""               # "id|hostname|port,id|hostname|port"
+```
+
+**默认不内置任何第三方目标**：probe 目标决定"设备主动连接谁"，也决定
+评价体系把谁当 ground truth。硬编码第三方公共服务会产生新的错误 oracle
+（对方限流/地区不可达/改响应都会被解释成 Internet 故障）。
+无 first-party endpoint 时保持 `enabled=false`，相关 SLE 诚实返回
+UNKNOWN/NONE，**绝不退回被动证据替代**。
+
+**目标必须来自不同故障域**：配置校验与文档要求 probe targets 不能只是
+同一服务的两个域名（同一 DNS provider / 同一 CDN / 同一 ASN 实为单点）。
+v1 不做 ASN 分析，但配置纪律必须声明：quorum 计数为 2 而故障域为 1，
+等于仍是单点 oracle。
+
+**判定规则（目标冗余）**：
+
+```text
+>= 2 个独立目标参与
+单个 target 失败              → 不判 capability 失败（可能是该目标自身问题）
+所有受控目标 TCP 全部失败     → Active TCP = BAD + capability_level_negative
+                                  （受控目标应稳定可达，故具否决权）
+```
+
+**依赖截断**（避免一次故障污染多个 SLE）：
+
+```text
+DNS 失败 → 该 target 的 TCP/TLS/HTTP 记为 blocked_by_dns（UNKNOWN），
+          而不是各自产生一次"失败"
+DNS 成功 + TCP 失败 → TLS/HTTP 记为 blocked_by_tcp
+TLS 成功 + HTTP 异常 → HTTP 记为 blocked_by_tls（仅当 HTTP 阶段未能执行时）
+```
+
+实现上 DNS 失败后**不再尝试**该目标的 TCP，从源头杜绝连锁假故障。
+
+**本轮覆盖范围**：
+
+| 维度 | 状态 | 说明 |
+|---|---|---|
+| Active DNS capability | ✅ 已实现 | 自构造 UDP 查询直连配置 resolver |
+| Active TCP capability | ✅ 已实现 | 非阻塞 connect + poll |
+| Active HTTPS capability | ❌ UNKNOWN/NONE | `no_tls_probe_capability` —— 容器与开发板均无 TLS 开发头文件 |
+| Active Portal capability | ❌ UNKNOWN/NONE | 同上 |
+
+**为什么 DNS 探测自构造报文而不用 getaddrinfo**：libc resolver 会发出
+调用方并不等待的附加查询（AAAA/MX），那些查询在捕获视角下就是"发出但无响应"——
+这正是此前把健康解析器误判为故障的原因。自构造报文可精确指定 QTYPE 与控制超时。
+
+**HTTPS/Portal 为何不现在做**：容器与开发板都缺 TLS 开发依赖，且容器内
+`apt-get install libssl-dev` 失败（bullseye-security Release 已过期 + deb 404）。
+不接受三种绕法：手写 OpenSSL/libcurl ABI（把环境问题变长期代码债）、
+daemon 执行可配置外部命令（引入命令执行/安全/输出解析契约）、
+现场补丁容器（换机器即复现）。应作为**可复现构建**工作补齐：
+Dockerfile 固定 base/repository → 安装 libssl-dev → CMake `find_package(OpenSSL)`
+→ CI 与 ARM64 构建双重验证。
+
+**关键不变式**：DNS + TCP 全部成功**只证明 Internet transport capability 可用**，
+不得据此推断 HTTPS/Portal 可用，也不得把 Active coverage 写成 FULL。
+
+### 证据来源与阻塞性（Active/Passive 语义）
+
+**核心原则：Profile 决定某个 SLE 是否有资格影响 Overall，而不是"它算出了 BAD 就自动影响 Overall"。**
+
+| SLE | source | scope | 对 INTERNET_ACCESS 的阻塞性 |
+|---|---|---|---|
+| IP Reachability | ACTIVE_PROBE | NETWORK_PATH | **blocking**（Core） |
+| Reliability | SYSTEM_TELEMETRY | NETWORK_PATH | **blocking**（Core） |
+| Responsiveness | ACTIVE_PROBE | NETWORK_PATH | **blocking**（DEGRADED 级） |
+| RF Health | SYSTEM_TELEMETRY | LINK | advisory |
+| DNS Service | PASSIVE_REAL_TRAFFIC | HOST_RESOLVER_CAPABILITY | **条件 blocking**（见下） |
+| TCP Connect | PASSIVE_REAL_TRAFFIC | PER_DESTINATION | **non-blocking** |
+| Cleartext HTTP | PASSIVE_REAL_TRAFFIC | CLEARTEXT_PER_DESTINATION | **non-blocking** |
+| Captive Portal | UNSPECIFIED | NO_CAPABILITY | **无决策权** |
+| Active DNS capability | ACTIVE_PROBE | NETWORK_PATH | **blocking**（全部受控目标失败时） |
+| Active TCP capability | ACTIVE_PROBE | NETWORK_PATH | **blocking**（全部受控目标失败时） |
+| Active HTTPS / Portal | UNSPECIFIED | NO_CAPABILITY | 本轮未实现，无决策权 |
+
+**为什么被动 TCP/HTTP 不阻塞**：它们观测的是"本机连向任意业务目的地的结果"，
+而目的地由用户业务决定，可能本来就该失败（已下线服务器、被防火墙拦截的端口、
+不存在的服务）。允许它们把 Overall 压到 BAD **或 DEGRADED**，本质上都是
+用未知目的地的失败评价 Internet —— 语义漏洞不会因为从 BAD 改成 DEGRADED 而消失。
+它们自身仍可为 BAD/DEGRADED 并展示证据，但只作为 `observed experience`。
+
+**DNS 为什么保留阻塞权**：解析失败是**本机能力级**（host-level resolver
+capability）故障 —— 本机解析不了名字，上网体验确实受损，与"某个目的地连不上"
+性质不同。但否决权**严格限定**为能力级证据：
+
+```text
+capability_level_negative = true    →  可 veto（Overall BAD）
+  连续超时（解析器完全不响应）
+  失败以 TIMEOUT 为主
+  解析普遍极慢
+
+capability_level_negative = false   →  不 veto（降为 warning + evidence）
+  单域名 SERVFAIL / REFUSED：解析器"答了"，只是那个域名失败，
+  可能是域名自身 / 权威侧 / 策略问题
+```
+
+即否决权由**失败类型**决定，而非聚合 failure_ratio —— 小样本下单个域名的
+SERVFAIL 就可能超过 20% 阈值，若按比率授予否决权，会把"一个域名解析失败"
+升级成"Internet 不可用"。
+
+**Captive Portal 当前为盲区**：可靠判定需要受控探测（向已知
+connectivity-check 端点请求，比对是否被重定向/内容替换）。当前 capture 不提取
+`Location`，也没有主动探测，故如实返回 `UNKNOWN / NONE /
+no_portal_probe_capability`。普通 `301/302/307/308` 是网站常见正常行为，
+**只记 `redirect_observed` 证据，不产生任何状态语义** —— 既不能判"有门户"，
+也不能判"没有门户"，即使观测到 100 个 302 也是如此。
+
+**Applicability**：`APPLICABLE` / `NOT_APPLICABLE`。有线链路下 RF 为 `NOT_APPLICABLE`（state=UNKNOWN，coverage=FULL），不参与 vote、不产生 warning，前端显示 `N/A`——物理指标用于解释体验，而不是替代体验。
+
+## 四、判定阈值（以代码为准）
+
+### IP Reachability — `ip_reachability_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | 尾部连续失败 ≥3 **或** 成功率 <50% |
+| DEGRADED | 尾部连续失败 ≥1 **或** 成功率 <90% |
+| GOOD | 无连续失败且成功 |
+| UNKNOWN | 无样本 / 无有效样本 |
+
+> 已知代码问题：`ip_reachability_evaluator.hpp:44` 计算了 `max_consecutive_fails` 但决策只使用尾部连续段（`current_consecutive_fails`），该变量为死变量。是否应改为使用最大连续段属于评价语义决策，暂未改动。
+
+### Responsiveness — `responsiveness_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | median RTT >150ms **或** bad_ratio（>150ms 占比）≥30% **或** median jitter >40ms |
+| GOOD | median RTT ≤60ms **且** bad_ratio <10% **且** median jitter ≤15ms |
+| DEGRADED | 其余 |
+| UNKNOWN | 有效 RTT 样本 <4（coverage=PARTIAL） |
+
+### Reliability — `reliability_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | Wi-Fi loss ≥3% **或** TCP loss ≥4% |
+| DEGRADED | Wi-Fi loss >0.5% **或** TCP loss >1% |
+| GOOD | Wi-Fi ≤0.5% **且** TCP ≤1% |
+| UNKNOWN | 无可用丢包指标 |
+
+### DNS Service — `dns_service_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | failure_ratio ≥20% **或** median latency ≥500ms **或** SR-9 突发 |
+| DEGRADED | failure_ratio ≥5% **或** median latency ≥200ms（W3 校准：原 150ms 偏紧，真实递归在 80~180ms 波动） |
+| GOOD | 其余（且通过全部门禁） |
+| UNKNOWN | 三态缺失 / 终态不足 / 分类覆盖不足 / **观测质量门禁** |
+
+### TCP Connect — `tcp_connect_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | 失败率 ≥20% **或** 建连中位时延 ≥1000ms |
+| DEGRADED | 失败率 ≥5% **或** 中位时延 ≥300ms |
+| GOOD | 其余（且通过门禁） |
+| UNKNOWN | 样本 <5 / 观测丢失 / 配对不完整 |
+
+> 阈值属结构先定，**待真机负载矩阵校准**。
+
+### HTTP/HTTPS Access — `http_access_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | 5xx 占比 ≥20% **或** 无响应占比 ≥30% **或** TTFB 中位 ≥5s |
+| DEGRADED | 5xx 占比 ≥5% **或** 无响应占比 ≥10% **或** TTFB 中位 ≥1.5s |
+| GOOD | 其余（且通过门禁） |
+| UNKNOWN | 样本 <5 / 观测丢失 |
+
+**语义边界（关键）**：4xx（404/403）是业务语义，服务端正常应答，链路可用 → **不判 BAD**。
+这与 DNS 的 NXDOMAIN 属事务成功是同一条原则：**传输可用性 ≠ 业务结果**。
+5xx 是服务端明确报告的故障 → 直接负面证据。
+
+### Captive Portal — `captive_portal_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| BAD | 门户特征占比 ≥60% **且** 底层链路（IP/DNS/TCP）健康 |
+| GOOD | 预期内容占比 ≥60% |
+| UNKNOWN | 样本不足 / 特征不明确 / **门户特征存在但底层不健康** / 观测丢失 |
+
+> 独立维度而非"HTTP 不成功"的模糊推测。门户特征存在但底层链路本身有问题时，
+> 必须返回 UNKNOWN 交由底层 SLE 解释，**不得把底层故障误归因门户**。
+
+### RF Health（Advisory）— `rf_health_evaluator.hpp`
+
+| 状态 | 条件 |
+|---|---|
+| NOT_APPLICABLE | 有线链路 |
+| BAD | median RSSI <-80dBm **或** 低信号样本占比 ≥40% |
+| DEGRADED | median RSSI ≤-65dBm |
+| GOOD | median RSSI >-65dBm |
+
+## 五、DNS Service 判定细节
+
+### 5.1 终态语义
+
+```text
+known_success       = NOERROR + NXDOMAIN
+known_failure       = SERVFAIL + REFUSED + TIMEOUT_EXPIRED
+evaluable_terminals = known_success + known_failure
+failure_ratio       = known_failure / evaluable_terminals
+```
+
+**NXDOMAIN 属于成功。** "域名不存在"意味着 DNS 请求与响应链路都正常工作，是**事务成功**，不是服务失败：
+
+```text
+DNS Transaction: NXDOMAIN
+DNS Service SLE: GOOD
+```
+
+至于"目标业务域名无法解析导致某应用不可用"，属于上层 Profile/业务目标问题，不在 DNS Service Evaluator 职责内。
+
+### 5.2 分类互斥（TC / RCODE）
+
+```text
+if malformed        → RESPONSE_OTHER
+else if TC == 1     → RESPONSE_TRUNCATED
+else                → 按 RCODE 分类
+```
+
+`RESPONSE_OTHER` 与 `RESPONSE_TRUNCATED` **不进入** `evaluable_terminals`，因此**不稀释** `failure_ratio`。分类覆盖率过低时（`classificationCoverage() < 0.70`）判 `UNKNOWN(insufficient_classified_outcomes)`。
+
+### 5.3 Missingness 三态
+
+```text
+queries_started == 0 && inflight == 0  → UNKNOWN(no_dns_observations, coverage=NONE)
+inflight > 0 && evaluable == 0         → UNKNOWN(awaiting_inflight, coverage=PARTIAL)
+terminals > 0 但不足门禁               → UNKNOWN(insufficient_terminal_observations)
+```
+
+**绝不因为"没数据"而输出 GOOD。**
+
+### 5.4 SR-9 突发单杀
+
+```text
+同一 binding_epoch
+AND ≥3 个独立事务 TIMEOUT_EXPIRED
+AND 全部在 critical_window(15s) 内
+AND 首尾两个 critical timeout 之间无任何 known_success
+→ BAD(critical_burst_timeouts) + critical bypass
+```
+
+`TIMEOUT, TIMEOUT, TIMEOUT` → 立即 BAD。
+`TIMEOUT, SUCCESS, TIMEOUT, SUCCESS, TIMEOUT` → 成功穿插打断，不触发。
+
+## 六、Evidence Quality（本增量核心）
+
+### 6.1 为什么需要这一层
+
+评价系统必须回答：**我现在掌握的证据，够不够让我下这个结论？**
+
+真实数据暴露的问题：
+
+```text
+capture: emitted=271047  emit_fail=2300
+drain:   sample_callbacks=271046  lost=2295
+```
+
+如果 perf buffer 丢了 response，Tracker 看不到响应，就会记成 `TIMEOUT_EXPIRED`，最终被评价体系误读为 **DNS 服务 BAD**。这是评价体系最不能有的假阳性。
+
+### 6.2 Direct vs Absence-derived Evidence
+
+```text
+Direct Evidence（即使 coverage 不完美也成立）
+  SERVFAIL / REFUSED / 明确错误 rcode / malformed response
+
+Absence-derived Evidence（会被观测丢失污染）
+  Query 发出但未看到 response → TIMEOUT_EXPIRED
+```
+
+**观测丢失真正能污染的只有第二类。**
+
+### 6.3 三分支判定
+
+| Observer | 证据构成 | 结果 |
+|---|---|---|
+| 不可靠 | 存在直接坏证据（SERVFAIL/REFUSED） | 允许 BAD/DEGRADED，`coverage=PARTIAL`，附 observer warning |
+| 不可靠 | 故障依据仅来自 TIMEOUT | `UNKNOWN` / `PARTIAL`，reason=`observer_unreliable_*` |
+| 不可靠 | 无直接坏证据 | **绝不 GOOD** |
+
+不变式：
+
+```text
+坏证据可以在不完整 Coverage 下成立；
+GOOD 必须要求证据足够。
+```
+
+### 6.4 两级传输分别计量
+
+```text
+BPF capture ──► emitted / emit_fail        → captureEmitFailureRatio()
+     │
+     ▼
+perf buffer ──► delivered / lost           → perfDeliveryLossRatio()
+```
+
+两个比率**分别进入** Evidence Quality，**不合并成单一数字**——`emit_fail` 与 `lost` 是否描述同一轮拥塞尚未验证，合并会掩盖真实边界。评价规则是：
+
+```text
+任一 transport-quality ratio 超阈值 → Observer evidence degraded
+```
+
+### 6.5 窗口增量，不是 lifetime 累计
+
+Observer 质量使用 **evaluation-window delta**（与 DNS SLE 同一 window/epoch），不用进程启动以来的累计比率：
+
+```text
+问题一：早期 10 分钟丢 2000，之后 23h 正常 → 累计比率长期污染评价
+问题二：历史 100 万正常事件 → 当前突发丢 3000 被稀释 → 当前 Observer 已坏却测不出
+```
+
+这与 RTT 使用滑动窗口是同一个道理。
+
+### 6.6 参数表
+
+| 参数 | 当前值 | 定值依据 |
+|---|---|---|
+| `observer_min_capture_attempts` | 20 | 观测量门禁，避免小样本误判 |
+| `max_capture_emit_failure_ratio` | 0.02 | **已由真机负载矩阵校准**（Radxa Cubie A7A 正常运行与高频负载下实测为 0.000000，取 0.02 留出足够安全裕量） |
+| `max_perf_delivery_loss_ratio` | 0.02 | **已由真机负载矩阵校准**（真机实测 perf 投递丢失率稳定为 0.000000，0.02 可灵敏检出内核 buffer 溢出） |
+| `max_ambiguity_ratio` | 0.10 | **已由真机负载矩阵校准**（真机单一来源重构后多网卡/多事务歧义率为 0.00%） |
+| `max_insert_failure_ratio` | 0.02 | **已由真机负载矩阵校准**（BPF Map 扩容定标后插入失败率 0.00%） |
+
+> 上述阈值已结合开发板（Radxa Cubie A7A，ARM64）真实长稳负载矩阵及 `./tools/dns-assurance-acceptance.sh`、`./tools/assurance-matrix.sh` 实测校准定稿。在真实硬件运行期间，正常流量下各项失败率稳定为 0.00%，因此保留原定阈值作为可靠性红线合理有效。
+
+### 6.7 计数器策略
+
+生产计数器**始终单调递增**，不由测试工具重置（否则会出现"脚本 reset → evaluator 恰好 evaluate → Observer 突然看起来完美"）。验收采用 **before/after snapshot 取差**。
+
+## 七、OverallPolicy(profile)
+
+决策顺序（负面证据优先）：
+
+```text
+Evaluate(profile):
+  1. Applicability        不适用的 SLE 不 vote、不罚 Coverage
+  2. Coverage Gate        核心证据不足 → UNKNOWN
+  3. Critical Negative    Reachability BAD → BAD
+  4. Profile Service      INTERNET_ACCESS 下 DNS BAD → BAD (Primary=DNS)
+  5. Reliability          Reliability BAD → BAD
+  6. Experience           Responsiveness BAD → DEGRADED
+  7. Any required DEGRADED → DEGRADED
+  8. Advisory             RF / 共存 → warning only
+  9. Otherwise            → GOOD
+```
+
+**Profile 决定哪些 SLE 属 Core**：
+
+- `NETWORK_ONLY`：核心是 Reachability / Responsiveness / Reliability，DNS 不参与 Overall（仅 advisory warning）
+- `INTERNET_ACCESS`：额外要求 DNS（未来含 TCP/HTTP）
+
+### 优先级示例
+
+| 场景 | Overall | Primary Issue |
+|---|---|---|
+| Reachability BAD + DNS BAD | BAD | IP path unreachable（DNS 视为 symptom） |
+| Reachability GOOD + DNS BAD | BAD | DNS service resolution failure |
+
+## 八、StateStabilizer
+
+原始 evaluator 给出 Raw State，发布给用户的是 Stable State：
+
+```text
+恶化确认：10s
+恢复确认：20s
+Critical failure：立即 BAD（bypass）
+```
+
+**HR-6 铁律：No Evidence No Progression** —— 没有新的 evidence（新的 sequence）到达时，不因时间流逝而推进状态。DNS 的 `TIMEOUT_EXPIRED` 之所以不违反此原则，是因为它由**一条真实存在的 query** 推导产生（Timer 只是把这条真实证据转为终态），而不是凭时钟空转宣布状态变化。
+
+## 九、分数只是投影
+
+内部真值：`BAD / DEGRADED / GOOD / UNKNOWN`。
+
+`0~100 display_score` 仅用于展示，并兼容映射到历史接口：
+
+```text
+UNKNOWN  → UNKNOWN → 0
+BAD      → POOR    → 1
+DEGRADED → FAIR    → 2
+GOOD     → GOOD    → 3
+GOOD + 高分 → EXCELLENT → 4
+```
+
+**状态决定分数区间，而不是分数决定状态。** 不要写出 `score >= 80 → GOOD` 这类逻辑。
+
+## 十、不变式清单
+
+1. **No Evidence No Progression** —— 无新证据不推进状态（HR-6）
+2. **负面证据优先** —— 且可在 PARTIAL coverage 下成立
+3. **证据不足 → UNKNOWN** —— 绝不伪造 GOOD
+4. **NXDOMAIN ≠ 服务失败** —— 域名不存在是事务成功
+5. **Direct 证据不受观测丢失影响** —— 只有 absence-derived 证据会被污染
+6. **观测器损坏不得嫁祸业务** —— 降 Coverage，不降业务状态
+7. **RF 仅 Advisory** —— 不 vote、不罚 Coverage
+8. **分数不决定状态** —— display_score 只是投影
+9. **unmatched response 绝不反向创建 transaction**
+10. **计数只增不减** —— 测试用 snapshot delta，不改生产状态
+
+## 十一、AssessmentResult 目标形态
+
+```cpp
+struct AssessmentResult {
+    AssessmentProfile profile;
+
+    HealthState state;
+    Coverage coverage;
+
+    std::string primary_issue;
+
+    std::vector<SleResult> sle_results;
+    std::vector<EvidenceItem> evidence;
+    std::vector<std::string> warnings;
+
+    // Observer / Evidence Quality
+    double capture_emit_failure_ratio;
+    double perf_delivery_loss_ratio;
+    double ambiguity_ratio;
+    double insert_failure_ratio;
+
+    int display_score;   // 仅投影
+};
+```
+
+**实现状态**：`NetworkExperience` 已承载 profile / state / coverage / 各 SLE / warnings / primary_issue / display_score；Observer 质量当前以 `EvidenceItem` 形式挂在 DNS SLE 上（`capture_emit_failure_ratio` / `perf_delivery_loss_ratio` / `ambiguity_ratio` / `insert_failure_ratio`），尚未提升为独立字段。
+
+## 十二、后续增量与当前状态 (Assurance Model v1 FROZEN)
+
+1. ~~服务层 SLE 扩展~~ **已完成**（2026-09-12）：TCP Connect → HTTP/HTTPS → Captive Portal
+   全部复用本文的 Evidence Quality / Coverage / Profile Policy，未重新发明判断逻辑。
+2. ~~主动探测能力与 TLS 依赖~~ **已完成**（2026-09-13）：
+   - OpenSSL 1.1 私有 sysroot 建立并与开发板 ABI 严格对齐；
+   - Active HTTPS / Captive Portal 探针建立，实现了非阻塞客户端、SNI 证书校验、Portal 多厂商受控 Oracle；
+   - BPF-side Port Tagging 彻底拔除未注册 helper，实现 Active/Passive 双向严格隔离（70s 增量为 0）。
+3. ~~阈值与时间动力学联合校准 (W3，见 [`W3参数校准规范.md`](W3参数校准规范.md))~~ **已完成**（2026-09-14）：
+   - 三类参数严格分类冻结（评价模型阈值、安全不变量、实现参数）；
+   - DNS 递归中位延迟阈值由 150ms 放宽校准至 200ms，真实公网环境零误报；
+   - 10s 恶化保持期、20s 恢复保持期及 Critical Bypass 零时延单杀盲测全绿。
+4. ~~完整故障矩阵与快照生命周期 (W4)~~ **已完成**（2026-09-14）：
+   - 全故障矩阵自动化测试锁定（Core 抢占、依赖截断、404/500 非坏、Portal Quorum、Passive 非阻塞）；
+   - 不可变 AssessmentSnapshot 跨消费者（HealthCheck / GetNetworkExperience / History / Web）四路同源一致性已证明；
+   - 生产级长稳资源采样守护器 `tools/soak_monitor.py` 部署开发板，证明 `dns_self_endpoints` LRU 容量稳定受控。
+
+### 当前定级说明：**FROZEN**（2026-09-15，由 Freeze Candidate 升级）
+目前代码、架构、阈值、单元测试与故障矩阵已全部就绪并锁定，生产级采样工具 `tools/soak_monitor.py` 也已部署验证。
+**长稳状态分类**：
+- 短时间与功能级真机采样：**PASSED**（RSS/FD 稳定，LRU 淘汰受控，Flapping 为 0）。
+- 6h 开发门禁：**PASSED**（soak_3h69_prepowerloss.jsonl，3.69h 段1）。
+- 24h 完整证据（分段累计口径）：**PASSED**（2026-09-15 定稿）——
+  段1 `soak_3h69_prepowerloss.jsonl`（3.69h，PID 2133，断电中断）+ 段2 `soak_24h.jsonl`
+  （20.64h，PID 511），分段累计 24.32h，`analyze_soak.py` 正式审计 **18/18 全绿**（无 FAIL/SKIP）。
+  关键指标：RSS 斜率 +0.392 MB/h、FD +0.020/h、socket/线程有界、`dns_self_endpoints`
+  峰值 255/256 有界锯齿回落、emit/perf 丢失率 0、unmatched/late/ambiguous 净增 0、
+  状态跃迁 3 次（预算 20.3）、数据库零增长、D-Bus 信号平稳。
+  审计期间修正两处判据缺陷（均为误报，非产品缺陷）：
+  1. 跨午夜回绕：journal 时间戳不含日期，23:59→00:00 的秒内换算回绕差
+     （86332s）污染轮间隔中位数；`soak_monitor.py`/`analyze_soak.py` 增加
+     回绕识别与折算。
+  2. 劣化链路轮耗时：tcp capability=BAD（链路劣化）时每目标 TCP 连接等满
+     超时（3s×N），轮耗时合法增长至 ~21s（轮间隔 49~51s）；判据按窗口自身
+     tcp capability 分档，不再把弱网上的正确调度误判为偏离。
+
+### 冻结后的变更纪律（硬约束）
+从进入 Freeze Candidate 起，必须遵守以下严格变更规则：
+1. **语义级变更（Semantic Change）**：必须升版本号（v1.x / v2）或正式 reopen freeze，严禁静默修改 v1 truth table。
+   - 以下核心契约绝对禁止“顺手改”：
+     - DNS 200ms (DEGRADED) / 500ms (BAD) 正式阈值；
+     - StateStabilizer 10s degradation hold / 20s recovery hold；
+     - Captive Portal 独立故障域 Quorum（$\ge 2$）判定规则；
+     - Active/Passive blocking 权限与依赖截断逻辑；
+     - Coverage（FULL / PARTIAL / NONE）真值规则；
+     - Primary Issue 依赖抢占优先级；
+     - Schema v2 导出字段语义。
+2. **非语义 Bug 修复（Bug Fix）**：必须经由完整故障矩阵测试（`test_w4_fault_matrix_gtest` 等 37 组测试全绿）并辅以针对性真机验证，不得引入新接口。
+3. **新增能力（New Capability）**：划入下一版本线，不得污染 v1 基线。
+
+### v1 冻结边界与明确不支持项 (Out of Scope)
+- **IPv6 DNS**：v1 仅保证 IPv4 体系下 DNS 事务单一来源捕获；IPv6 流量不计入评估。
+- **DoT / DoH**：DNS over TLS / HTTPS 为加密报文，v1 仅评估标准 UDP 53 服务保障。
+- **Web 前端重构**：v1 保持现有 Dashboard 结构，不展开样式重写。
+- **OS / Toolchain Migration**：Debian 11 Bullseye 与 OpenSSL 1.1.1 为 v1 基线，升级 Bookworm / OpenSSL 3 移出 v1 范围。
+
+### 采集成对性已闭环（2026-09-12）
+
+此前记录的"response 远多于 query（tracker_q=45 vs tracker_r=324）"已解决。
+
+**根因**：跨探针 join 不可靠——syscall tracepoint 提供 payload、kprobe 提供
+endpoint，两者触发时机不同且无稳定关联键，`pid_tgid` 在并发/交错场景下失效。
+
+**修复**：确立单一来源原则（见下 IR-DNS-5），query 与 response 各自从
+**同一个已定型报文**取 endpoint + payload：
+
+```text
+query    : kprobe/ip_finish_output2   skb → UDP/IP 头 + DNS 载荷
+response : kprobe/udp_queue_rcv_skb   skb → UDP/IP 头 + DNS 载荷
+```
+
+选点依据（逐个证伪后确定）：
+- `udp_sendmsg` 入口：未 connect 的 socket 尚未 autobind，
+  `skc_num`/`skc_rcv_saddr` 仍为 0，取不到真实 local endpoint
+- `udp_send_skb` 入口：UDP 头尚未写入（该函数自己才写）
+- `ip_finish_output2`：UDP/IP 头均已就绪、地址已定型 ✓
+
+**两处关键实现细节**（此前多轮哑火的真因）：
+1. `iovec` descriptor 在内核内存（`iovstack`/kmalloc），仅 `iov_base`
+   指向用户数据——两者必须分别用 kernel/user 读
+2. UDP 端口以大端组装得主机序数值；IP 按 4 字节原样读取，两侧同域
+
+**真机结果**：
+```text
+dir=0 cli=...:59361 rs=... txid=17699
+dir=1 cli=...:59361 rs=... txid=17699   ← canonical 键完全一致
+DNS SLE = GOOD / FULL_FOR_PROFILE
+fail=0/18  ok=18  unmatched=0  ambiguous=0  late=0
+```
+
+### 更正：此前"网关解析器故障"结论不成立（2026-09-12 复核）
+
+**此前结论**：开发板网关解析器 `192.168.137.1` 对合法 CNAME 目标返回 NXDOMAIN，
+因此 DNS 判 POOR 是"正确检出真实故障"。
+
+**复核结论：该判断错误，已撤回。**
+
+**错在哪里**：此前用 `host -W 2 <name> <resolver>` 的**进程退出码**作为
+"A 记录解析是否正常"的 ground truth。但 `host` 在不指定 `-t` 时会
+**额外**查询 AAAA/MX 等 RR 类型，这些查询返回 NXDOMAIN，导致整个进程
+exit=1 —— 于是一个 A 记录完全正常的解析器被判为"故障"。
+
+**正确测量方法**：自行构造 DNS 查询报文，显式指定 QTYPE，直接解析
+RCODE / ANCOUNT / 答案记录（见 `tools/dns_oracle.py`）。
+
+**按 RR type 重测（A / AAAA / MX / NXDOMAIN 分别测）**：
+
+```text
+192.168.137.1 :  A=NOERROR(2 answers)  AAAA=NOERROR  MX=NOERROR  NXDOMAIN=正确
+223.5.5.5     :  A=NOERROR(3 answers)  AAAA=NOERROR  MX=NOERROR  NXDOMAIN=正确
+```
+
+网关解析器**完全健康**，与公共解析器行为一致。
+
+**连带更正**：此前基于该错误 oracle 修改了验收脚本的判定门禁
+（`GT_OK1` 条件），在健康网络上跳过了阶段 1/3/4 的真实断言。
+该门禁的触发前提不成立，已随本次修正一并调整。
+
+**教训**（与整个评价体系同一条原则）：**oracle 本身必须先被独立验证**。
+用一个未经证实的测量方法去判定评价体系的对错，会把测量缺陷
+错记成被测量对象的问题 —— 这与我们禁止"把观测器故障嫁祸业务"
+是同一个道理，只不过发生在测量链的更上游。
+
+### P0 重新验收：DNS SLE accuracy（2026-09-12）
+
+capture/pairing 收敛之后，还需独立证明 evaluator 在真实场景中的准确度。
+使用 `tools/dns_oracle.py` 作为独立 ground truth 重测：
+
+| 场景 | 期望 | 实测结果 |
+|---|---|---|
+| 健康解析器（10 次 A 查询） | GOOD / FULL | ✅ GOOD，fail=0/10 ok=10 unmatched=0 |
+| NXDOMAIN（6 次，唯一域名） | 不判 BAD | ✅ fail=0（NXDOMAIN 计入成功） |
+| 快速 A 查询（20 次） | GOOD | ✅ GOOD，fail=0/26 |
+| NXDOMAIN（20 次） | 不判 BAD | ⚠️ **初测 BAD** → 见下方缺陷修正（修正后复核 GOOD） |
+| UDP/53 注入丢包 | BAD + Primary=DNS | ✅ **复测通过**（fail=16/16，Primary 精确指向 DNS，Observer 保持 HEALTHY） |
+
+**发现并修复的真实缺陷（P0 核心产出）**
+
+初测表现：只发 NXDOMAIN 时，`failure_ratio=0`（**零失败**），
+DNS SLE 却判 **BAD / excessive_dns_latency**。
+
+机制（已精确测量）：
+
+```text
+A 查询时延:      2.5 ~ 192 ms    (中位 ≈ 45ms)
+NXDOMAIN 时延:   92 ~ 754 ms     (中位 ≈ 545ms)
+```
+
+NXDOMAIN 需要递归到权威服务器逐层否定，**结构性**就比肯定应答慢，
+中位数超过 500ms 的 BAD 阈值。
+
+**根因是评价语义错误**：NXDOMAIN 既然属"事务成功"，它的固有慢
+就不该被用来判定"解析器服务劣化"。`latencies_ms` 此前把 NXDOMAIN
+也计入时延样本，导致"解析器全部正确应答"被误判为服务故障。
+
+**修正**：时延判定只基于需要解析器正常解析的请求（NOERROR），
+NXDOMAIN 仍计入 `knownSuccess` 参与失败率，但不计入时延样本。
+
+**修正后复核**：20 次 NXDOMAIN → **GOOD / dns_service_healthy**（fail=0/20）。
+
+> 状态更新（2026-09-13）：**capture/pairing 已收敛；DNS SLE accuracy 经 P0 复核
+> 全部五场景通过**（健康 10/10、NXDOMAIN 20 次不误判、UDP/53 注入 BAD fail=16/16、
+> 观测器故障不嫁祸、恢复 GOOD —— 见 tools/dns-assurance-acceptance.sh PASS=11 FAIL=0）。
+> 2026-09-12 环境更正：此前"网关解析器故障"结论系测试方法错误，已撤回（见上节）。
+=============== docs/weaknet_cli_usage.md ===============
+# WeakNet CLI (weaknet-cli) 使用手册
+
+> **版本**：v1.0  
+> **适用平台**：Radxa Cubie A7A (ARM64) / x86_64 开发机  
+> **依赖**：systemd、D-Bus 系统总线、libweaknet.so
+
+---
+
+## 1. 概述
+
+`weaknet-cli` 是 WeakNet 网络诊断平台的**命令行配置管理工具**，用于在开发板上**实时查询、修改监控器参数**，无需重启服务。它是 `libweaknet.so` C API 的薄封装，通过 D-Bus 系统总线与 `weaknet-dbus-server` 通信。
+
+**核心能力**：
+- 🔍 **查询**：实时获取任意监控器的完整参数（JSON 格式）
+- ⚙️ **设置**：实时修改监控器参数（白名单校验、区间校验、原子提交）
+- 📋 **列举**：列出所有可配置的监控器名称
+- 📡 **事件查询**：查询已持久化的无线设备事件（断连等，只读）
+
+> **关键特性**：运行时修改**仅影响内存态**，重启服务后自动回落到 `/etc/weaknet/config.yaml` 的启动配置。这是设计使然——配置文件是“启动快照”，CLI 是“运行时覆盖”。
+
+---
+
+## 2. 安装与前置条件
+
+### 2.1 开发板部署（ARM64）
+
+`weaknet-cli` 随 `tools/ci.sh` 自动打包进 `dist-arm64/client/bin/weaknet-cli`，并由 `tools/ci.sh` 部署到开发板：
+
+```bash
+# 开发板上的路径
+/home/radxa/weaknet/client/bin/weaknet-cli
+```
+
+**依赖**：
+- `libweaknet.so` 必须在系统库路径（`/usr/local/lib/`），由 `tools/ci.sh` 自动部署并 `ldconfig`
+- D-Bus 系统总线（服务端运行在系统总线 `com.example.WeakNet`）
+
+### 2.2 开发机验证（x86_64）
+
+```bash
+# 本地编译（不含 eBPF）
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build-x86 -j$(nproc)
+
+# 二进制位置
+./build-x86/client/bin/weaknet_cli
+```
+
+> 注意：x86 版本需连接开发板的 D-Bus（或本地运行服务端）才能工作。
+
+---
+
+## 3. 命令参考
+
+### 3.1 语法概览
+
+```bash
+weaknet-cli <command> [arguments...]
+
+命令：
+  get <monitor>          查询监控器当前参数（JSON）
+  set <key> <value>      设置参数（白名单校验）
+  list                   列出所有可用监控器名
+  monitor list           列出所有监控器运行状态（JSON）
+  monitor status [name]  查询监控器运行状态
+  monitor enable <name>  启用并启动监控器
+  monitor disable <name> 停止监控器
+  monitor restart <name> 重启监控器
+  monitor save           保存运行时启停状态到 override 文件
+  events [过滤条件]       查询无线设备事件（Canonical Device Event，JSON）
+  incidents [过滤条件]    查询区域级异常事件（SiteIncident，JSON）
+  diagnosis              查询当前网络确定性诊断事实（DiagnosisFacts，JSON）
+  experience             查询当前网络体验权威快照（NetworkExperience Schema v2，JSON）
+  action <action_id> [<key> <val>] 执行白名单安全排查动作（仅限 root）
+  update status          查询 OTA 本地升级状态（只读，走 D-Bus）
+  update verify <pkg|dir|URL>    校验升级包/release 目录完整性（root）
+  update apply <pkg>     应用升级包（root；原子切换+健康窗口+自动回滚）
+  update rollback        回滚到上一版本（root）
+```
+
+`events` 的过滤条件全部可选，省略即不限制：
+
+```
+  --device <addr>       设备地址过滤（XX:XX:XX:XX:XX:XX）
+  --type <EVENT_TYPE>   事件类型过滤（如 LINK_DISCONNECTED）
+  --start <ms>          起始时间（Unix 毫秒，0 表示不限）
+  --end <ms>            结束时间（Unix 毫秒，0 表示不限）
+  --limit <N>           最大条数（默认 100，服务端上限 10000）
+
+### 3.2 `weaknet-cli monitor <command>`
+
+运行时监控器生命周期控制，与服务端 `MonitorManager` 直接关联：
+
+```bash
+# 查看全部监控器状态
+$ weaknet-cli monitor list
+[{"name":"rtt","state":"running","desired_enabled":true,"generation":3,"changed_at":"...","error":""},...]
+
+# 查询单个监控器
+$ weaknet-cli monitor status rtt
+{"name":"rtt","state":"running","desired_enabled":true,"generation":3,"changed_at":"...","error":""}
+
+# 停止 RTT（其他监控器不受影响）
+$ weaknet-cli monitor disable rtt
+{"name":"rtt","state":"stopped","desired_enabled":false,"generation":3,"error":""}
+
+# 重新启用
+$ weaknet-cli monitor enable rtt
+
+# 重启（generation 递增）
+$ weaknet-cli monitor restart rtt
+
+# 保存当前启停状态（服务重启后生效）
+$ weaknet-cli monitor save
+```
+
+依赖约束：`jitter` 已合并进 `rtt`（作为 RTT 采样的衍生指标在同一线程内计算）；
+`quality` 依赖 `rtt/rssi/tcp_loss/traffic` 等上游指标。停止仍被依赖的上游监控器会被拒绝，
+避免依赖方读取过期数据。
+
+
+### 3.3 `weaknet-cli list`
+
+列出所有可配置的监控器名称。
+
+```bash
+$ weaknet-cli list
+rtt
+rssi
+tcp_loss
+traffic
+quality
+bluetooth
+dns
+wifi_loss
+http_latency
+process_profiler
+tcp_retrans
+tcp_conn
+skb_drop
+tcp_connect
+active_probe
+edge
+server
+all
+```
+
+**输出**：每行一个监控器名，最后一行 `all` 表示查询全部。
+
+---
+
+### 3.4 `weaknet-cli events`
+
+查询规范化无线设备事件（Canonical Device Event），只读。这是一次真实断连
+在"设备事件 → 持久化"之后的**系统查询出口**——在此之前只能直连 SQLite。
+
+```bash
+# 最近 20 条断连事件
+$ weaknet-cli events --type LINK_DISCONNECTED --limit 20
+
+# 指定设备的全部事件
+$ weaknet-cli events --device AA:BB:CC:DD:EE:FF
+
+# 时间窗（Unix 毫秒）
+$ weaknet-cli events --start 1790700000000 --end 1790703600000
+```
+
+返回 JSON 数组，每条事件含：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `event_id` | 全局唯一事件 ID（`btev_<实例码>_<序号>`，跨服务重启不碰撞） |
+| `ts` | 事件时刻（Unix 毫秒） |
+| `site_id` / `gateway_id` | 事件来源身份（哪台探针看到的） |
+| `device_address` / `address_type` | 设备地址与地址类型（`BREDR`/`LE_PUBLIC`/`LE_RANDOM`） |
+| `event_type` | `LINK_DISCONNECTED` / `LINK_DEGRADED` / `DEVICE_APPEARED` … |
+| `reason` / `raw_reason_code` | 归一化原因 与 内核原始码（后者无损保留） |
+| `source` / `source_detail` | 证据来源类别与精确 hook 名 |
+| `suspected_cause` | **恒为 null**（采集层不做诊断，留给后续阶段） |
+| `rssi_at_event_dbm` | 可为 `null`（未采集；**不是 0**） |
+| `details.raw_evidence` | 支撑该事件的全部原始观测（可追溯性） |
+
+### 3.5 `weaknet-cli incidents`
+
+查询**区域级异常事件**（SiteIncident），只读。与 `events` 的区别是抽象层次：
+`events` 回答"哪台设备发生了什么"（设备层事实），`incidents` 回答"这一片区域
+是否同时出了问题、影响了哪些设备"（区域层解释）。
+
+当现场多台设备在 60 秒关联窗口内同时出现非计划断连或链路劣化时，
+服务端自动产出一条 SiteIncident（`OPEN → ONGOING → RESOLVED`），
+并保留构成它的每一条 `device_events.event_id` 回链。
+
+```bash
+# 最近 24 小时的全部区域事件
+$ weaknet-cli incidents --start 1790700000000
+
+# 只看仍在活跃的事故
+$ weaknet-cli incidents --state OPEN
+```
+
+过滤条件全部可选：
+
+```
+  --state <STATE>       状态过滤（OPEN / ONGOING / RESOLVED）
+  --start <ms>          起始时间（Unix 毫秒，按 last_event_ms 过滤）
+  --end <ms>            结束时间（Unix 毫秒，0 表示不限）
+  --limit <N>           最大条数（默认 100，服务端上限 10000）
+```
+
+返回 JSON 数组，每条 incident 含：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `incident_id` | 区域事件 ID（`sitinc_<现场>_<started_at_ms>`；确定性 ID，重启回放写回同一行） |
+| `site_id` / `gateway_id` | 事件来源身份 |
+| `started_at_ms` | 覆盖的最早异常时刻（**不是**"发现时刻"） |
+| `last_event_ms` | 最近吸收异常的时刻；时间过滤以此为准 |
+| `resolved_at_ms` | 结案时刻；仍在活跃时为 `null`（**不是 0**） |
+| `affected_devices` | 受影响设备数量 |
+| `affected_device_ids` | 受影响设备地址清单（由证据回链派生） |
+| `suspected_cause` | **恒为 null**——关联层只做时空聚合，不做根因推断 |
+
+**阈值可调**（见 §4 `set` 章节）：`bluetooth.incident_min_devices` /
+`incident_min_ratio_bp` / `incident_window` / `incident_quiet_window` /
+`incident_active_window`。这些键决定关联器的构造期配置，改完需
+`weaknet-cli monitor restart bt_events` 生效——重启回放会恢复既有事故，
+不丢状态。
+
+**不会成为事故证据的事件**：用户主动断开 / 对端设备断开（计划内行为，
+`REMOTE_USER_TERMINATED` / `LOCAL_HOST_TERMINATED`）。若计入，
+每天下班集体关机都会误报一起"区域无线故障"。
+
+### 3.6 `weaknet-cli diagnosis` / `weaknet-cli experience` / `weaknet-cli action`
+
+端侧诊断、权威网络体验评估快照与安全排查动作（Phase 4a+ / 消解孤儿接口）：
+
+```bash
+# 查询端侧确定性机器诊断事实（DiagnosisFacts）
+$ weaknet-cli diagnosis
+
+# 携带端侧大模型智能初筛（Edge AI RAG 假设生成）
+$ weaknet-cli diagnosis --ai
+
+# 查询权威网络体验快照（Schema v2）
+$ weaknet-cli experience
+
+# 执行安全白名单排查动作（仅限 root / sudo）
+$ sudo weaknet-cli action CHECK_RESOLVER_CONFIG
+$ sudo weaknet-cli action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5
+$ sudo weaknet-cli action INSPECT_DEFAULT_GATEWAY
+```
+
+### 3.7 `weaknet-cli bt-traffic`
+
+查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）：
+
+```bash
+# 查询全部活跃连接的 ACL 数据通道指标
+$ weaknet-cli bt-traffic
+
+# 按对端 MAC 过滤
+$ weaknet-cli bt-traffic --device 20:23:00:00:00:01
+```
+
+### 3.8 `weaknet-cli get <monitor>`
+
+查询指定监控器的完整当前参数（JSON 格式）。
+
+```bash
+# 查询单个监控器
+$ weaknet-cli get rtt
+{"rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800,"window_size":30}}
+
+# 查询全部监控器
+$ weaknet-cli get all
+{
+  "server":{"data_dir":"/home/radxa/weaknet/data","log_level":"info"},
+  "rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800,"window_size":30},
+  ...
+}
+```
+
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `edge` `server` `all`
+
+**输出字段说明**（以 `rtt` 为例）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `enabled` | bool | 是否启用该监控器 |
+| `target` | string | 探测目标 IP/域名 |
+| `interval_ms` | uint32 | 采样周期（毫秒） |
+| `timeout_ms` | uint32 | 单次超时（毫秒） |
+| `window_size` | uint32 | RTT 样本滑动窗口大小，用于在 rtt 线程内计算 Jitter |
+| `bpf_obj` | string | eBPF 对象路径（仅 eBPF 监控器） |
+
+---
+
+### 3.9 `weaknet-cli set <key> <value>`
+
+实时修改监控器参数。**立即生效**，无需重启服务。
+
+```bash
+# 修改 RTT 采样周期为 5 秒
+$ weaknet-cli set rtt.interval_ms 5s
+ok
+
+# 修改 RTT 探测目标
+$ weaknet-cli set rtt.target 8.8.8.8
+ok
+
+# 启用/禁用监控器
+$ weaknet-cli set rtt.enabled false
+ok
+
+# 修改 eBPF 对象路径
+$ weaknet-cli set dns.bpf_obj /usr/lib/weaknet/dns_monitor.bpf.o
+ok
+```
+
+**键格式**：`<monitor>.<field>`，例如 `rtt.interval_ms`、`dns.bpf_obj`、`bluetooth.enabled`
+
+**支持的字段与取值范围**：
+
+| 监控器 | 字段 | 类型 | 取值范围/格式 | 说明 |
+|---|---|---|---|---|
+| `rtt` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `rtt` | `target` | string | IPv4 / 域名 | 探测目标 |
+| `rtt` | `interval_ms` | duration | `100ms` ~ `600000ms` | 采样周期，支持 `ms`/`s`/`m` 后缀 |
+| `rtt` | `timeout_ms` | duration | `100ms` ~ `60000ms` | 单次超时 |
+| `rtt` | `window_size` | uint | `2` ~ `1000` | RTT 滑动窗口大小（jitter 计算窗口） |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `bluetooth` | `enabled` | bool | `true` / `false` | 启用开关（同时控制 `bt_events`） |
+| `bluetooth` | `interval_ms` | duration | `1000ms` ~ `60000ms` | 采样周期 |
+| `bluetooth` | `bpf_obj` | string | 路径 | Phase2 eBPF 对象路径 |
+| `bluetooth` | `events_bpf_obj` | string | 路径 | bt_events eBPF 对象路径 |
+| `bluetooth` | `incident_min_devices` | uint | `2` ~ `1000` | 区域事故绝对门槛（受影响设备最少台数） |
+| `bluetooth` | `incident_min_ratio_bp` | uint | `1` ~ `10000` | 区域事故比例门槛，万分比（`3000` = 30%） |
+| `bluetooth` | `incident_window` | duration | `1s` ~ `10m` | 关联窗口（读回键为 `incident_window_ms`） |
+| `bluetooth` | `incident_quiet_window` | duration | `1s` ~ `24h` | 静默窗口：安静这么久 → `RESOLVED` |
+| `bluetooth` | `incident_active_window` | duration | `1s` ~ `10m` | 活跃设备记忆（动态分母的记忆时长） |
+| `dns` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `dns` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `dns` | `bpf_obj` | string | 路径 | eBPF 对象路径 |
+| `dns` | `capture_pages` | uint | `1` ~ `256` | perf buffer 页数 |
+| `dns` | `assessment_profile` | string | `NETWORK_ONLY` / `INTERNET_ACCESS` | DNS 评估模式 |
+| `tcp_connect` | `capture_pages` | uint | `1` ~ `256` | perf buffer 页数 |
+| `active_probe` | `enabled` | bool | `true` / `false` | 启用开关（默认关闭） |
+| `active_probe` | `interval`/`interval_ms` | duration | `1000ms` ~ `600000ms` | 探测周期 |
+| `active_probe` | `timeout`/`timeout_ms` | duration | `100ms` ~ `120000ms` | 单次探测超时 |
+| `active_probe` | `targets` | string | URL 列表 | TCP/HTTP 探测目标 |
+| `active_probe` | `https_enabled` | bool | `true` / `false` | 是否启用 HTTPS 探测 |
+| `active_probe` | `portal_check_enabled` | bool | `true` / `false` | 是否检测 captive portal |
+| `active_probe` | `portal_targets` | string | URL 列表 | portal 探测目标 |
+| `active_probe` | `portal_path` | string | 路径 | portal 探测路径 |
+| `active_probe` | `portal_expect_body` | string | 字符串 | portal 期望响应体 |
+| `edge` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `edge` | `url` | string | URL | 上行端点（如 `http://<cloud>:8000/api/v1/network/edge/telemetry`） |
+| `edge` | `tenant` | string | 租户 ID | 租户标识 |
+| `edge` | `device_id` | string | 设备 ID | 设备标识 |
+| `edge` | `site_id` | string | 站点 ID | 站点标识 |
+| `edge` | `token` | string | 密钥 | 认证 token |
+| `edge` | `private_key_path` | string | 路径 | Ed25519 私钥路径 |
+| `edge` | `key_id` | string | 密钥 ID | 签名密钥标识 |
+| `edge` | `interval`/`interval_ms` | duration | `1000ms` ~ `3600000ms` | 上行周期 |
+| `edge` | `timeout`/`timeout_ms` | duration | `100ms` ~ `120000ms` | 上行超时 |
+| `server` | `data_dir` | string | 路径 | 数据目录 |
+| `server` | `log_level` | string | `debug`/`info`/`warning`/`error`/`fatal` | 日志级别（`debug` 额外打开 `LOG_DEBUG` 调试行与 libbpf 校验器原文） |
+
+**时长格式**：
+- 裸数字 = 毫秒（如 `5000` = 5000ms）
+- `500ms`、`5s`、`2m`（毫秒/秒/分钟）
+
+**校验规则**：
+- 白名单键：仅接受上表定义的键
+- 类型校验：bool/int/string/duration
+- 区间校验：超出范围拒绝
+- 原子提交：校验全通过后一次性写入，失败保持旧值
+
+**返回**：
+- 成功：`ok`
+- 失败：错误描述（含原因）
+
+---
+
+### 3.10 `weaknet-cli update <sub>`
+
+OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`releases/<version>/` + `current` 软链接原子翻转；`data/` 与 `/etc/weaknet/config.yaml` 升级全程只读。
+
+| 子命令 | 权限 | 通道 | 说明 |
+|---|---|---|---|
+| `update status` | 普通用户 | D-Bus `GetUpdateStatus`（只读） | 当前版本、布局、pending/committed 状态 |
+| `update verify <dir-or-pkg|URL>` | **root**（sudo） | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径）。需在 `releases/` 下解包暂存，故要 root。选项：`--insecure`（跳过验签）、`--allow-downgrade`（放行降级，与 apply 语义一致） |
+| `update apply <pkg>` | **root**（sudo） | fork+exec 升级脚本 | 解包→版本单调检查→原子翻转→重启→健康窗口→转正，失败自动回滚 |
+| `update rollback` | **root**（sudo） | fork+exec 升级脚本 | 回滚到 `.previous` 记录的上一版（`--to <version>` 可指定） |
+
+```bash
+# 查询升级状态（只读，服务在线即可）
+weaknet-cli update status
+
+# 校验升级包 / 已解包 release 目录（需 root：解包暂存到 releases/ 下）
+sudo weaknet-cli update verify /path/to/weaknet-1.1.0.tar.zst
+
+# 也可直接校验远程 URL（与 apply 同一拉包路径，先下载再校验）
+sudo weaknet-cli update verify http://127.0.0.1:8090/weaknet-1.1.0-arm64.tar.zst
+
+# 校验降级包（与 apply 同一策略开关：不给 --allow-downgrade 会被版本策略拒绝）
+sudo weaknet-cli update verify ./old-1.0.0.tar.zst --allow-downgrade
+
+# 应用升级（需 sudo；健康窗口默认 120s、连续 3 次全绿才转正）
+sudo weaknet-cli update apply /path/to/weaknet-1.1.0.tar.zst
+
+# 跳过健康窗口直接转正（不推荐，仅应急）
+sudo weaknet-cli update apply pkg.tar.zst --commit
+
+# 显式允许降级（版本单调检查默认拒绝降级）
+sudo weaknet-cli update apply pkg.tar.zst --allow-downgrade
+
+# 回滚到上一版本
+sudo weaknet-cli update rollback
+```
+
+**执行体**：`tools/weaknet-local-update.sh`（板端安装于 `/home/radxa/weaknet/weaknet-local-update.sh`，随包下发并自更新；开发机可用 `WEAKNET_UPDATE_SCRIPT` 覆盖路径）。apply/rollback 不经 D-Bus——服务端不能在调用中途重启自己，故 CLI 直接 fork+exec 脚本。
+
+> **云端下发 OTA 升级**：平台侧经 `pending_actions` 通道下发 `system.ota_upgrade_url` 动作（value=固件 URL），板端异步拉包升级并回传 `APPLIED`/`REJECTED` 终态。回执两段式（调度时 `IN_PROGRESS` → 脚本终态 `SUCCEEDED`/`FAILED`），升级诊断留痕于板端 `data/ota_upgrade.log`。详见《OTA 固件更新与安全发布指南》3.5 节。
+
+**版本策略**：仓库根 `VERSION` 为单一来源；`dpkg --compare-versions` 数字比较，`target >= current` 放行，降级需 `--allow-downgrade`（防回滚攻击的本地版）。
+
+**健康窗口**：服务 `active` + `HealthCheck` + `GetEbpfMonitorHealth` + `GetUpdateStatus.installed_version == 目标版本`（防"健康但跑旧版"假绿灯），连续 3 次通过才写 `.committed` 转正；失败自动回滚上一版。
+
+**签名（Phase 2 起强制）**：`<pkg>.sig` 为 ECDSA (NIST P-256) + SHA256 分离式签名（`openssl dgst -sha256 -sign/verify`）。板端配置发布公钥（`config/release_pub.pem`，由 `tools/ci.sh` 自动部署）后**强制验签**：缺签名或验签失败直接拒绝（fail-closed）；仅显式 `--insecure` 标志可跳过（仅限无公钥的调试环境）。发布密钥对由 `tools/gen-release-keys.sh` 生成，正式包由 `tools/release.sh` 构建并签名。
+
+> **选型说明**：Phase 1 曾设计为 Ed25519，实测发现板端 Debian Bullseye 自带 OpenSSL 1.1.1 CLI 不支持 Ed25519 的命令行签名/验签（OpenSSL 3.0 起才支持），而 C API 路径成本高；ECDSA P-256 在两代 OpenSSL CLI 上原生可用且安全强度等同，故统一采用 ECDSA P-256（板端上行遥测的 Ed25519 验签走 C API `EVP_DigestVerify`，不受此限制）。
+
+**注意**：
+- 修改过 `ActionRegistry`/白名单的版本，发布前必须同步云端目录评审（`docs/网关动作目录版本契约.md`，fail-closed 防线）
+- 升级永不触碰：`data/` 下 5 个状态文件、`/etc/weaknet/config.yaml`、`config/` 密钥
+
+---
+
+## 4. 典型使用场景
+
+### 4.1 调整采样频率（不重启）
+
+```bash
+# RTT 默认 10s，改为 3 秒高频采样（同一次采样同步刷新 Jitter）
+weaknet-cli set rtt.interval 3s
+
+# 恢复默认
+weaknet-cli set rtt.interval 10s
+```
+
+### 4.2 切换探测目标
+
+```bash
+# 从阿里云 DNS 切到 Google DNS
+weaknet-cli set rtt.target 8.8.8.8
+
+# 切回阿里云
+weaknet-cli set rtt.target 223.5.5.5
+```
+
+### 4.3 临时禁用某监控器
+
+```bash
+# 不需要 DNS 监控，禁用省资源
+weaknet-cli set dns.enabled false
+
+# 之后恢复
+weaknet-cli set dns.enabled true
+```
+
+### 4.4 批量查看当前配置
+
+```bash
+# 查看全部
+weaknet-cli get all | jq .
+
+# 只看 eBPF 监控器
+weaknet-cli get all | jq '.dns, .wifi_loss, .http_latency'
+```
+
+### 4.5 脚本化集成示例
+
+```bash
+#!/bin/bash
+# monitor_tune.sh - 根据时间段动态调整采样频率
+
+HOUR=$(date +%H)
+if (( HOUR >= 9 && HOUR <= 18 )); then
+    # 工作时间：高频采样（jitter 由 rtt 同一次采样同步计算）
+    weaknet-cli set rtt.interval 2s
+else
+    # 非工作时间：低频省电
+    weaknet-cli set rtt.interval 30s
+fi
+```
+
+---
+
+## 5. 配置文件 vs 实时调参
+
+| 维度 | `/etc/weaknet/config.yaml` | `weaknet-cli set` |
+|---|---|---|
+| **生效时机** | 服务启动时读取 | 运行时立即生效 |
+| **持久性** | 永久（重启保留） | 临时（重启丢失，回落配置文件） |
+| **用途** | 基线配置、版本管理、部署标准化 | 临时调优、故障排查、临时实验 |
+| **优先级** | 低（启动基线） | 高（运行时覆盖） |
+
+**最佳实践**：
+1. 在 `/etc/weaknet/config.yaml` 定义标准基线
+2. 运维时用 `weaknet-cli set` 临时调整
+3. 验证无误后，同步更新配置文件
+4. 下次重启自动生效新基线
+
+---
+
+## 6. 错误处理与常见问题
+
+### 6.1 常见错误
+
+| 错误现象 | 原因 | 解决 |
+|---|---|---|
+| `客户端未连接` | 服务未运行或 D-Bus 不通 | `systemctl status weaknet-server` 确认服务运行 |
+| `空的 key 或 value` | 参数为空 | 检查参数拼写 |
+| `unknown monitor: xxx` | 监控器名拼写错误 | `weaknet-cli list` 确认可用名 |
+| `rtt.target: invalid IPv4` | IP 格式错误 | 使用合法 IPv4 或域名 |
+| `rtt.interval: must be 100ms~600000ms` | 超出范围 | 设置 100ms~600000ms 之间的值 |
+
+### 6.2 开发机调试（连开发板 D-Bus）
+
+```bash
+# 开发机通过 SSH 隧道连接开发板 D-Bus（用 mDNS 主机名，勿硬编码 DHCP 地址）
+ssh -L 9999:localhost:9999 radxa@radxa-cubie-a7a.local \
+  'sudo dbus-daemon --system --address=unix:path=/run/dbus/system_bus_socket --nofork --print-address' &
+
+# 本地 weaknet_cli 指向隧道
+DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/dbus-tunnel weaknet-cli get rtt
+```
+
+---
+
+## 7. API 参考（C/C++ 集成）
+
+若需在自有程序中集成，使用 `libweaknet.so` 提供的 C API：
+
+```c
+#include "weaknet_client.h"
+
+// 初始化
+if (!weaknet_init()) { /* 失败处理 */ }
+
+// 设置参数
+char err[256];
+weaknet_set_monitor_param("rtt.interval", "5s", err, sizeof(err));
+
+// 查询参数
+char buf[8192];
+weaknet_get_monitor_param("rtt", buf, sizeof(buf), err, sizeof(err));
+printf("%s\n", buf);  // JSON 字符串
+
+// 清理
+weaknet_cleanup();
+```
+
+**编译链接**：
+```bash
+gcc -o myapp myapp.c -L/path/to/dist-arm64/client/lib -lweaknet -ldbus-1
+```
+
+---
+
+## 8. 版本历史
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| v1.2 | 2026-10-21 | 3.10 补云端下发 OTA 说明（`system.ota_upgrade_url` 动作通道与回执终态） |
+| v1.1 | 2026-10-19 | 新增 3.10 `update` 子命令（OTA Phase 1 本地升级：status/verify/apply/rollback） |
+| v1.0 | 2026-09-01 | 首个版本：get/set/list、白名单校验、D-Bus 通信 |
+
+---
+
+## 9. 相关文档
+
+- [CLAUDE.md](../CLAUDE.md) - 项目完整操作指南
+- [OTA固件更新与安全发布指南.md](../docs/OTA固件更新与安全发布指南.md) - OTA 固件更新、签名与发布完整指南
+- [交叉编译与开发板部署.md](../docs/交叉编译与开发板部署.md) - ARM64 编译部署全流程
+- [架构设计-模块与代码结构.md](../docs/架构设计-模块与代码结构.md) - 系统架构与监控器设计
+- [学习路线图.md](../docs/学习路线图.md) - 6.2.1 配置化驱动章节
+
+---
+
+> **提示**：本文档随代码同步更新。如发现命令行为与文档不符，请以 `weaknet-cli --help`（如实现）或源码 `client/weaknet_cli.cpp` 为准。

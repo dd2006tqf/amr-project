@@ -1,0 +1,450 @@
+-- Configuring done (0.1s)
+-- Generating done (0.5s)
+-- Build files have been written to: /home/ubuntu/个人学习/amr_dispatcher/build/core
+[  0%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/planning/topology_graph_builder.cpp.o
+[  0%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/mission_queue.cpp.o
+[  1%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/planning/skeleton_planner.cpp.o
+[  2%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/mission_state.cpp.o
+[  2%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/dispatch_state_snapshot.cpp.o
+[  2%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/audit_log.cpp.o
+[  3%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/deadlock_snapshot_assembly.cpp.o
+[  3%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/mission_comparator.cpp.o
+[  3%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/traffic_reservation.cpp.o
+[  3%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/deadlock_detector.cpp.o
+[  4%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/dispatcher/recovery_policy.cpp.o
+[  4%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/catalog/station_catalog.cpp.o
+[  5%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/fleet_catalog.cpp.o
+[  5%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/fleet_runtime_state.cpp.o
+[  6%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vda5050_link_state.cpp.o
+[  6%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vehicle_adapter_interface.cpp.o
+[  6%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vda5050_serializer.cpp.o
+[  7%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vda5050_order_builder.cpp.o
+[  7%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/force_clear_link.cpp.o
+[  7%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vehicle_assignment.cpp.o
+[  8%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vehicle_assignment_request_builder.cpp.o
+[  8%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/fleet/vehicle_selection_strategy.cpp.o
+[  9%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/facility_catalog.cpp.o
+[  9%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/facility_reservation.cpp.o
+[  9%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/facility_workflow.cpp.o
+[ 10%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/facility_adapter_interface.cpp.o
+[ 10%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/modbus_tcp_client.cpp.o
+[ 10%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/facility/modbus_facility_adapter.cpp.o
+[ 11%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/payload_schema.cpp.o
+[ 11%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/traffic_planning.cpp.o
+[ 12%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/dynamic_unlocking.cpp.o
+[ 12%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/fleet_link_guard.cpp.o
+[ 13%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/time_space_planning.cpp.o
+[ 13%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/auto_charging_planning.cpp.o
+[ 13%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/workflow_control.cpp.o
+[ 13%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/mission_preflight.cpp.o
+[ 13%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/station_transport_workflow.cpp.o
+[ 14%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/station_sequence_workflow.cpp.o
+[ 14%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/order_batch_bundling.cpp.o
+[ 15%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/traffic_coordination_model.cpp.o
+[ 15%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/in_flight_reroute_planning.cpp.o
+[ 15%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/traffic_recovery_coordinator.cpp.o
+[ 16%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/docking_workflow.cpp.o
+[ 16%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/mission_charging_workflow.cpp.o
+[ 16%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/mission_resource_cleanup.cpp.o
+[ 17%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/queued_mission.cpp.o
+[ 17%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/mission_profile_builders.cpp.o
+[ 18%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/operator_snapshot.cpp.o
+[ 18%] Building CXX object CMakeFiles/amr_dispatcher_core.dir/src/workflow/dock_catalog.cpp.o
+[ 19%] Linking CXX static library libamr_dispatcher_core.a
+[ 33%] Built target amr_dispatcher_core
+[ 34%] Linking CXX executable test_chassis_packet_stream
+[ 34%] Linking CXX executable test_chassis_packet
+[ 34%] Linking CXX executable test_pure_pursuit
+[ 34%] Linking CXX executable test_chassis_kinematics
+[ 34%] Built target test_chassis_kinematics
+[ 34%] Built target test_chassis_packet_stream
+[ 34%] Built target test_pure_pursuit
+[ 35%] Built target test_chassis_packet
+[ 35%] Linking CXX executable test_stanley
+[ 35%] Building CXX object CMakeFiles/test_mission_state.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_state.cpp.o
+[ 36%] Building CXX object CMakeFiles/test_mission_queue.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp.o
+[ 37%] Building CXX object CMakeFiles/test_dispatch_state_snapshot.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dispatch_state_snapshot.cpp.o
+[ 38%] Built target test_stanley
+[ 38%] Building CXX object CMakeFiles/test_audit_log.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_audit_log.cpp.o
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_RejectsDuplicateAndFull_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp:42:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   42 |   MissionQueue q{{.max_size = 2, .comparator = "priority_fifo"}};
+      |                   ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp:42:34: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   42 |   MissionQueue q{{.max_size = 2, .comparator = "priority_fifo"}};
+      |                                  ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_DeadlineComparator_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp:55:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   55 |   MissionQueue q{{.max_size = 16, .comparator = "earliest_deadline"}};
+      |                   ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp:55:35: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   55 |   MissionQueue q{{.max_size = 16, .comparator = "earliest_deadline"}};
+      |                                   ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp: In member function ‘virtual void MissionQueueTest_RejectUnknownComparatorFallsBack_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_queue.cpp:102:19: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  102 |   MissionQueue q{{.comparator = "nonsense"}};
+      |                   ^
+[ 39%] Linking CXX executable test_mission_state
+[ 39%] Linking CXX executable test_audit_log
+[ 39%] Built target test_mission_state
+[ 39%] Building CXX object CMakeFiles/test_deadlock_snapshot_assembly.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_snapshot_assembly.cpp.o
+[ 39%] Built target test_audit_log
+[ 39%] Building CXX object CMakeFiles/test_traffic_coordination_model.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_traffic_coordination_model.cpp.o
+[ 39%] Linking CXX executable test_dispatch_state_snapshot
+[ 39%] Built target test_dispatch_state_snapshot
+[ 39%] Building CXX object CMakeFiles/test_in_flight_reroute_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_in_flight_reroute_planning.cpp.o
+[ 39%] Linking CXX executable test_mission_queue
+[ 39%] Built target test_mission_queue
+[ 40%] Building CXX object CMakeFiles/test_traffic_recovery_coordinator.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_traffic_recovery_coordinator.cpp.o
+[ 41%] Linking CXX executable test_traffic_coordination_model
+[ 41%] Built target test_traffic_coordination_model
+[ 41%] Building CXX object CMakeFiles/test_fleet_link_guard.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_fleet_link_guard.cpp.o
+[ 42%] Linking CXX executable test_deadlock_snapshot_assembly
+[ 42%] Built target test_deadlock_snapshot_assembly
+[ 42%] Building CXX object CMakeFiles/test_vda5050_link_state.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vda5050_link_state.cpp.o
+[ 43%] Linking CXX executable test_in_flight_reroute_planning
+[ 43%] Built target test_in_flight_reroute_planning
+[ 44%] Building CXX object CMakeFiles/test_traffic_reservation.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_traffic_reservation.cpp.o
+[ 44%] Linking CXX executable test_traffic_recovery_coordinator
+[ 45%] Linking CXX executable test_fleet_link_guard
+[ 45%] Built target test_traffic_recovery_coordinator
+[ 45%] Linking CXX executable test_mission_event_log
+[ 45%] Built target test_fleet_link_guard
+[ 45%] Linking CXX executable test_link_quality
+[ 46%] Built target test_mission_event_log
+[ 46%] Linking CXX executable test_link_recovery
+[ 46%] Built target test_link_quality
+[ 46%] Building CXX object CMakeFiles/test_backend_degradation.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp.o
+[ 47%] Built target test_link_recovery
+[ 48%] Linking CXX executable test_serial_udp_backend
+[ 48%] Built target test_serial_udp_backend
+[ 49%] Building CXX object CMakeFiles/test_deadlock_detector.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp.o
+[ 49%] Linking CXX executable test_vda5050_link_state
+[ 49%] Built target test_vda5050_link_state
+[ 49%] Building CXX object CMakeFiles/test_recovery_policy.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp.o
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In constructor ‘{anonymous}::StubBackend::StubBackend(std::string, std::shared_ptr<bool>)’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:30:15: warning: ‘{anonymous}::StubBackend::name_’ will be initialized after [-Wreorder]
+   30 |   std::string name_;
+      |               ^~~~~
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:27:25: warning:   ‘std::shared_ptr<bool> {anonymous}::StubBackend::open_flag_’ [-Wreorder]
+   27 |   std::shared_ptr<bool> open_flag_;
+      |                         ^~~~~~~~~~
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:15:12: warning:   when initialized here [-Wreorder]
+   15 |   explicit StubBackend(std::string name, std::shared_ptr<bool> open_flag = nullptr)
+      |            ^~~~~~~~~~~
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_HighLossRateTriggersDemotion_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:53:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:53:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:53:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   53 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_CooldownPreventsRapidFlip_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:74:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |        ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:74:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |                             ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:74:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   74 |       {.warmup_samples = 2, .demote_loss_rate = 0.3, .cooldown = 1000ms});
+      |                                                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackToPreferredAfterRecoverySignal_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:120:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:120:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:120:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackBlockedDuringCooldown_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:142:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |        ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:142:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |                             ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:142:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  142 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 100ms});
+      |                                                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp: In member function ‘virtual void BackendDegradationTest_FailbackOpenFailureKeepsCurrentBackend_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:193:8: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |        ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:193:29: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                             ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_backend_degradation.cpp:193:54: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  193 |       {.warmup_samples = 4, .demote_loss_rate = 0.3, .cooldown = 0ms});
+      |                                                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_TooManyActiveMissions_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp:120:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  120 |   DeadlockDetector d({.max_active_missions = 2});
+      |                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_IdleActiveDetected_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp:131:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  131 |   DeadlockDetector d({.max_active_missions = 100,
+      |                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp:132:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  132 |                      .active_idle_threshold = 100ms});
+      |                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp: In member function ‘virtual void DeadlockDetectorTest_LongReservationHoldDetected_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp:143:23: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  143 |   DeadlockDetector d({.max_active_missions = 100,
+      |                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_deadlock_detector.cpp:144:22: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+  144 |                      .reservation_hold_threshold = 100ms});
+      |                      ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_IdleActiveWithRetriesLeftPicksRetry_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:21:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |   RecoveryPolicy p({.max_retries = 3, .auto_cancel_on_exhausted = true});
+      |                     ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:21:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   21 |   RecoveryPolicy p({.max_retries = 3, .auto_cancel_on_exhausted = true});
+      |                                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_IdleActiveExhaustedCancels_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:29:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   29 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = true});
+      |                     ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:29:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   29 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = true});
+      |                                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_ExhaustedWithoutAutoCancelPauses_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:37:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   37 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = false});
+      |                     ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:37:39: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   37 |   RecoveryPolicy p({.max_retries = 1, .auto_cancel_on_exhausted = false});
+      |                                       ^
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp: In member function ‘virtual void RecoveryPolicyTest_LongHoldRetryWhenBudgetLeft_Test::TestBody()’:
+/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_recovery_policy.cpp:75:21: warning: C++ designated initializers only available with ‘-std=c++20’ or ‘-std=gnu++20’ [-Wc++20-extensions]
+   75 |   RecoveryPolicy p({.max_retries = 2});
+      |                     ^
+[ 50%] Linking CXX executable test_recovery_policy
+[ 50%] Built target test_recovery_policy
+[ 50%] Linking CXX executable test_traffic_reservation
+[ 51%] Linking CXX executable test_cmd_vel_gate
+[ 51%] Built target test_traffic_reservation
+[ 51%] Linking CXX executable test_watchdog
+[ 51%] Built target test_cmd_vel_gate
+[ 52%] Linking CXX executable test_safety_sources
+[ 53%] Linking CXX executable test_backend_degradation
+[ 53%] Built target test_watchdog
+[ 53%] Built target test_safety_sources
+[ 53%] Linking CXX executable test_config_loader
+[ 53%] Built target test_backend_degradation
+[ 54%] Linking CXX executable test_logger
+[ 54%] Linking CXX executable test_station_topology
+/usr/bin/ld: CMakeFiles/test_config_loader.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_config_loader.cpp.o: in function `(anonymous namespace)::WriteTemp(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)':
+test_config_loader.cpp:(.text+0x1461): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+/usr/bin/ld: CMakeFiles/test_logger.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_logger.cpp.o: in function `SyncLoggerTest_WritesFormattedRecords_Test::TestBody()':
+test_logger.cpp:(.text+0x2be5): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+[ 54%] Linking CXX executable test_deadlock_detector
+[ 54%] Built target test_config_loader
+[ 55%] Linking CXX executable test_transport_and_diagnostics
+[ 56%] Built target test_station_topology
+[ 56%] Built target test_logger
+[ 56%] Linking CXX executable test_mock_linear_planner
+[ 56%] Built target test_deadlock_detector
+[ 57%] Linking CXX executable test_map_geometry_utils
+[ 57%] Linking CXX executable test_safety_space_filter
+[ 57%] Built target test_transport_and_diagnostics
+[ 57%] Built target test_map_geometry_utils
+[ 57%] Built target test_mock_linear_planner
+[ 58%] Linking CXX executable test_skeleton_extractor
+[ 59%] Building CXX object CMakeFiles/test_topology_graph_builder.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_topology_graph_builder.cpp.o
+[ 59%] Building CXX object CMakeFiles/test_skeleton_planner.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_skeleton_planner.cpp.o
+[ 59%] Built target test_safety_space_filter
+[ 59%] Building CXX object CMakeFiles/test_mission_profile.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_profile.cpp.o
+[ 59%] Built target test_skeleton_extractor
+[ 59%] Building CXX object CMakeFiles/test_mission_profile_builders.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_profile_builders.cpp.o
+[ 59%] Linking CXX executable test_mission_profile_builders
+[ 59%] Linking CXX executable test_skeleton_planner
+[ 59%] Built target test_mission_profile_builders
+[ 60%] Building CXX object CMakeFiles/test_queued_mission.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_queued_mission.cpp.o
+[ 60%] Built target test_skeleton_planner
+[ 60%] Linking CXX executable test_order_payload
+[ 60%] Linking CXX executable test_topology_graph_builder
+[ 61%] Built target test_order_payload
+[ 61%] Building CXX object CMakeFiles/test_payload_schema.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_payload_schema.cpp.o
+[ 61%] Built target test_topology_graph_builder
+[ 62%] Linking CXX executable test_fulfillment_workflow
+[ 62%] Built target test_fulfillment_workflow
+[ 63%] Linking CXX executable test_payload_workflow
+[ 63%] Built target test_payload_workflow
+[ 63%] Linking CXX executable test_mission_runtime_workflow
+[ 64%] Built target test_mission_runtime_workflow
+[ 64%] Linking CXX executable test_mission_result_workflow
+[ 64%] Built target test_mission_result_workflow
+[ 64%] Linking CXX executable test_mission_safety_workflow
+[ 65%] Built target test_mission_safety_workflow
+[ 65%] Linking CXX executable test_mission_recovery_policy
+[ 66%] Built target test_mission_recovery_policy
+[ 67%] Linking CXX executable test_workflow_mission_event_log
+[ 67%] Built target test_workflow_mission_event_log
+[ 67%] Building CXX object CMakeFiles/test_traffic_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_traffic_planning.cpp.o
+[ 68%] Linking CXX executable test_payload_schema
+[ 69%] Linking CXX executable test_mission_profile
+[ 69%] Built target test_payload_schema
+[ 70%] Building CXX object CMakeFiles/test_dynamic_unlocking.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dynamic_unlocking.cpp.o
+[ 70%] Built target test_mission_profile
+[ 70%] Building CXX object CMakeFiles/test_time_space_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_time_space_planning.cpp.o
+[ 70%] Linking CXX executable test_time_space_planning
+[ 70%] Linking CXX executable test_queued_mission
+[ 70%] Linking CXX executable test_dynamic_unlocking
+[ 70%] Built target test_time_space_planning
+[ 71%] Building CXX object CMakeFiles/test_workflow_control.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_workflow_control.cpp.o
+[ 71%] Built target test_dynamic_unlocking
+[ 71%] Built target test_queued_mission
+[ 72%] Building CXX object CMakeFiles/test_station_transport_workflow.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_station_transport_workflow.cpp.o
+[ 72%] Building CXX object CMakeFiles/test_station_sequence_workflow.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_station_sequence_workflow.cpp.o
+[ 72%] Linking CXX executable test_traffic_planning
+[ 72%] Built target test_traffic_planning
+[ 73%] Building CXX object CMakeFiles/test_docking_workflow.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_docking_workflow.cpp.o
+[ 73%] Linking CXX executable test_station_transport_workflow
+[ 73%] Built target test_station_transport_workflow
+[ 73%] Building CXX object CMakeFiles/test_mission_charging_workflow.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_charging_workflow.cpp.o
+[ 73%] Linking CXX executable test_station_sequence_workflow
+[ 73%] Built target test_station_sequence_workflow
+[ 73%] Building CXX object CMakeFiles/test_mission_resource_cleanup.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_mission_resource_cleanup.cpp.o
+[ 73%] Linking CXX executable test_workflow_control
+[ 73%] Built target test_workflow_control
+[ 73%] Building CXX object CMakeFiles/test_operator_snapshot.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_operator_snapshot.cpp.o
+[ 73%] Linking CXX executable test_mission_charging_workflow
+[ 74%] Linking CXX executable test_mission_resource_cleanup
+[ 74%] Built target test_mission_charging_workflow
+[ 74%] Building CXX object CMakeFiles/test_dock_catalog.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dock_catalog.cpp.o
+[ 74%] Built target test_mission_resource_cleanup
+[ 74%] Building CXX object CMakeFiles/test_station_catalog.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_station_catalog.cpp.o
+[ 74%] Linking CXX executable test_docking_workflow
+[ 74%] Built target test_docking_workflow
+[ 74%] Linking CXX executable test_scenario_catalog
+[ 75%] Built target test_scenario_catalog
+[ 76%] Linking CXX executable test_business_order_catalog
+[ 76%] Built target test_business_order_catalog
+[ 77%] Linking CXX executable test_zone_catalog
+[ 77%] Built target test_zone_catalog
+[ 77%] Building CXX object CMakeFiles/test_fleet_catalog.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_fleet_catalog.cpp.o
+[ 78%] Linking CXX executable test_operator_snapshot
+[ 78%] Built target test_operator_snapshot
+[ 78%] Building CXX object CMakeFiles/test_fleet_runtime_state.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_fleet_runtime_state.cpp.o
+[ 78%] Linking CXX executable test_dock_catalog
+[ 78%] Built target test_dock_catalog
+[ 78%] Building CXX object CMakeFiles/test_vehicle_adapter_interface.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vehicle_adapter_interface.cpp.o
+[ 79%] Linking CXX executable test_station_catalog
+/usr/bin/ld: CMakeFiles/test_station_catalog.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_station_catalog.cpp.o: in function `(anonymous namespace)::WriteCatalogTemp(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)':
+test_station_catalog.cpp:(.text+0xc71): warning: the use of `tmpnam' is dangerous, better use `mkstemp'
+[ 79%] Built target test_station_catalog
+[ 79%] Building CXX object CMakeFiles/test_vda5050_serializer.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vda5050_serializer.cpp.o
+[ 80%] Linking CXX executable test_fleet_catalog
+[ 80%] Built target test_fleet_catalog
+[ 81%] Building CXX object CMakeFiles/test_vda5050_order_builder.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vda5050_order_builder.cpp.o
+[ 81%] Linking CXX executable test_vehicle_adapter_interface
+[ 81%] Built target test_vehicle_adapter_interface
+[ 82%] Building CXX object CMakeFiles/test_force_clear_link.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_force_clear_link.cpp.o
+[ 82%] Linking CXX executable test_fleet_runtime_state
+[ 82%] Built target test_fleet_runtime_state
+[ 83%] Building CXX object CMakeFiles/test_vehicle_assignment.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vehicle_assignment.cpp.o
+[ 84%] Linking CXX executable test_vda5050_serializer
+[ 84%] Built target test_vda5050_serializer
+[ 84%] Building CXX object CMakeFiles/test_vehicle_assignment_request_builder.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vehicle_assignment_request_builder.cpp.o
+[ 84%] Linking CXX executable test_vda5050_order_builder
+[ 84%] Built target test_vda5050_order_builder
+[ 84%] Building CXX object CMakeFiles/test_vehicle_selection_strategy.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vehicle_selection_strategy.cpp.o
+[ 84%] Linking CXX executable test_force_clear_link
+[ 84%] Built target test_force_clear_link
+[ 85%] Building CXX object CMakeFiles/test_auto_charging_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_auto_charging_planning.cpp.o
+[ 85%] Linking CXX executable test_vehicle_assignment
+[ 85%] Built target test_vehicle_assignment
+[ 85%] Building CXX object CMakeFiles/test_order_batch_bundling.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_order_batch_bundling.cpp.o
+[ 86%] Linking CXX executable test_vehicle_assignment_request_builder
+[ 86%] Built target test_vehicle_assignment_request_builder
+[ 86%] Linking CXX executable test_auto_charging_planning
+[ 86%] Building CXX object CMakeFiles/test_assignment_dispatch_action.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_assignment_dispatch_action.cpp.o
+[ 86%] Built target test_auto_charging_planning
+[ 86%] Building CXX object CMakeFiles/test_vda5050_vehicle_binding.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_vda5050_vehicle_binding.cpp.o
+[ 87%] Linking CXX executable test_vehicle_selection_strategy
+[ 87%] Built target test_vehicle_selection_strategy
+[ 88%] Building CXX object CMakeFiles/test_dispatch_gate_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dispatch_gate_planning.cpp.o
+[ 88%] Linking CXX executable test_order_batch_bundling
+[ 88%] Built target test_order_batch_bundling
+[ 88%] Building CXX object CMakeFiles/test_dispatch_endpoint_resolution.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dispatch_endpoint_resolution.cpp.o
+[ 89%] Linking CXX executable test_assignment_dispatch_action
+[ 89%] Built target test_assignment_dispatch_action
+[ 89%] Building CXX object CMakeFiles/test_dispatch_tick_planning.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_dispatch_tick_planning.cpp.o
+[ 90%] Linking CXX executable test_vda5050_vehicle_binding
+[ 90%] Built target test_vda5050_vehicle_binding
+[ 91%] Building CXX object CMakeFiles/test_find_route_path_avoiding.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_find_route_path_avoiding.cpp.o
+[ 91%] Linking CXX executable test_dispatch_gate_planning
+[ 91%] Built target test_dispatch_gate_planning
+[ 92%] Building CXX object CMakeFiles/test_facility_catalog.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_facility_catalog.cpp.o
+[ 92%] Linking CXX executable test_dispatch_endpoint_resolution
+[ 92%] Built target test_dispatch_endpoint_resolution
+[ 92%] Building CXX object CMakeFiles/test_facility_reservation.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_facility_reservation.cpp.o
+[ 92%] Linking CXX executable test_facility_catalog
+[ 93%] Linking CXX executable test_dispatch_tick_planning
+[ 93%] Built target test_facility_catalog
+[ 94%] Building CXX object CMakeFiles/test_facility_lease.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_facility_lease.cpp.o
+[ 94%] Built target test_dispatch_tick_planning
+[ 94%] Building CXX object CMakeFiles/test_facility_workflow.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_facility_workflow.cpp.o
+[ 94%] Linking CXX executable test_find_route_path_avoiding
+[ 94%] Built target test_find_route_path_avoiding
+[ 94%] Building CXX object CMakeFiles/test_facility_adapter_interface.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_facility_adapter_interface.cpp.o
+[ 94%] Linking CXX executable test_facility_lease
+[ 94%] Built target test_facility_lease
+[ 95%] Building CXX object CMakeFiles/test_modbus_tcp_client.dir/home/ubuntu/个人学习/amr_dispatcher/test/unit/test_modbus_tcp_client.cpp.o
+[ 95%] Linking CXX executable test_facility_adapter_interface
+[ 95%] Built target test_facility_adapter_interface
+[ 96%] Linking CXX executable test_submit_order_router
+[ 97%] Linking CXX executable test_facility_reservation
+[ 97%] Built target test_submit_order_router
+[ 97%] Linking CXX executable test_topology_projection
+[ 97%] Built target test_facility_reservation
+[ 97%] Building CXX object CMakeFiles/test_end_to_end_pipeline.dir/home/ubuntu/个人学习/amr_dispatcher/test/integration/test_end_to_end_pipeline.cpp.o
+[ 98%] Built target test_topology_projection
+[ 99%] Building CXX object CMakeFiles/test_multi_vehicle_time_space.dir/home/ubuntu/个人学习/amr_dispatcher/test/integration/test_multi_vehicle_time_space.cpp.o
+[ 99%] Linking CXX executable test_facility_workflow
+[ 99%] Built target test_facility_workflow
+[ 99%] Linking CXX executable test_modbus_tcp_client
+[ 99%] Built target test_modbus_tcp_client
+[100%] Linking CXX executable test_end_to_end_pipeline
+[100%] Built target test_end_to_end_pipeline
+[100%] Linking CXX executable test_multi_vehicle_time_space
+[100%] Built target test_multi_vehicle_time_space
+Running main() from ./googletest/src/gtest_main.cc
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from ModbusPacketCodecTest
+[ RUN      ] ModbusPacketCodecTest.BuildReadCoilsRequest
+[       OK ] ModbusPacketCodecTest.BuildReadCoilsRequest (0 ms)
+[ RUN      ] ModbusPacketCodecTest.BuildWriteSingleCoilRequest
+[       OK ] ModbusPacketCodecTest.BuildWriteSingleCoilRequest (0 ms)
+[ RUN      ] ModbusPacketCodecTest.ParseReadCoilsResponse
+[       OK ] ModbusPacketCodecTest.ParseReadCoilsResponse (0 ms)
+[ RUN      ] ModbusPacketCodecTest.ParseReadHoldingRegistersResponse
+[       OK ] ModbusPacketCodecTest.ParseReadHoldingRegistersResponse (0 ms)
+[ RUN      ] ModbusPacketCodecTest.ParseExceptionResponse
+[       OK ] ModbusPacketCodecTest.ParseExceptionResponse (0 ms)
+[----------] 5 tests from ModbusPacketCodecTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+Running main() from ./googletest/src/gtest_main.cc
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from FacilityReservationLeaseTest
+[ RUN      ] FacilityReservationLeaseTest.LeaseExpiresAndGetsPruned
+[       OK ] FacilityReservationLeaseTest.LeaseExpiresAndGetsPruned (0 ms)
+[ RUN      ] FacilityReservationLeaseTest.ZeroLeaseNeverExpires
+[       OK ] FacilityReservationLeaseTest.ZeroLeaseNeverExpires (0 ms)
+[----------] 2 tests from FacilityReservationLeaseTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 2 tests.

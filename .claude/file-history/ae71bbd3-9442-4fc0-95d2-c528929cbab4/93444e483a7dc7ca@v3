@@ -1,0 +1,95 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+// ============================================================
+// 存储后端（带索引 + CRC + 格式版本）
+//   每个扫描包 = 目录，含：
+//     header.bin        包格式版本/设备序列号/标定参数
+//     index.bin         ts_us -> offset，供随机回放
+//     ch{n}.bin         相机帧流（每帧带 CRC32）
+//     lidar.bin         点云流（带 CRC32）
+//     imu.bin           IMU 采样流
+//     manifest.json     完整性清单
+// ============================================================
+
+struct PacketHeader {
+    uint32_t magic = 0x58475249;        // "XGRI"
+    uint16_t version = 2;
+    char device_sn[32] = {};
+    char calib_hash[32] = {};
+    int64_t scan_start_us;
+    int64_t scan_end_us;
+    uint32_t num_channels;
+};
+
+struct FrameIndex {
+    int64_t ts_us;
+    int64_t offset;    // 帧头在数据文件里的偏移
+    uint32_t len;      // 载荷长度（含帧头+CRC）
+    uint8_t channel;
+    uint8_t flags;     // bit0: corrupted
+};
+
+class StorageBackend {
+public:
+    explicit StorageBackend(const std::string& root);
+
+    bool begin_scan(const std::string& scan_id, int64_t start_ts_us,
+                    const char* device_sn, const char* calib_hash);
+
+    // 写入一帧，同时记索引
+    int64_t write(const ImageFrame& f);
+    int64_t write(const LidarFrame& f);
+    int64_t write(const ImuPacket& p);
+
+    // 收尾：写 manifest + 帧索引 + 包头，产出包信息
+    struct PacketInfo {
+        std::string scan_dir;
+        int64_t start_ts_us, end_ts_us;
+        uint64_t total_bytes;
+        uint32_t num_frames;
+    };
+    PacketInfo finish_scan(int64_t end_ts_us, const std::string& manifest_json);
+
+    // 维测：按时间范围随机读帧（回放/对账用）
+    std::vector<FrameIndex> index_range(int ch, int64_t t0, int64_t t1) const;
+    bool read_frame(const FrameIndex& idx, ImageFrame& out) const;
+    bool validate_crc(const FrameIndex& idx) const;
+
+    double free_gb() const;
+    double current_write_rate_gbps() const;
+
+private:
+    std::string root_;
+    std::string cur_dir_;
+    PacketHeader header_;
+    std::array<std::string, 4> cam_files_;
+    std::string lidar_file_, imu_file_;
+    std::string index_file_, header_file_;
+
+    // 帧索引：内存中维护，收尾时一次性写盘
+    std::vector<FrameIndex> index_;
+    mutable std::mutex index_mu_;
+
+    uint64_t bytes_written_ = 0;
+    int64_t scan_start_us_ = -1;
+
+    // 帧头（写入时）：ts(8) + seq(4) + w(2) + h(2) + len(4) + crc(4) = 24B
+    static constexpr size_t kFrameHeadSize = 24;
+    uint32_t crc32(const void* data, size_t len) const;
+
+    mutable std::mutex rate_mu_;
+    mutable int64_t last_rate_ts_us_ = -1;
+    mutable uint64_t last_rate_bytes_ = 0;
+    mutable double rate_gbps_ = 0;
+};
+
+}  // namespace xgrids

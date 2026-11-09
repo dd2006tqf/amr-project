@@ -1,0 +1,109 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+#include <array>
+#include <mutex>
+#include <deque>
+#include "sensors/sensor_frame.h"
+#include "sync/clock_model.h"
+#include "sync/interpolator.h"
+
+namespace xgrids {
+
+// 四相机同步组
+struct SyncGroup {
+    int64_t anchor_ts_us = 0;
+    std::array<FrameMeta, 4> frames;
+    std::array<bool, 4> valid;
+    int64_t max_skew_us = 0;
+    bool complete = false;
+    uint64_t group_seq = 0;
+};
+
+// 对齐切片（含 IMU 预积分位姿）
+struct AlignedSlice {
+    int64_t t_us = 0;
+    SyncGroup cams;
+    LidarFrame lidar;
+    std::vector<ImuPacket> imu_in_slice;
+    ImuState imu_state;             // 切片中心时刻的 IMU 插值状态
+    PosePoint pose;                 // 切片中心时刻的位姿估计
+    GnssFix nearest_gnss;
+    bool has_gnss = false;
+    bool has_imu_state = false;
+    bool has_pose = false;
+};
+
+// ============================================================
+// 时基对齐器（含时钟模型 + 插值）
+//
+// 深度：
+//   1) 每路相机/激光雷达有独立 ClockModel，应用层估计并校正时钟漂移
+//   2) IMU 用线性插值取切片中心时刻的状态（非最近邻）
+//   3) LiDAR 切片区间做 IMU 预积分得相对位姿
+//   4) GNSS 时间戳（最权威时基）作为 ClockModel 的锚点
+// ============================================================
+class TimeAligner {
+public:
+    struct Config {
+        int64_t cam_window_us = 5000;
+        int64_t lidar_slack_us = 20'000;
+        int64_t gnss_slack_us = 500'000;
+        bool use_clock_model = true;
+        bool use_imu_interp = true;
+    };
+
+    explicit TimeAligner(Config cfg);
+
+    bool on_event(const SensorEvent& e, AlignedSlice& out);
+    bool flush(AlignedSlice& out);
+
+    // 时钟模型观测（调试用）
+    double cam_drift_ppm(int ch) const;
+    double lidar_drift_ppm() const;
+    bool clock_converged() const;
+
+    // 乱序帧：对齐器丢弃了已过窗口的迟到帧（消费一次返回 true）
+    // 后续窗口没有它槽位会记为 sync_incomplete —— 由 manifest 捕获
+    bool take_stale(FrameMeta& out) {
+        if (!has_stale_) return false;
+        out = last_stale_; has_stale_ = false; return true;
+    }
+    uint64_t stale_count() const { return stale_frames_; }
+
+private:
+    void fill_slice(int64_t t0, int64_t t1, AlignedSlice& out);
+    // 把传感器本地时间戳换算到公共时基
+    int64_t to_sys_ts(SensorType type, int channel, int64_t local_ts_us) const;
+
+    Config cfg_;
+    mutable std::mutex mu_;
+
+    // 每路相机一个时钟模型（真实硬件各路时钟有漂移）
+    std::array<ClockModel, 4> cam_clock_;
+    ClockModel lidar_clock_;
+    ClockModel gnss_clock_;         // GNSS 作为参考，记录自身偏差
+
+    // 相机组状态
+    int64_t cam_anchor_ = -1;
+    std::array<FrameMeta, 4> cam_pending_;
+    std::array<bool, 4> cam_have_{};
+    int cam_cnt_ = 0;
+    uint64_t group_seq_ = 0;
+
+    // 待对齐传感器缓存（时间戳已换算到公共时基）
+    std::deque<LidarFrame> lidar_q_;
+    std::deque<ImuPacket> imu_q_;
+    std::deque<GnssFix> gnss_q_;
+
+    ImuInterpolator imu_interp_;
+    int64_t last_slice_t_ = -1;
+
+    // 乱序帧处理
+    uint64_t stale_frames_ = 0;
+    FrameMeta last_stale_;
+    bool has_stale_ = false;
+};
+
+}  // namespace xgrids

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# 四类开关组合的日志与 writer 数验证（阶段 4b 验收）。
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+LH="$PKG/lib/amr_dispatcher_ros/link_health_publisher"
+
+run_case () {
+  local name="$1"; local expect="$2"; shift 2
+  echo "=== $name（期望 $expect）==="
+  "$LH" --ros-args -r __node:="$name" "$@" > "/tmp/${name}.log" 2>&1 &
+  local pid=$!
+  sleep 5
+  local r p
+  r=$(ros2 topic info /system/aggregated_link_health -v 2>/dev/null | grep -c "$name" || true)
+  p=$(ros2 topic info /system/aggregated_link_health_proto -v 2>/dev/null | grep -c "$name" || true)
+  echo "  rosidl writer=$r  proto writer=$p"
+  grep -E '双发已启用|proto 侧已关闭|rosidl 侧已关闭|两侧都已关闭' "/tmp/${name}.log" | sed 's/^/  LOG: /' || true
+  kill "$pid" 2>/dev/null || true
+  wait 2>/dev/null || true
+  echo
+}
+
+run_case cut_a_both     "both"        -p proto_dual_publish:=true  -p proto_rosidl_publish:=true
+run_case cut_b_rosidl   "rosidl only" -p proto_dual_publish:=false -p proto_rosidl_publish:=true
+run_case cut_c_proto    "proto only"  -p proto_dual_publish:=true  -p proto_rosidl_publish:=false
+run_case cut_d_neither  "neither"     -p proto_dual_publish:=false -p proto_rosidl_publish:=false

@@ -1,0 +1,29 @@
+import json, re, html, urllib.request
+
+def get(url, timeout=40):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def api(path):
+    return json.loads(get('https://api.github.com' + path))
+
+print('=== radxa-pkg/linux-a733 ===')
+try:
+    d = api('/repos/radxa-pkg/linux-a733')
+    print('full_name:', d.get('full_name'), '| branch:', d.get('default_branch'), '| desc:', d.get('description'), '| msg:', d.get('message', ''))
+except Exception as e:
+    print('ERR', e)
+
+print()
+print('=== search dts for a733/cubie-a7a ===')
+for ref in ['main', 'master', 'a733', 'allwinner-aiot-linux-5.15']:
+    try:
+        d = api(f'/repos/radxa-pkg/linux-a733/contents/arch/arm64/boot/dts/allwinner?ref={ref}')
+        if isinstance(d, dict):
+            print(ref, '-> msg:', d.get('message'))
+            continue
+        names = [x['name'] for x in d]
+        print(ref, '-> total', len(names), [n for n in names if 'sun60' in n or 'a733' in n or 'cubie' in n][:20])
+    except Exception as e:
+        print(ref, 'ERR', e)

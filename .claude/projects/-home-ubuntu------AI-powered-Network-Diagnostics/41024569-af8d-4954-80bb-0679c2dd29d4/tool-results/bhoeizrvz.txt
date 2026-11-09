@@ -1,0 +1,1275 @@
+=============== qt_monitor_client/src/grpc_client.cpp ===============
+#include "grpc_client.h"
+#include "time_utils.h"
+#include "monitor_data.h"
+
+#include <QDebug>
+
+GrpcClient::GrpcClient(const std::string& server_address) {
+    // 创建gRPC通道
+    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+    
+    // 创建服务存根
+    stub_ = monitor::proto::QueryService::NewStub(channel_);
+}
+
+GrpcClient::~GrpcClient() {
+}
+
+bool GrpcClient::GetLatestScore(std::vector<ServerScoreSummary>& servers, ClusterStats& stats) {
+    monitor::proto::QueryLatestScoreRequest request;
+    monitor::proto::QueryLatestScoreResponse response;
+    grpc::ClientContext context;
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryLatestScore(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "GetLatestScore RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换服务器评分数据
+    for (const auto& server : response.servers()) {
+        ServerScoreSummary summary;
+        summary.server_name = server.server_name();
+        summary.score = server.score();
+        summary.last_update = TimeUtils::TimestampToQDateTime(server.last_update());
+        summary.online = (server.status() == monitor::proto::ONLINE);
+        summary.cpu_percent = server.cpu_percent();
+        summary.mem_used_percent = server.mem_used_percent();
+        summary.disk_util_percent = server.disk_util_percent();
+        summary.load_avg_1 = server.load_avg_1();
+        servers.push_back(summary);
+    }
+
+    // 转换集群统计数据
+    const auto& cluster_stats = response.cluster_stats();
+    stats.total_servers = cluster_stats.total_servers();
+    stats.online_servers = cluster_stats.online_servers();
+    stats.offline_servers = cluster_stats.offline_servers();
+    stats.avg_score = cluster_stats.avg_score();
+    stats.max_score = cluster_stats.max_score();
+    stats.min_score = cluster_stats.min_score();
+    stats.best_server = cluster_stats.best_server();
+    stats.worst_server = cluster_stats.worst_server();
+
+    return true;
+}
+
+bool GrpcClient::QueryPerformance(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<PerformanceRecord>& records) {
+    
+    monitor::proto::QueryPerformanceRequest request;
+    monitor::proto::QueryPerformanceResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(1000);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryPerformance(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryPerformance RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换性能数据
+    for (const auto& record : response.records()) {
+        PerformanceRecord perf_record;
+        perf_record.server_name = record.server_name();
+        perf_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        perf_record.cpu_percent = record.cpu_percent();
+        perf_record.usr_percent = record.usr_percent();
+        perf_record.system_percent = record.system_percent();
+        perf_record.nice_percent = record.nice_percent();
+        perf_record.idle_percent = record.idle_percent();
+        perf_record.io_wait_percent = record.io_wait_percent();
+        perf_record.irq_percent = record.irq_percent();
+        perf_record.soft_irq_percent = record.soft_irq_percent();
+        perf_record.load_avg_1 = record.load_avg_1();
+        perf_record.load_avg_3 = record.load_avg_3();
+        perf_record.load_avg_15 = record.load_avg_15();
+        perf_record.mem_used_percent = record.mem_used_percent();
+        perf_record.mem_total = record.mem_total();
+        perf_record.mem_free = record.mem_free();
+        perf_record.mem_avail = record.mem_avail();
+        perf_record.disk_util_percent = record.disk_util_percent();
+        perf_record.send_rate = record.send_rate();
+        perf_record.rcv_rate = record.rcv_rate();
+        records.push_back(perf_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QueryTrend(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    int32_t interval_seconds,
+    std::vector<PerformanceRecord>& records) {
+    
+    monitor::proto::QueryTrendRequest request;
+    monitor::proto::QueryTrendResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置聚合间隔
+    request.set_interval_seconds(interval_seconds);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryTrend(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryTrend RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换趋势数据
+    for (const auto& record : response.records()) {
+        PerformanceRecord perf_record;
+        perf_record.server_name = record.server_name();
+        perf_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        perf_record.cpu_percent = record.cpu_percent();
+        perf_record.usr_percent = record.usr_percent();
+        perf_record.system_percent = record.system_percent();
+        perf_record.nice_percent = record.nice_percent();
+        perf_record.idle_percent = record.idle_percent();
+        perf_record.io_wait_percent = record.io_wait_percent();
+        perf_record.irq_percent = record.irq_percent();
+        perf_record.soft_irq_percent = record.soft_irq_percent();
+        perf_record.load_avg_1 = record.load_avg_1();
+        perf_record.load_avg_3 = record.load_avg_3();
+        perf_record.load_avg_15 = record.load_avg_15();
+        perf_record.mem_used_percent = record.mem_used_percent();
+        perf_record.mem_total = record.mem_total();
+        perf_record.mem_free = record.mem_free();
+        perf_record.mem_avail = record.mem_avail();
+        perf_record.disk_util_percent = record.disk_util_percent();
+        perf_record.send_rate = record.send_rate();
+        perf_record.rcv_rate = record.rcv_rate();
+        records.push_back(perf_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QueryAnomaly(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<AnomalyRecord>& anomalies) {
+    
+    monitor::proto::QueryAnomalyRequest request;
+    monitor::proto::QueryAnomalyResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置默认阈值
+    request.set_cpu_threshold(80.0f);
+    request.set_mem_threshold(90.0f);
+    request.set_disk_threshold(85.0f);
+    request.set_change_rate_threshold(0.5f);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(100);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryAnomaly(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryAnomaly RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换异常数据
+    for (const auto& anomaly : response.anomalies()) {
+        AnomalyRecord anomaly_record;
+        anomaly_record.server_name = anomaly.server_name();
+        anomaly_record.timestamp = TimeUtils::TimestampToQDateTime(anomaly.timestamp());
+        anomaly_record.anomaly_type = anomaly.anomaly_type();
+        anomaly_record.severity = anomaly.severity();
+        anomaly_record.value = anomaly.value();
+        anomaly_record.threshold = anomaly.threshold();
+        anomaly_record.metric_name = anomaly.metric_name();
+        anomalies.push_back(anomaly_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QueryNetDetail(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<NetDetailRecord>& records) {
+    
+    monitor::proto::QueryDetailRequest request;
+    monitor::proto::QueryNetDetailResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(1000);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryNetDetail(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryNetDetail RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换网络详细数据
+    for (const auto& record : response.records()) {
+        NetDetailRecord net_record;
+        net_record.server_name = record.server_name();
+        net_record.net_name = record.net_name();
+        net_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        net_record.err_in = record.err_in();
+        net_record.err_out = record.err_out();
+        net_record.drop_in = record.drop_in();
+        net_record.drop_out = record.drop_out();
+        net_record.rcv_bytes_rate = record.rcv_bytes_rate();
+        net_record.snd_bytes_rate = record.snd_bytes_rate();
+        net_record.rcv_packets_rate = record.rcv_packets_rate();
+        net_record.snd_packets_rate = record.snd_packets_rate();
+        records.push_back(net_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QueryDiskDetail(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<DiskDetailRecord>& records) {
+    
+    monitor::proto::QueryDetailRequest request;
+    monitor::proto::QueryDiskDetailResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(1000);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryDiskDetail(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryDiskDetail RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换磁盘详细数据
+    for (const auto& record : response.records()) {
+        DiskDetailRecord disk_record;
+        disk_record.server_name = record.server_name();
+        disk_record.disk_name = record.disk_name();
+        disk_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        disk_record.read_bytes_per_sec = record.read_bytes_per_sec();
+        disk_record.write_bytes_per_sec = record.write_bytes_per_sec();
+        disk_record.read_iops = record.read_iops();
+        disk_record.write_iops = record.write_iops();
+        disk_record.avg_read_latency_ms = record.avg_read_latency_ms();
+        disk_record.avg_write_latency_ms = record.avg_write_latency_ms();
+        disk_record.util_percent = record.util_percent();
+        records.push_back(disk_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QueryMemDetail(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<MemDetailRecord>& records) {
+    
+    monitor::proto::QueryDetailRequest request;
+    monitor::proto::QueryMemDetailResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(1000);
+
+    // 调用RPC
+    grpc::Status status = stub_->QueryMemDetail(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QueryMemDetail RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换内存详细数据
+    for (const auto& record : response.records()) {
+        MemDetailRecord mem_record;
+        mem_record.server_name = record.server_name();
+        mem_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        mem_record.total = record.total();
+        mem_record.free = record.free();
+        mem_record.avail = record.avail();
+        mem_record.buffers = record.buffers();
+        mem_record.cached = record.cached();
+        mem_record.swap_cached = record.swap_cached();
+        mem_record.active = record.active();
+        mem_record.inactive = record.inactive();
+        mem_record.active_anon = record.active_anon();
+        mem_record.inactive_anon = record.inactive_anon();
+        mem_record.active_file = record.active_file();
+        mem_record.inactive_file = record.inactive_file();
+        mem_record.dirty = record.dirty();
+        mem_record.writeback = record.writeback();
+        mem_record.anon_pages = record.anon_pages();
+        mem_record.mapped = record.mapped();
+        records.push_back(mem_record);
+    }
+
+    return true;
+}
+
+bool GrpcClient::QuerySoftIrqDetail(
+    const std::string& server_name,
+    const QDateTime& start_time,
+    const QDateTime& end_time,
+    std::vector<SoftIrqDetailRecord>& records) {
+    
+    monitor::proto::QueryDetailRequest request;
+    monitor::proto::QuerySoftIrqDetailResponse response;
+    grpc::ClientContext context;
+
+    // 设置请求参数
+    request.set_server_name(server_name);
+    
+    // 设置时间范围
+    *request.mutable_time_range()->mutable_start_time() = TimeUtils::QDateTimeToTimestamp(start_time);
+    *request.mutable_time_range()->mutable_end_time() = TimeUtils::QDateTimeToTimestamp(end_time);
+    
+    // 设置分页
+    auto* pagination = request.mutable_pagination();
+    pagination->set_page(1);
+    pagination->set_page_size(1000);
+
+    // 调用RPC
+    grpc::Status status = stub_->QuerySoftIrqDetail(&context, request, &response);
+    if (!status.ok()) {
+        qDebug() << "QuerySoftIrqDetail RPC failed: " << status.error_message().c_str();
+        return false;
+    }
+
+    // 转换软中断详细数据
+    for (const auto& record : response.records()) {
+        SoftIrqDetailRecord softirq_record;
+        softirq_record.server_name = record.server_name();
+        softirq_record.cpu_name = record.cpu_name();
+        softirq_record.timestamp = TimeUtils::TimestampToQDateTime(record.timestamp());
+        softirq_record.hi = record.hi();
+        softirq_record.timer = record.timer();
+        softirq_record.net_tx = record.net_tx();
+        softirq_record.net_rx = record.net_rx();
+        softirq_record.block = record.block();
+        softirq_record.irq_poll = record.irq_poll();
+        softirq_record.tasklet = record.tasklet();
+        softirq_record.sched = record.sched();
+        softirq_record.hrtimer = record.hrtimer();
+        softirq_record.rcu = record.rcu();
+        records.push_back(softirq_record);
+    }
+
+    return true;
+}
+
+=============== qt_monitor_client/src/data_fetch_thread.cpp ===============
+#include "data_fetch_thread.h"
+#include "grpc_client.h"
+
+#include <QDateTime>
+#include <QDebug>
+
+DataFetchThread::DataFetchThread(GrpcClient* client, QObject* parent)
+    : QThread(parent), client_(client), running_(true), update_interval_(5) {
+}
+
+DataFetchThread::~DataFetchThread() {
+    Stop();
+    wait();
+}
+
+void DataFetchThread::SetServerName(const QString& server_name) {
+    QMutexLocker locker(&mutex_);
+    server_name_ = server_name;
+}
+
+void DataFetchThread::Stop() {
+    running_ = false;
+}
+
+void DataFetchThread::SetUpdateInterval(int seconds) {
+    update_interval_ = seconds;
+}
+
+void DataFetchThread::run() {
+    while (running_) {
+        // 获取最新评分（每次循环都获取）
+        FetchLatestScore();
+        
+        // 获取当前选中服务器的详细数据
+        QString server_name;
+        {
+            QMutexLocker locker(&mutex_);
+            server_name = server_name_;
+        }
+        
+        if (!server_name.isEmpty()) {
+            FetchPerformanceData();
+            FetchTrendData();
+            FetchAnomalyData();
+            FetchDetailData();
+        }
+        
+        // 等待指定的更新间隔
+        sleep(update_interval_);
+    }
+}
+
+void DataFetchThread::FetchLatestScore() {
+    std::vector<ServerScoreSummary> servers;
+    ClusterStats stats;
+    
+    if (client_->GetLatestScore(servers, stats)) {
+        emit latestScoreFetched(servers, stats);
+    }
+}
+
+void DataFetchThread::FetchPerformanceData() {
+    QString server_name;
+    {
+        QMutexLocker locker(&mutex_);
+        server_name = server_name_;
+    }
+    
+    if (server_name.isEmpty()) return;
+    
+    // 获取最近1小时的性能数据
+    QDateTime end_time = QDateTime::currentDateTime();
+    QDateTime start_time = end_time.addSecs(-3600);
+    
+    std::vector<PerformanceRecord> records;
+    if (client_->QueryPerformance(server_name.toStdString(), start_time, end_time, records)) {
+        emit performanceDataFetched(records);
+    }
+}
+
+void DataFetchThread::FetchTrendData() {
+    QString server_name;
+    {
+        QMutexLocker locker(&mutex_);
+        server_name = server_name_;
+    }
+    
+    if (server_name.isEmpty()) return;
+    
+    // 获取最近24小时的趋势数据，每小时聚合一次
+    QDateTime end_time = QDateTime::currentDateTime();
+    QDateTime start_time = end_time.addDays(-1);
+    
+    std::vector<PerformanceRecord> records;
+    if (client_->QueryTrend(server_name.toStdString(), start_time, end_time, 3600, records)) {
+        emit trendDataFetched(records);
+    }
+}
+
+void DataFetchThread::FetchAnomalyData() {
+    QString server_name;
+    {
+        QMutexLocker locker(&mutex_);
+        server_name = server_name_;
+    }
+    
+    if (server_name.isEmpty()) return;
+    
+    // 获取最近24小时的异常数据
+    QDateTime end_time = QDateTime::currentDateTime();
+    QDateTime start_time = end_time.addDays(-1);
+    
+    std::vector<AnomalyRecord> records;
+    if (client_->QueryAnomaly(server_name.toStdString(), start_time, end_time, records)) {
+        emit anomalyDataFetched(records);
+    }
+}
+
+void DataFetchThread::FetchDetailData() {
+    QString server_name;
+    {
+        QMutexLocker locker(&mutex_);
+        server_name = server_name_;
+    }
+    
+    if (server_name.isEmpty()) return;
+    
+    // 获取最近1小时的详细数据
+    QDateTime end_time = QDateTime::currentDateTime();
+    QDateTime start_time = end_time.addSecs(-3600);
+    
+    // 网络详细数据
+    std::vector<NetDetailRecord> net_records;
+    if (client_->QueryNetDetail(server_name.toStdString(), start_time, end_time, net_records)) {
+        emit netDetailFetched(net_records);
+    }
+    
+    // 磁盘详细数据
+    std::vector<DiskDetailRecord> disk_records;
+    if (client_->QueryDiskDetail(server_name.toStdString(), start_time, end_time, disk_records)) {
+        emit diskDetailFetched(disk_records);
+    }
+    
+    // 内存详细数据
+    std::vector<MemDetailRecord> mem_records;
+    if (client_->QueryMemDetail(server_name.toStdString(), start_time, end_time, mem_records)) {
+        emit memDetailFetched(mem_records);
+    }
+    
+    // 软中断详细数据
+    std::vector<SoftIrqDetailRecord> softirq_records;
+    if (client_->QuerySoftIrqDetail(server_name.toStdString(), start_time, end_time, softirq_records)) {
+        emit softIrqDetailFetched(softirq_records);
+    }
+}
+
+=============== qt_monitor_client/src/monitor_data.h ===============
+#pragma once
+
+#include <string>
+#include <vector>
+#include <QDateTime>
+
+// 服务器评分摘要
+struct ServerScoreSummary {
+    std::string server_name;
+    float score;
+    QDateTime last_update;
+    bool online;
+    float cpu_percent;
+    float mem_used_percent;
+    float disk_util_percent;
+    float load_avg_1;
+};
+
+// 性能数据记录
+struct PerformanceRecord {
+    std::string server_name;
+    QDateTime timestamp;
+    float cpu_percent;
+    float usr_percent;
+    float system_percent;
+    float nice_percent;
+    float idle_percent;
+    float io_wait_percent;
+    float irq_percent;
+    float soft_irq_percent;
+    float load_avg_1;
+    float load_avg_3;
+    float load_avg_15;
+    float mem_used_percent;
+    float mem_total;
+    float mem_free;
+    float mem_avail;
+    float disk_util_percent;
+    float send_rate;
+    float rcv_rate;
+};
+
+// 异常记录
+struct AnomalyRecord {
+    std::string server_name;
+    QDateTime timestamp;
+    std::string anomaly_type;
+    std::string severity;
+    float value;
+    float threshold;
+    std::string metric_name;
+};
+
+// 网络详细数据
+struct NetDetailRecord {
+    std::string server_name;
+    std::string net_name;
+    QDateTime timestamp;
+    uint64_t err_in;
+    uint64_t err_out;
+    uint64_t drop_in;
+    uint64_t drop_out;
+    float rcv_bytes_rate;
+    float snd_bytes_rate;
+    float rcv_packets_rate;
+    float snd_packets_rate;
+};
+
+// 磁盘详细数据
+struct DiskDetailRecord {
+    std::string server_name;
+    std::string disk_name;
+    QDateTime timestamp;
+    float read_bytes_per_sec;
+    float write_bytes_per_sec;
+    float read_iops;
+    float write_iops;
+    float avg_read_latency_ms;
+    float avg_write_latency_ms;
+    float util_percent;
+};
+
+// 内存详细数据
+struct MemDetailRecord {
+    std::string server_name;
+    QDateTime timestamp;
+    float total;
+    float free;
+    float avail;
+    float buffers;
+    float cached;
+    float swap_cached;
+    float active;
+    float inactive;
+    float active_anon;
+    float inactive_anon;
+    float active_file;
+    float inactive_file;
+    float dirty;
+    float writeback;
+    float anon_pages;
+    float mapped;
+};
+
+// 软中断详细数据
+struct SoftIrqDetailRecord {
+    std::string server_name;
+    std::string cpu_name;
+    QDateTime timestamp;
+    int64_t hi;
+    int64_t timer;
+    int64_t net_tx;
+    int64_t net_rx;
+    int64_t block;
+    int64_t irq_poll;
+    int64_t tasklet;
+    int64_t sched;
+    int64_t hrtimer;
+    int64_t rcu;
+};
+
+// 集群统计信息
+struct ClusterStats {
+    int32_t total_servers;
+    int32_t online_servers;
+    int32_t offline_servers;
+    float avg_score;
+    float max_score;
+    float min_score;
+    std::string best_server;
+    std::string worst_server;
+};
+
+=============== qt_monitor_client/src/theme_manager.h ===============
+#pragma once
+
+#include <QObject>
+#include <QString>
+#include <QFile>
+#include <QApplication>
+#include <QSettings>
+#include <QDebug>
+
+class ThemeManager : public QObject {
+    Q_OBJECT
+
+public:
+    enum Theme {
+        Dark,
+        Light,
+        Classic
+    };
+    Q_ENUM(Theme)
+
+    static ThemeManager* Instance() {
+        static ThemeManager instance;
+        return &instance;
+    }
+
+    void SetTheme(Theme theme) {
+        current_theme_ = theme;
+        ApplyTheme();
+        SaveSettings();
+        emit ThemeChanged(theme);
+    }
+
+    Theme GetTheme() const {
+        return current_theme_;
+    }
+
+    QString GetThemeName() const {
+        switch (current_theme_) {
+            case Dark:   return tr("深色主题");
+            case Light:  return tr("浅色主题");
+            case Classic: return tr("经典主题");
+            default:     return tr("未知");
+        }
+    }
+
+    void LoadSettings() {
+        QSettings settings("MonitorSystem", "QtClient");
+        int theme = settings.value("theme", static_cast<int>(Dark)).toInt();
+        current_theme_ = static_cast<Theme>(theme);
+        ApplyTheme();
+    }
+
+signals:
+    void ThemeChanged(Theme theme);
+
+private:
+    ThemeManager() : current_theme_(Dark) {}
+    ThemeManager(const ThemeManager&) = delete;
+    ThemeManager& operator=(const ThemeManager&) = delete;
+
+    void ApplyTheme() {
+        QString qss_file;
+        
+        switch (current_theme_) {
+            case Dark:
+                qss_file = ":/styles/dark_theme.qss";
+                break;
+            case Light:
+                qss_file = ":/styles/light_theme.qss";
+                break;
+            case Classic:
+                qss_file = ":/styles/main.qss";
+                break;
+        }
+
+        QFile file(qss_file);
+        if (file.open(QFile::ReadOnly | QFile::Text)) {
+            QString style_sheet = QString::fromUtf8(file.readAll());
+            qApp->setStyleSheet(style_sheet);
+            file.close();
+            qDebug() << "Theme applied:" << GetThemeName();
+        } else {
+            qWarning() << "Failed to load theme file:" << qss_file;
+        }
+    }
+
+    void SaveSettings() {
+        QSettings settings("MonitorSystem", "QtClient");
+        settings.setValue("theme", static_cast<int>(current_theme_));
+    }
+
+    Theme current_theme_;
+};
+
+=============== qt_monitor_client/src/main.cpp ===============
+#include <QApplication>
+#include <QFile>
+#include "mainwindow.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+
+    // Load stylesheet
+    QFile styleFile(":/styles/main.qss");
+    if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QString styleSheet = styleFile.readAll();
+        a.setStyleSheet(styleSheet);
+        styleFile.close();
+    }
+
+    MainWindow w;
+    w.show();
+
+    return a.exec();
+}
+=============== qt_monitor_client/src/dialogs/alarm_config_dialog.cpp ===============
+#include "alarm_config_dialog.h"
+#include "ui_alarm_config_dialog.h"
+
+#include <QDebug>
+#include <QMessageBox>
+
+AlarmConfigDialog::AlarmConfigDialog(const QString& server_name, QWidget *parent)
+    : QDialog(parent)
+    , ui(new Ui::AlarmConfigDialog)
+    , server_name_(server_name) {
+    ui->setupUi(this);
+    
+    // 设置对话框标题
+    setWindowTitle(QString("告警配置 - %1").arg(server_name));
+    
+    // 初始化UI组件
+    InitializeUI();
+    
+    // 加载现有告警配置
+    LoadAlarmConfig();
+}
+
+AlarmConfigDialog::~AlarmConfigDialog() {
+    delete ui;
+}
+
+void AlarmConfigDialog::InitializeUI() {
+    // 设置图标
+    setWindowIcon(QIcon(":/icons/logo.png"));
+    
+    // 初始化状态栏
+    ui->statusBar->showMessage("就绪");
+    
+    // 设置默认指标
+    ui->metricCombo->setCurrentIndex(0);
+    
+    // 设置默认阈值
+    ui->warningThresholdSpinBox->setValue(80.0);
+    ui->criticalThresholdSpinBox->setValue(90.0);
+    
+    // 设置默认通知方式
+    ui->emailCheckBox->setChecked(true);
+    ui->smsCheckBox->setChecked(false);
+    ui->webhookCheckBox->setChecked(false);
+}
+
+void AlarmConfigDialog::LoadAlarmConfig() {
+    // 加载现有告警配置
+    ui->statusBar->showMessage(QString("正在加载 %1 的告警配置...").arg(server_name_));
+    
+    // 这里应该从数据库或配置文件加载告警配置
+    // 为了演示，我们使用默认配置
+    
+    // 设置服务器名称
+    ui->serverNameLabel->setText(server_name_);
+    
+    // 设置默认告警配置
+    ui->enabledCheckBox->setChecked(true);
+    ui->warningThresholdSpinBox->setValue(80.0);
+    ui->criticalThresholdSpinBox->setValue(90.0);
+    ui->emailCheckBox->setChecked(true);
+    ui->smsCheckBox->setChecked(false);
+    ui->webhookCheckBox->setChecked(false);
+    ui->emailLineEdit->setText("admin@example.com");
+    ui->webhookLineEdit->setText("https://example.com/webhook");
+    
+    ui->statusBar->showMessage(QString("已加载 %1 的告警配置").arg(server_name_));
+}
+
+void AlarmConfigDialog::SaveAlarmConfig() {
+    // 保存告警配置
+    ui->statusBar->showMessage(QString("正在保存 %1 的告警配置...").arg(server_name_));
+    
+    // 验证输入
+    if (ui->warningThresholdSpinBox->value() >= ui->criticalThresholdSpinBox->value()) {
+        QMessageBox::warning(this, "警告", "警告阈值必须小于严重阈值");
+        return;
+    }
+    
+    if (ui->emailCheckBox->isChecked() && ui->emailLineEdit->text().isEmpty()) {
+        QMessageBox::warning(this, "警告", "请输入邮箱地址");
+        return;
+    }
+    
+    if (ui->webhookCheckBox->isChecked() && ui->webhookLineEdit->text().isEmpty()) {
+        QMessageBox::warning(this, "警告", "请输入Webhook地址");
+        return;
+    }
+    
+    // 这里应该将配置保存到数据库或配置文件
+    // 为了演示，我们只显示保存成功的消息
+    
+    QMessageBox::information(this, "成功", QString("已保存 %1 的告警配置").arg(server_name_));
+    ui->statusBar->showMessage(QString("已保存 %1 的告警配置").arg(server_name_));
+    accept();
+}
+
+void AlarmConfigDialog::ResetAlarmConfig() {
+    // 重置告警配置
+    if (QMessageBox::question(this, "确认", "确定要重置告警配置吗？") == QMessageBox::Yes) {
+        InitializeUI();
+        ui->statusBar->showMessage(QString("已重置 %1 的告警配置").arg(server_name_));
+    }
+}
+
+void AlarmConfigDialog::on_saveButton_clicked() {
+    SaveAlarmConfig();
+}
+
+void AlarmConfigDialog::on_cancelButton_clicked() {
+    reject();
+}
+
+void AlarmConfigDialog::on_resetButton_clicked() {
+    ResetAlarmConfig();
+}
+
+void AlarmConfigDialog::on_metricCombo_currentTextChanged(const QString &arg1) {
+    // 根据选择的指标类型更新UI控件
+    qDebug() << "切换指标类型: " << arg1;
+    
+    // 根据指标类型设置不同的阈值范围
+    if (arg1 == "CPU" || arg1 == "内存" || arg1 == "磁盘") {
+        ui->warningThresholdSpinBox->setRange(0.0, 100.0);
+        ui->criticalThresholdSpinBox->setRange(0.0, 100.0);
+        ui->thresholdUnitLabel->setText("%");
+    } else if (arg1 == "网络") {
+        ui->warningThresholdSpinBox->setRange(0.0, 10000.0);
+        ui->criticalThresholdSpinBox->setRange(0.0, 10000.0);
+        ui->thresholdUnitLabel->setText("KB/s");
+    } else if (arg1 == "负载") {
+        ui->warningThresholdSpinBox->setRange(0.0, 10.0);
+        ui->criticalThresholdSpinBox->setRange(0.0, 10.0);
+        ui->thresholdUnitLabel->setText("负载值");
+    }
+    
+    // 设置默认阈值
+    ui->warningThresholdSpinBox->setValue(80.0);
+    ui->criticalThresholdSpinBox->setValue(90.0);
+}
+=============== qt_monitor_client/src/dialogs/server_detail_dialog.cpp ===============
+#include "server_detail_dialog.h"
+#include "ui_server_detail_dialog.h"
+
+#include <QDebug>
+#include <QDateTime>
+
+ServerDetailDialog::ServerDetailDialog(const QString& server_name, QWidget *parent)
+    : QDialog(parent)
+    , ui(new Ui::ServerDetailDialog)
+    , server_name_(server_name) {
+    ui->setupUi(this);
+    
+    // 设置对话框标题
+    setWindowTitle(QString("服务器详情 - %1").arg(server_name));
+    
+    // 初始化UI组件
+    InitializeUI();
+    
+    // 查询并显示服务器详情
+    QueryServerDetail();
+}
+
+ServerDetailDialog::~ServerDetailDialog() {
+    delete ui;
+}
+
+void ServerDetailDialog::InitializeUI() {
+    // 设置图标
+    setWindowIcon(QIcon(":/icons/logo.png"));
+    
+    // 初始化状态栏
+    ui->statusBar->showMessage("就绪");
+    
+    // 设置默认图表类型
+    ui->chartTypeCombo->setCurrentIndex(0);
+    
+    // 初始化图表
+    ui->cpuChartView->setRenderHint(QPainter::Antialiasing);
+    ui->memChartView->setRenderHint(QPainter::Antialiasing);
+    ui->diskChartView->setRenderHint(QPainter::Antialiasing);
+    ui->netChartView->setRenderHint(QPainter::Antialiasing);
+    ui->loadChartView->setRenderHint(QPainter::Antialiasing);
+}
+
+void ServerDetailDialog::QueryServerDetail() {
+    // 查询服务器详情数据
+    ui->statusBar->showMessage(QString("正在查询 %1 的详细数据...").arg(server_name_));
+    
+    // 这里应该调用gRPC客户端查询数据
+    // 为了演示，我们使用模拟数据
+    
+    // 模拟数据填充
+    ui->hostnameLabel->setText(server_name_);
+    ui->ipLabel->setText("192.168.1.100");
+    ui->statusLabel->setText("在线");
+    ui->statusLabel->setStyleSheet("color: green;");
+    ui->uptimeLabel->setText("12:34:56");
+    ui->cpuLabel->setText("4核 Intel Core i7");
+    ui->memLabel->setText("16 GB");
+    ui->diskLabel->setText("500 GB SSD");
+    
+    // 更新图表
+    UpdateCharts();
+    
+    ui->statusBar->showMessage(QString("已更新 %1 的详细数据").arg(server_name_));
+}
+
+void ServerDetailDialog::UpdateCharts() {
+    // 更新各指标图表
+    // 这里应该使用真实数据更新图表
+    // 为了演示，我们创建一个简单的示例图表
+    
+    // 创建CPU图表
+    QtCharts::QChart *cpu_chart = new QtCharts::QChart();
+    QtCharts::QLineSeries *cpu_series = new QtCharts::QLineSeries();
+    
+    // 添加示例数据
+    cpu_series->append(0, 20);
+    cpu_series->append(1, 30);
+    cpu_series->append(2, 25);
+    cpu_series->append(3, 40);
+    cpu_series->append(4, 35);
+    cpu_series->append(5, 50);
+    
+    cpu_chart->addSeries(cpu_series);
+    cpu_chart->setTitle("CPU使用率");
+    cpu_chart->createDefaultAxes();
+    
+    ui->cpuChartView->setChart(cpu_chart);
+    
+    // 同样的方式更新其他图表
+    // 内存图表
+    QtCharts::QChart *mem_chart = new QtCharts::QChart();
+    QtCharts::QLineSeries *mem_series = new QtCharts::QLineSeries();
+    mem_series->append(0, 40);
+    mem_series->append(1, 45);
+    mem_series->append(2, 42);
+    mem_series->append(3, 48);
+    mem_series->append(4, 46);
+    mem_series->append(5, 50);
+    mem_chart->addSeries(mem_series);
+    mem_chart->setTitle("内存使用率");
+    mem_chart->createDefaultAxes();
+    ui->memChartView->setChart(mem_chart);
+    
+    // 磁盘图表
+    QtCharts::QChart *disk_chart = new QtCharts::QChart();
+    QtCharts::QLineSeries *disk_series = new QtCharts::QLineSeries();
+    disk_series->append(0, 15);
+    disk_series->append(1, 18);
+    disk_series->append(2, 16);
+    disk_series->append(3, 20);
+    disk_series->append(4, 19);
+    disk_series->append(5, 22);
+    disk_chart->addSeries(disk_series);
+    disk_chart->setTitle("磁盘使用率");
+    disk_chart->createDefaultAxes();
+    ui->diskChartView->setChart(disk_chart);
+    
+    // 网络图表
+    QtCharts::QChart *net_chart = new QtCharts::QChart();
+    QtCharts::QLineSeries *net_series = new QtCharts::QLineSeries();
+    net_series->append(0, 100);
+    net_series->append(1, 150);
+    net_series->append(2, 120);
+    net_series->append(3, 200);
+    net_series->append(4, 180);
+    net_series->append(5, 250);
+    net_chart->addSeries(net_series);
+    net_chart->setTitle("网络流量");
+    net_chart->createDefaultAxes();
+    ui->netChartView->setChart(net_chart);
+    
+    // 负载图表
+    QtCharts::QChart *load_chart = new QtCharts::QChart();
+    QtCharts::QLineSeries *load_series = new QtCharts::QLineSeries();
+    load_series->append(0, 0.5);
+    load_series->append(1, 0.8);
+    load_series->append(2, 0.6);
+    load_series->append(3, 1.2);
+    load_series->append(4, 1.0);
+    load_series->append(5, 1.5);
+    load_chart->addSeries(load_series);
+    load_chart->setTitle("系统负载");
+    load_chart->createDefaultAxes();
+    ui->loadChartView->setChart(load_chart);
+}
+
+void ServerDetailDialog::on_closeButton_clicked() {
+    close();
+}
+
+void ServerDetailDialog::on_refreshButton_clicked() {
+    QueryServerDetail();
+}
+
+void ServerDetailDialog::on_chartTypeCombo_currentTextChanged(const QString &arg1) {
+    // 根据图表类型显示对应的图表
+    qDebug() << "切换图表类型: " << arg1;
+}
+
+=============== qt_monitor_client/CMakeLists.txt ===============
+
+
+project(qt_monitor_client VERSION 0.1 LANGUAGES CXX)
+
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 查找Qt包
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Charts Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Charts Network)
+
+# 查找gRPC和Protobuf
+find_package(gRPC CONFIG QUIET)
+if(NOT gRPC_FOUND)
+    find_library(GRPC_LIBRARY grpc)
+    find_library(GRPCPP_LIBRARY grpc++)
+    find_library(GRPCPP_REFLECTION_LIBRARY grpc++_reflection)
+    if(GRPC_LIBRARY AND GRPCPP_LIBRARY)
+        add_library(gRPC::grpc STATIC IMPORTED)
+        set_property(TARGET gRPC::grpc PROPERTY IMPORTED_LOCATION ${GRPC_LIBRARY})
+
+        add_library(gRPC::grpc++ STATIC IMPORTED)
+        set_property(TARGET gRPC::grpc++ PROPERTY IMPORTED_LOCATION ${GRPCPP_LIBRARY})
+
+        add_library(gRPC::grpc++_reflection STATIC IMPORTED)
+        set_property(TARGET gRPC::grpc++_reflection PROPERTY IMPORTED_LOCATION ${GRPCPP_REFLECTION_LIBRARY})
+    endif()
+endif()
+
+find_package(Protobuf REQUIRED)
+
+# 源文件
+set(SOURCES
+    src/main.cpp
+    src/mainwindow.cpp
+    src/grpc_client.cpp
+    src/data_fetch_thread.cpp
+    src/dialogs/server_detail_dialog.cpp
+    src/dialogs/alarm_config_dialog.cpp
+    # proto生成的文件（需要先生成）
+    src/proto/cpu_load.pb.cc
+    src/proto/cpu_load.grpc.pb.cc
+    src/proto/cpu_softirq.pb.cc
+    src/proto/cpu_softirq.grpc.pb.cc
+    src/proto/cpu_stat.pb.cc
+    src/proto/cpu_stat.grpc.pb.cc
+    src/proto/disk_info.pb.cc
+    src/proto/disk_info.grpc.pb.cc
+    src/proto/mem_info.pb.cc
+    src/proto/mem_info.grpc.pb.cc
+    src/proto/monitor_info.pb.cc
+    src/proto/monitor_info.grpc.pb.cc
+    src/proto/net_info.pb.cc
+    src/proto/net_info.grpc.pb.cc
+    src/proto/query_api.pb.cc
+    src/proto/query_api.grpc.pb.cc
+)
+
+# 头文件
+set(HEADERS
+    src/mainwindow.h
+    src/grpc_client.h
+    src/monitor_data.h
+    src/time_utils.h
+    src/data_fetch_thread.h
+    src/theme_manager.h
+    src/dialogs/server_detail_dialog.h
+    src/dialogs/alarm_config_dialog.h
+    # proto生成的头文件
+    src/proto/cpu_load.pb.h
+    src/proto/cpu_load.grpc.pb.h
+    src/proto/cpu_softirq.pb.h
+    src/proto/cpu_softirq.grpc.pb.h
+    src/proto/cpu_stat.pb.h
+    src/proto/cpu_stat.grpc.pb.h
+    src/proto/disk_info.pb.h
+    src/proto/disk_info.grpc.pb.h
+    src/proto/mem_info.pb.h
+    src/proto/mem_info.grpc.pb.h
+    src/proto/monitor_info.pb.h
+    src/proto/monitor_info.grpc.pb.h
+    src/proto/net_info.pb.h
+    src/proto/net_info.grpc.pb.h
+    src/proto/query_api.pb.h
+    src/proto/query_api.grpc.pb.h
+)
+
+# UI文件
+set(UI
+    src/mainwindow.ui
+    src/dialogs/server_detail_dialog.ui
+    src/dialogs/alarm_config_dialog.ui
+)
+
+# 资源文件
+set(RESOURCES
+    resources/resources.qrc
+)
+
+# 创建可执行文件
+qt_add_executable(qt_monitor_client
+    ${SOURCES}
+    ${HEADERS}
+    ${UI}
+    ${RESOURCES}
+)
+
+# 包含目录
+target_include_directories(qt_monitor_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${Protobuf_INCLUDE_DIRS}
+)
+
+# 链接库
+target_link_libraries(qt_monitor_client PRIVATE
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Charts
+    Qt${QT_VERSION_MAJOR}::Network
+    gRPC::grpc++
+    gRPC::grpc++_reflection
+    ${Protobuf_LIBRARIES}
+)
+
+# 设置目标属性
+set_target_properties(qt_monitor_client PROPERTIES
+    WIN32_EXECUTABLE TRUE
+    MACOSX_BUNDLE TRUE
+)
+

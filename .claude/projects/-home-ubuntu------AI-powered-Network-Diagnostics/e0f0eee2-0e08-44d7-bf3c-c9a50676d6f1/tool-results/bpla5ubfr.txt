@@ -1,0 +1,627 @@
+-- weaknet TLS: enabled (sysroot:/opt/sysroot-bullseye-arm64/opt/weaknet-openssl-1.1)
+-- weaknet edge export: enabled (libcurl sysroot:/opt/sysroot-bullseye-arm64/opt/weaknet-libcurl)
+-- Configuring done (0.1s)
+-- Generating done (0.4s)
+-- Build files have been written to: /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/build-arm64-native
+[  6%] Built target ebpf
+[  8%] Built target weaknet_common
+[  9%] Built target weaknet
+[ 11%] Built target test_lifecycle_api
+[ 11%] Built target test_client_bin
+[ 12%] Built target weaknet_cli
+[ 12%] Building CXX object server/CMakeFiles/server_lib.dir/src/active_connectivity_monitor.cpp.o
+[ 13%] Building CXX object server/CMakeFiles/server_lib.dir/src/bt_monitor.cpp.o
+[ 13%] Building CXX object server/CMakeFiles/server_lib.dir/src/bt_data_path_anomaly_detector.cpp.o
+[ 14%] Building CXX object server/CMakeFiles/server_lib.dir/src/assurance/action_registry.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/bt_monitor.cpp:39:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:25:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:23:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   22 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/bt_monitor.hpp:507:8: note: previous use is here
+  507 | struct ServerContext;
+      |        ^
+[ 15%] Building CXX object server/CMakeFiles/server_lib.dir/src/dbus_service.cpp.o
+[ 15%] Building CXX object server/CMakeFiles/server_lib.dir/src/edge_telemetry_exporter.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/bt_monitor.cpp:39:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/bt_monitor.cpp:40:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/active_connectivity_monitor.cpp:22:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/active_connectivity_monitor.cpp:44:13: warning: unused function 'qtypeName' [-Wunused-function]
+   44 | std::string qtypeName(uint16_t) { return "A"; }
+      |             ^~~~~~~~~
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/active_connectivity_monitor.cpp:229:6: warning: unused function 'probeTcpConnect' [-Wunused-function]
+  229 | bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
+      |      ^~~~~~~~~~~~~~~
+3 warnings generated.
+[ 16%] Building CXX object server/CMakeFiles/server_lib.dir/src/edge_wireless_uplink_exporter.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/dbus_service.cpp:39:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/dbus_service.cpp:40:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+[ 16%] Building CXX object server/CMakeFiles/server_lib.dir/src/event_manager.cpp.o
+3 warnings generated.
+[ 16%] Building CXX object server/CMakeFiles/server_lib.dir/src/looper.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/event_manager.cpp:20:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:25:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:23:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   22 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/event_manager.hpp:96:8: note: previous use is here
+   96 | struct ServerContext;
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/edge_wireless_uplink_exporter.cpp:43:20: warning: unused variable 'kUplinkIntervalMsDefault' [-Wunused-const-variable]
+   43 | constexpr uint32_t kUplinkIntervalMsDefault = 10000;
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+1 warning generated.
+[ 17%] Building CXX object server/CMakeFiles/server_lib.dir/src/monitor_ebpf_plugins.cpp.o
+2 warnings generated.
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/looper.cpp:31:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+[ 17%] Building CXX object server/CMakeFiles/server_lib.dir/src/monitor_manager.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/event_manager.cpp:20:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/looper.cpp:32:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/looper.hpp:24:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   24 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/looper.hpp:24:1: note: did you mean struct here?
+   24 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/event_manager.cpp:21:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/looper.cpp:61:39: warning: unused parameter 'signum' [-Wunused-parameter]
+   61 | static void looper_signal_handler(int signum) {
+      |                                       ^
+3 warnings generated.
+[ 18%] Building CXX object server/CMakeFiles/server_lib.dir/src/monitor_plugins.cpp.o
+3 warnings generated.
+[ 18%] Building CXX object server/CMakeFiles/server_lib.dir/src/rssi_monitor.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/monitor_ebpf_plugins.cpp:20:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/monitor_manager.cpp:21:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/monitor_plugins.cpp:19:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/monitor_plugins.cpp:22:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   21 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: note: did you mean struct here?
+   21 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/monitor_plugins.cpp:23:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   23 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: note: did you mean struct here?
+   23 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp:22:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp:24:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp:25:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   23 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: note: did you mean struct here?
+   23 | class ServerContext;
+      | ^~~~~
+      | struct
+1 warning generated.
+[ 19%] Building CXX object server/CMakeFiles/server_lib.dir/src/rtt_monitor.cpp.o
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp:46:13: warning: variable 'loop_count' set but not used [-Wunused-but-set-variable]
+   46 |         int loop_count = 0;
+      |             ^
+4 warnings generated.
+[ 19%] Building CXX object server/CMakeFiles/server_lib.dir/src/tcp_loss_monitor.cpp.o
+3 warnings generated.
+[ 19%] Building CXX object server/CMakeFiles/server_lib.dir/src/weaknet_config.cpp.o
+1 warning generated.
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp:35:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp:36:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp:38:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   21 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: note: did you mean struct here?
+   21 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp:124:13: warning: variable 'loop_count' set but not used [-Wunused-but-set-variable]
+  124 |         int loop_count = 0;
+      |             ^
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/tcp_loss_monitor.cpp:28:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/tcp_loss_monitor.cpp:32:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+4 warnings generated.
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/tcp_loss_monitor.cpp:57:13: warning: variable 'loop_count' set but not used [-Wunused-but-set-variable]
+   57 |         int loop_count = 0;
+      |             ^
+3 warnings generated.
+[ 19%] Linking CXX static library libserver_lib.a
+[ 42%] Built target server_lib
+[ 42%] Linking CXX executable test_net_info
+[ 43%] Linking CXX executable history_query_tool
+[ 43%] Linking CXX executable test_quality_assessor_gtest
+[ 44%] Building CXX object server/CMakeFiles/weaknet-dbus-server.dir/src/main.cpp.o
+[ 44%] Built target test_net_info
+[ 44%] Linking CXX executable test_audio_fusion_gtest
+[ 44%] Built target history_query_tool
+[ 44%] Building CXX object server/CMakeFiles/weaknet-dbus-server.dir/src/server.cpp.o
+[ 45%] Built target test_quality_assessor_gtest
+[ 45%] Linking CXX executable test_band_conflict_gtest
+[ 46%] Built target test_audio_fusion_gtest
+[ 46%] Linking CXX executable test_serializer_gtest
+[ 47%] Built target test_band_conflict_gtest
+[ 48%] Building CXX object server/test/CMakeFiles/test_event_manager_gtest.dir/unit/test_event_manager_gtest.cpp.o
+[ 49%] Built target test_serializer_gtest
+[ 49%] Building CXX object server/test/CMakeFiles/test_event_manager_gtest.dir/unit/mock_dbus_service.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/main.cpp:14:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:42:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_event_manager_gtest.cpp:7:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:25:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:23:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   22 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/event_manager.hpp:96:8: note: previous use is here
+   96 | struct ServerContext;
+      |        ^
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:43:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:44:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/looper.hpp:24:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   24 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/looper.hpp:24:1: note: did you mean struct here?
+   24 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:47:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   21 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rtt_monitor.hpp:21:1: note: did you mean struct here?
+   21 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:48:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: warning: class 'ServerContext' was previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   23 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/rssi_monitor.hpp:23:1: note: did you mean struct here?
+   23 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/mock_dbus_service.cpp:12:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/src/server.cpp:375:13: warning: variable 'loop_count' set but not used [-Wunused-but-set-variable]
+  375 |         int loop_count = 0;
+      |             ^
+1 warning generated.
+[ 50%] Building CXX object server/test/CMakeFiles/test_bt_full_link_gtest.dir/unit/test_bt_full_link_gtest.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_event_manager_gtest.cpp:7:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_event_manager_gtest.cpp:8:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+1 warning generated.
+[ 50%] Building CXX object server/test/CMakeFiles/test_bt_full_link_gtest.dir/unit/mock_dbus_service.cpp.o
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_bt_full_link_gtest.cpp:15:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:25:
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:23:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   22 | class ServerContext;
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/event_manager.hpp:96:8: note: previous use is here
+   96 | struct ServerContext;
+      |        ^
+3 warnings generated.
+[ 51%] Linking CXX executable test_event_manager_gtest
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_bt_full_link_gtest.cpp:15:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+[ 51%] Built target test_event_manager_gtest
+[ 51%] Linking CXX executable test_bt_monitor
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/mock_dbus_service.cpp:12:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:1: warning: 'ServerContext' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   73 | struct ServerContext {
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_manager.hpp:27:1: note: did you mean struct here?
+   27 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/monitor_plugin.hpp:22:1: note: did you mean struct here?
+   22 | class ServerContext;
+      | ^~~~~
+      | struct
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+In file included from /home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/test/unit/test_bt_full_link_gtest.cpp:16:
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: warning: class 'ServerContext' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+   39 | class ServerContext;  ///< 前置声明
+      | ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/server.hpp:73:8: note: previous use is here
+   73 | struct ServerContext {
+      |        ^
+/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp:39:1: note: did you mean struct here?
+   39 | class ServerContext;  ///< 前置声明
+      | ^~~~~
+      | struct
+[ 51%] Built target test_bt_monitor
+[ 52%] Linking CXX executable test_iface_type_gtest
+6 warnings generated.
+[ 53%] Linking CXX executable weaknet-dbus-server
+[ 53%] Built target test_iface_type_gtest
+[ 54%] Linking CXX executable test_logger_gtest
+1 warning generated.
+[ 54%] Built target test_logger_gtest
+[ 54%] Linking CXX executable test_traffic_analyzer_gtest
+[ 54%] Linking CXX executable test_weak_netmgr_gtest
+3 warnings generated.
+[ 55%] Linking CXX executable test_bt_full_link_gtest
+[ 56%] Built target test_traffic_analyzer_gtest
+[ 57%] Built target test_weak_netmgr_gtest
+[ 58%] Linking CXX executable test_net_iface_gtest
+[ 58%] Linking CXX executable test_rtt_monitor_gtest
+[ 58%] Built target weaknet-dbus-server
+[ 58%] Linking CXX executable test_bt_monitor_extra_gtest
+[ 58%] Built target test_bt_full_link_gtest
+[ 59%] Linking CXX executable test_jitter_monitor_gtest
+[ 60%] Built target test_rtt_monitor_gtest
+[ 60%] Built target test_net_iface_gtest
+[ 60%] Linking CXX executable test_database_manager_gtest
+[ 60%] Linking CXX executable test_dns_monitor_gtest
+[ 61%] Built target test_bt_monitor_extra_gtest
+[ 61%] Linking CXX executable test_wireless_event_gtest
+[ 61%] Built target test_jitter_monitor_gtest
+[ 62%] Linking CXX executable test_bt_link_quality_gtest
+[ 63%] Built target test_dns_monitor_gtest
+[ 64%] Built target test_database_manager_gtest
+[ 64%] Linking CXX executable test_site_incident_gtest
+[ 64%] Linking CXX executable test_network_epoch_store_gtest
+[ 64%] Built target test_bt_link_quality_gtest
+[ 65%] Built target test_wireless_event_gtest
+[ 65%] Linking CXX executable test_net_wifiriss_gtest
+[ 65%] Linking CXX executable test_ebpf
+[ 67%] Built target test_network_epoch_store_gtest
+[ 68%] Built target test_site_incident_gtest
+[ 68%] Linking CXX executable test_ebpf_monitor_observability_gtest
+[ 69%] Building CXX object server/test/CMakeFiles/test_weaknet_config_gtest.dir/unit/test_weaknet_config_gtest.cpp.o
+[ 70%] Built target test_net_wifiriss_gtest
+[ 71%] Built target test_ebpf
+[ 72%] Linking CXX executable test_monitor_registry_gtest
+[ 73%] Linking CXX executable test_monitor_manager_gtest
+[ 74%] Built target test_ebpf_monitor_observability_gtest
+[ 75%] Linking CXX executable test_metrics_registry_gtest
+[ 75%] Built target test_monitor_registry_gtest
+[ 75%] Built target test_monitor_manager_gtest
+[ 75%] Linking CXX executable test_sle_evaluator_gtest
+[ 75%] Linking CXX executable test_dns_transaction_tracker_gtest
+[ 75%] Built target test_metrics_registry_gtest
+[ 75%] Linking CXX executable test_dns_service_evaluator_gtest
+[ 76%] Built target test_sle_evaluator_gtest
+[ 77%] Built target test_dns_transaction_tracker_gtest
+[ 77%] Linking CXX executable test_tcp_connect_evaluator_gtest
+[ 78%] Linking CXX executable test_http_access_evaluator_gtest
+[ 79%] Built target test_dns_service_evaluator_gtest
+[ 79%] Linking CXX executable test_captive_portal_evaluator_gtest
+[ 80%] Built target test_tcp_connect_evaluator_gtest
+[ 80%] Built target test_http_access_evaluator_gtest
+[ 80%] Linking CXX executable test_assurance_policy_source_gtest
+[ 80%] Linking CXX executable test_active_connectivity_gtest
+[ 81%] Built target test_captive_portal_evaluator_gtest
+[ 81%] Linking CXX executable test_tls_probe_client_gtest
+[ 82%] Built target test_assurance_policy_source_gtest
+[ 82%] Linking CXX executable test_w3_time_dynamics_gtest
+[ 83%] Built target test_active_connectivity_gtest
+[ 83%] Linking CXX executable test_w4_fault_matrix_gtest
+[ 84%] Built target test_tls_probe_client_gtest
+[ 84%] Linking CXX executable test_w4_snapshot_lifecycle_gtest
+[ 85%] Built target test_w3_time_dynamics_gtest
+[ 86%] Built target test_w4_fault_matrix_gtest
+[ 87%] Building CXX object server/test/CMakeFiles/test_edge_telemetry_exporter_gtest.dir/unit/test_edge_telemetry_exporter_gtest.cpp.o
+[ 88%] Building CXX object server/test/CMakeFiles/test_edge_wireless_uplink_gtest.dir/unit/test_edge_wireless_uplink_gtest.cpp.o
+[ 89%] Built target test_w4_snapshot_lifecycle_gtest
+[ 89%] Linking CXX executable test_topology_collector_gtest
+[ 90%] Built target test_topology_collector_gtest
+[ 90%] Linking CXX executable test_diagnosis_engine_gtest
+[ 90%] Linking CXX executable test_weaknet_config_gtest
+[ 91%] Built target test_diagnosis_engine_gtest
+[ 91%] Linking CXX executable test_bpf_map_sizing_gtest
+[ 91%] Built target test_weaknet_config_gtest
+[ 91%] Linking CXX executable test_per_key_counter_tracker_gtest
+[ 92%] Built target test_bpf_map_sizing_gtest
+[ 93%] Building CXX object server/test/CMakeFiles/test_action_catalog_version_gtest.dir/unit/test_action_catalog_version_gtest.cpp.o
+[ 94%] Built target test_per_key_counter_tracker_gtest
+[ 94%] Linking CXX executable test_edge_ai_scheduler_gtest
+[ 95%] Built target test_edge_ai_scheduler_gtest
+[ 96%] Linking CXX executable test_bt_hci_traffic_gtest
+[ 96%] Built target test_bt_hci_traffic_gtest
+[ 97%] Building CXX object server/test/CMakeFiles/test_bt_anomaly_detector_gtest.dir/unit/test_bt_anomaly_detector_gtest.cpp.o
+[ 97%] Linking CXX executable test_edge_telemetry_exporter_gtest
+[ 97%] Linking CXX executable test_edge_wireless_uplink_gtest
+[ 97%] Built target test_edge_telemetry_exporter_gtest
+[ 98%] Linking CXX executable runner_bt_hci_analyzer
+[ 98%] Linking CXX executable test_action_catalog_version_gtest
+[ 98%] Built target test_edge_wireless_uplink_gtest
+[100%] Linking CXX executable test_map_sizing_spec_sync_gtest
+[100%] Built target runner_bt_hci_analyzer
+[100%] Built target test_action_catalog_version_gtest
+[100%] Built target test_map_sizing_spec_sync_gtest
+[100%] Linking CXX executable test_bt_anomaly_detector_gtest
+[100%] Built target test_bt_anomaly_detector_gtest

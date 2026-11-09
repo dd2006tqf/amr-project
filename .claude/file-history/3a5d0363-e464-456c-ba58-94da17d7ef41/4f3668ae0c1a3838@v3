@@ -1,0 +1,24 @@
+# B7：按 ROS 参数文件规范组织——节点名顶层键 + ros__parameters，
+# 由 launch/full_system.launch.py 通过 ament_index_python 解析 share 路径注入。
+safety_gate_node:
+  ros__parameters:
+    max_linear_x_mps: 1.5
+    max_linear_y_mps: 1.0
+    max_angular_z_radps: 2.0
+    # B1：双心跳源（chassis_driver / path_tracker）共用超时阈值
+    heartbeat_timeout_ms: 500
+    soft_timeout_ms: 2000
+    # M5：Fault Supervisor 降级限速（kClampSpeed）时的线速度阈值
+    degraded_max_linear_x_mps: 0.2
+    # 阶段 2 proto 发布开关：/safety/state_proto（10Hz+50Hz 兜底，安全消息迁移期间的最大带宽项）。
+    # 关闭后本节点不发安全状态。
+    #
+    # 阶段 4c：rosidl 侧已删除，本节点只发 /safety/state_proto。
+    # 注意本节点**不订阅**自己的这条状态话题，所以这不影响门控判定。
+    proto_dual_publish: true
+    # 阶段 3 双订阅：link_health 与 topology_state 从 *_proto 读取
+    # （适配器内部反投影回 rosidl，门控判定逻辑一字未改）。
+    #
+    # **阶段 4c 起默认 true**：发布端已删除 rosidl 侧，默认 false 会让本节点
+    # 订阅永远不会有人发布的话题——DDS 不报错，只是永久收不到消息。
+    proto_dual_subscribe: true

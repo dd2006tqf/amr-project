@@ -1,0 +1,321 @@
+# 内核模块技术栈引入讨论
+
+> **状态**：讨论记录，未形成决策，未进入 OpenSpec 工作流
+> **讨论日期**：2026-11-02
+> **来源项目**：`/home/ubuntu/个人学习/Linux监控系统源码新版/monitor_system`（MIT，`cpp-agan-team/monitor_system`）
+> **本文性质**：技术可行性讨论纪要。文中所有结论均标注证据来源，可复核；未标注"已实测"的均为推断。
+
+---
+
+## 一、诉求
+
+把 monitor_system 的**驱动模块技术栈**引入当前项目（AI-powered-Network-Diagnostics / WeakNet）。
+
+明确边界：
+
+- 只谈**内核模块**（`worker/src/kmod/`），不涉及 eBPF。
+- 目标是**技术栈深度**，不是生产可用性。
+- 与 Qt 客户端、TC eBPF 的引入是不同的独立议题，不在本文范围。
+
+---
+
+## 二、勘误：关于"两个新 eBPF 文件"
+
+讨论初期曾认为 monitor_system 提供两个 eBPF 源文件。实测后更正：
+
+```text
+$ find monitor_system -name "*.bpf.c"
+./worker/src/ebpf/net_stats.bpf.c        ← 全仓仅此一个
+
+$ grep '^SEC(' net_stats.bpf.c
+86:SEC("tc/ingress")
+107:SEC("tc/egress")                       ← 同一文件内的两个 BPF 程序
+```
+
+`worker/src/kmod/` 下两个 `.c` 文件（`cpu_stat_collector.c`、`softirq_collector.c`）经实测 `grep -c 'SEC(' ` **计数为 0**，是纯内核模块，不含任何 eBPF 程序段。
+
+**结论**：本议题涉及的源文件只有两个 `.c` + 一个 `Makefile` + 两个用户态测试程序，规模远小于最初估计。
+
+---
+
+## 三、事实核对
+
+### 3.1 源项目侧
+
+| 项 | 事实 | 证据 |
+| --- | --- | --- |
+| 模块数 | 2 个 | `worker/src/kmod/{cpu_stat_collector,softirq_collector}.c` |
+| 许可证 | `MODULE_LICENSE("GPL")` | 两文件第 41 / 30 行 |
+| 上游许可 | MIT，`Copyright (c) 2024`，无具名作者 | `monitor_system/LICENSE` |
+| 构建方式 | 目标机原地编译，`KDIR ?= /lib/modules/$(shell uname -r)/build` | `worker/src/kmod/Makefile` |
+| 是否进入 CMake 主构建 | 仅 `add_custom_target(kernel_modules)`，非默认目标 | `worker/CMakeLists.txt:97` |
+| 仓库内是否有 `.ko` 产物 | 无 | `find . -name "*.ko"` 空 |
+| 是否有 DKMS 配置 | 无 | — |
+
+### 3.2 目标板侧
+
+| 项 | 事实 | 证据 |
+| --- | --- | --- |
+| 内核版本 | `5.15.147-99btf1-a733` | `docs/蓝牙监控优化实现方案.md:1052`（2026-09-29 实测） |
+| SoC | Allwinner A733（`sun60iw2`） | `docs/本地LLM部署方案.md:5` |
+| `CONFIG_MODULES` | 推断为 `y`——因 `CONFIG_BT = m` | `docs/蓝牙监控优化实现方案.md:1059`（实测） |
+| `/lib/modules/$(uname -r)/build` 是否存在 | **未知，待实测** | 板端隧道当前不可达 |
+| 内核头文件是否可得 | **未知** | Radxa 是否发布 `5.15.147-99btf1-a733` 内核源码树，需单独确认 |
+
+> **勘误**：讨论中曾推断"厂商 BSP 内核基本不提供模块构建目录"，该判断**证据不足、已撤回**。
+> `CONFIG_BT = m` 证明该内核支持模块加载，`CONFIG_MODULES=y` 成立。真正待确认的是
+> **头文件是否可得**，不是模块机制是否存在。
+
+### 3.3 当前项目侧
+
+| 项 | 事实 | 证据 |
+| --- | --- | --- |
+| 是否已有内核模块 | 无 | `find server client tools -name "*.ko" -o -path "*kmod*"` 空 |
+| sysroot 是否含内核头文件 | 否 | `scripts/setup_arm64_sysroot.sh` 无 `linux-headers` / `/usr/src` 相关 |
+| `ci.sh` 打包的内核侧产物 | 仅 `*.bpf.o` | `tools/ci.sh:155` |
+| OTA 是否涉及内核模块 | 否，零命中 | `grep -rn "insmod\|modprobe\|内核模块" tools/ docs/OTA固件更新与安全发布指南.md` |
+| 是否采集主机资源 | 否，完全不采集 | `grep -rn "proc/stat\|/proc/meminfo\|getloadavg"` 仅命中一处无关注释 |
+| 评估链是否引用主机资源 | 否 | `server/include/assurance/` 下 25 个头文件零引用 |
+
+---
+
+## 四、源模块实现剖析
+
+两个模块结构高度相似，此处以 `cpu_stat_collector.c` 为代表。
+
+### 4.1 数据通路
+
+```text
+hrtimer(1s, CLOCK_MONOTONIC, HRTIMER_MODE_REL)
+        │
+        ▼
+update_cpu_stats()
+        │  逐 CPU 读 kcpustat_cpu(cpu).cpustat[CPUTIME_*]
+        │  逐 CPU 读 get_cpu_idle_time_us / get_cpu_iowait_time_us
+        ▼
+__get_free_pages(GFP_KERNEL|__GFP_ZERO, order)   分配的连续物理页
+        │  写 struct cpu_stat[256]，末位 cpu_name[0]='\0' 作结束哨兵
+        ▼
+mmap 回调：remap_pfn_range + pgprot_noncached
+        ▼
+用户态 mmap(PROT_READ, MAP_SHARED) → 按哨兵遍历 → 与上次快照差分 → 百分比
+```
+
+### 4.2 值得肯定的设计点
+
+1. **tickless 感知**。`get_cpu_idle_time_us` / `get_cpu_iowait_time_us` 优先，失败回落 `kcpustat`。这是很多手写采集器会漏掉的细节，NO_HZ 模式下普通 tick 累计值会失真。
+2. **内核态定点采样**。1Hz 由内核定时，不依赖用户态调度，读数节拍稳定。
+3. **零拷贝**。`remap_pfn_range` 直接映射物理页，用户态读无 `read()` 系统调用开销。
+4. **哨兵遍历**。用空 `cpu_name` 标记结束，避免了定长数组需要额外传长度。
+
+### 4.3 缺陷
+
+按严重度排序。
+
+**D1. 无锁、无双缓冲（最高危）**
+
+`update_cpu_stats()` 在 hrtimer 软中断上下文**逐字段**写入 `struct cpu_stat`（96 字节），用户态同时在 mmap 区**逐字段**读取。arm64 上单个 `u64` 是原子的，但**整条记录不是原子的**。
+
+后果：用户态可能读到「本轮的 `user` + 上一轮的 `idle`」，算出的百分比是错的，且不可复现、不可诊断。
+
+正确做法：双缓冲 + 代次号（用户态校验代次一致才采信），或 `seqlock`。
+
+**D2. `pgprot_noncached` 用错**
+
+注释写"确保数据一致性"，实际上：
+
+- 一致性靠的是**内存屏障**，不是 cache 属性；
+- 把普通 RAM 页设成非缓存，每次读都穿透到内存，性能反而更差；
+- 对 CPU 写的普通内存，正确做法是普通 cached 映射 + 用户态自己做一致性处理，或改用 `dma_mmap_coherent`。
+
+**D3. `user` 与 `guest` 重复计入**
+
+内核语义中 `CPUTIME_USER` 已包含 `CPUTIME_GUEST`，`CPUTIME_NICE` 已包含 `CPUTIME_GUEST_NICE`。模块把 10 项全量导出，用户态（`cpu_stat_monitor.cpp`）又把 `user+nice+system+irq+softirq+steal` 直接当 busy 时间——在运行虚拟化的机器上 CPU 使用率会系统性偏高。
+
+**D4. 用户态假定的 CPU 上限与内核不一致（潜在越界）**
+
+| 层 | 上限常量 | 位置 |
+| --- | --- | --- |
+| 内核模块 | `MAX_CPUS 256` | `cpu_stat_collector.c` |
+| 用户态 mmap | **硬编码 128** | `cpu_stat_monitor.cpp` |
+
+```cpp
+size_t stat_count = 128; // 假设最多128个CPU
+size_t stat_size = sizeof(struct cpu_stat) * stat_count;
+void* addr = mmap(nullptr, stat_size, PROT_READ, MAP_SHARED, fd, 0);
+```
+
+内核只按 `size > data_size` 判断（256 条），用户态请求 128 条能通过；但若机器核数 > 128，用户态遍历到第 128 条就停——**静默丢数据**。两处常量无任何编译期或运行期关联。
+
+**D5. `for_each_possible_cpu` 包含离线 CPU**
+
+导出的是 possible 而非 online，用户态无法区分哪些 CPU 当前离线，会算出零值 CPU 拉低整体均值。
+
+**D6. 无 capability 校验**
+
+`cpu_stat_open` 只打日志，任何本地用户可读全部 CPU 统计。与当前项目 `requireRootCaller` 的写操作鉴权是两种安全模型。
+
+**D7. 构建链不可移植**
+
+`KDIR ?= /lib/modules/$(shell uname -r)/build` 有两个硬约束：必须在目标机编译、必须有完整内核头文件树。交叉编译则还需显式传 `ARCH=arm64`、`CROSS_COMPILE`、`KDIR` 三者。
+
+---
+
+## 五、与当前项目的冲突
+
+### 5.1 OTA：不可回避的架构级冲突
+
+当前 OTA 体系（`docs/OTA固件更新与安全发布指南.md`）对内核态**完全没有概念**：
+
+| OTA 机制 | 对内核模块的后果 |
+| --- | --- |
+| `releases/<version>/` 目录 + `current` 软链原子翻转 | `.ko` 无处安放；软链翻转不影响内核中已加载的模块 |
+| `manifest.sha256` 全量校验 | 不覆盖 `.ko`，签名链对它无效 |
+| `weaknet-ota-ctl` 事务状态机 | 不记录模块版本，崩溃点判定看不到内核态 |
+| `weaknet-ota-gate` fail-closed 门禁 | 无法感知内核态代码与用户态不匹配 |
+| 回滚 | 可能出现「旧模块 + 新用户态」或「新模块 + 回滚后的用户态」混跑，无任何检测手段 |
+
+这不是改几行脚本能解决的，是 OTA 契约需要新增一个维度。按 `docs/架构设计-五层权责契约.md` 的分层，属于 L5 执行面，需要独立 change 定义。
+
+### 5.2 安全性：eBPF 有验证器，内核模块没有
+
+| | eBPF | 内核模块 |
+| --- | --- | --- |
+| 加载前验证 | verifier 逐指令检查越界、死循环、非法指针 | 无 |
+| 出错后果 | 拒绝加载，插件降级（`EbpfMonitorState::Fallback`） | 内核 panic，设备失联 |
+| 可回滚 | 用户态 `bpf_link__destroy` 即卸 | 需 `rmmod`，且可能被引用计数阻塞 |
+
+当前项目有完整的降级语义（`server/include/ebpf_monitor_interface.hpp` 的 `Fallback` 状态），内核模块没有对应的安全网。
+
+### 5.3 数据价值：procfs 逐项覆盖
+
+这是最需要正视的一条。两个模块采集的全部字段，procfs 都有，且顺序一致：
+
+```text
+/proc/stat
+cpu  5425896 5750 2311078 63729942 1056720 0 65200 0 0 0
+     user    nice system idle    iowait  irq softirq steal guest guest_nice
+
+/proc/softirqs
+          HI    TIMER   NET_TX   NET_RX   BLOCK   IRQ_POLL TASKLET  SCHED   HRTIMER  RCU
+```
+
+与 `struct cpu_stat`（10 字段）、`struct softirq_stat`（10 类）**完全对应**。
+
+内核模块唯一多给的是「内核态 1Hz 定点采样」，而这个能力用 `BPF_MAP_TYPE_PERCPU_ARRAY` + `bpf_timer` 也能获得——当前项目已在用前者（`server/src/dns_monitor.bpf.c:178`、`server/src/tcp_connect.bpf.c:70`）。
+
+**因此：引入内核模块，在数据层面没有增量。**
+
+---
+
+## 六、可选路径
+
+### 路径 A：实验性引入（不改生产架构）
+
+在 `server/kmod/` 下放一份独立模块源码，**完全不接入生产链路**：
+
+- 不进 `tools/ci.sh`
+- 不进 OTA `manifest.sha256`
+- 不注册为 `IMonitorPlugin`
+- 不新增 D-Bus 方法
+- 不进入 `config.yaml`
+
+用途：在板端手工 `make` → `insmod` → 跑测试程序，验证内核态采集的真实行为，结论回写本文。按 CLAUDE.md，工作流外任务需在 `openspec/tasks/` 留记录。
+
+| 维度 | 评估 |
+| --- | --- |
+| 满足"技术栈深度"诉求 | ✅ 完整覆盖 hrtimer / mmap / remap_pfn_range / per-CPU 数据通路 |
+| 生产风险 | ✅ 零（不加载即无影响） |
+| OTA 影响 | ✅ 零 |
+| 前置条件 | 板端必须有内核头文件 |
+| 工作量 | 小（2 个 `.c` + Makefile，需适配 5.15） |
+
+### 路径 B：生产级引入
+
+需依次解决：内核头文件来源 → 交叉编译链（`KDIR`/`ARCH`/`CROSS_COMPILE`）→ 模块版本与 OTA 事务绑定 → 回滚一致性 → 加载失败降级 → 内核 panic 兜底。
+
+| 维度 | 评估 |
+| --- | --- |
+| 满足"技术栈深度"诉求 | ✅ |
+| 数据增量 | ❌ 接近零（procfs 全覆盖） |
+| 生产风险 | ❌ 内核 panic → 设备失联 |
+| 工作量 | 大（至少两个 change：编译部署 + OTA 契约） |
+
+### 路径 C：针对 procfs 拿不到的能力另起
+
+若目标是让内核模块**有存在意义**，应改盯 procfs 无法提供的数据：Wi-Fi 驱动 TX/RX ring 统计、硬件 PMU 计数器、温度传感器寄存器等。
+
+但这需要**改驱动或写平台驱动**，必须针对具体硬件（本板为 AIC8800D80，见 `docs/蓝牙监控优化实现方案.md`），无法从 monitor_system 照搬。
+
+---
+
+## 七、倾向
+
+用户诉求是**技术栈深度**，不是生产能力。据此：
+
+**路径 A 是最匹配的选项。** 它完整覆盖内核模块的技术要点（字符设备、mmap、remap_pfn_range、hrtimer、per-CPU 数据），同时不对 OTA、五层权责契约、生产稳定性产生任何影响。
+
+若后续想升级为生产，路径 B 的前置条件（内核头文件、OTA 契约扩展）应作为独立议题重新评估，不应在本次引入中夹带。
+
+---
+
+## 八、未决问题
+
+| # | 问题 | 影响 | 状态 |
+| --- | --- | --- | --- |
+| Q1 | 板端是否存在 `/lib/modules/5.15.147-99btf1-a733/build`？ | 决定路径 A 是否可行 | **待实测**（隧道不可达） |
+| Q2 | Radxa 是否发布该版本内核源码 / 头文件包？ | 若无，需自建头文件树或改走 in-tree 方案 | 待查 |
+| Q3 | 引入后的模块放在哪个目录？ | `server/kmod/` 还是独立 `kmod/` | 待定 |
+| Q4 | 是否需要保留源项目的 MIT 署名？ | 是，若复制其代码须保留版权声明 | 待确认引入方式（引用 vs 重写） |
+
+### Q1 实测命令
+
+```bash
+ssh radxa@radxa-cubie-a7a.local \
+  'uname -r; ls -d /lib/modules/$(uname -r)/build 2>/dev/null || echo NO_BUILD_DIR; ls /lib/modules/'
+```
+
+---
+
+## 九、若采纳路径 A，需要改造的点
+
+源模块直接搬到 5.15.147 需要适配，不能原样使用：
+
+1. **CPU 上限一致性**：内核 `MAX_CPUS 256` 与用户态硬编码 `128` 必须统一，且应从 `num_possible_cpus()` 动态传递。
+2. **并发安全**：加双缓冲 + 代次号，消除 D1 的撕裂读。
+3. **cache 属性**：去掉 `pgprot_noncached`（D2）。
+4. **guest 重复计入**：busy 时间计算排除 `guest` / `guest_nice`（D3）。
+5. **内核对齐**：`class_create` 已有 `>= 6.4.0` 分支，5.15 走旧签名，需确认已正确分支。
+6. **capability 校验**：至少加 `capable(CAP_SYS_ADMIN)` 或明确文档化"仅实验用"。
+7. **软中断首采样 bug**：源码 `cpu_softirq_monitor.cpp` 首次采样分支直接写累计值（后续才用增量），需修。
+
+---
+
+## 十、附：monitor_system 驱动栈与当前项目的对照
+
+| 维度 | monitor_system | WeakNet |
+| --- | --- | --- |
+| 内核态采集 | 内核模块 mmap + procfs + TC eBPF | 纯 eBPF CO-RE（19 kprobe / 15 tracepoint / 2 kretprobe） |
+| 是否有内核模块 | 有（2 个） | 无 |
+| 数据传输 | 内核页 → mmap 零拷贝 | BPF Map → `bpf_map_lookup_elem` |
+| 采样节拍 | 内核 hrtimer 1Hz | 用户态轮询（插件 `interval_ms`） |
+| 采集对象 | 机器资源（CPU/内存/磁盘/软中断/网络） | 无线链路与设备（Wi-Fi/BT/RTT/DNS/HTTP/丢包） |
+| 进程模型 | Worker/Manager 分离，gRPC push | 单进程 `weaknet-dbus-server` + 17 个 `IMonitorPlugin` |
+| IPC | gRPC `SetMonitorInfo`（10s 推送） | D-Bus 系统总线（31 方法，写操作 `requireRootCaller`） |
+| 存储 | MySQL 5 表 | SQLite 7 表 |
+| 前端 | Qt Widgets + Charts（未编入构建） | Next.js + FastAPI 云端工作台 |
+| 评估模型 | 加权总分 `CPU×35%+Mem×30%+Load×15%+Disk×15%+Net×5%` | SLE v2，明确拒绝单一总分（Evidence-First） |
+| 构建 | CMake + 独立 Makefile（kmod/ebpf） | 唯一 CMake，ARM64 原生交叉（~40s） |
+| 测试 | 无 gtest / 无 CTest | 56 个 gtest 套件 |
+
+---
+
+## 十一、参考
+
+- `docs/架构设计-五层权责契约.md` — L1~L5 分层与契约，判断内核态归属
+- `docs/OTA固件更新与安全发布指南.md` — A/B 布局、事务状态机、启动门禁
+- `docs/蓝牙监控优化实现方案.md:1052,1059` — 板端内核版本与 `CONFIG_BT=m` 实测
+- `docs/网络体验评价体系.md` — Observer 健康与证据链
+- `server/include/ebpf_monitor_interface.hpp` — 现有降级语义（`Fallback` 状态）
+- `server/include/monitor_plugin.hpp` — 插件生命周期契约
+- 源项目：`/home/ubuntu/个人学习/Linux监控系统源码新版/monitor_system/worker/src/kmod/`

@@ -1,0 +1,19 @@
+---
+name: docs-cleanup-2026-10-13
+description: 2026-10-13 docs/ 目录大清理——删除 4 篇过时/过程文档、迁移 1 篇 harness 内部文档、精简学习路线图、改名架构设计
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 380b729c-a60f-4044-b44d-3d6bfc8083c9
+  modified: 2026-10-13T09:47:24.731Z
+---
+
+2026-10-13 对 `docs/` 做了结构性清理（用户批准全部方案）：
+
+- **删除**：`docker-buildx-优化方案.md`（QEMU 方案已被 2026-10-11 裸机交叉编译取代）、`项目评估.md`（自评报告无指导价值）、`ideas/fix-a2dp-l2cap-chan-offset.md`（已修复完毕）、`edge-telemetry-evolutions-1-2-implementation-plan.md`（Planner 底稿，内容已实施完毕）。
+- **迁移**：`docs/ai/workflow-errors-ref.md` → `.ai-harness/docs/workflow-errors-ref.md`（harness 内部排错文档不属于项目 docs）。
+- **改名**：`docs/架构设计.md` → `docs/架构设计-模块与代码结构.md`（与 `架构设计-五层权责契约.md` 区分），所有跨文件引用已同步更新，文档开头加了互链。
+- **精简**：`docs/学习路线图.md` 从 914 行砍到 818 行（删 §8 应用场景五小节、§9 学习资源整节，结论章更新为当前事实）。
+- **标注废弃**：`docs/交叉编译与开发板部署.md` 的 §4.1/§4.3 容器镜像、§8 `-j1` 警告、附录 D Dockerfile 全部标"历史参考，已废弃"，顶部加了当前主路径提示（sysroot 初始化 + vmlinux.h 两步即可）。
+
+**相关**：[[edge-uplink-epoch-collision]]、[[arm64-build-environment]]、[[project-profile-cmake-migration]]

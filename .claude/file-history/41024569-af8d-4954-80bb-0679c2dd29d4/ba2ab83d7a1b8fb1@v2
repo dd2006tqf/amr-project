@@ -1,0 +1,68 @@
+# Qt 本地看板（实验性）
+
+> **状态**：实验性代码结构，未纳入主构建，未进入 OpenSpec 工作流
+> **创建日期**：2026-11-05
+> **依据**：根目录 `内核模块技术栈引入讨论.md` 方向一（路径 A1）
+
+## 这是什么
+
+设备接 HDMI 显示器时，在开发板本地打开一个 Qt 看板，查看 WeakNet 的实时诊断情况。
+
+## 关键设计决定
+
+### 数据层：复用现有 C API，不重写 D-Bus
+
+`client/weaknet_client.h` 已经提供完整封装（29 KB，50+ 函数），全部是
+
+```c
+bool weaknet_get_xxx(char* buffer, size_t buffer_size,
+                     char* error_buffer, size_t error_size);
+```
+
+返回 JSON 字符串。**看板直接链接 `libweaknet.so` 调用这些函数，不自己实现 D-Bus。**
+
+### JSON：手写轻量解析，不引第三方库
+
+项目全仓不使用 nlohmann/json，`server/src/net_info.cpp:15` 明确写了这一点。
+看板沿用同样策略：只解析自己需要的字段，未知字段忽略。
+
+### 图表：QPainter 自绘，不用 Qt Charts
+
+理由（见讨论文档 4.7）：
+
+1. 板端**没有** `libqt5charts5`
+2. `QChart` 在 Mesa 软件渲染下性能差
+3. 自绘组件可以渲染到 `QImage` 做**像素级单元测试**，无需显示器
+
+### Qt 版本：跟随系统，不锁死
+
+CMake 写 `find_package(QT NAMES Qt6 Qt5 ...)`，代码里用 `QT_VERSION_MAJOR`，
+不硬编码 `Qt5::`。
+
+## 目录结构
+
+```
+qt_dashboard/
+├── README.md                  ← 本文件
+├── data/                      ← 数据层（不依赖 Qt，可独立单测）
+│   ├── dashboard_data.hpp     ← POD 结构体
+│   ├── json_reader.hpp        ← 轻量 JSON 读取
+│   └── json_reader.cpp
+├── ui/                        ← UI 层（依赖 Qt）
+│   ├── line_chart_widget.hpp  ← QPainter 自绘折线图
+│   └── line_chart_widget.cpp
+└── tests/                     ← 单元测试
+    └── test_json_reader.cpp
+```
+
+## 构建状态
+
+**未接入 CMake。** 当前只是代码骨架，验证通过后再决定是否纳入
+`client/CMakeLists.txt`。
+
+## 与现有代码的边界
+
+- 不修改 `client/` 下任何现有文件
+- 不修改根 `CMakeLists.txt`
+- 不修改 `scripts/`
+- 不新增 D-Bus 方法（全部使用现有只读方法）

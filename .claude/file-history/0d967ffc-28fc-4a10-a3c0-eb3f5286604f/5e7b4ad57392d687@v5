@@ -1,0 +1,809 @@
+# 机器人项目简历知识库
+
+本文件是简历撰写与面试讲解的知识沉淀，按简历条目组织。每条包含：标准写法、可验证断言拆解、背景知识、代码走读、面试问答。
+
+写作硬规范（沿用既定四条）：无括号、无箭头、斜杠用顿号；每点 60 至 80 中文字符（约五号字两行）；只用行业公认技术名词，可用英文专有名词；简洁严谨，不堆砌形容词。
+
+---
+
+## 简历主文（5 点）
+
+> **基于 ROS 2 Jazzy 的仓储 AMR 调度基础设施平台**
+> **技术栈**：C++11/17、ROS 2 Jazzy、ros2_control、GoogleTest、CMake/colcon、Docker
+> **项目简介**：基于 ROS 2 中间件实现智能仓储 AMR 调度基础设施平台，支持多后端底盘通信容灾与分层故障注入验证。
+>
+> * 实现任务调度核心库与中间件解耦的任务调度框架。将队列调度、时空资源互斥与死锁自愈抽离为纯 C++ 核心库，不依赖 ROS 组件；引入行为树实现订单路由、出队派发与恢复策略编排。
+> * 构建多级安全熔断与底盘通信容灾机制。抽象串口与 UDP 网络统一底层驱动，编写 ros2_control 硬件接口插件；基于滑窗监控链路质量，丢包超限即逐级降级并执行冷却保护，链路恢复后直接重连并自动回切。
+> * 设计 ROS 2 接口包与轻量 REST 网关。调度节点基于 rclcpp_lifecycle 实现受控生命周期，暴露多组 Service 覆盖任务、交通与设施管理；原生编写轻量 HTTP 网关，桥接外部请求并实现幂等提单。
+> * 搭建配置驱动的目录管理与业务工作流体系。统一维护路网、设施与车队等 YAML 目录，基于文件 mtime 轮询实现参数在线热重载；设施资源基于状态机支持独占与会话管理，车队按能力标签与路线成本匹配最优车辆。
+> * 搭建分层自动化故障注入验证流水线。串联单元测试、极限压测与故障演练，分别模拟看门狗急停、底盘通信降级与死锁自愈场景；经实测，高频任务队列入队吞吐达 4.5 万次/秒，异步日志入队吞吐达 140 万次/秒。
+
+---
+
+## 条目一：任务调度核心库与行为树编排
+
+### 简历标准写法
+
+> 实现任务调度核心库与中间件解耦的任务调度框架。将队列调度、时空资源互斥与死锁自愈抽离为纯 C++ 核心库，不依赖 ROS 组件；引入行为树实现订单路由、出队派发与恢复策略编排。
+
+### 这句话拆成五个可验证断言
+
+| 断言 | 落点 | 关键代码 |
+| :--- | :--- | :--- |
+| 纯 C++ 核心库不依赖 ROS | `amr_dispatcher_core` 四个包的 CMakeLists 无 rclcpp 依赖，只链 yaml-cpp 与 pthread | `src/amr_dispatcher_core/CMakeLists.txt` |
+| 队列调度 | 可插拔比较器的优先级队列，支持暂停、取消、改优先级 | `MissionQueue` + 4 个 `MissionComparator` |
+| 时空资源互斥 | 静态原子排他预留加时间窗预约，失败整体回滚 | `ResourceTable::Reserve` 与 `ReserveTimeSpace` |
+| 死锁自愈 | Wait-For Graph 环检测加三类死锁判定与恢复裁决 | `DeadlockDetector` + `RecoveryPolicy` |
+| 行为树编排 | BehaviorTree.CPP v4 十棵树覆盖路由、派发、恢复、清理 | `src/amr_dispatcher_bt/src/` 十个 BT 源文件 |
+
+### 背景知识 A：分层架构——中间件解耦到底解在哪
+
+大白话：整个仓库是汉堡结构，从下往上三层。
+
+第一层是 `amr_dispatcher_core`（纯 C++17），只有 STL 加 yaml-cpp 加 pthread。队列、资源表、死锁检测、路径跟踪 PurePursuit、安全门 CmdVelGate、底盘链路监控全在这里。它**不知道 ROS 的存在**，单元测试秒级跑完，也是压测数字的来源。
+
+> 口径注意：简历栈写 C++11/17，四个包的 CMake 实际强制 `CMAKE_CXX_STANDARD 17`，压测程序用 `c++20` 编译。面试以 C++17 为基线作答，被问标准就说"以 17 为主，兼容讲解 11 与 20 特性"。
+
+第二层是 `amr_dispatcher_ros`（薄壳），只做三件事：把核心数据结构包成节点、把消息类型转换成服务回调、把定时器节拍注入核心逻辑。业务规则一旦改动，动的是核心库，壳层几乎不改。
+
+第三层是 `amr_dispatcher_bt`（行为树编排层），把"订单进来之后先做什么再做什么"用 BehaviorTree.CPP 的节点组合表达出来，而不是写成几百行 if-else 的大函数。
+
+解耦的直接收益：核心算法可以脱离 ROS 环境在 CI 里跑（本仓库 L1 层测试即如此），换中间件版本或做纯离线仿真都不用动业务代码。
+
+### 背景知识 B：MissionQueue——可插拔比较器与惰性重排
+
+`mission_queue.hpp` 的设计要点：
+
+1. **比较器可插拔**：`SetComparator` 转移所有权换策略，库里内置四种——`priority_fifo`（默认，优先级加先来先服务）、`deadline`（截止时间近的先出）、`shortest_job`（短任务优先）、`weighted_score`（加权综合分，集成测试用它验证多因子排序）。传入未知名字不抛异常，回退默认策略（`RejectsDuplicateAndFull` 与 `RejectUnknownComparatorFallsBack` 两测守护）。
+2. **惰性排序**：入队与改优先级只置 `dirty_` 标志，出队前才重排。频繁 Push 的场景把排序开销摊到 Pop 上，这正是压测里 Push 吞吐远高于"每入队都维护堆序"预期的原因。
+3. **整单暂停语义**：暂停作用在 `order_id` 上而非单条任务，出队时**跳过而非删除**（`PopResult::all_paused` 让调用方区分"队列空"和"全在暂停"），恢复后原单原位继续。
+4. **边界即契约**：重复 id 拒收、超容量拒收、空 id 拒收——入队是外部世界的入口，必须严进。
+
+一个必须背下的口径：`MissionQueue` **本身非线程安全**（头文件注释写明），单线程访问或上层加锁是明确契约；调度节点里 Service 回调与定时器跑在同一个 executor 线程，天然满足。
+
+### 背景知识 C：时空资源互斥——Time-Space Reservation
+
+传统做法是"一路段一锁"，同一时间全网每条路段只能一辆车。本项目的 `traffic_reservation.hpp` 在此之上加了时间维度：
+
+1. `TimeInterval [start, end)` 带 `OverlapsWith` 判断（半开区间，start < other.end 且 other.start < end）。
+2. `ReserveTimeSpace` 允许多车**时间窗不重叠时错峰并行**预约同一路段——这是"时空"二字的准确出处，对向车流排队进单行道就是典型场景。
+3. 静态排他 `Reserve` 走**原子语义**：一次申请多把锁（按 route 建 `route_edge:A__B` 之类的锁 id，路口场景还加节点锁），任何一把被占即**全部回滚一把不留**（`ReserveAtomicRollback` 测试）。"先占两把再说"在调度系统里是灾难，宁可整单拒绝。
+4. 同任务重复申请自己的锁幂等放行，任务结束按 owner 精确释放自己的锁（含孤儿锁清理）。
+
+### 背景知识 D：死锁检测与自愈——Wait-For Graph 与三类判定
+
+`deadlock_detector.hpp` 的模型是一张**等待图**：`waiting_for` 记录每任务在等哪些资源，`held_by` 记录每资源被谁持有。检测器每秒跑一次（节点 `DeadlockTick` 定时器），给出三类结论：
+
+1. `kMutualBlock`——图中出现环（A 等 B、B 等 A），教科书式死锁，用图论环检测，DAG 形态的等待链不算死锁（`NoCycleWhenWaitGraphIsDAG` 防误报）。
+2. `kIdleActive`——任务状态是 ACTIVE 但 10 秒（`active_idle_threshold`）无进度更新，判为"僵尸活跃"。
+3. `kLongReservationHold`——持锁超过 30 秒（`reservation_hold_threshold`），无论有没有环都报警。
+
+`RecoveryPolicy` 接收判定结果做裁决：低优先级任务让行、取消重试、升级人工介入，具体策略可在 `recovery_policy.hpp` 调整。检测参数在节点 `on_configure` 里写死传入 10s 与 30s，同时受 `max_active_missions` 上限约束（默认 4）。
+
+### 背景知识 E：行为树编排——十棵树的分工
+
+选行为树而非 if-else 状态机的理由：任务恢复流程天然是一棵**决策树**（失败了？重试次数到上限了吗？要回坞吗？），行为树把每个分支做成可独立测试的叶子节点。
+
+`src/amr_dispatcher_bt/src/` 十棵树（BehaviorTree.CPP v4，XML 以 `BTCPP_format="4"` 内嵌源码）：
+
+| 树 | 职责 |
+| :--- | :--- |
+| `submit_order` | 订单提交路由（订单类型到场景到工作流的分发） |
+| `mission_queue` | 队列头任务可运行性判定与出队派发 |
+| `queued_mission_start` | 空闲直接启动、抢占时先取消当前再启动队列头 |
+| `mission_runtime` | 运行时每拍决策：自启动、队列启动、组合、仅发布 |
+| `mission_recovery` | 失败恢复：重试分级、重试耗尽转回坞、回坞失败转人工 |
+| `mission_result` | 结果处理与收尾 |
+| `mission_resource_cleanup` | 资源锁释放清理 |
+| `facility` | 设施资源动作与电梯会话分支 |
+| `station_sequence` | 多站点序列任务编排 |
+| `docking` | 对接充电：接触失败走重试分支 |
+
+订单路由的实体是 `business_order_catalog.hpp` 的 `BusinessOrderSubmitDecision`：按 business_type 查表得到 `routed_service`、`routed_scenario_id`、`routed_workflow_id`，即"业务类型到场景到工作流"的三级路由表，新增业务类型只需加 YAML 数据不改代码。
+
+### 代码走读核心片段
+
+#### 1. 队列契约（`mission_queue.hpp:17-24` 注释段）
+
+```cpp
+// - 排序委托可插拔 MissionComparator（默认 priority FIFO）；
+// - 入队拒绝重复 id 与超容量；
+// - 支持按 order_id 整单暂停/恢复（暂停任务出队时跳过而非删除）；
+// - 非线程安全，由上层（节点层）保证单线程访问或加锁。
+```
+
+头文件注释即契约：设计意图、线程模型、边界行为全部前置声明，读者不用翻实现。
+
+#### 2. 时空预约（`traffic_reservation.hpp:16-22、44-52`）
+
+```cpp
+struct TimeInterval {
+  std::chrono::steady_clock::time_point start;
+  std::chrono::steady_clock::time_point end;
+  bool OverlapsWith(const TimeInterval& other) const {
+    return start < other.end && other.start < end;
+  }
+};
+// 时空窗口预约：允许多车错峰占用同一路段，只要时间窗口不重叠即可并行预约
+bool ReserveTimeSpace(const std::string& mission_id, const std::string& resource_id, ...);
+```
+
+#### 3. 死锁输入模型（`deadlock_detector.hpp:26-37`）
+
+```cpp
+struct ResourceAllocationModel {
+  std::unordered_map<std::string, std::vector<std::string>> waiting_for;
+  std::unordered_map<std::string, std::string> held_by;
+};
+// 严密的资源依赖分配关系（支持 0 毫秒图论环检测）
+```
+
+检测是纯内存图论计算，输入由调用方聚合快照传入，检测器无副作用——这是它能被单测穷举的前提。
+
+### 面试问答汇总
+
+#### Q1：核心库和 ROS 层怎么划分的？解耦带来什么实际好处？
+
+**答**：core 是纯 C++17，只有 STL、yaml-cpp、pthread，装不装 ROS 都能编译；ros 层只做消息转换、服务注册和定时器注入。实际好处有三：一是单元测试不用起 ROS 环境，50 个测试文件毫秒级跑完，CI 快；二是压测数字直接反映算法本身而不是中间件开销；三是将来换 DDS 实现或做离线仿真，业务规则零改动。
+
+#### Q2：任务队列的排序策略怎么设计的？为什么用惰性排序？
+
+**答**：比较器抽象成 `MissionComparator` 接口，内置优先级 FIFO、截止时间、短作业、加权分四种，运行期可换，传错名字安全回退默认。惰性排序是性能权衡：入队只置 dirty 标志，出队前才重排，把每次入队都要维护堆序的开销摊薄成"每批一次排序"。压测里队列入队 4.5 万次每秒，这个设计是主要贡献之一。
+
+#### Q3："时空资源互斥"具体指什么？和普通互斥锁有什么区别？
+
+**答**：普通路段锁是"同一时间只能一辆车"；时空预约是在锁上加时间窗，`TimeInterval` 判断两车占用区间是否重叠，不重叠就允许错峰并行用同一路段，比如对向车流排队进单行道。另外多资源申请是原子语义：一次要三把锁，第三把被占就三把全回滚，绝不留下半截锁。同任务重复申请自己的锁幂等放行，释放按 owner 精确清理。
+
+#### Q4：死锁怎么检测的？怎么区分"死锁"和"只是慢"？
+
+**答**：维护 Wait-For Graph，`waiting_for` 加 `held_by` 两张表构成依赖图，每秒检测一次。真正死锁看图里有没有环，DAG 形态的长等待链不算环不误报。另外两个补充判据：任务 ACTIVE 但 10 秒无进度更新判僵尸活跃，持锁超 30 秒判异常长持有。三类结果都交给恢复策略裁决：低优先级让行、取消重试、升级人工介入。
+
+#### Q5：为什么用行为树不用状态机？恢复策略具体怎么编排的？
+
+**答**：任务恢复是天然的决策树——失败了先查重试次数，没超就重试，超了转回坞充电，回坞也失败才报人工介入。行为树把每个分支做成独立叶子节点，可以单独测试单个分支（我们有 36 个 BT 用例覆盖这些分支），而平面状态机写到十几层嵌套就没法维护了。抢占场景同理：树里显式表达"先取消当前、再启动队列头"的顺序，避免竞态。
+
+#### Q6：订单路由是怎么实现的？
+
+**答**：业务目录 `business_order_catalog` 里每种业务类型（比如搬运、充电、巡检）映射到一条路由记录，字段包括目标服务、场景 id、工作流 id。收到订单先按 business_type 查表得到 `BusinessOrderSubmitDecision`，再由行为树的 submit_order 分支提交到对应场景工作流。新增业务类型只改 YAML 数据，代码零改动。
+
+#### Q7：队列是非线程安全的，你们怎么保证并发正确？
+
+**答**：这是显式契约不是疏漏。调度节点里所有 Service 回调、调度定时器、状态发布定时器都跑在同一个 executor 线程（单线程 spin），队列天然串行访问。唯一跨线程的场景是 Action 执行任务，那部分用 `active_missions_` 之外独立的互斥保护。宁可声明"非线程安全"逼调用方想清楚线程模型，也不在核心数据结构里到处加锁拖慢热路径。
+
+### 面试应答模板（30 秒版）
+
+> "这块的核心思路是**业务算法与中间件彻底分层**。队列调度、时空资源预约、死锁检测全部在纯 C++ 核心库里，不依赖 ROS，所以能被 400 多个单元测试毫秒级覆盖，压测数字也真实反映算法开销。队列支持四种可插拔排序策略和整单暂停；资源预约带时间窗，多车可错峰并行；死锁用等待图环检测加两个超时判据，区分死锁和慢任务。上层用 BehaviorTree.CPP 编排了十棵树，订单路由、出队抢占、失败恢复到回坞充电的完整链路都是可独立测试的树分支。"
+
+---
+
+## 条目二：多级安全熔断与底盘通信容灾
+
+### 简历标准写法
+
+> 构建多级安全熔断与底盘通信容灾机制。抽象串口与 UDP 网络统一底层驱动，编写 ros2_control 硬件接口插件；基于滑窗监控链路质量，丢包超限即逐级降级并执行冷却保护，链路恢复后直接重连并自动回切。
+
+### 这句话拆成六个可验证断言
+
+| 断言 | 落点 | 关键代码 |
+| :--- | :--- | :--- |
+| 统一底层驱动抽象 | 串口、UDP、mock 三后端实现同一虚接口 | `ChassisBackend` + `serial_backend` + `udp_backend` + `mock_backend` |
+| ros2_control 插件 | SystemInterface 子类导出状态与命令接口并注册插件宏 | `chassis_hardware_interface.cpp` 尾部 `PLUGINLIB_EXPORT_CLASS` |
+| 滑窗监控链路质量 | 64 样本滑窗统计丢包率、CRC 错误率、时延 | `LinkQualityMonitor` + `LinkQualityConfig` |
+| 丢包超限逐级降级 | 降级判定 30% 丢包率，Serial 到 UDP 到 Mock | `BackendDegradationController` |
+| 冷却保护 | 降级后 30 秒冷却窗 | `BackendDegradationConfig::cooldown` + `last_demote_at_`，防 50 赫兹评估下连续降档 |
+| 恢复后重连回切 | 恢复信号触发回切首选（冷却窗内禁止），断线后 `LinkRecoveryPolicy` 指数退避扫描重连，驱动节点读轮询全程驱动 | `FailbackToPreferredAfterRecoverySignal` 等 4 个专项单测 + `chassis_driver_node` 接线 |
+
+### 背景知识 A：统一后端抽象——一个虚接口三个实现
+
+`chassis_backend.hpp` 定义最小接口：`Name`、`Open`、`Close`、`IsOpen`、`WriteCommand`、`Read`。三个实现：
+
+1. `serial_backend`——POSIX 串口（`/dev/ttyUSB0`、115200 波特率参数化），真车默认路径。
+2. `udp_backend`——UDP 网络底盘（host 与端口参数化），无线或以太网底盘。
+3. `mock_backend`——本地模拟，开发与故障演练兜底，降级链的终点。
+
+`chassis_driver_node` 在 `on_configure` 读取 `serial_device/serial_baud/udp_host/udp_port` 参数，把后端列表交给降级控制器；上层调用方拿到的永远是"当前后端"的统一指针，换后端对业务代码透明。这就是"抽象统一底层驱动"的含义：**协议细节被虚接口吞掉了**。
+
+### 背景知识 B：滑动窗口链路质量监控
+
+`link_quality.hpp` 的关键参数与语义：
+
+1. 窗口容量 64 样本，每收到一帧记一笔，旧样本滑出——只看最近 64 帧，历史再好也盖不住当下恶化。
+2. CRC 校验失败**计入丢包**（`CrcErrorCountsAsLost` 测试）：包收到了但内容坏了，对控制链路等价于丢了。
+3. 四级健康度 `kUnknown` 到 `kHealthy` 到 `kDegraded` 到 `kCritical`：丢包率超 2% 出健康区，超 15% 进 degraded，另有连续成功 50 帧才认恢复（`success_threshold`），防单帧好转误判。
+4. 同时统计平均时延与最大时延快照，供 `/chassis/link_health` 话题与运维面板消费。
+
+### 背景知识 C：三级降级与冷却保护——没有冷却会瞬间跌穿三级
+
+`backend_degradation.hpp` 的控制器参数：预热 8 样本、降级判定丢包率 0.30、冷却 30 秒。
+
+降级触发条件是**滑窗丢包率超 30%**，判定前有 8 样本预热窗避免"刚启动样本少导致误判"。触发后沿后端列表向下切一档，切换动作是关旧后端再开新后端（`SwitchToKnownIndexClosesOld` 测试盯着这个顺序）。
+
+冷却保护防的是**降档失速**：驱动节点在 50 赫兹的读轮询里每拍评估降级，持续高丢包时每个拍都满足降档条件，没有冷却约束的话几十毫秒就能从串口连跌两档直接落到 mock——链路还没来得及恢复，降级链已经走完。现在降档后 30 秒内禁止再降（`last_switch_at_` 记时间戳，`CooldownPreventsRapidFlip` 断言首次降档后立刻再判必须为 false），把降档节奏压到每个窗口至多一档，给恢复判据留出观察窗；同一时间窗双向约束回切，是滞回控制的通用结构。
+
+必须背下的准确语义：30% 是**降级判定线**，30 秒是**降级后的冷却观察窗**，不是"先等 30 秒再降级"。
+
+阈值全景（三个层次别混淆）：链路 degraded 显示阈值 15%，后端降级切换阈值 30%，FaultSupervisor 急停阈值 35%（`critical_loss_rate_threshold`）。
+
+### 背景知识 D：断线重连——指数退避加抖动
+
+`link_recovery.hpp`：初始退避 200 毫秒，倍率 2，封顶 10 秒，抖动比例 0.2，最大重试次数 0 表示不限。
+
+状态机是 `kWaiting` 等退避到 `kConnected` 再到 `kExhausted` 一类的迁移。设计要点：
+
+1. **指数退避防雪崩**：重连尝试按 200ms、400ms、800ms 递增，封顶 10 秒，避免对故障设备每秒猛敲。
+2. **抖动防同步踩踏**：多设备同时断网时整齐划一的重连会二次打垮服务端，0.2 比例随机抖动把重连时刻打散（`DecideBackoffWithJitterRange` 测试）。
+3. **退避计算是纯函数**：`DecideBackoff` 无副作用可注入抖动源，单测直接断言序列（`ExponentialBackoffSequence`）。
+
+恢复回切与断线重连已经端到端接线（2026-10-10 按 TDD 补齐）：**回切**走 `ConsumeRecoverySignal` 恢复信号（连续 50 帧成功触发）加冷却窗守卫，触发后 `SwitchTo(0)` 回首选档；首选设备打不开时立即恢复原后端并进入冷却，绝不把连接搞成空档。**重连**走 `LinkRecoveryPolicy`：`current_` 为空时驱动节点读轮询仍会调用评估函数，策略按指数退避推进 `open_attempt` 按首选顺序扫描可用后端。四条专项单测（回切、冷却禁切、回切失败保底、断线扫描重连）进 `check_hardware_failover` 演练。
+
+### 背景知识 E：ros2_control 硬件接口插件
+
+`chassis_hardware_interface.cpp` 定义 `ChassisHardwareInterface : public hardware_interface::SystemInterface`：
+
+1. `on_init` 解析 URDF 里的硬件信息，初始化内部状态。
+2. `export_state_interfaces` 与 `export_command_interfaces` 导出里程计状态与速度命令接口，controller_manager 据此把控制器接到这份"硬件"上。
+3. `read` 与 `write` 回调完成真实 I/O：write 把控制器算好的速度指令经后端发给底盘，read 从底盘回读位姿刷新状态接口。
+4. 文件尾部 `PLUGINLIB_EXPORT_CLASS(..., hardware_interface::SystemInterface)` 注册插件，launch 时按插件名加载。
+
+价值一句话：接入 ros2_control 生态后，diff_drive 等标准控制器可以直接驱动这份"底盘"，不必为每种底盘重写控制链路。
+
+### 背景知识 F：多级安全熔断——看门狗、速度门、故障监督三层
+
+三个组件各管一段（均在 `amr_dispatcher_core/safety/`）：
+
+1. **SafetyWatchdog（心跳看门狗）**：跟踪一组节点心跳。500 毫秒没心跳发 `kWarn` 事件，2000 毫秒软超时升级 `kCritical`（参数在 `config/safety.yaml` 可调）。支持 `Forget` 忘记跟踪节点。
+2. **CmdVelGate（速度安全门）**：所有下发底盘的速度指令必须过这道门。来源阻断回调统一判断急停、防撞 bumper、人工接管；`kCritical` 事件直接禁止运动（allowed 置 false，速度归零），`kWarn` 降速，同时有速度上限钳制。事件历史有界 256 条防内存膨胀。
+3. **FaultSupervisor（故障监督）**：多源健康报告仲裁，2000 毫秒启动宽限期内容忍冷启动指标，超丢包率 35% 输出 `kFault` 触发急停建议。
+
+`safety_gate_node` 把三者串成 ROS 节点：订阅 `/safety/estop` 与心跳话题，100 毫秒一拍巡检，输出限速后的 `/cmd_vel` 与 `/safety/state` 状态话题，形成"急停输入、看门狗监督、仲裁限速、状态上报"的闭环。
+
+### 代码走读核心片段
+
+#### 1. 后端虚接口（`chassis_backend.hpp:21-29`）
+
+```cpp
+class ChassisBackend {
+ public:
+  virtual ~ChassisBackend() = default;
+  virtual std::string Name() const = 0;
+  virtual bool Open(std::string* error) = 0;
+  virtual void Close() = 0;
+  virtual bool IsOpen() const = 0;
+  virtual bool WriteCommand(const ChassisCommand& command, std::string* error) = 0;
+  virtual std::optional<std::string> Read(std::string* error) = 0;
+};
+```
+
+六个纯虚函数就是全部契约，错误经出参字符串回传而不是抛异常，方便在 C 风格 I/O 失败路径上逐点检查。
+
+#### 2. 降级配置（`backend_degradation.hpp:13-18`）
+
+```cpp
+struct BackendDegradationConfig {
+  std::size_t warmup_samples = 8;
+  double demote_loss_rate = 0.30;
+  std::chrono::milliseconds cooldown{std::chrono::seconds(30)};
+};
+```
+
+三个数字定义了整个降级行为，调参只改这里或 YAML，不用动控制流。
+
+#### 3. 插件注册（`chassis_hardware_interface.cpp:153-154`）
+
+```cpp
+#include <pluginlib/class_list_macros.hpp>
+PLUGINLIB_EXPORT_CLASS(amr_dispatcher_ros::ChassisHardwareInterface,
+                       hardware_interface::SystemInterface)
+```
+
+一行宏让类可被 pluginlib 按名加载，ros2_control 的标准接入方式。
+
+### 面试问答汇总
+
+#### Q1：串口和 UDP 两个后端怎么统一的？
+
+**答**：`ChassisBackend` 虚接口定六个函数：开关、读写、名字、状态。串口实现走 POSIX termios，UDP 实现走 socket，mock 是本地模拟。上层只持有 `unique_ptr<ChassisBackend>`，业务代码不知道也不需要知道底下是线是网。降级切换时关旧开新，对调用方透明。
+
+#### Q2：链路质量具体监控哪些指标？窗口多大？
+
+**答**：64 样本滑窗统计丢包率、CRC 错误率、平均与最大往返时延。CRC 错坏的包计入丢包，因为对控制链路来说内容坏了等于丢了。健康度分 unknown、healthy、degraded、critical 四级，丢包率 2% 以内算健康，15% 进 degraded，恢复要连续 50 帧成功，防止一帧好转就误判恢复。
+
+#### Q3：降级和回切的完整流程讲一遍？
+
+**答**：全链路接通的，分三段。降级段：滑窗丢包率超 30% 判定降级，沿列表从串口切到 UDP 再切到 mock，先关旧再开新，降档后 30 秒冷却窗内禁止再降，防止 50 赫兹评估下一次丢包尖峰把三级一口气跌穿。回切段：链路恢复判据是连续成功 50 帧触发恢复信号，冷却窗外消费信号自动回切首选；首选设备故障打不开时立即恢复原后端等下个窗口再试。重连段：连接彻底断掉（Open 失败置空）时，驱动节点读轮询仍驱动控制器，`LinkRecoveryPolicy` 按指数退避（200 毫秒起步翻倍、封顶 10 秒、20% 随机抖动）扫描重连。三段各有专项单测钉死。
+
+#### Q4：为什么要有冷却期？去掉会怎样？
+
+**答**：防降档失速，并给回切提供滞回窗口。评估发生在驱动节点 50 赫兹的读轮询里，持续高丢包时每个拍都满足降档条件，没有冷却约束，几十毫秒就能从串口连跌两档落到 mock，链路根本没有恢复的机会。30 秒冷却把节奏压到每窗口至多一档，`CooldownPreventsRapidFlip` 断言首次降档后立即再判必须为 false；同一时间窗也双向约束回切（`FailbackBlockedDuringCooldown` 断言冷却期内恢复信号被保留不消费）。高频评估驱动的状态机，降档与回档两侧都必须有时间约束。
+
+#### Q5：ros2_control 插件做了什么？为什么不直接用自带的底盘驱动？
+
+**答**：写了一个 `SystemInterface` 子类，导出底盘里程计状态接口和速度命令接口，`write` 把控制器输出经统一后端发给底盘，`read` 回读刷新状态，尾部宏注册成插件。这样 diff_drive 这类标准控制器可以直接驱动我们的底盘抽象，同时串口、UDP、mock 的容灾逻辑对 ros2_control 生态透明。自带驱动做不到这层容灾与统一。
+
+#### Q6：看门狗分级熔断具体怎么分级？
+
+**答**：三级。第一级速度钳制：超过配置的线速度角速度上限直接削到上限。第二级警告降速：心跳超 500 毫秒发 kWarn，速度打折继续走。第三级急停：软超时 2000 毫秒升级 kCritical，或者急停按钮、防撞、人工接管任一来源触发，速度门直接禁止输出，底盘归零。故障监督层另有 2 秒启动宽限期，容忍冷启动时的指标抖动。
+
+#### Q7：这套机制的实测验证怎么做的？
+
+**答**：三个专项演练脚本加单测矩阵。`check_hardware_failover` 跑链路质量、降级、重连三个测试套：LinkQualityTest 验滑窗统计与恢复判据，BackendDegradationTest 验降档、冷却、恢复回切与断线扫描重连（24 个用例全绿），LinkRecoveryTest 验指数退避状态机；`check_watchdog_estop` 验证心跳丢失触发 Critical、速度指令截断为零。全是确定性用例，CI 里可重复跑，不依赖真底盘。
+
+### 面试应答模板（30 秒版）
+
+> "容灾这块分两条线。**通信线**：底盘后端抽成统一虚接口，串口、UDP、mock 三实现；64 样本滑窗盯着丢包率和 CRC 错误，超 30% 沿列表逐级降级，30 秒冷却窗防降档失速，链路恢复自动回切首选，断线走指数退避扫描重连。同时写了 ros2_control 的 SystemInterface 插件，标准控制器直接对接这套抽象。**安全线**：看门狗 500 毫秒警告、2 秒急停，所有速度指令过安全门仲裁，Critical 事件直接归零，再加故障监督层 35% 丢包触发 E-Stop。每级阈值都有专项单测钉死。"
+
+> **接线状态（条目二，2026-10-10 已闭环）**：简历原文"链路恢复后直接重连并自动回切"此前是零件齐全、接线未闭环，现已按 TDD 补齐——回切（恢复信号加冷却窗守卫加失败保底）、断线退避扫描重连、驱动节点读轮询在连接丢失时仍推进评估，共 4 条新单测进 `check_hardware_failover` 演练。面试可放心往深处追问，追问路径见背景 D 与 Q3。
+
+---
+
+## 条目三：ROS 2 接口包与轻量 REST 网关
+
+### 简历标准写法
+
+> 设计 ROS 2 接口包与轻量 REST 网关。调度节点基于 rclcpp_lifecycle 实现受控生命周期，暴露多组 Service 覆盖任务、交通与设施管理；原生编写轻量 HTTP 网关，桥接外部请求并实现幂等提单。
+
+### 这句话拆成五个可验证断言
+
+| 断言 | 落点 | 关键代码 |
+| :--- | :--- | :--- |
+| ROS 2 接口包 | 19 个 Service 加 2 个 Action 加 6 个消息 | `src/amr_dispatcher_interfaces/` + `rosidl_generate_interfaces` |
+| rclcpp_lifecycle 受控生命周期 | 五个生命周期回调各司其职 | `dispatcher_node.hpp:70` + `on_configure` 到 `on_shutdown` |
+| 多组 Service | 18 个服务分任务、交通、设施运维三组 | 6 个 v1 加 12 个 v2 服务注册段 |
+| 原生 HTTP 网关 | 裸 POSIX socket 手写 HTTP，零第三方库 | `rest_gateway.cpp:96-131` socket 五连招 |
+| 幂等提单 | 幂等键集合先记账再派发，重复直接忽略 | `seen_idempotency_keys_` + ignored 响应 |
+
+### 背景知识 A：接口包——用 rosidl 把契约编译成代码
+
+`amr_dispatcher_interfaces` 是纯接口包：只放 `.srv`、`.msg`、`.action` 定义，`rosidl_generate_interfaces` 把它们编译成 C++ 与 Python 绑定。规模：19 个服务、2 个动作（`ExecuteMission`、`NavigateSequence`）、6 个状态消息（调度器状态、事件、安全态、拓扑态等）。
+
+`.srv` 文件用横线分隔请求与响应，横线上是请求字段下是响应字段。接口包的价值是**契约先行**：服务端与客户端 `#include` 同一份生成代码，字段增删在编译期暴露而不是运行期错位。`package.xml` 里 `<member_of_group>rosidl_interface_packages</member_of_group>` 声明成员身份，ament 会据此排定构建顺序。
+
+### 背景知识 B：rclcpp_lifecycle——为什么调度节点必须是生命周期节点
+
+普通节点构造即全速运行：还没加载站点目录、队列还没建好，定时器和 Service 已经开始收活。`rclcpp_lifecycle::LifecycleNode` 把启动拆成受控阶段，五个回调的职责边界：
+
+1. `on_configure`——分配资源：建队列、资源表、事件日志、死锁检测器、规划器，加载站点目录，注册全部 18 个 Service，创建 LifecyclePublisher。此阶段**只有服务没有数据流**。
+2. `on_activate`——开闸：三个 LifecyclePublisher 手动激活才真正发数据，创建三个定时器（10 赫兹调度、1 赫兹死锁巡检、500 毫秒状态广播）。
+3. `on_deactivate`——先停定时器再关发布器，顺序反了会发"激活状态下的停机帧"。
+4. `on_cleanup`——18 个服务句柄、3 个发布器、核心数据结构全部 `reset()`，回到未配置态，可重新 configure。
+5. `on_shutdown`——兜底收尾。
+
+LifecyclePublisher 激活前静默不发，避免节点没准备好就往 DDS 总线撒数据，下游收到半成品状态。
+
+### 背景知识 C：多组 Service 的三类划分
+
+18 个服务按业务域分三组，v1 旧名与 v2 新名并存：
+
+| 组 | 代表服务 | 语义 |
+| :--- | :--- | :--- |
+| 任务管理 | submit_order、cancel_order、pause、resume、enqueue、preempt、reprioritize、estimate_cost | 提单、撤单、暂停恢复、插队改级、成本预估 |
+| 交通管理 | reserve_resource、release_resource、block_station_route、detect_traffic_deadlock、list_traffic_reservations | 路段互斥、封路解封、死锁检测、预留清单 |
+| 设施与运维 | reserve_facility_resource、list_stations、get_operator_snapshot、validate_site_config | 设施预留、站点清单、运营聚合快照、配置校验 |
+
+`GetOperatorSnapshot` 是给运维面板的聚合查询，一次返回队列、车队、设施、近期事件的并行数组快照。`GetSystemReadiness` 不在调度节点上而在协调器上（见背景 F）。
+
+### 背景知识 D：原生轻量 HTTP 网关——裸 socket 手写 HTTP
+
+`rest_gateway.cpp` 是一个普通 ROS 节点加一条独立服务器线程，**零第三方 HTTP 库**：
+
+1. POSIX 五连招起服务：`socket` 建套接字、`SO_REUSEADDR` 防重启端口占用、`htons` 转网络字节序、`bind` 加 `listen`、`accept` 逐个接连接。
+2. 手写 HTTP 解析：一次 `read` 可能只到半个请求，解析 `Content-Length` 后循环补读到收齐 body。
+3. 手拼响应：状态行、`Content-Length`、CORS 头、`Connection: close`，`write` 发回，一请求一连接。
+4. 路由表：GET 根路径发运维控制台 HTML，GET 快照与就绪探针，POST 提单、撤单、急停。
+5. 语义化状态码：ROS 服务两秒不回映射 504，服务未就绪 503，缺参数 400。
+
+线程模型：主线程 `spin` 跑 ROS 回调更新状态缓存（`data_mutex_` 保护），服务器线程读缓存拼 JSON 也持同一把锁。幂等集合只被服务器线程访问，故意不加锁。
+
+已知取舍要背下：单线程串行处理请求（一个请求卡 2 秒会排队），换取零锁的 HTTP 层；对低频下单操作够用，被追问时主动承认。
+
+### 背景知识 E：幂等提单——先记账再干活
+
+幂等解决的问题：HTTP 超时后客户端重试，同一订单被下两次，现场跑出两台车。
+
+实现是查询参数 `idempotency_key` 加一张 `std::unordered_set` 哈希表：
+
+1. 请求进来先查 key 是否已见过，见过直接返回 `{"status":"ignored","reason":"idempotent_duplicate"}`，不碰 ROS 服务。
+2. 没见过就**先 insert 记账，再**发 `SubmitOrder` 服务请求——顺序至关重要：先干活后记账的话，干活超时瞬间来了重试，照样重复下单。
+3. 集合是纯内存的，网关重启失效、无过期时间。这是有意的简化，被追问时主动说生产级应加 TTL 或落盘。
+
+### 背景知识 F：生命周期协调器与就绪探针
+
+`lifecycle_coordinator_node` 是受控启动的"导演"：
+
+1. 每 500 毫秒调 `GetState` 服务问调度节点的生命周期状态（异步发送加轮询 shared_future，下文 STAR 故事一详述）。
+2. `auto_bringup` 开关下自动级联提拉：unconfigured 就发 configure 迁移，inactive 就发 activate 迁移——这些是每个 lifecycle 节点自动暴露的标准服务，协调器作为客户端去调。
+3. 汇总调度节点 active 状态加安全门心跳，提供 `/system/ready` 就绪探针，未就绪时 REST 网关探活直接 503 拒单。
+4. 以 transient_local 语义发布 `/system/ready_flag`，晚加入的订阅者也能立刻拿到最新就绪态。
+
+启动拓扑顺序在文件头注释写明：底盘驱动到安全门到路径跟踪到调度节点，逐级拉起。
+
+### 代码走读核心片段
+
+#### 1. 生命周期资源配对（`dispatcher_node.cpp:123-153`）
+
+```cpp
+CallbackReturn DispatcherNode::on_activate(...) {
+  state_pub_->on_activate();
+  event_pub_->on_activate();
+  plan_pub_->on_activate();
+  schedule_timer_ = create_wall_timer(...);   // 10Hz 调度节拍
+  deadlock_timer_ = create_wall_timer(...);   // 1Hz 死锁巡检
+  state_timer_ = create_wall_timer(500ms, ...);
+}
+CallbackReturn DispatcherNode::on_deactivate(...) {
+  schedule_timer_.reset();    // 先停产
+  deadlock_timer_.reset();
+  state_timer_.reset();
+  state_pub_->on_deactivate(); // 再断电
+  ...
+}
+```
+
+#### 2. 幂等记账顺序（`rest_gateway.cpp:208-211`）
+
+```cpp
+if (!ikey.empty() && seen_idempotency_keys_.find(ikey) != seen_idempotency_keys_.end()) {
+  response_body = "{\"status\":\"ignored\",\"reason\":\"idempotent_duplicate\"}";
+} else {
+  if (!ikey.empty()) seen_idempotency_keys_.insert(ikey);  // 先记账
+  auto req = std::make_shared<...SubmitOrder::Request>();   // 再干活
+```
+
+#### 3. 协调器异步轮询（`lifecycle_coordinator_node.cpp:78-97`）
+
+```cpp
+// 单线程 executor 下 spin 期间不能嵌套 wait_for future（会永久阻塞），
+// 必须异步发送 + 轮询 shared_future 的就绪位。
+if (!pending_get_state_.valid()) {
+  pending_get_state_ = dispatcher_get_state_cli_->async_send_request(req).share();
+  return;
+}
+if (pending_get_state_.wait_for(0s) != std::future_status::ready) {
+  if (++get_state_wait_ticks_ > 10) { pending_get_state_ = {}; ... }  // 超时放弃
+  return;
+}
+```
+
+注释就是事故报告：嵌套等待死过人，这段代码是整改结果。
+
+### 面试问答汇总
+
+#### Q1：接口包里都有什么？怎么保证前后端不写岔？
+
+**答**：19 个服务、2 个动作、6 个消息，`rosidl_generate_interfaces` 编译成 C++ 绑定，服务端客户端 include 同一份生成代码，字段不一致编译期就报错，运行期不存在错位。`package.xml` 声明 `rosidl_interface_packages` 成员，构建顺序由 ament 自动保证。新增接口就是加一个 `.srv` 文件加一行 CMake 列表。
+
+#### Q2：为什么用 rclcpp_lifecycle？普通 Node 差在哪？
+
+**答**：普通节点构造函数一跑完就开始收活，队列没建好、目录没加载也可能被调服务。lifecycle 节点把启动拆成 configure、activate 两阶段：configure 期建资源注册服务但不产生数据流，activate 期才开定时器和发布器。好处一是就绪语义明确，上层能问"它到底能不能干活"，二是 deactivate cleanup 能干净退回可重配状态，这对工业系统的受控启停是刚需。
+
+#### Q3：18 个服务怎么组织的？举三个例子。
+
+**答**：按业务域三组。任务组 `submit_order` 提单进队、`preempt_mission` 抢占、`reprioritize_queued_mission` 改优先级；交通组 `block_station_route` 封路、`detect_traffic_deadlock` 主动触发死锁检测、`list_traffic_reservations` 查占用；设施运维组 `reserve_facility_resource` 预留充电桩工位、`get_operator_snapshot` 一次拉齐队列车队设施事件的运维聚合。路由上 v1 旧名与 v2 新名并存过渡。
+
+#### Q4：HTTP 网关为什么自己写？和用现成 HTTP 库比有什么取舍？
+
+**答**：诉求是"轻"——网关只做协议翻译，不需要路由框架、中间件、模板引擎。裸 socket 加手写 HTTP 解析总共几百行，依赖只有 POSIX，交叉编译零负担。取舍明确：单线程串行处理，一个请求卡两秒后面的排队；没有 keep-alive 连接复用；解析只覆盖我们自己用到的子集。这些对低频下单操作都可接受，被追问时我会主动承认边界在哪。
+
+#### Q5：幂等具体怎么实现的？关键细节是什么？
+
+**答**：客户端提单带 `idempotency_key`，网关用哈希集合记录见过的 key，重复 key 直接返回 ignored 不再触碰 ROS 服务。关键细节是**记账必须在派发之前**：先查重、再 insert、最后才发服务请求。反过来先派发后记账的话，派发超时的一瞬间重试进来就是重复订单。集合纯内存、重启失效、无过期，这是教学项目的有意简化。
+
+#### Q6：网关的线程模型？两个线程怎么共享数据？
+
+**答**：主线程 spin 处理 ROS 回调，四个订阅把调度状态、安全态、链路健康、事件缓存进成员变量，写时持 `data_mutex_`；独立服务器线程 accept 处理 HTTP，读缓存拼 JSON 时持同一把锁。幂等集合只有服务器线程碰，不加锁是有意的。HTTP 层也因此天然免锁——一次只处理一个连接。
+
+#### Q7：外部系统怎么知道能不能下单？
+
+**答**：协调器提供 `/system/ready` 就绪探针，聚合两个条件：调度节点生命周期在 active、安全门心跳健康且允许运动。网关把探活桥接成 `GET /api/system/ready`，系统未就绪时返回 503，前端和外部 WMS 据此拒发订单。ready 标志还以 transient_local 发布，晚启动的组件不用等下个周期。
+
+#### Q8：生命周期协调器启动调度节点的流程？遇到过什么坑？
+
+**答**：协调器每 500 毫秒问一次调度节点的生命周期状态，unconfigured 就发 configure、inactive 就发 activate，级联拉到 active 后对外宣告就绪。坑在单线程 executor 里发请求后嵌套等 future 会永久死锁——响应要靠同一个线程 spin 才能送达，等它就永远等不到。整改成异步发送加每拍轮询就绪位，超时十拍放弃本次请求，这段历史现在留在代码注释里。
+
+### 面试应答模板（30 秒版）
+
+> "接口与接入层做了三件事。一是**接口包**：19 个服务加 2 个动作加 6 个消息，rosidl 编译保证前后端强类型一致。二是**受控生命周期**：调度节点用 rclcpp_lifecycle，configure 期建资源注册服务、activate 期开定时器发布器，协调器自动级联拉起并提供 `/system/ready` 就绪探针，未就绪网关直接拒单。三是**REST 网关**：裸 POSIX socket 手写 HTTP，零第三方库，桥接外部订单到 ROS 服务，幂等键先记账再派发保证重试不重复下单。"
+
+---
+
+## 条目四：配置驱动的目录管理与业务工作流
+
+### 简历标准写法
+
+> 搭建配置驱动的目录管理与业务工作流体系。统一维护路网、设施与车队等 YAML 目录，基于文件 mtime 轮询实现参数在线热重载；设施资源基于状态机支持独占与会话管理，车队按能力标签与路线成本匹配最优车辆。
+
+### 这句话拆成五个可验证断言
+
+| 断言 | 落点 | 关键代码 |
+| :--- | :--- | :--- |
+| YAML 目录统一维护 | 站点、设施、车队、业务、语义区按域分文件 | `config/` 目录 + `catalog/` 加载器家族 |
+| mtime 轮询热重载 | 文件时间戳变化触发重新解析回调，调度节点 1Hz 驱动 | `StationCatalogReloader` 组合 `HotReloadWatcher` + 节点 `reload_timer_` + 单测 `ReloadsOnMtimeChangeAndKeepsOldOnInvalid` |
+| 设施独占与会话 | holder 预留加会话状态投影 | `facility_reservation.hpp` + `LiftSessionBehaviorTree` |
+| 能力标签选车 | required_capability 过滤可用机器人 | `RobotHasCapability` + `SelectFleetRobot` |
+| 路线成本匹配 | 取接、任务、总里程打分选最优 | `SelectFleetRobotForStationTask` + `FleetRobotTaskScore` |
+
+### 背景知识 A：按域拆分的目录家族
+
+`config/` 下 YAML 按域拆分，每个域对应核心库里一个 catalog 加载器：
+
+| 目录 | 加载器 | 内容 |
+| :--- | :--- | :--- |
+| 站点路网 | `station_catalog` | 站点坐标、路段、路口 |
+| 设施 | `facility_catalog` | 充电桩、电梯、工位 |
+| 车队 | `fleet_catalog` | 机器人 id、能力标签、当前站位、电量 |
+| 业务订单 | `business_order_catalog` | 业务类型到场景工作流路由表 |
+| 语义区 | `zone_catalog` | 功能区域划分 |
+
+加载器统一模式：`LoadXxxCatalog(path)` 返回 `optional`，失败不抛裸异常；另有 `ValidateXxxCatalog` 做引用完整性校验（比如路段引用的站点必须存在）。跨目录引用校验由 `scripts/validate_config.py` 在流水线里跑。
+
+### 背景知识 B：mtime 热重载的机制与边界（面试别说错）
+
+`config_loader.hpp` 的 `HotReloadWatcher`：
+
+1. 构造时绑定文件路径与回调，调用方建议 1 赫兹驱动 `Tick()`。
+2. `Tick` 里 `std::filesystem::last_write_time` 取文件时间戳，与上次不同就重新解析整份 YAML 并调用 `on_reload(root)`。
+3. 解析失败记录在 `last_error_`，不会拿坏数据覆盖好配置。
+4. 配套的 `ConfigObserver` 订阅机制支持按键前缀订阅字段变更通知。
+
+**接线状态（2026-10-10 已闭环）**：核心库新增 `StationCatalogReloader` 组合 `HotReloadWatcher`——构造时加载初始目录并打 mtime 基线，`Tick` 发现时间戳变化即重解析，新目录校验失败（空目录、重复 id、非法位姿）**保留旧目录并记录错误**；调度节点 `on_activate` 起 1Hz `reload_timer_` 驱动，换新打 INFO、失败打 10 秒节流 WARN，定时器与生命周期配对（deactivate 即停）。容器实测：追加站点日志 `hot-reloaded: 5 stations`，恢复文件回 4 站，写入重复 id 触发 WARN 且旧目录继续生效。单测 `ReloadsOnMtimeChangeAndKeepsOldOnInvalid` 钉住换新与保旧两条路径。
+
+### 背景知识 C：设施状态机——独占与会话
+
+`facility_reservation.hpp` 的模型：
+
+1. 每条预留记录有 `holder_id`（持有者）、`mission_id`、`status`（默认 reserved）、`hold_after_completion`（任务完成后是否保持占用，充电桩典型为是）。
+2. 独占语义：资源被占时新申请失败，除非申请方带 `release_existing_for_holder` 显式抢占自己的旧占用——同 holder 换任务是常见操作。
+3. 会话语义：电梯类设施是"进-用-出"的多步流程，`facility_behavior_tree` 的 `LiftSessionBehaviorTree` 把预留与释放包成会话分支，中途拒绝不会错误地滑进释放分支（`LiftSession_RejectedReleaseDoesNotFallThroughToReserve` 测试盯这个分支陷阱）。
+4. 状态投影：`BuildFacilityResourceStateProjection` 把目录数据与运行时预留合并成对外快照（可用性、持有者、状态串），供服务查询与运维面板消费。
+
+### 背景知识 D：车队匹配——先过能力关再算路线账
+
+`fleet_catalog.hpp` 两级筛选：
+
+1. **能力标签关**：`RobotHasCapability` 按标签过滤，充电桩订单只有带充电能力的车能接，货架搬运同理。`SelectFleetRobot` 在全目录里找第一台满足标签且不在不可用名单里的车。
+2. **路线成本关**：`SelectFleetRobotForStationTask` 传入站点目录与取送货站点，对候选车算 `FleetRobotTaskScore`——取接里程、任务里程、总里程加当前电量，综合打分选最优。车在 A 站、任务从 B 站取货时，距离因子直接决定谁接单更省时间。
+
+这套"先硬条件后软成本"的两段式是资源匹配类需求的通用范式：能力是布尔门槛，成本是优化目标，先砍候选集再排序，避免对不满足条件的车做无意义打分。
+
+### 代码走读核心片段
+
+#### 1. mtime 比对（`config_loader.cpp:174-176` 与头文件注释）
+
+```cpp
+// 热重载：周期性检查文件 mtime，发现变化时调用 on_reload(root)。
+// 由调用方驱动（建议 1Hz）
+void HotReloadWatcher::Tick() {
+  auto mtime = std::filesystem::last_write_time(path_, ec);
+  ...
+```
+
+#### 2. 预留记录结构（`facility_reservation.hpp:10-16`）
+
+```cpp
+struct ResourceReservation {
+  std::string holder_id;
+  std::string mission_id;
+  std::string status = "reserved";
+  bool hold_after_completion = true;
+};
+```
+
+四个字段定义独占模型：谁持有、为哪单持有、什么状态、结束后放不放。
+
+#### 3. 选车打分接口（`fleet_catalog.hpp:39-46`）
+
+```cpp
+const FleetRobot* SelectFleetRobotForStationTask(
+    const FleetCatalog&, const StationCatalog&,
+    const std::string& required_capability,
+    const std::string& pickup_station, const std::string& dropoff_station,
+    const std::vector<std::string>& unavailable_robot_ids,
+    FleetRobotTaskScore* selected_score);
+```
+
+出参带打分结构，调用方能拿到"为什么选它"的里程分解，可解释性是匹配逻辑可运维的关键。
+
+### 面试问答汇总
+
+#### Q1：目录体系怎么组织的？加载失败怎么办？
+
+**答**：按域拆五个 YAML：站点路网、设施、车队、业务订单、语义区，每域一个 catalog 加载器。加载返回 optional，失败不抛裸异常，节点侧记警告并禁用对应能力而不是带病启动。跨目录引用（路段引站点、任务引充电桩）由 `validate_config.py` 在流水线校验，引用不存在直接红灯。
+
+#### Q2：热重载具体怎么实现的？
+
+**答**：核心库 `HotReloadWatcher` 比对 `std::filesystem::last_write_time`，变了就整份重解析 YAML 并回调，解析失败记错误不覆盖旧配置。节点侧的接线是：`StationCatalogReloader` 组合 watcher，构造时加载并打 mtime 基线，调度节点 `on_activate` 起 1Hz 定时器驱动 `Tick`；换新打 INFO、校验失败打节流 WARN 且**旧目录继续生效**（重复 id、非法位姿都会被校验层挡下）。容器实测追加站点即见 `hot-reloaded: 5 stations` 日志。定时器随生命周期 deactivate 即停、cleanup 释放，与其余三个定时器同样配对管理。
+
+#### Q3：设施独占和会话管理的区别？举个例子。
+
+**答**：独占是单步原子操作——充电桩被 A 单占用，B 单申请直接失败，A 单自己换任务可用显式抢占参数换持有。会话是多步流程——电梯要"进梯、运行、出梯"，BT 的 LiftSession 分支把预留到释放包成完整会话，中途某步被拒不许错误滑进释放分支，这个分支陷阱有专门测试钉住。充电桩还有完成后保持占用的语义，充满前不放。
+
+#### Q4：车队选车的完整条件链？
+
+**答**：两段式。先过硬条件：任务要求的能力标签过滤，候选必须在车队目录里且不在不可用名单。再算软成本：对每台候选按取接里程、任务里程、总里程加电量打综合分，分最优者接单。打分结构作为出参返回，调度员能看到"选它是因为取接路短"这类分解，不是黑盒。
+
+#### Q5：这套目录体系对"新增一个站点"的改动成本？
+
+**答**：改一份 YAML 加几行站点与路段数据，跑一遍 `validate_config.py` 确认引用完整，重启或触发重载即可。业务类型加新路由也是加数据行，`routed_service` 指向既有场景工作流就行。代码层面零改动——这正是配置驱动的意义，把"变化"留在数据里。
+
+### 面试应答模板（30 秒版）
+
+> "业务数据全部配置驱动：站点路网、设施、车队、业务路由、语义区五类 YAML 目录，各配加载器与引用完整性校验。热重载用文件 mtime 轮询比对，变化触发重解析，机制有单测覆盖。设施侧充电桩工位做 holder 独占、电梯做多步会话管理，分支陷阱有专项测试。车队选车两段式：能力标签先砍候选集，再按取接里程、任务里程、电量打分选最优，打分可解释。"
+
+---
+
+## 条目五：分层故障注入验证流水线
+
+### 简历标准写法
+
+> 搭建分层自动化故障注入验证流水线。串联单元测试、极限压测与故障演练，分别模拟看门狗急停、底盘通信降级与死锁自愈场景；经实测，高频任务队列入队吞吐达 4.5 万次/秒，异步日志入队吞吐达 140 万次/秒。
+
+### 这句话拆成五个可验证断言
+
+| 断言 | 落点 | 关键代码 |
+| :--- | :--- | :--- |
+| 分层串联 | L1 单测加压测、L2 节点契约、L3 混沌演练 | `scripts/check_all.sh` 总入口 |
+| 单元测试 | 50 个文件 457 个用例零 ROS 依赖 | `test/unit/` + ctest |
+| 极限压测 | 队列 1 万次出入队、日志 5 万条入队计时 | `scripts/benchmark.sh` 现场生成 bench 程序 |
+| 三项故障演练 | 死锁自愈、看门狗急停、通信降级三个脚本 | `check_deadlock_resolution` 等三个脚本 |
+| 实测吞吐数字 | 队列约 4.5 万、日志约 140 万 ops 每秒 | 本机三次复跑取保守值 |
+
+### 背景知识 A：四层测试矩阵
+
+总入口 `scripts/check_all.sh`，任何一步失败整条流水线红灯（set -euo pipefail）：
+
+| 层 | 内容 | 特征 |
+| :--- | :--- | :--- |
+| L1 单元 | 50 个文件 457 个用例，gtest 加 ctest | 零 ROS 依赖，毫秒级，穷举边界 |
+| L1 行为树 | 10 个套件 36 个用例，BehaviorTree.CPP v4 | 分支级断言：重试耗尽转回坞、抢占先取消再启动 |
+| L1 压测 | benchmark.sh 现场生成 bench 程序 | c++ O3 优化直接链核心库 |
+| L2 节点契约 | launch_testing 拉起协调器验证退出码与就绪契约 | 唯一起真节点的层 |
+| L3 混沌演练 | 三个场景脚本，本质是带叙事的 ctest 场景过滤 | 确定性回放，零 flaky |
+
+单元测试覆盖策略一句话：**纯函数穷举边界，有状态的测状态迁移，编排逻辑测分支陷阱**。队列 45 个用例穷举排序与暂停边界，状态机 7 个用例验合法迁移拒绝非法迁移，BT 36 个用例专盯"分支滑错"这类编排 bug。
+
+### 背景知识 B：压测怎么测的——现场生成被测程序
+
+`benchmark.sh` 的工程细节值得讲：
+
+1. 脚本**现场生成** `bench_core.cpp`，`c++ -O3 -std=c++20` 编译并直链核心库，测完即删——保证被测代码永远是当次编译的最新核心库。
+2. 队列压测：1 万次 Push（priority_fifo 策略、优先级 0 到 99 循环）单独计时，随后 1 万次 PopNext 另行计时，分开报告出入队吞吐。
+3. 日志压测：5 万条 AsyncLogger 入队只计入队耗时（flush 间隔 50 毫秒，落盘在后台线程），测的是**入队吞吐**不是端到端落盘吞吐，面试必须说清。
+4. 实测三次：Push 约 4.3 至 4.7 万 ops 每秒，日志入队约 130 至 155 万 ops 每秒，简历取保守值 4.5 万与 140 万。
+
+两个数字差 30 倍的原因（必问点）：任务队列每次 Push 要去重校验加惰性置脏，带业务语义；异步日志是单生产者追加环形缓冲，无锁无比较，设计目标本就不同。
+
+### 背景知识 C：三项混沌演练——确定性场景回放
+
+三个脚本不杀进程不注网络损伤，而是用 `ctest -R 正则` 从用例库挑出对应场景的确定性用例重跑，配上事故叙事：
+
+| 脚本 | 实际执行 | 验证场景 |
+| :--- | :--- | :--- |
+| check_deadlock_resolution | DeadlockDetectorTest 加 RecoveryPolicyTest 加集成死锁流 | 两车互争路段，检出环形依赖，低优先级让行恢复 |
+| check_watchdog_estop | WatchdogTest 加 CmdVelGateTest 急停用例加 FaultSupervisorTest | 心跳丢失升级 Critical，速度指令截断为零 |
+| check_hardware_failover | LinkQualityTest 加 BackendDegradationTest 加 LinkRecoveryTest | 丢包激增触发三级降级与冷却限速，恢复回切与断线退避重连（24 用例） |
+
+这套设计的定位要讲准：是**故障场景的确定性验证**，不是随机混沌注入。优点是 CI 可重复、零 flaky、不依赖真底盘；被问"你们混沌工程怎么做的"时，如实说"分层故障场景验证与回放"比夸大成随机注入稳。
+
+三个"别说错"清单：
+
+1. 演练脚本文案写看门狗 200 毫秒，实际参数是心跳 500 毫秒警告、软超时 2000 毫秒急停（`config/safety.yaml`），以代码为准。
+2. `check_all.sh` 生成的 `test_report_matrix.json` 里用例数 453、队列 3.8 万等数字是硬编码旧模板，与当前实测不符，引用数字用 benchmark.sh 输出。
+3. 演练脚本在 ctest 缺失或未编译时会静默跳过测试仍打印 PASSED，正规跑法先执行 `scripts/build.sh`。
+
+### 代码走读核心片段
+
+#### 1. 流水线编排（`check_all.sh` 主干）
+
+```bash
+"${WORKSPACE_DIR}/scripts/build.sh"              # L1 编译与单测
+"${WORKSPACE_DIR}/scripts/benchmark.sh"          # L1 压测
+"${WORKSPACE_DIR}/scripts/check_deadlock_resolution.sh"   # L3 演练 1
+"${WORKSPACE_DIR}/scripts/check_watchdog_estop.sh"        # L3 演练 2
+"${WORKSPACE_DIR}/scripts/check_hardware_failover.sh"     # L3 演练 3
+```
+
+#### 2. 演练脚本的实质（`check_hardware_failover.sh`）
+
+```bash
+ctest --test-dir "${WORKSPACE_DIR}/build/core" \
+  -R "LinkQualityTest|BackendDegradationTest|LinkRecoveryTest" --output-on-failure
+```
+
+场景脚本等于"带业务名字的测试过滤器"，叙事在 echo 里，断言在用例里。
+
+#### 3. 集成测试的端到端链（`test/integration/test_end_to_end_pipeline.cpp:21` 起）
+
+```cpp
+TEST(IntegrationPipelineTest, EndToEndDispatchToMotionControl) {
+  // 提单入队 -> 加权策略出队 -> PurePursuit 速度 -> 安全门放行 -> 链路监控记 RTT
+```
+
+两个集成用例：一条打通订单到运动控制，一条打通交通锁到死锁自愈，均在纯内存中串起多个核心组件。
+
+### 面试问答汇总
+
+#### Q1：测试分几层？各解决什么问题？
+
+**答**：四层。L1 单元测试 50 个文件 457 个用例，零 ROS 依赖穷举核心算法边界；L1 行为树测试 36 个用例盯编排分支；L2 用 launch_testing 起真节点验生命周期与就绪契约，是唯一碰中间件的层；L3 三个演练脚本回放死锁、急停、降级三类事故场景。分层的逻辑是：算法 bug 在最便宜的层抓住，越往下越贵越慢。
+
+#### Q2：混沌演练具体怎么"注入"故障？
+
+**答**：确定性回放，不是随机注入。以通信降级为例，单测里用 `LinkQualityMonitor` 直接 RecordLoss 灌满丢包样本，断言降级控制器切档、冷却窗拒绝连降、恢复信号触发回切、断线后退避扫描重连的完整序列；死锁演练在集成测试里构造两车互锁的资源分配图，断言检出环并裁决让行。演练脚本把这些用例用正则过滤重跑并配上事故叙事。好处是每次结果一致，CI 不 flaky，不需要真底盘。
+
+#### Q3：4.5 万和 140 万这两个数字怎么测出来的？
+
+**答**：benchmark.sh 现场生成压测程序，O3 优化编译直链核心库。队列测 1 万次 Push 计时，priority_fifo 加优先级循环取值，三次复跑区间 4.3 至 4.7 万，简历取 4.5 万。日志测 5 万条 AsyncLogger 入队耗时，flush 在后台线程不计入，区间 130 至 155 万，取 140 万。必须说清测的是入队吞吐，队列带去重与置脏开销所以比裸日志慢 30 倍，这正是"业务队列"和"日志管道"设计目标不同的体现。
+
+#### Q4：单元测试怎么保证不测成"自我安慰"？
+
+**答**：三条原则。纯函数穷举边界——退避序列、时间窗重叠判断这类直接列真值表断言；有状态组件测状态迁移——状态机测非法迁移必须拒绝，降级控制器测冷却期内禁止切换；编排逻辑专盯分支陷阱——比如电梯会话"释放被拒不许滑进预留分支"有独立用例。另外所有演练场景的断言都在用例里而不是脚本 echo 里，脚本只负责过滤重放。
+
+#### Q5：L2 层为什么只测了协调器一个节点？
+
+**答**：当前 L2 聚焦生命周期与就绪契约这个最关键也最容易碎的集成点——协调器的拉起流程、退出码、就绪服务语义。其余节点交互靠 L1 的核心库测试加集成测试覆盖，因为节点壳很薄、业务都在核心库。扩展方向是把 dispatcher 的 18 个服务可达性与 Action 契约也纳入 launch_testing，报告模板里已预留了这些契约字段。
+
+#### Q6：这条流水线在实际开发里的使用方式？
+
+**答**：`check_all.sh` 一键全跑，也在提交前的脚本里串行执行。单测和压测是每次必跑的门禁，演练脚本因为确定性所以成本很低也日常跑。数字类产出（吞吐区间）定期复跑刷新进简历与文档，避免拿过期数字面试。
+
+### 面试应答模板（30 秒版）
+
+> "验证体系分四层：457 个零 ROS 依赖的单元测试穷举核心算法边界，36 个行为树测试盯编排分支，launch_testing 起真节点验生命周期契约，三个演练脚本确定性回放死锁自愈、看门狗急停、通信降级三类事故。压测用现场生成的 O3 程序直链核心库，实测任务队列入队 4.5 万次每秒、异步日志入队 140 万次每秒。整条流水线一条命令跑完，任何一步失败即红灯。"
+
+---
+
+## 附录：面试通关实战武器库（开场白、量化大表与 STAR 排障故事）
+
+### 一、端到端一分钟项目介绍（Elevator Pitch）
+
+> **使用场景**：面试开场必考题："请用一两分钟简单介绍一下你的这个项目。"
+> **核心原则**：先讲定位与业务痛点，再讲技术架构几大支柱，最后量化成果收尾。
+
+#### 口语化作答模板（约 60 秒）
+
+> "面试官好，我重点介绍一下我主导的**'基于 ROS 2 Jazzy 的仓储 AMR 调度基础设施平台'**。
+>
+> **【背景与痛点】** 仓储 AMR 调度的难点有三个：调度算法与 ROS 中间件耦合导致难以测试；底盘通信在工业现场必然抖动，断链降级做不好就是安全事故；外部业务系统（WMS）和机器人内部是两个世界，接入层要么不可靠要么臃肿。
+>
+> **【三大支柱】** 针对这三点：第一，**调度核心纯 C++ 解耦**——队列调度、时空资源预约、死锁检测全在不依赖 ROS 的核心库里，457 个单元测试毫秒级覆盖，行为树编排了订单路由到失败恢复的十棵树；第二，**安全与容灾双线**——底盘后端抽象成串口、UDP、mock 三级，64 样本滑窗监控链路，30% 丢包逐级降级加 30 秒冷却窗防降档失速，链路恢复自动回切首选、断线指数退避扫描重连（专项单测进演练）；所有速度指令过安全门，看门狗 500 毫秒警告、2 秒急停；第三，**受控接入**——调度节点用 rclcpp_lifecycle 实现受控生命周期，协调器自动拉起并提供就绪探针，外部 WMS 走原生手写的轻量 REST 网关提单，幂等键保证重试不重复下单。
+>
+> **【成果】** 整套系统一条命令跑完单测、压测、三类故障演练；实测任务队列入队吞吐 4.5 万次每秒，异步日志入队 140 万次每秒；底盘断链、死锁、心跳丢失三类事故场景都有确定性验证。"
+
+### 二、工业级系统指标与量化大表
+
+> **使用场景**：面试官追问"性能怎么样"、"参数多少"、"怎么验证的"。
+
+| 维度 | 指标 | 数值 | 支撑机制 |
+| :--- | :--- | :--- | :--- |
+| 调度性能 | 任务队列入队吞吐 | 约 4.5 万 ops 每秒 | 惰性重排加 O3 直链压测，实测区间 4.3 至 4.7 万 |
+| 日志性能 | 异步日志入队吞吐 | 约 140 万 ops 每秒 | 单生产者追加加后台 50 毫秒批量落盘 |
+| 测试规模 | 单元测试 | 50 文件 457 用例 | 零 ROS 依赖，gtest 加 ctest |
+| 热重载 | 站点目录轮询周期 | 1Hz mtime 比对 | `StationCatalogReloader`，校验失败保留旧目录，容器实测换新与保旧双路径 |
+| 行为树测试 | 分支断言 | 10 套件 36 用例 | BehaviorTree.CPP v4 |
+| 链路监控 | 滑动窗口 | 64 样本 | 丢包率加 CRC 加时延，连续 50 帧成功才认恢复 |
+| 降级阈值 | 降级判定线 | 丢包率 30% | 8 样本预热防启动误判 |
+| 冷却保护 | 降级后禁切窗 | 30 秒 | 防 50 赫兹评估下连续降档失速 |
+| 重连退避 | 初始到封顶 | 200 毫秒翻倍至 10 秒 | 20% 随机抖动防多设备同步踩踏 |
+| 安全分级 | 警告与急停 | 心跳 500 毫秒、软超时 2000 毫秒 | 安全门 Critical 直接速度归零 |
+| 急停阈值 | 故障监督 | 丢包率 35% 触发 kFault | 启动宽限 2 秒容忍冷启动 |
+| 接口规模 | 服务与动作 | 19 srv、2 action、6 msg | rosidl 强类型契约 |
+| 生命周期 | 服务注册数 | 18 个 Service | configure 期注册、cleanup 期全量释放 |
+
+### 三、两大技术深水区排障实战故事（STAR 法则）
+
+> **使用场景**：面试核心提问："开发中遇到的最难的技术问题是什么？"
+> **核心原则**：S 场景、T 任务、A 行动、R 结果四步展开，锚定真实代码。
+
+#### 故事一（中间件并发深水区）：单线程 executor 嵌套等待 future 的永久死锁与异步轮询整改
+
+* **S（场景）**：协调器要周期性拉起调度节点，第一步是调用它的 `GetState` 生命周期服务查询当前状态，拿到状态才能决定发 configure 还是 activate 迁移。最初写法很自然：发请求，等 future 返回，继续下一步。
+* **T（问题）**：手动一跑，协调器永久卡死，既不推进状态也不报错，CPU 空转，日志停在发请求那一刻。
+* **A（行动与排查）**：复盘执行流发现根因在 ROS 2 单线程 executor 的调度模型上：future 的响应由 executor 在 spin 回调里送达，而 `wait_for` 阻塞了当前线程——这个线程正是唯一会 spin 的线程。于是"等响应"和"产生响应"落在同一个线程上，经典的自等待死锁，等的事件永远排在自己后面。整改分三步：请求改为 `async_send_request` 拿 shared_future 立即返回；每拍（500 毫秒）轮询一次就绪位，就绪才取结果；加悬挂保护，连续十拍未就绪就丢弃该 future 重发，防服务端异常导致请求永久悬挂。
+* **R（结果与沉淀）**：协调器稳定级联拉起 unconfigured 到 active，无一次死锁。整改结论固化成团队规则：**单线程 executor 里禁止任何形式的嵌套阻塞等待**，轮询加超时丢弃是唯一安全姿势；这段教训连同根因分析写进了 `lifecycle_coordinator_node.cpp` 的源码注释，后来者一眼可见。
+
+#### 故事二（容灾状态机深水区）：50 赫兹评估下的降档失速与冷却窗设计
+
+* **S（场景）**：底盘通信容灾按设计运行：64 样本滑窗统计丢包率，超 30% 沿后端列表降级（串口到 UDP 到 mock）。驱动节点在读轮询里每拍调用降级评估——轮询频率 50 赫兹。
+* **T（问题）**：台架注入持续丢包压测时发现：一次持续数秒的丢包尖峰，控制器在几十毫秒内连续降档，串口还没撑住就跌到 UDP 再落到 mock。降级判定本身"合法"，但跌穿太快——链路其实能恢复，滑窗还没来得及好转，兜底后端已经接管，真故障与瞬时尖峰再也无法区分。
+* **A（行动与排查）**：复盘发现评估频率与切换动作之间没有任何时间约束：每个二十毫秒的读拍都重新判定，丢包率持续超限时每一拍都满足降档条件。整改引入冷却窗：降档时刻记录 `last_demote_at_` 时间戳，之后 30 秒内 `EvaluateAndMaybeSwitch` 一律返回 false，把降档节奏压到每 30 秒至多一档，给滑窗恢复判据（连续 50 帧成功）留出完整观察窗。单测 `CooldownPreventsRapidFlip` 钉死"首次降档后立即再判必须为 false"。
+* **R（结果与沉淀）**：同场景复测，同样的尖峰下降档至多一级，mock 兜底不再被无谓触发，恢复观察窗被完整保留。沉淀两条原则：**高频评估驱动的状态机必须带时间约束（冷却或滞回）**，**恢复判据要比降级判据更严格**——单向灵敏、回向迟滞的滞回结构。后续按 TDD 把回切与断线重连补齐进同一控制器（恢复信号触发回切、`LinkRecoveryPolicy` 退避扫描重连、驱动节点连接丢失时继续驱动评估），四条专项单测全部进了硬件容灾演练。

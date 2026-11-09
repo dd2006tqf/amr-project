@@ -1,0 +1,11 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "monitor/network_metrics.h"
+
+namespace ins {
+namespace live_broadcast {
+
+// TODO(yinjun|2025-12-30): 实现网络指标采集
+
+}  // namespace live_broadcast
+}  // namespace ins

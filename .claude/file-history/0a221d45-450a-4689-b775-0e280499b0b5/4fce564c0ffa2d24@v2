@@ -1,0 +1,43 @@
+import json, urllib.request
+
+def get(url, timeout=90):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def jget(url):
+    try:
+        return json.loads(get(url))
+    except Exception as e:
+        return {'__err__': str(e)}
+
+print('=== A) ar100s/arch 下有哪些 CPU 架构 ===')
+d = jget('https://api.github.com/repos/radxa/allwinner-arisc/contents/ar100s/arch?ref=main')
+if isinstance(d, dict):
+    print('msg:', d.get('message'), d.get('__err__',''))
+else:
+    print([(x['type'], x['name']) for x in d])
+
+print('\n=== B) 各架构下的 plat-sun60* ===')
+for arch in ('openrisc', 'riscv', 'arm', 'nds32'):
+    d = jget(f'https://api.github.com/repos/radxa/allwinner-arisc/contents/ar100s/arch/{arch}?ref=main')
+    if isinstance(d, dict):
+        print(f'  {arch}: {d.get("message")}')
+    else:
+        plats = [x['name'] for x in d if x['type'] == 'dir']
+        print(f'  {arch}: {plats}')
+
+print('\n=== C) sun60iw2p1 defconfig 对应的 arch（看 Makefile 选择）===')
+try:
+    s = get('https://raw.githubusercontent.com/radxa/allwinner-arisc/main/ar100s/Makefile')
+    for l in s.splitlines():
+        if 'ARCH' in l or 'riscv' in l.lower() or 'openrisc' in l.lower():
+            print('  ', l.strip())
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== D) 是否有 sun60iw2p1 的 openrisc platform ===')
+for p in ('ar100s/arch/openrisc',):
+    d = jget(f'https://api.github.com/repos/radxa/allwinner-arisc/contents/{p}?ref=main')
+    if isinstance(d, list):
+        print([x['name'] for x in d])

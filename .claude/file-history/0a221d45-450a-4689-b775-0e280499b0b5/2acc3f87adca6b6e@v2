@@ -1,0 +1,45 @@
+import json, urllib.request
+
+def get(url, timeout=40):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def jget(url):
+    try:
+        return json.loads(get(url))
+    except Exception as e:
+        return {'__err__': str(e)}
+
+print('=== 1) radxa-pkg/linux-a733 .gitmodules ===')
+for ref in ['main', 'master']:
+    try:
+        s = get(f'https://raw.githubusercontent.com/radxa-pkg/linux-a733/{ref}/.gitmodules')
+        print(f'[{ref}]'); print(s[:1500]); break
+    except Exception as e:
+        print(f'[{ref}] {e}')
+
+print('\n=== 2) radxa-pkg/linux-a733 root ===')
+d = jget('https://api.github.com/repos/radxa-pkg/linux-a733/contents/?ref=main')
+if isinstance(d, dict):
+    print('msg:', d.get('message'), d.get('__err__', ''))
+else:
+    print([(x['type'], x['name']) for x in d][:40])
+
+print('\n=== 3) radxa/allwinner-arisc full tree (filter) ===')
+d = jget('https://api.github.com/repos/radxa/allwinner-arisc/git/trees/main?recursive=1')
+if isinstance(d, dict):
+    print('msg:', d.get('message'), d.get('__err__', ''))
+else:
+    paths = [x['path'] for x in d.get('tree', [])]
+    print('total paths:', len(paths))
+    hits = [p for p in paths if any(k in p.lower() for k in ('sun60', 'a733', 'sun20', 'sun55', 'sun50'))]
+    print('platform hits:', hits[:40])
+    print('top dirs:', sorted({p.split('/')[0] for p in paths})[:20])
+
+print('\n=== 4) arisc 里是否提到 msgbox / rpmsg / amp ===')
+if not isinstance(d, dict):
+    paths = [x['path'] for x in d.get('tree', [])]
+    for k in ('msgbox', 'rpmsg', 'amp', 'scp', 'ar100'):
+        sub = [p for p in paths if k in p.lower()]
+        print(f'{k}: {len(sub)}', sub[:8])

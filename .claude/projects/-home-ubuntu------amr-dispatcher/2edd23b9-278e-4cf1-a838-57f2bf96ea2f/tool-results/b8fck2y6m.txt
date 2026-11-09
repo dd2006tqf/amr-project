@@ -1,0 +1,673 @@
+########## ci.yml ##########
+     1	name: AMR Dispatcher CI
+     2	
+     3	on:
+     4	  push:
+     5	    branches: [ main ]
+     6	  pull_request:
+     7	    branches: [ main ]
+     8	
+     9	jobs:
+    10	  # 零 ROS 核心：纯 CMake + GoogleTest，秒级完成。
+    11	  # 保留在宿主机直接构建的方式，因为这是 amr_dispatcher_core 被设计成的使用形态
+    12	  # （零 ROS 依赖，可脱离 ROS 环境独立编译测试）。
+    13	  build-and-test-core:
+    14	    runs-on: ubuntu-22.04
+    15	    steps:
+    16	      - uses: actions/checkout@v4
+    17	
+    18	      - name: Install Dependencies
+    19	        run: |
+    20	          sudo apt-get update
+    21	          sudo apt-get install -y cmake g++ libyaml-cpp-dev libgtest-dev
+    22	
+    23	      # 与 scripts/build.sh 的 cmake 参数保持一致（含 -DCMAKE_BUILD_TYPE=Release），
+    24	      # 这样后面 check_all.sh 内部再次 configure 时是 no-op，不会触发二次全量编译。
+    25	      - name: Build Core
+    26	        run: |
+    27	          cmake -S src/amr_dispatcher_core -B build/core -DBUILD_TESTING=ON \
+    28	                -DCMAKE_CXX_FLAGS="-std=c++20" -DCMAKE_BUILD_TYPE=Release
+    29	          cmake --build build/core -j$(nproc)
+    30	
+    31	      - name: Run Core Tests
+    32	        run: |
+    33	          ctest --test-dir build/core --output-on-failure
+    34	
+    35	      # 全链路自检：复用上面已构建好的 build/core（增量，几乎无重复编译）。
+    36	      # 纯宿主机（ubuntu-22.04，无 ROS）下 BT/colcon 阶段如实记为 SKIPPED，不算失败；
+    37	      # verdict=FAILED 时脚本以非零退出使 CI 变红；测试矩阵写入 test_report_matrix.json。
+    38	      - name: Run Full Check Pipeline (check_all.sh)
+    39	        run: ./scripts/check_all.sh
+    40	
+    41	  # 完整 ROS 2 工作区：用官方 jazzy 镜像做 colcon 构建。
+    42	  #
+    43	  # 为什么必须有这个 job
+    44	  # -------------------
+    45	  # 上面那个零 ROS 的 job 覆盖不到 colcon 层面的问题。实际踩到过的例子：
+    46	  # src/amr_dispatcher_tools/include/ 下没有任何被跟踪文件，而 git 不跟踪空目录，
+    47	  # 于是从仓库全新 clone 后该目录不存在，amr_dispatcher_tools 的
+    48	  # install(DIRECTORY include/ ...) 直接失败并连带中止 amr_dispatcher_ros。
+    49	  # 该问题只在全新 clone 时暴露（开发机上那个目录一直存在），本地 cmake/colcon
+    50	  # 构建与全部测试都能通过（测试数量随开发演进，不写死具体数字），一路溜到部署到服务器才炸。
+    51	  # CI 每次都是全新 clone，因此这个 job 是发现此类问题的唯一关口。
+    52	  build-ros2-jazzy:
+    53	    runs-on: ubuntu-24.04
+    54	    container:
+    55	      image: ros:jazzy-ros-base
+    56	    steps:
+    57	      - uses: actions/checkout@v4
+    58	
+    59	      # 基础镜像已含大部分依赖，这里只补 behaviortree_cpp 与 hardware_interface
+    60	      # （与 docker/Dockerfile.jazzy 的清单保持一致）。
+    61	      - name: Install Build Dependencies
+    62	        run: |
+    63	          apt-get update
+    64	          apt-get install -y --no-install-recommends \
+    65	            ros-jazzy-behaviortree-cpp \
+    66	            ros-jazzy-hardware-interface \
+    67	            build-essential \
+    68	            libyaml-cpp-dev \
+    69	            libgtest-dev
+    70	          rm -rf /var/lib/apt/lists/*
+    71	
+    72	      # 两阶段构建：amr_dispatcher_bt / _ros / _tools 依赖 interfaces 生成的消息头，
+    73	      # 必须先单独构建 core + interfaces。
+    74	      # shell 必须是 bash —— 容器默认是 sh，`source` 不可用。
+    75	      - name: Build All Packages (colcon)
+    76	        shell: bash
+    77	        run: |
+    78	          set -e
+    79	          source /opt/ros/jazzy/setup.bash
+    80	          colcon build --base-paths src --symlink-install \
+    81	            --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
+    82	            --cmake-args -DCMAKE_BUILD_TYPE=Release
+    83	          source install/setup.bash
+    84	          colcon build --base-paths src --symlink-install \
+    85	            --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+    86	            --cmake-args -DCMAKE_BUILD_TYPE=Release
+    87	
+    88	      # 这一步专门守住「装了但没装全」的情况：amr_dispatcher_tools 安装失败时
+    89	      # colcon 仍可能以退出码 0 收尾，必须显式断言 5 个包都在。
+    90	      - name: Verify All 5 Packages Installed
+    91	        shell: bash
+    92	        run: |
+    93	          set -e
+    94	          source /opt/ros/jazzy/setup.bash
+    95	          source install/setup.bash
+    96	
+    97	          installed=$(ls -d install/amr_dispatcher_* | wc -l)
+    98	          echo "install/ 下的包数: $installed"
+    99	          ls -d install/amr_dispatcher_*
+   100	          if [ "$installed" -ne 5 ]; then
+   101	            echo "::error::期望 install 5 个包，实际 $installed 个"
+   102	            exit 1
+   103	          fi
+   104	
+   105	          for p in amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_bt \
+   106	                   amr_dispatcher_ros amr_dispatcher_tools; do
+   107	            if ! ros2 pkg prefix "$p" >/dev/null 2>&1; then
+   108	              echo "::error::ros2 找不到包 $p"
+   109	              exit 1
+   110	            fi
+   111	            echo "OK  $p"
+   112	          done
+   113	
+   114	      # 确认 10 个可执行文件都产出了（launch 文件依赖它们）
+   115	      - name: Verify Expected Executables Exist
+   116	        shell: bash
+   117	        run: |
+   118	          set -e
+   119	          source /opt/ros/jazzy/setup.bash
+   120	          source install/setup.bash
+   121	          missing=0
+   122	          for exe in chassis_driver_node dispatcher_node safety_gate_node \
+   123	                     path_tracker_node link_health_publisher \
+   124	                     dispatcher_visualizer_node lifecycle_coordinator_node \
+   125	                     navigate_sequence_bridge_node; do
+   126	            if [ ! -x "install/amr_dispatcher_ros/lib/amr_dispatcher_ros/$exe" ]; then
+   127	              echo "::error::缺失可执行文件 $exe"
+   128	              missing=1
+   129	            fi
+   130	          done
+   131	          for exe in dispatcher_cli rest_gateway; do
+   132	            if [ ! -x "install/amr_dispatcher_tools/lib/amr_dispatcher_tools/$exe" ]; then
+   133	              echo "::error::缺失可执行文件 $exe"
+   134	              missing=1
+   135	            fi
+   136	          done
+   137	          [ "$missing" -eq 0 ] && echo "10 个可执行文件全部就位"
+   138	          exit "$missing"
+   139	
+   140	      # 各包单测。tools 与 ros 的用例数随开发演进（不写死数字），
+   141	      # 但任何一个包失败都必须让 job 变红——此前只跑 core + bt，
+   142	      # 网关的四组纯逻辑与 L2 契约测试在 CI 里从未被执行过。
+   143	      - name: Run Unit Tests (core / bt / tools / ros)
+   144	        shell: bash
+   145	        run: |
+   146	          set -e
+   147	          source /opt/ros/jazzy/setup.bash
+   148	          source install/setup.bash
+   149	          for pkg in amr_dispatcher_core amr_dispatcher_bt \
+   150	                     amr_dispatcher_tools amr_dispatcher_ros; do
+   151	            if [ -d "build/${pkg}" ]; then
+   152	              echo "=== ctest: ${pkg} ==="
+   153	              ctest --test-dir "build/${pkg}" --output-on-failure
+   154	            fi
+   155	          done
+   156	
+   157	  # e2e 门禁 job（10 套脚本串行）。
+   158	  #
+   159	  # 直接在 ros:jazzy-ros-base 容器 job 内以 AMR_E2E_INNER=1 运行：
+   160	  # 这些脚本都带"内层执行守卫"（检测到未设置 AMR_E2E_INNER 才尝试 docker exec
+   161	  # 穿透），因此在容器里直接跑不会去找 amr_dispatcher 容器，也不需要 DinD。
+   162	  # 相位 11 的两套新脚本本身是 "docker exec 驱动" 的写法，它们复用
+   163	  # scripts/lib/inner_docker_shim.sh 把 docker exec/cp/ps 顶成本地执行——
+   164	  # 因此断言序列与在宿主机穿透容器时逐字相同，只有"在哪里执行"不同。
+   165	  #
+   166	  # web 控制台 e2e 不在这里：它需要宿主机 Chrome + 独立容器，放进手动/nightly
+   167	  # job（见 README 的"验证"一节），常规 CI 不把它当成门禁。
+   168	  e2e-fleet:
+   169	    runs-on: ubuntu-24.04
+   170	    container:
+   171	      image: ros:jazzy-ros-base
+   172	    # 10 套 e2e 串行执行（其中拓扑热更新与探针守护各约 2 分钟，含各自的
+   173	    # 栈拉起/冷启动），20 分钟余量不足；40 分钟仍能在一个 runner 上跑完，
+   174	    # 且超时时会明确失败而不是被"还没跑完"静默截断。
+   175	    timeout-minutes: 40
+   176	    needs: build-ros2-jazzy
+   177	    steps:
+   178	      - uses: actions/checkout@v4
+   179	
+   180	      # 依赖清单与 build-ros2-jazzy 保持一致，额外补 e2e 需要的地图服务与 MQTT：
+   181	      #   nav2_map_server  -> check_map_ingest_e2e.sh
+   182	      #   mosquitto + paho -> check_vda5050_e2e.sh
+   183	      - name: Install E2E Dependencies
+   184	        shell: bash
+   185	        run: |
+   186	          apt-get update
+   187	          apt-get install -y --no-install-recommends \
+   188	            ros-jazzy-behaviortree-cpp \
+   189	            ros-jazzy-hardware-interface \
+   190	            ros-jazzy-nav2-map-server \
+   191	            ros-jazzy-launch-testing \
+   192	            ros-jazzy-launch-testing-ros \
+   193	            mosquitto \
+   194	            python3-paho-mqtt \
+   195	            python3-yaml \
+   196	            curl \
+   197	            procps \
+   198	            build-essential \
+   199	            libyaml-cpp-dev \
+   200	            libgtest-dev
+   201	          rm -rf /var/lib/apt/lists/*
+   202	
+   203	      - name: Build Workspace
+   204	        shell: bash
+   205	        run: |
+   206	          set -e
+   207	          source /opt/ros/jazzy/setup.bash
+   208	          colcon build --base-paths src --symlink-install \
+   209	            --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
+   210	            --cmake-args -DCMAKE_BUILD_TYPE=Release
+   211	          source install/setup.bash
+   212	          colcon build --base-paths src --symlink-install \
+   213	            --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+   214	            --cmake-args -DCMAKE_BUILD_TYPE=Release
+   215	
+   216	      - name: Map Ingest E2E
+   217	        shell: bash
+   218	        env:
+   219	          AMR_E2E_INNER: "1"
+   220	        run: |
+   221	          set -e
+   222	          source /opt/ros/jazzy/setup.bash
+   223	          source install/setup.bash
+   224	          ./scripts/check_map_ingest_e2e.sh
+   225	
+   226	      - name: VDA 5050 Fleet E2E
+   227	        shell: bash
+   228	        env:
+   229	          AMR_E2E_INNER: "1"
+   230	        run: |
+   231	          set -e
+   232	          source /opt/ros/jazzy/setup.bash
+   233	          source install/setup.bash
+   234	          ./scripts/check_vda5050_e2e.sh
+   235	
+   236	      - name: REST Gateway Hardening E2E
+   237	        shell: bash
+   238	        env:
+   239	          AMR_E2E_INNER: "1"
+   240	        run: |
+   241	          set -e
+   242	          source /opt/ros/jazzy/setup.bash
+   243	          source install/setup.bash
+   244	          ./scripts/check_rest_gateway_hardening.sh
+   245	
+   246	      - name: State Persistence & Crash Recovery E2E
+   247	        shell: bash
+   248	        env:
+   249	          AMR_E2E_INNER: "1"
+   250	        run: |
+   251	          set -e
+   252	          source /opt/ros/jazzy/setup.bash
+   253	          source install/setup.bash
+   254	          ./scripts/check_state_persistence_e2e.sh
+   255	
+   256	      - name: Prometheus Metrics Exposition E2E
+   257	        shell: bash
+   258	        env:
+   259	          AMR_E2E_INNER: "1"
+   260	        run: |
+   261	          set -e
+   262	          source /opt/ros/jazzy/setup.bash
+   263	          source install/setup.bash
+   264	          ./scripts/check_metrics_e2e.sh
+   265	
+   266	      - name: Traffic Coordination & Deadlock Recovery E2E
+   267	        shell: bash
+   268	        env:
+   269	          AMR_E2E_INNER: "1"
+   270	        run: |
+   271	          set -e
+   272	          source /opt/ros/jazzy/setup.bash
+   273	          source install/setup.bash
+   274	          ./scripts/check_traffic_coordination_e2e.sh
+   275	
+   276	      - name: Industrial Facility Integration E2E
+   277	        shell: bash
+   278	        env:
+   279	          AMR_E2E_INNER: "1"
+   280	        run: |
+   281	          set -e
+   282	          source /opt/ros/jazzy/setup.bash
+   283	          source install/setup.bash
+   284	          ./scripts/check_facility_integration_e2e.sh
+   285	
+   286	      - name: CBS Multi-Agent Coordination E2E
+   287	        shell: bash
+   288	        env:
+   289	          AMR_E2E_INNER: "1"
+   290	        run: |
+   291	          set -e
+   292	          source /opt/ros/jazzy/setup.bash
+   293	          source install/setup.bash
+   294	          ./scripts/check_cbs_coordination_e2e.sh
+   295	
+   296	      # 相位 11：探针/守护与拓扑热生效。
+   297	      # 两个脚本都支持 AMR_E2E_INNER：内层模式下 docker 子命令由
+   298	      # scripts/lib/inner_docker_shim.sh 顶成本地执行，因此不需要 DinD，
+   299	      # 断言序列与在宿主机穿透容器时逐字相同（只有"在哪里执行"不同）。
+   300	      - name: Probes, Respawn & Webhook Alerting E2E
+   301	        shell: bash
+   302	        env:
+   303	          AMR_E2E_INNER: "1"
+   304	        run: |
+   305	          set -e
+   306	          source /opt/ros/jazzy/setup.bash
+   307	          source install/setup.bash
+   308	          ./scripts/check_health_supervision_e2e.sh
+   309	
+   310	      - name: Topology Hot-Update E2E
+   311	        shell: bash
+   312	        env:
+   313	          AMR_E2E_INNER: "1"
+   314	        run: |
+   315	          set -e
+   316	          source /opt/ros/jazzy/setup.bash
+   317	          source install/setup.bash
+   318	          ./scripts/check_topology_hot_update_e2e.sh
+   319	
+   320	      # 失败时把 e2e 现场日志带出来（脚本把 TMP_DIR 打在输出里，
+   321	      # 这里按前缀兜底收集），否则只能看 GitHub 的日志行数上限。
+   322	      - name: Upload E2E Artifacts
+   323	        if: failure()
+   324	        uses: actions/upload-artifact@v4
+   325	        with:
+   326	          name: e2e-logs
+   327	          path: |
+   328	            /tmp/amr_*/**/*.log
+   329	            /tmp/amr_*/**/*.jsonl
+   330	          if-no-files-found: ignore
+########## check_all.sh ##########
+     1	#!/usr/bin/env bash
+     2	set -euo pipefail
+     3	
+     4	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+     5	WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+     6	REPORT_FILE="${WORKSPACE_DIR}/test_report_matrix.json"
+     7	
+     8	START_TIME=$(date +%s)
+     9	
+    10	echo "================================================================="
+    11	echo "       AMR Dispatcher 工业级系统基础设施与混沌演练流水线         "
+    12	echo "================================================================="
+    13	
+    14	# ---------------------------------------------------------------------------
+    15	# 阶段状态一律由实际执行结果生成：PASSED / FAILED / SKIPPED。
+    16	#   PASSED  = 阶段执行成功
+    17	#   FAILED  = 阶段执行失败（计入失败数，脚本最终以非零退出）
+    18	#   SKIPPED = 本机不具备执行条件（不计入失败，但如实写入报告与 verdict）
+    19	# 矩阵中不再写入任何硬编码的通过结论；verdict 只基于实际执行的阶段。
+    20	# ---------------------------------------------------------------------------
+    21	CORE_STATUS="SKIPPED"
+    22	BENCH_STATUS="SKIPPED"
+    23	BT_STATUS="SKIPPED"
+    24	CHAOS_DEADLOCK_STATUS="SKIPPED"
+    25	CHAOS_WATCHDOG_STATUS="SKIPPED"
+    26	CHAOS_FAILOVER_STATUS="SKIPPED"
+    27	# L2 契约 / 运维验收：需要容器内的 ROS 运行时（Docker + colcon 构建产物）。
+    28	# 宿主机没有则如实记 SKIPPED，绝不写成 PASSED。
+    29	L2_CONTRACTS_STATUS="SKIPPED"
+    30	OPS_SUPERVISION_STATUS="SKIPPED"
+    31	OPS_TOPOLOGY_STATUS="SKIPPED"
+    32	FAILED_STAGES=0
+    33	
+    34	# record_status <目标变量名> <PASSED|FAILED>
+    35	record_status() {
+    36	  local -n _status_ref="$1"
+    37	  _status_ref="$2"
+    38	  if [ "$2" = "FAILED" ]; then
+    39	    FAILED_STAGES=$((FAILED_STAGES + 1))
+    40	  fi
+    41	}
+    42	
+    43	# count_suites <目录...>：统计测试源码中唯一 TEST/TEST_F 套件名数量（无匹配时输出 0）
+    44	count_suites() {
+    45	  {
+    46	    grep -rhoE 'TEST(_F)?[[:space:]]*\([[:space:]]*[A-Za-z0-9_]+' "$@" 2>/dev/null \
+    47	      | sed -E 's/.*\([[:space:]]*//' \
+    48	      | sort -u \
+    49	      | wc -l \
+    50	      | tr -d '[:space:]'
+    51	  } || true
+    52	}
+    53	
+    54	# count_ctest_cases <构建目录>：读取 ctest 注册的用例总数（仅列举不执行）
+    55	count_ctest_cases() {
+    56	  {
+    57	    ctest --test-dir "$1" -N 2>/dev/null \
+    58	      | sed -n 's/.*Total Tests: \([0-9][0-9]*\).*/\1/p' \
+    59	      | tail -1
+    60	  } || true
+    61	}
+    62	
+    63	# json_number <值>：空值降级为 JSON null
+    64	json_number() {
+    65	  if [ -n "$1" ]; then printf '%s' "$1"; else printf 'null'; fi
+    66	}
+    67	
+    68	# ---------------------------------------------------------------------------
+    69	# L1 核心层：纯 C++ 编译 + GoogleTest
+    70	# ---------------------------------------------------------------------------
+    71	echo ""
+    72	echo "[L1 核心层] 编译纯 C++ 核心库并执行 GoogleTest 单元测试 (零 ROS 依赖)..."
+    73	if "${WORKSPACE_DIR}/scripts/build.sh"; then
+    74	  record_status CORE_STATUS PASSED
+    75	else
+    76	  echo "[L1 核心层] FAILED：构建或单测未通过" >&2
+    77	  record_status CORE_STATUS FAILED
+    78	fi
+    79	
+    80	CORE_TEST_CASES=""
+    81	CORE_TEST_SUITES=""
+    82	if [ "$CORE_STATUS" = "PASSED" ]; then
+    83	  CORE_TEST_CASES="$(count_ctest_cases "${WORKSPACE_DIR}/build/core")"
+    84	  CORE_TEST_SUITES="$(count_suites "${WORKSPACE_DIR}/test/unit" "${WORKSPACE_DIR}/test/integration")"
+    85	fi
+    86	
+    87	# ---------------------------------------------------------------------------
+    88	# L1 压测层：基准压测（依赖 L1 构建产物）
+    89	# ---------------------------------------------------------------------------
+    90	BENCH_LOG="$(mktemp)"
+    91	# M6：脚本早退路径也要清理 benchmark 临时文件
+    92	trap 'rm -f "${BENCH_LOG}"' EXIT
+    93	BENCH_QUEUE_NOTE="not measured (benchmark stage not executed)"
+    94	BENCH_LOGGER_NOTE="not measured (benchmark stage not executed)"
+    95	if [ "$CORE_STATUS" = "PASSED" ]; then
+    96	  echo ""
+    97	  echo "[L1 压测层] 执行核心库极限基准压测 (任务队列并发 & 异步低阻塞日志)..."
+    98	  if "${WORKSPACE_DIR}/scripts/benchmark.sh" 2>&1 | tee "${BENCH_LOG}"; then
+    99	    record_status BENCH_STATUS PASSED
+   100	  else
+   101	    echo "[L1 压测层] FAILED：基准压测未通过" >&2
+   102	    record_status BENCH_STATUS FAILED
+   103	  fi
+   104	  bench_queue_push="$(sed -n 's/.*Push throughput: \([0-9.]*\) ops\/sec.*/\1/p' "${BENCH_LOG}" | head -1)"
+   105	  bench_queue_pop="$(sed -n 's/.*Pop throughput:[[:space:]]*\([0-9.]*\) ops\/sec.*/\1/p' "${BENCH_LOG}" | head -1)"
+   106	  bench_logger="$(sed -n 's/.*Enqueue throughput: \([0-9.]*\) ops\/sec.*/\1/p' "${BENCH_LOG}" | head -1)"
+   107	  if [ "$BENCH_STATUS" = "PASSED" ]; then
+   108	    if [ -n "$bench_queue_push" ] && [ -n "$bench_queue_pop" ]; then
+   109	      BENCH_QUEUE_NOTE="push ${bench_queue_push} ops/sec, pop ${bench_queue_pop} ops/sec (measured this run)"
+   110	    fi
+   111	    if [ -n "$bench_logger" ]; then
+   112	      BENCH_LOGGER_NOTE="enqueue ${bench_logger} ops/sec (measured this run)"
+   113	    fi
+   114	  fi
+   115	else
+   116	  echo ""
+   117	  echo "[L1 压测层] SKIPPED：依赖 L1 核心库构建产物"
+   118	fi
+   119	rm -f "${BENCH_LOG}"
+   120	
+   121	# ---------------------------------------------------------------------------
+   122	# L1 行为树层：amr_dispatcher_bt（ament/colcon 产物；纯宿主机无此产物则 SKIPPED）
+   123	# ---------------------------------------------------------------------------
+   124	BT_BUILD_DIR="${WORKSPACE_DIR}/build/amr_dispatcher_bt"
+   125	BT_TEST_CASES=""
+   126	BT_TEST_SUITES=""
+   127	if [ -d "${BT_BUILD_DIR}" ]; then
+   128	  # 构建产物可能来自 Docker 容器（CTestTestfile 内记录 /workspace 绝对路径），
+   129	  # 宿主机上这些路径不存在，ctest 必然报错——此时应判 SKIPPED 而非 FAILED。
+   130	  BT_FOREIGN_BUILD_DIR="$(sed -n 's/^# Build directory: //p' "${BT_BUILD_DIR}/CTestTestfile.cmake" 2>/dev/null | head -1)"
+   131	  if [ -n "${BT_FOREIGN_BUILD_DIR}" ] && [ ! -d "${BT_FOREIGN_BUILD_DIR}" ]; then
+   132	    echo ""
+   133	    echo "[L1 行为树层] SKIPPED：BT 构建产物来自容器（${BT_FOREIGN_BUILD_DIR} 在宿主机不存在），宿主机无法执行；请在容器/CI 内运行"
+   134	  else
+   135	    echo ""
+   136	    echo "[L1 行为树层] 执行 amr_dispatcher_bt 行为树单元测试 (BehaviorTree.CPP v4 + GTest)..."
+   137	    if ctest --test-dir "${BT_BUILD_DIR}" --output-on-failure; then
+   138	      record_status BT_STATUS PASSED
+   139	      BT_TEST_CASES="$(count_ctest_cases "${BT_BUILD_DIR}")"
+   140	      BT_TEST_SUITES="$(count_suites "${WORKSPACE_DIR}/src/amr_dispatcher_bt/test")"
+   141	    else
+   142	      echo "[L1 行为树层] FAILED：BT ctest 未通过" >&2
+   143	      record_status BT_STATUS FAILED
+   144	    fi
+   145	  fi
+   146	else
+   147	  echo ""
+   148	  echo "[L1 行为树层] SKIPPED：build/amr_dispatcher_bt 不存在（BT 包需 colcon/ament 构建，本环境未构建）"
+   149	fi
+   150	
+   151	# ---------------------------------------------------------------------------
+   152	# L3 场景层：混沌演练（依赖 L1 构建产物）
+   153	# ---------------------------------------------------------------------------
+   154	if [ "$CORE_STATUS" = "PASSED" ]; then
+   155	  echo ""
+   156	  echo "[L3 场景层: 混沌演练 1] 执行拓扑路网死锁检测与恢复演练..."
+   157	  if "${WORKSPACE_DIR}/scripts/check_deadlock_resolution.sh"; then
+   158	    record_status CHAOS_DEADLOCK_STATUS PASSED
+   159	  else
+   160	    echo "[L3 混沌演练 1] FAILED：死锁检测与恢复演练未通过" >&2
+   161	    record_status CHAOS_DEADLOCK_STATUS FAILED
+   162	  fi
+   163	
+   164	  echo ""
+   165	  echo "[L3 场景层: 混沌演练 2] 执行软看门狗心跳丢失与安全门熔断制动演练..."
+   166	  if "${WORKSPACE_DIR}/scripts/check_watchdog_estop.sh"; then
+   167	    record_status CHAOS_WATCHDOG_STATUS PASSED
+   168	  else
+   169	    echo "[L3 混沌演练 2] FAILED：看门狗/急停演练未通过" >&2
+   170	    record_status CHAOS_WATCHDOG_STATUS FAILED
+   171	  fi
+   172	
+   173	  echo ""
+   174	  echo "[L3 场景层: 混沌演练 3] 执行底层通信丢包监控与三级容灾降级演练..."
+   175	  if "${WORKSPACE_DIR}/scripts/check_hardware_failover.sh"; then
+   176	    record_status CHAOS_FAILOVER_STATUS PASSED
+   177	  else
+   178	    echo "[L3 混沌演练 3] FAILED：硬件降级演练未通过" >&2
+   179	    record_status CHAOS_FAILOVER_STATUS FAILED
+   180	  fi
+   181	else
+   182	  echo ""
+   183	  echo "[L3 场景层] SKIPPED：依赖 L1 核心库构建产物"
+   184	  CHAOS_DEADLOCK_STATUS="SKIPPED (依赖 L1)"
+   185	  CHAOS_WATCHDOG_STATUS="SKIPPED (依赖 L1)"
+   186	  CHAOS_FAILOVER_STATUS="SKIPPED (依赖 L1)"
+   187	fi
+   188	
+   189	# ---------------------------------------------------------------------------
+   190	# L2 契约层：launch_testing（respawn + 协调器重新提拉 + 服务重建）
+   191	#   需要容器内的 ROS 运行时与 colcon 构建产物；宿主机没有则 SKIPPED。
+   192	#   为什么单独判"容器内"：宿主机上的 build/ 目录若来自容器，CTestTestfile
+   193	#   里的 /workspace 路径不存在，直接跑 ctest 必然报错（与 BT 层同一处理）。
+   194	# ---------------------------------------------------------------------------
+   195	RUNNER_CONTAINER="${AMR_RUNNER_CONTAINER:-amr_dispatcher}"
+   196	# run_in_container <cmd> [args...]：在容器工作区里、source 过 ROS 环境后执行命令。
+   197	#
+   198	# `bash -lc '...' bash "$@"` 里那个 `bash` 占的是 $0，所以 $1 已经是第一个参数——
+   199	# 不能再 shift，否则会把命令本身（如 ctest）当成 $0 丢掉，最后去执行 `--test-dir`。
+   200	run_in_container() {
+   201	  docker exec "${RUNNER_CONTAINER}" bash -lc \
+   202	      'cd /workspace && source /opt/ros/jazzy/setup.bash && source install/setup.bash && "$@"' \
+   203	      bash "$@"
+   204	}
+   205	
+   206	CONTAINER_OK=0
+   207	if command -v docker >/dev/null 2>&1 &&
+   208	   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${RUNNER_CONTAINER}"; then
+   209	  CONTAINER_OK=1
+   210	fi
+   211	
+   212	echo ""
+   213	echo "[L2 契约层] 生命周期与进程守护契约测试 (launch_testing, 域 91/94)..."
+   214	if [ "${CONTAINER_OK}" -eq 1 ]; then
+   215	  if run_in_container ctest --test-dir build/amr_dispatcher_ros \
+   216	        -R "test_lifecycle_contracts|test_supervision_contracts" --output-on-failure; then
+   217	    record_status L2_CONTRACTS_STATUS PASSED
+   218	  else
+   219	    echo "[L2 契约层] FAILED：生命周期/守护契约未通过" >&2
+   220	    record_status L2_CONTRACTS_STATUS FAILED
+   221	  fi
+   222	else
+   223	  echo "[L2 契约层] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}（契约测试需要容器内 ROS 运行时）"
+   224	  L2_CONTRACTS_STATUS="SKIPPED (无容器运行时)"
+   225	fi
+   226	
+   227	echo ""
+   228	echo "[运维验收: 探针与守护] /healthz,/readyz + respawn + webhook 告警 (域 92 / REST 18100)..."
+   229	if [ "${CONTAINER_OK}" -eq 1 ]; then
+   230	  if "${WORKSPACE_DIR}/scripts/check_health_supervision_e2e.sh"; then
+   231	    record_status OPS_SUPERVISION_STATUS PASSED
+   232	  else
+   233	    echo "[运维验收: 探针与守护] FAILED" >&2
+   234	    record_status OPS_SUPERVISION_STATUS FAILED
+   235	  fi
+   236	else
+   237	  echo "[运维验收: 探针与守护] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}"
+   238	  OPS_SUPERVISION_STATUS="SKIPPED (无容器运行时)"
+   239	fi
+   240	
+   241	echo ""
+   242	echo "[运维验收: 拓扑热更新] 叠加层原子提交/持久化/失效归档 (域 93 / REST 18101)..."
+   243	if [ "${CONTAINER_OK}" -eq 1 ]; then
+   244	  if "${WORKSPACE_DIR}/scripts/check_topology_hot_update_e2e.sh"; then
+   245	    record_status OPS_TOPOLOGY_STATUS PASSED
+   246	  else
+   247	    echo "[运维验收: 拓扑热更新] FAILED" >&2
+   248	    record_status OPS_TOPOLOGY_STATUS FAILED
+   249	  fi
+   250	else
+   251	  echo "[运维验收: 拓扑热更新] SKIPPED：未找到运行中的容器 ${RUNNER_CONTAINER}"
+   252	  OPS_TOPOLOGY_STATUS="SKIPPED (无容器运行时)"
+   253	fi
+   254	
+   255	END_TIME=$(date +%s)
+   256	DURATION=$((END_TIME - START_TIME))
+   257	
+   258	# ---------------------------------------------------------------------------
+   259	# verdict：只基于实际执行的阶段
+   260	#   FAILED                        —— 任一执行阶段失败
+   261	#   PASSED_WITH_SKIPPED_STAGES    —— 已执行阶段全过，但存在 SKIPPED 阶段
+   262	#   ALL_PASSED                    —— 全部阶段执行且全部通过
+   263	# ---------------------------------------------------------------------------
+   264	ANY_SKIPPED=0
+   265	for _s in "$CORE_STATUS" "$BENCH_STATUS" "$BT_STATUS" \
+   266	          "$CHAOS_DEADLOCK_STATUS" "$CHAOS_WATCHDOG_STATUS" "$CHAOS_FAILOVER_STATUS" \
+   267	          "$L2_CONTRACTS_STATUS" "$OPS_SUPERVISION_STATUS" "$OPS_TOPOLOGY_STATUS"; do
+   268	  case "$_s" in
+   269	    SKIPPED*) ANY_SKIPPED=1 ;;
+   270	  esac
+   271	done
+   272	
+   273	if [ "${FAILED_STAGES}" -gt 0 ]; then
+   274	  VERDICT="FAILED"
+   275	elif [ "${ANY_SKIPPED}" -eq 1 ]; then
+   276	  VERDICT="PASSED_WITH_SKIPPED_STAGES"
+   277	else
+   278	  VERDICT="ALL_PASSED"
+   279	fi
+   280	
+   281	# 生成格式化测试矩阵交付报告（全部字段来自本次实际执行结果）
+   282	cat <<EOF > "${REPORT_FILE}"
+   283	{
+   284	  "project": "amr_dispatcher",
+   285	  "version": "1.2.0",
+   286	  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+   287	  "duration_seconds": ${DURATION},
+   288	  "testing_matrix": {
+   289	    "L1_core_unit_tests": {
+   290	      "status": "${CORE_STATUS}",
+   291	      "test_suites": $(json_number "${CORE_TEST_SUITES}"),
+   292	      "test_cases": $(json_number "${CORE_TEST_CASES}"),
+   293	      "dependencies": "Zero-ROS (Pure C++17/20 STL, GTest)",
+   294	      "note": "suites 源码实测统计, cases 取 ctest 实测注册数; 数字随测试增补而变化"
+   295	    },
+   296	    "L1_behavior_tree_tests": {
+   297	      "status": "${BT_STATUS}",
+   298	      "test_suites": $(json_number "${BT_TEST_SUITES}"),
+   299	      "test_cases": $(json_number "${BT_TEST_CASES}"),
+   300	      "framework": "BehaviorTree.CPP v4 + GTest",
+   301	      "note": "仅在 build/amr_dispatcher_bt 存在(colcon 构建过)时执行, 否则 SKIPPED"
+   302	    },
+   303	    "L1_performance_benchmark": {
+   304	      "status": "${BENCH_STATUS}",
+   305	      "mission_queue_throughput": "${BENCH_QUEUE_NOTE}",
+   306	      "async_logger_throughput": "${BENCH_LOGGER_NOTE}"
+   307	    },
+   308	    "L2_node_contracts": {
+   309	      "status": "${L2_CONTRACTS_STATUS}",
+   310	      "framework": "ROS 2 launch_testing (test/l2_launch_contracts/, 已接入 ctest)",
+   311	      "contracts": [
+   312	        "test_lifecycle_contracts: /system/ready,/system/healthy 可调用; 未提拉时报 INITIALIZING; ready_flag=false",
+   313	        "test_supervision_contracts: respawn 起新 PID; 协调器重新提拉到 active; on_configure 服务重建"
+   314	      ]
+   315	    },
+   316	    "L3_ops_acceptance": {
+   317	      "probes_and_supervision": "${OPS_SUPERVISION_STATUS}",
+   318	      "topology_hot_update": "${OPS_TOPOLOGY_STATUS}",
+   319	      "note": "域 92/93 与 REST 18100/18101 隔离运行; 生产 42/8080/1883 从不触碰"
+   320	    },
+   321	    "L3_chaos_scenarios": {
+   322	      "deadlock_wfg_cycle_resolution": "${CHAOS_DEADLOCK_STATUS}",
+   323	      "watchdog_200ms_timeout_cutoff": "${CHAOS_WATCHDOG_STATUS}",
+   324	      "hardware_failover_3tier_degradation": "${CHAOS_FAILOVER_STATUS}"
+   325	    }
+   326	  },
+   327	  "verdict": "${VERDICT}"
+   328	}
+   329	EOF
+   330	
+   331	echo ""
+   332	echo "================================================================="
+   333	if [ "${FAILED_STAGES}" -gt 0 ]; then
+   334	  echo "  [FAILED] ${FAILED_STAGES} 个阶段失败，verdict=${VERDICT}，详见上方日志。"
+   335	  echo "  📄 测试报告（含失败状态）已写入: ${REPORT_FILE}"
+   336	  echo "================================================================="
+   337	  exit 1
+   338	fi
+   339	echo "  [ALL EXECUTED STAGES PASSED] verdict=${VERDICT}（SKIPPED 阶段以报告为准）"
+   340	echo "  📄 测试报告已固化至: ${REPORT_FILE}"
+   341	echo "================================================================="

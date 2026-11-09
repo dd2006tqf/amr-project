@@ -1,0 +1,71 @@
+#include "manifest/manifest_recorder.h"
+#include <sstream>
+#include <cstdio>
+
+namespace xgrids {
+
+void ManifestRecorder::on_frame(const FrameMeta& f) {
+    if (f.channel_id < 0 || f.channel_id >= 4) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& cm = ch_[f.channel_id];
+    cm.channel_id = f.channel_id;
+    cm.total_frames++;
+    if (cm.first_ts_us < 0) cm.first_ts_us = f.ts_us;
+    cm.last_ts_us = f.ts_us;
+
+    if (have_last_[f.channel_id]) {
+        uint32_t expected = last_seq_[f.channel_id] + 1;
+        if (f.seq > expected) {
+            // seq 跳变：按帧号检出的丢帧区间
+            cm.gaps.push_back({f.channel_id, cm.last_ts_us, f.ts_us,
+                               expected, f.seq - 1, "frame_drop"});
+            cm.lost_frames += f.seq - expected;
+        }
+    }
+    last_seq_[f.channel_id] = f.seq;
+    have_last_[f.channel_id] = true;
+}
+
+void ManifestRecorder::record_gap(int channel, int64_t ts_us,
+                                  const char* reason,
+                                  uint32_t lost_from, uint32_t lost_to) {
+    if (channel < 0 || channel >= 4) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& cm = ch_[channel];
+    cm.gaps.push_back({channel, ts_us, ts_us, lost_from, lost_to, reason});
+    cm.lost_frames += (lost_to >= lost_from) ? (lost_to - lost_from + 1) : 0;
+}
+
+std::string ManifestRecorder::serialize() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::ostringstream os;
+    os << "{\n  \"scan_manifest\": [\n";
+    for (int i = 0; i < 4; ++i) {
+        const auto& c = ch_[i];
+        os << "    {\"channel\": " << i
+           << ", \"frames\": " << c.total_frames
+           << ", \"lost\": " << c.lost_frames
+           << ", \"gaps\": [";
+        for (size_t j = 0; j < c.gaps.size(); ++j) {
+            const auto& g = c.gaps[j];
+            os << "{\"start_us\":" << g.start_ts_us
+               << ",\"end_us\":" << g.end_ts_us
+               << ",\"lost\":\"" << g.lost_seq_from << "-" << g.lost_seq_to
+               << "\",\"reason\":\"" << g.reason << "\"}";
+            if (j + 1 < c.gaps.size()) os << ",";
+        }
+        os << "]}";
+        if (i < 3) os << ",";
+        os << "\n";
+    }
+    os << "  ]\n}\n";
+    return os.str();
+}
+
+bool ManifestRecorder::is_clean() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& c : ch_) if (c.lost_frames > 0) return false;
+    return true;
+}
+
+}  // namespace xgrids

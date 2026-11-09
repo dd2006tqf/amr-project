@@ -1,0 +1,155 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_base.h"
+
+#include "ins_base/log.h"
+#include "magic_enum/magic_enum.hpp"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStateMachine"
+}  // namespace
+
+// 静态成员定义
+std::shared_ptr<StreamController> LiveStateMachine::stream_controller_ =
+    nullptr;
+std::shared_ptr<NetworkController> LiveStateMachine::network_controller_ =
+    nullptr;
+std::shared_ptr<ConfigManager> LiveStateMachine::config_manager_ = nullptr;
+std::shared_ptr<ResumeManager> LiveStateMachine::resume_manager_ = nullptr;
+std::shared_ptr<LiveBroadcastManager> LiveStateMachine::manager_ = nullptr;
+
+// Hook相关静态成员（线程安全，使用项目标准互斥锁）
+std::shared_ptr<LiveStateMachine::StateChangeCallback>
+    LiveStateMachine::state_change_hook_ = nullptr;
+ins::base::Mutex LiveStateMachine::hook_mutex_;
+
+LiveStateMachine::LiveStateMachine(LiveBroadcastState state) : state_(state) {}
+
+std::string LiveStateMachine::Name() const {
+  return std::string(magic_enum::enum_name(state_));
+}
+
+void LiveStateMachine::OnStateChange() {
+  ILOGS_I << "State changed to: " << Name();
+
+  // 线程安全地获取Hook副本
+  // 设计：先加锁拷贝shared_ptr，解锁后再调用，避免持锁调用用户代码
+  std::shared_ptr<StateChangeCallback> hook_copy;
+  {
+    ins::base::AutoMutex lock(hook_mutex_);
+    hook_copy = state_change_hook_;
+  }
+
+  // 调用Hook（由Manager处理状态变化）
+  if (hook_copy && *hook_copy) {
+    (*hook_copy)(state_);
+  }
+}
+
+// ========== 默认事件处理（子类可覆盖） ==========
+
+void LiveStateMachine::OnEvent(const EventPrepareRequest& event) {
+  ILOGS_W << "Unhandled EventPrepareRequest in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventPrepareComplete& event) {
+  ILOGS_W << "Unhandled EventPrepareComplete in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventStartRequest& event) {
+  ILOGS_W << "Unhandled EventStartRequest in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventStartSuccess& event) {
+  ILOGS_W << "Unhandled EventStartSuccess in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventStartFailed& event) {
+  ILOGS_W << "Unhandled EventStartFailed in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventStopRequest& event) {
+  ILOGS_W << "Unhandled EventStopRequest in state: " << Name()
+          << ", reason=" << static_cast<int32_t>(event.reason);
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventStopComplete& event) {
+  ILOGS_W << "Unhandled EventStopComplete in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventCancel& event) {
+  ILOGS_W << "Unhandled EventCancel in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventError& event) {
+  ILOGS_W << "Unhandled EventError in state: " << Name()
+          << ", error_code=" << static_cast<int32_t>(event.error_code)
+          << ", message=" << event.message;
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventResume& event) {
+  ILOGS_W << "Unhandled EventResume in state: " << Name();
+  static_cast<void>(event);
+}
+
+void LiveStateMachine::OnEvent(const EventDiscardResume& event) {
+  ILOGS_W << "Unhandled EventDiscardResume in state: " << Name();
+  static_cast<void>(event);
+}
+
+// ========== 静态接口实现 ==========
+
+void LiveStateMachine::SetStreamController(
+    const std::shared_ptr<StreamController>& controller) {
+  stream_controller_ = controller;
+}
+
+void LiveStateMachine::SetNetworkController(
+    const std::shared_ptr<NetworkController>& controller) {
+  network_controller_ = controller;
+}
+
+void LiveStateMachine::SetConfigManager(
+    const std::shared_ptr<ConfigManager>& manager) {
+  config_manager_ = manager;
+}
+
+void LiveStateMachine::SetResumeManager(
+    const std::shared_ptr<ResumeManager>& manager) {
+  resume_manager_ = manager;
+}
+
+void LiveStateMachine::SetManager(
+    const std::shared_ptr<LiveBroadcastManager>& manager) {
+  manager_ = manager;
+}
+
+void LiveStateMachine::SetStateChangeHook(
+    const std::function<void(LiveBroadcastState)>& hook) {
+  // 线程安全地设置Hook
+  // 使用shared_ptr包装，确保读取端可以安全拷贝后调用
+  ins::base::AutoMutex lock(hook_mutex_);
+  if (hook) {
+    state_change_hook_ = std::make_shared<StateChangeCallback>(hook);
+  } else {
+    state_change_hook_ = nullptr;
+  }
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

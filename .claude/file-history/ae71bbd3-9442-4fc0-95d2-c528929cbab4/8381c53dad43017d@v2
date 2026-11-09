@@ -1,0 +1,44 @@
+#pragma once
+
+#include <cstddef>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <optional>
+#include <atomic>
+
+namespace xgrids {
+
+// 单生产者单消费者无锁环形缓冲，用于采集线程 -> 写盘线程解耦。
+// 背压策略：满了优先丢“预览帧”，不丢原始帧（对应产品里原始数据不可丢的约束）。
+template <typename T>
+class RingBuffer {
+public:
+    enum class Priority { kLow, kHigh };  // kHigh=原始帧不可丢, kLow=可丢
+
+    explicit RingBuffer(size_t capacity)
+        : buf_(capacity), head_(0), tail_(0), size_(0) {}
+
+    // 尝试 push；满了时若 priority==kLow 则丢弃返回 false，
+    // kHigh 则阻塞等待（或按业务选择丢最老的低优先级项）。
+    bool push(const T& item, Priority prio);
+    bool push(T&& item, Priority prio);
+
+    std::optional<T> pop();
+
+    size_t size() const { return size_.load(); }
+    size_t capacity() const { return buf_.size(); }
+    uint64_t dropped_count() const { return dropped_.load(); }
+
+private:
+    std::vector<T> buf_;
+    std::atomic<size_t> head_;
+    std::atomic<size_t> tail_;
+    std::atomic<size_t> size_;
+    std::atomic<uint64_t> dropped_{0};
+
+    std::mutex mu_;
+    std::condition_variable not_full_, not_empty_;
+};
+
+}  // namespace xgrids

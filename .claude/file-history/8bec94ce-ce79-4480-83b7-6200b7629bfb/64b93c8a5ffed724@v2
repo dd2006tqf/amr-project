@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package amr_dispatcher.proto;
+
+// 与 amr_dispatcher_interfaces/msg/ChassisLinkHealth 形状相近的遥测消息，
+// 用于验证 protobuf 类型能否在不 fork rclcpp 的前提下直接作为 ROS 2 话题类型。
+message FleetTelemetry {
+  int64 stamp_ns = 1;
+  string vehicle_id = 2;
+  double x_m = 3;
+  double y_m = 4;
+  double yaw_rad = 5;
+  fixed64 sequence = 6;
+  // 预留：将来放完整轨迹或原始串口帧，用于验证大 payload 路径。
+  bytes payload = 7;
+}

@@ -1,0 +1,37 @@
+build/
+*.pyc
+__pycache__/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+install/
+log/
+
+# 个人简历等非项目文件，不应进入公开仓库
+*.pdf
+*简历知识库.md
+
+# 工作流计划与审查产物（不入库）
+docs/superpowers/
+
+# check_all.sh 每次运行生成的测试矩阵（由脚本如实重写，只作本地产物）
+test_report_matrix.json
+
+# 地图导入引擎生成的拓扑站点文件（由 map_ingest_node 运行时生成）
+config/generated/
+
+# check_web_console_e2e.sh 在容器内工作区留下的临时运行目录
+.wc_stamp/
+
+# 运行时持久化产物（调度状态快照 / 审计 JSONL / 幂等键），由节点按参数生成
+runtime/
+# e2e 在容器内工作区留下的临时运行目录
+.pers_stamp/
+.hard_stamp/
+.metrics_stamp/
+.health_stamp/
+.topo_stamp/
+*.tmp
+.tmp

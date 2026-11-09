@@ -1,0 +1,360 @@
+===== deploy/alerts/amr_dispatcher.rules.yml =====
+docs/DEPLOYMENT.md:371:告警规则样例见 `deploy/alerts/amr_dispatcher.rules.yml`。
+deploy/alerts/README.md:3:`amr_dispatcher.rules.yml` 是 Prometheus 规则文件，配套 `docs/DEPLOYMENT.md`
+deploy/alerts/README.md:25:  - /etc/prometheus/rules/amr_dispatcher.rules.yml
+===== deploy/alerts/README.md =====
+USAGE.md:34:└── README.md                # 项目简介
+.dockerignore:24:README.md
+.claude/skills/sync-docs-and-code/SKILL.md:60:# 1. 架构与顶层说明：README.md, docs/架构设计.md, docs/项目评估.md, docs/学习路线图.md
+===== docker/docker-compose.server.yml =====
+.dockerignore:34:docker/docker-compose.server.yml
+USAGE.md:19:├── docker/                  # Dockerfile.jazzy 与 docker-compose.server.yml
+USAGE.md:85:docker compose -f docker/docker-compose.server.yml up -d
+USAGE.md:341:- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库。完整的 ROS 2 节点请通过 `docker compose -f docker/docker-compose.server.yml up -d` 运行（详见 `docs/DEPLOYMENT.md`）。
+docs/DEPLOYMENT.md:198:| 14 | 重启自恢复 | `docker compose -f docker/docker-compose.server.yml restart` 后重跑 4–7 | 全部通过 |
+docs/DEPLOYMENT.md:266:C="docker compose -f docker/docker-compose.server.yml"
+docs/DEPLOYMENT.md:482:>   docker compose -f docker/docker-compose.server.yml restart'
+docs/DEPLOYMENT.md:601:ssh $S 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+docs/DEPLOYMENT.md:677:# docker-compose.server.yml 中给 safety_gate_node 加参数
+docs/DEPLOYMENT.md:707:ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml restart'
+docs/DEPLOYMENT.md:837:ssh ubuntu@<server-ip> 'cd /home/ubuntu/amr_dispatcher && docker compose -f docker/docker-compose.server.yml down'
+docs/DEPLOYMENT.md:858:| bridge 网络 + 回环端口绑定 | `docker/docker-compose.server.yml` | 替代 `network_mode: host` + `privileged: true` + `-v /dev:/dev`。见第 2 节 |
+docs/DEPLOYMENT.md:859:| 容器日志限额 | `docker/docker-compose.server.yml` | `max-size: 10m` × 3,避免长跑占满 17GB 可用磁盘 |
+docs/DEPLOYMENT.md:860:| `shm_size: 512m` | `docker/docker-compose.server.yml` | Fast DDS 走共享内存,默认 64MB 偏小 |
+docs/DEPLOYMENT.md:862:| 显式 `name: amr-dispatcher` | `docker/docker-compose.server.yml` | compose 默认以所在目录名作项目名,本文件在 `docker/` 下故项目名为 `docker`。实测该服务器上 `tc_fcgi_app` / `tc_fcgi_nginx_fastdfs` / `tc_fcgi_mysql` 三个长期运行的容器**同属 `docker` 项目**,启动本栈时已出现 orphan containers 警告。一旦对同名项目执行 `--remove-orphans`,那三个无关容器会被一并删除 |
+scripts/deploy_to_server.sh:162:    ssh $SERVER 'docker compose -f $REPO_DIR/docker/docker-compose.server.yml logs -f'
+scripts/tunnel.sh:7:# 且无 bind 地址参数），应用本身也没有任何认证。docker-compose.server.yml 已把容器
+scripts/server_setup.sh:8:# 3. 用 docker/docker-compose.server.yml 拉起容器
+scripts/server_setup.sh:26:COMPOSE_FILE="docker/docker-compose.server.yml"
+docker/entrypoint.server.sh:22:#   docker compose -f docker/docker-compose.server.yml up -d
+docker/docker-compose.server.yml:26:#   docker compose -f docker-compose.server.yml up -d
+docker/docker-compose.server.yml:27:#   docker compose -f docker-compose.server.yml logs -f
+docker/docker-compose.server.yml:28:#   docker compose -f docker-compose.server.yml down
+===== docker/Dockerfile.jazzy =====
+.dockerignore:33:docker/Dockerfile.jazzy
+HARDWARE_INTEGRATION.md:276:  -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy-arm64 --load .
+USAGE.md:19:├── docker/                  # Dockerfile.jazzy 与 docker-compose.server.yml
+USAGE.md:82:docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+docs/DEPLOYMENT.md:131:2. `docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .`(加 `--no-build` 则跳过)
+docs/DEPLOYMENT.md:857:| 入口脚本从挂载仓库读取 | `docker/Dockerfile.jazzy` 的 `CMD` | 原先 `COPY` 到 `/usr/local/bin` 并直接 `ENTRYPOINT` 那个路径,脚本一经修改就必须重建镜像,否则**容器静默使用过期版本**(此坑已实际踩到一次)。现在优先用 `/workspace/docker/entrypoint.server.sh`,镜像内副本仅作兜底 |
+README.md:234:On a host machine the script automatically re-executes inside the `amr_dispatcher` Docker container (requires `python3-paho-mqtt`, `mosquitto`, `mosquitto-clients`; all preinstalled by `docker/Dockerfile.jazzy`).
+scripts/deploy_to_server.sh:64:[ -f "${REPO_ROOT}/docker/Dockerfile.jazzy" ] || die "找不到 docker/Dockerfile.jazzy，请在仓库根目录执行。"
+scripts/deploy_to_server.sh:98:    -f docker/Dockerfile.jazzy \
+.github/workflows/ci.yml:60:      # （与 docker/Dockerfile.jazzy 的清单保持一致）。
+scripts/container_build.sh:11:# 镜像用 amr-dispatcher:jazzy（由 docker/Dockerfile.jazzy 构建）；
+scripts/container_build.sh:27:  echo "       请先构建：docker build -f docker/Dockerfile.jazzy -t $IMAGE ." >&2
+docker/Dockerfile.jazzy:28:#   docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+===== docker/entrypoint.server.sh =====
+.dockerignore:8:# 即 docker/entrypoint.server.sh
+HARDWARE_INTEGRATION.md:117:> **关键坑**：`entrypoint.server.sh` 默认 `AMR_SERIAL_DEVICE=/dev/ttyUSB0`。A7A 板载串口叫 `/dev/ttyAS4`，不指定就会去起 PTY 模拟器，然后"系统看着正常、车一动不动"。
+HARDWARE_INTEGRATION.md:211:| 6 | `entrypoint.server.sh` 设备不存在时静默起 PTY 模拟器 | `AMR_USE_MOCK_CHASSIS=0` 且设备不存在 → 打印原因并 `exit 1` |
+docs/DEPLOYMENT.md:855:| `--base-paths src` | `docker/entrypoint.server.sh` | 仓库根的 `CMakeLists.txt` 会让 colcon 把**整个仓库**当成一个包(`amr_dispatcher_workspace`),从而忽略 `src/` 下 5 个真实包,导致 `ros2 launch` 报 `package 'amr_dispatcher_ros' not found`。与 `scripts/container_build.sh` 的既有用法一致 |
+docs/DEPLOYMENT.md:856:| `python3 -u` | `docker/entrypoint.server.sh` | Python stdout 重定向到文件时变块缓冲(8KB),而启动日志仅数百字节,导致 PTY 路径解析在轮询窗口内读不到内容,底盘拿不到串口设备 |
+docs/DEPLOYMENT.md:857:| 入口脚本从挂载仓库读取 | `docker/Dockerfile.jazzy` 的 `CMD` | 原先 `COPY` 到 `/usr/local/bin` 并直接 `ENTRYPOINT` 那个路径,脚本一经修改就必须重建镜像,否则**容器静默使用过期版本**(此坑已实际踩到一次)。现在优先用 `/workspace/docker/entrypoint.server.sh`,镜像内副本仅作兜底 |
+scripts/container_build.sh:4:# 与 docker/entrypoint.server.sh 的关系
+scripts/container_build.sh:6:# 正式的部署流程由 entrypoint.server.sh 负责（按需构建 + 启动服务）。
+docker/Dockerfile.jazzy:66:COPY docker/entrypoint.server.sh /workspace-docker/entrypoint.server.sh
+docker/Dockerfile.jazzy:67:RUN chmod +x /workspace-docker/entrypoint.server.sh
+docker/Dockerfile.jazzy:72:# 入口脚本优先使用挂载进容器的那一份（/workspace/docker/entrypoint.server.sh），
+docker/Dockerfile.jazzy:79:  if [ -x /workspace/docker/entrypoint.server.sh ]; then \
+docker/Dockerfile.jazzy:80:    exec /workspace/docker/entrypoint.server.sh; \
+docker/Dockerfile.jazzy:82:    echo '[amr] WARN 未找到 /workspace/docker/entrypoint.server.sh，使用镜像内兜底副本' >&2; \
+docker/Dockerfile.jazzy:83:    exec /workspace-docker/entrypoint.server.sh; \
+===== docker/healthcheck.py =====
+docs/DEPLOYMENT.md:300:| `docker healthcheck`（`docker/healthcheck.py` → `GET /readyz`） | `docker ps` 显示 `healthy/unhealthy`；`compose up --wait` 等待就绪 | 不重启容器；不替代应用自愈 |
+docker/docker-compose.server.yml:79:      test: ["CMD", "python3", "/workspace/docker/healthcheck.py"]
+===== scripts/benchmark.sh =====
+USAGE.md:62:./scripts/benchmark.sh
+ROADMAP_EVOLUTION.md:264:   - 运行 `./scripts/benchmark.sh`，展示 **2,000,000 条/秒的无锁异步日志吞吐** 与 **25,000 ops/秒的任务队列并发吞吐**。
+docs/TECHNICAL_SPECIFICATION.md:506:./scripts/benchmark.sh
+scripts/check_all.sh:98:  if "${WORKSPACE_DIR}/scripts/benchmark.sh" 2>&1 | tee "${BENCH_LOG}"; then
+===== scripts/build.sh =====
+USAGE.md:340:### Q1: 在宿主机运行 `./scripts/build.sh` 提示没有 ROS 2 Jazzy？
+USAGE.md:341:- **正常现象**。宿主机若为 CentOS 或未安装 Jazzy 的环境，`build.sh` 会自动仅构建并测试 `amr_dispatcher_core` 纯 C++ 库。完整的 ROS 2 节点请通过 `docker compose -f docker/docker-compose.server.yml up -d` 运行（详见 `docs/DEPLOYMENT.md`）。
+ROADMAP_EVOLUTION.md:263:   - 切入终端运行 `./scripts/build.sh`，展示纯 CMake 下 **130+ 单元测试在 4 秒内全绿通过**。
+docs/TECHNICAL_SPECIFICATION.md:503:./scripts/build.sh
+docs/TECHNICAL_SPECIFICATION.md:530:| **Step 1** | **算法接口抽象与 Mock 占位** | • `include/planning/path_planner_interface.hpp`<br>• `include/planning/mock_linear_planner.hpp`<br>• `include/path_tracking/path_tracker_interface.hpp`<br>• `test/unit/mock_linear_planner_test.cpp` | 运行 `./scripts/build.sh`，新增单测全绿，耗时维持 ~4s。 |
+docs/DEPLOYMENT.md:855:| `--base-paths src` | `docker/entrypoint.server.sh` | 仓库根的 `CMakeLists.txt` 会让 colcon 把**整个仓库**当成一个包(`amr_dispatcher_workspace`),从而忽略 `src/` 下 5 个真实包,导致 `ros2 launch` 报 `package 'amr_dispatcher_ros' not found`。与 `scripts/container_build.sh` 的既有用法一致 |
+scripts/run_demo.sh:10:  bash "$ROOT_DIR/scripts/build.sh"
+scripts/check_all.sh:73:if "${WORKSPACE_DIR}/scripts/build.sh"; then
+scripts/check_traffic_coordination_e2e.sh:31:#   宿主机 scripts/build.sh -> ${REPO_ROOT}/build/core          （CTest 文件内嵌宿主机绝对路径）
+.github/workflows/ci.yml:23:      # 与 scripts/build.sh 的 cmake 参数保持一致（含 -DCMAKE_BUILD_TYPE=Release），
+docker/entrypoint.server.sh:69:  # 该组合与 scripts/container_build.sh 中的用法一致。
+===== scripts/check_all.sh =====
+README.md:201:./scripts/check_all.sh
+README.md:350:GitHub Actions runs three jobs: `build-and-test-core` (host CMake + `check_all.sh`),
+ROADMAP_EVOLUTION.md:146:  - `check_all.sh`：一键自动化全流程流水线，串联静态检查、单元测试、基准压测与上述混沌测试。
+ROADMAP_EVOLUTION.md:236:│  • 编写一键执行汇总脚本 check_all.sh                                    │
+docs/TECHNICAL_SPECIFICATION.md:79:    └── check_all.sh
+docs/TECHNICAL_SPECIFICATION.md:493:### 6.4 `scripts/check_all.sh`（一键汇总交付脚本）
+docs/TECHNICAL_SPECIFICATION.md:535:| **Step 6** | **构建混沌演练自动化脚本矩阵** | • `scripts/check_deadlock_resolution.sh`<br>• `scripts/check_watchdog_estop.sh`<br>• `scripts/check_hardware_failover.sh`<br>• `scripts/check_all.sh` | 终端运行 `./scripts/check_all.sh`，5 个检验阶段全部通过输出绿标。 |
+docs/DEPLOYMENT.md:187:| 3 | L1 核心链路 | `$C 'cd /workspace && ./scripts/check_all.sh'` | `🎉 [ALL CHECKS PASSED]` |
+.gitignore:19:# check_all.sh 每次运行生成的测试矩阵（由脚本如实重写，只作本地产物）
+docs/EXTENSION_ROADMAP.md:109:    `check_all.sh` 全 PASS
+docs/EXTENSION_ROADMAP.md:206:    `scripts/check_all.sh` 的测试矩阵。
+.github/workflows/ci.yml:24:      # 这样后面 check_all.sh 内部再次 configure 时是 no-op，不会触发二次全量编译。
+.github/workflows/ci.yml:38:      - name: Run Full Check Pipeline (check_all.sh)
+.github/workflows/ci.yml:39:        run: ./scripts/check_all.sh
+docker/entrypoint.server.sh:26:#   docker run --rm    -v "$PWD":/workspace amr-dispatcher:jazzy bash -lc ./scripts/check_all.sh
+===== scripts/check_cbs_coordination_e2e.sh =====
+README.md:105:   - **Verified End-to-End**: `scripts/check_cbs_coordination_e2e.sh` and 100% CTest unit coverage (`SpaceTimeAStarTest`, `ConflictBasedSearchTest`, `PrioritizedPlanningTest`, `MAPFSolverTest`, `CBSTrafficCoordinatorTest`).
+README.md:356:`check_facility_integration_e2e.sh`, `check_cbs_coordination_e2e.sh`,
+docs/EXTENSION_ROADMAP.md:133:    使时空窗口与 `time_space` 口径严格对齐；`check_cbs_coordination_e2e.sh` 5 阶段验收通过。
+scripts/check_cbs_coordination_e2e.sh:3:# check_cbs_coordination_e2e.sh - Phase 9 (P3) CBS 高层多车协同寻路集成验证脚本
+scripts/check_cbs_coordination_e2e.sh:36:        bash /workspace/scripts/check_cbs_coordination_e2e.sh "$@"
+.github/workflows/ci.yml:294:          ./scripts/check_cbs_coordination_e2e.sh
+===== scripts/check_deadlock_resolution.sh =====
+docs/TECHNICAL_SPECIFICATION.md:76:    ├── check_deadlock_resolution.sh
+docs/TECHNICAL_SPECIFICATION.md:469:### 6.1 `scripts/check_deadlock_resolution.sh`
+docs/TECHNICAL_SPECIFICATION.md:509:./scripts/check_deadlock_resolution.sh
+docs/TECHNICAL_SPECIFICATION.md:535:| **Step 6** | **构建混沌演练自动化脚本矩阵** | • `scripts/check_deadlock_resolution.sh`<br>• `scripts/check_watchdog_estop.sh`<br>• `scripts/check_hardware_failover.sh`<br>• `scripts/check_all.sh` | 终端运行 `./scripts/check_all.sh`，5 个检验阶段全部通过输出绿标。 |
+ROADMAP_EVOLUTION.md:143:  - `check_deadlock_resolution.sh`：自动模拟并发提交 2 个冲突对头订单，检查系统是否触发死锁警报，并验证抢占释放机制是否在预期时间内解除冲突。
+ROADMAP_EVOLUTION.md:233:│  • 编写 check_deadlock_resolution.sh（死锁检测与恢复演练）               │
+scripts/check_deadlock_resolution.sh:18:echo "=== check_deadlock_resolution.sh PASSED ==="
+scripts/check_all.sh:157:  if "${WORKSPACE_DIR}/scripts/check_deadlock_resolution.sh"; then
+===== scripts/check_facility_integration_e2e.sh =====
+README.md:98:   - **Verified End-to-End**: `scripts/check_facility_integration_e2e.sh` and Python Modbus-TCP PLC simulator (`scripts/mock_plc_facility.py`).
+README.md:356:`check_facility_integration_e2e.sh`, `check_cbs_coordination_e2e.sh`,
+scripts/check_facility_integration_e2e.sh:3:# check_facility_integration_e2e.sh - Phase 8 工业物理设施联锁集成验收测试
+scripts/check_facility_integration_e2e.sh:35:        bash /workspace/scripts/check_facility_integration_e2e.sh "$@"
+.github/workflows/ci.yml:284:          ./scripts/check_facility_integration_e2e.sh
+===== scripts/check_hardware_failover.sh =====
+ROADMAP_EVOLUTION.md:144:  - `check_hardware_failover.sh`：向通信链路注入人为丢包，验证系统在无需人工干预的情况下，按顺序自动降级：`Serial -> UDP -> Mock`。
+ROADMAP_EVOLUTION.md:234:│  • 编写 check_hardware_failover.sh（通信断开三级自动降级演练）             │
+docs/TECHNICAL_SPECIFICATION.md:77:    ├── check_hardware_failover.sh
+docs/TECHNICAL_SPECIFICATION.md:485:### 6.3 `scripts/check_hardware_failover.sh`
+docs/TECHNICAL_SPECIFICATION.md:515:./scripts/check_hardware_failover.sh
+docs/TECHNICAL_SPECIFICATION.md:535:| **Step 6** | **构建混沌演练自动化脚本矩阵** | • `scripts/check_deadlock_resolution.sh`<br>• `scripts/check_watchdog_estop.sh`<br>• `scripts/check_hardware_failover.sh`<br>• `scripts/check_all.sh` | 终端运行 `./scripts/check_all.sh`，5 个检验阶段全部通过输出绿标。 |
+scripts/check_hardware_failover.sh:17:echo "=== check_hardware_failover.sh PASSED ==="
+scripts/check_all.sh:175:  if "${WORKSPACE_DIR}/scripts/check_hardware_failover.sh"; then
+===== scripts/check_health_supervision_e2e.sh =====
+README.md:115:   - **Verified End-to-End**: `scripts/check_health_supervision_e2e.sh` (T1–T8, incl. `kill -9` -> `503` -> respawn -> `200` and webhook payload checks) and `scripts/check_topology_hot_update_e2e.sh` (T1–T12, incl. the dispatched VDA order actually taking the bypass, restart replay, and base-map-change invalidation). Both run inside the CI container via `AMR_E2E_INNER=1`.
+README.md:213:- [Step 8] Probes & supervision E2E (`check_health_supervision_e2e.sh`).
+README.md:238:./scripts/check_health_supervision_e2e.sh
+README.md:357:`check_health_supervision_e2e.sh`, `check_topology_hot_update_e2e.sh` inside the ROS container).
+docs/ARCHITECTURE.md:209:这三条语义（`test_alerting.cpp`）与现场行为（`check_health_supervision_e2e.sh` T5
+docs/EXTENSION_ROADMAP.md:203:    `check_health_supervision_e2e.sh` T1–T8、`check_topology_hot_update_e2e.sh` T1–T12
+docs/DEPLOYMENT.md:350:进程/线程/话题与关闭前完全一致（`check_health_supervision_e2e.sh` T8 断言）。
+scripts/check_health_supervision_e2e.sh:3:# check_health_supervision_e2e.sh - 探针与进程守护端到端验收（相位 11 / A+B）
+scripts/check_health_supervision_e2e.sh:30:# 用法：./scripts/check_health_supervision_e2e.sh
+scripts/check_all.sh:230:  if "${WORKSPACE_DIR}/scripts/check_health_supervision_e2e.sh"; then
+.github/workflows/ci.yml:308:          ./scripts/check_health_supervision_e2e.sh
+deploy/alerts/README.md:48:  `check_health_supervision_e2e.sh` T5 双重锁定）。
+===== scripts/check_map_ingest_e2e.sh =====
+README.md:218:./scripts/check_map_ingest_e2e.sh
+README.md:353:process supervision), and `e2e-fleet` (`check_map_ingest_e2e.sh`,
+docs/EXTENSION_ROADMAP.md:136:  - CI 新增 `e2e-fleet` job：`check_map_ingest_e2e.sh` 与 `check_vda5050_e2e.sh`
+scripts/check_web_console_e2e.sh:128:[ -f "${STATIONS_YAML}" ] || fail "缺少 ${STATIONS_YAML}（先跑 check_map_ingest_e2e.sh 生成拓扑）"
+scripts/check_health_supervision_e2e.sh:119:    || fail "容器内缺少 ${STATIONS_YAML}（先跑 check_map_ingest_e2e.sh 生成拓扑）"
+scripts/check_state_persistence_e2e.sh:87:    || fail "容器内缺少 ${STATIONS_YAML}（先跑 check_map_ingest_e2e.sh 生成拓扑）"
+.github/workflows/ci.yml:181:      #   nav2_map_server  -> check_map_ingest_e2e.sh
+.github/workflows/ci.yml:224:          ./scripts/check_map_ingest_e2e.sh
+scripts/check_map_ingest_e2e.sh:3:# check_map_ingest_e2e.sh
+scripts/check_map_ingest_e2e.sh:37:      exec docker exec -i -e AMR_E2E_INNER=1 -w /workspace amr_dispatcher bash /workspace/scripts/check_map_ingest_e2e.sh "$@"
+scripts/check_vda5050_e2e.sh:7:#   Stage 1: 地图拓扑提取 (复用 check_map_ingest_e2e.sh 产出 stations.yaml)
+===== scripts/check_metrics_e2e.sh =====
+README.md:331:./scripts/check_metrics_e2e.sh
+README.md:355:`check_metrics_e2e.sh`, `check_traffic_coordination_e2e.sh`,
+docs/EXTENSION_ROADMAP.md:149:    转义/数值格式/空族省略），`scripts/check_metrics_e2e.sh` 对真实进程断言格式
+docs/API.md:460:格式契约由 `MetricsFormatTest`（宿主 ctest）与 `scripts/check_metrics_e2e.sh`
+.github/workflows/ci.yml:264:          ./scripts/check_metrics_e2e.sh
+scripts/check_metrics_e2e.sh:3:# check_metrics_e2e.sh - /metrics 端点验收（Prometheus 文本格式）
+===== scripts/check_navigate_sequence_bridge.sh =====
+scripts/check_navigate_sequence_bridge.sh:321:echo "=== check_navigate_sequence_bridge.sh PASSED ==="
+===== scripts/check_rest_gateway_hardening.sh =====
+README.md:302:./scripts/check_rest_gateway_hardening.sh
+README.md:354:`check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,
+docs/API.md:403:**健壮性契约**（`scripts/check_rest_gateway_hardening.sh` 逐条断言）：
+docs/EXTENSION_ROADMAP.md:72:  - 验收：`scripts/check_rest_gateway_hardening.sh`（独立域 86，21 条断言）
+scripts/check_rest_gateway_hardening.sh:3:# check_rest_gateway_hardening.sh - REST 网关健壮性与安全边界验收
+.github/workflows/ci.yml:244:          ./scripts/check_rest_gateway_hardening.sh
+===== scripts/check_state_persistence_e2e.sh =====
+docs/API.md:310:验收：`./scripts/check_state_persistence_e2e.sh`（独立域 87 / REST 18098 /
+README.md:317:./scripts/check_state_persistence_e2e.sh
+README.md:354:`check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,
+docs/DEPLOYMENT.md:316:`/plan` / VDA order。这是既有的重启语义（`check_state_persistence_e2e.sh` 锁定），
+docs/EXTENSION_ROADMAP.md:86:  - 验收：`scripts/check_state_persistence_e2e.sh`（独立域 87）
+scripts/check_state_persistence_e2e.sh:3:# check_state_persistence_e2e.sh - 调度状态持久化与审计落盘验收
+.github/workflows/ci.yml:254:          ./scripts/check_state_persistence_e2e.sh
+===== scripts/check_topology_hot_update_e2e.sh =====
+README.md:115:   - **Verified End-to-End**: `scripts/check_health_supervision_e2e.sh` (T1–T8, incl. `kill -9` -> `503` -> respawn -> `200` and webhook payload checks) and `scripts/check_topology_hot_update_e2e.sh` (T1–T12, incl. the dispatched VDA order actually taking the bypass, restart replay, and base-map-change invalidation). Both run inside the CI container via `AMR_E2E_INNER=1`.
+README.md:214:- [Step 9] Topology hot-update E2E (`check_topology_hot_update_e2e.sh`).
+README.md:257:./scripts/check_topology_hot_update_e2e.sh
+README.md:357:`check_health_supervision_e2e.sh`, `check_topology_hot_update_e2e.sh` inside the ROS container).
+docs/EXTENSION_ROADMAP.md:203:    `check_health_supervision_e2e.sh` T1–T8、`check_topology_hot_update_e2e.sh` T1–T12
+scripts/check_web_console_e2e.sh:335:# YAML、预演门禁），不是连通性算法 —— 后者由 check_topology_hot_update_e2e.sh
+scripts/check_topology_hot_update_e2e.sh:3:# check_topology_hot_update_e2e.sh - 在线拓扑热生效端到端验收（相位 11 / C+D+E）
+scripts/check_all.sh:244:  if "${WORKSPACE_DIR}/scripts/check_topology_hot_update_e2e.sh"; then
+.github/workflows/ci.yml:318:          ./scripts/check_topology_hot_update_e2e.sh
+===== scripts/check_traffic_coordination_e2e.sh =====
+docs/EXTENSION_ROADMAP.md:126:  - [x] **全流程矩阵化验证 (P3)**：新增 `scripts/check_traffic_coordination_e2e.sh`
+README.md:39:     `scripts/check_traffic_coordination_e2e.sh`.
+README.md:355:`check_metrics_e2e.sh`, `check_traffic_coordination_e2e.sh`,
+scripts/check_traffic_coordination_e2e.sh:2:# check_traffic_coordination_e2e.sh
+scripts/check_traffic_coordination_e2e.sh:24:        bash /workspace/scripts/check_traffic_coordination_e2e.sh "$@"
+.github/workflows/ci.yml:274:          ./scripts/check_traffic_coordination_e2e.sh
+===== scripts/check_vda5050_e2e.sh =====
+README.md:66:   - **Spec 5.3 trailing lock release**: arriving at drop-off releases only the already-traversed trailing locks; **Spec 5.2 disconnect guard**: on LWT/heartbeat loss all locks are retained and fleet dispatch is suspended until the vehicle reconnects and its position is re-verified — verified end-to-end by `scripts/check_vda5050_e2e.sh` (9 stages, incl. kill -9 chaos drill).
+README.md:77:   - **Verified end-to-end**: `scripts/check_vda5050_e2e.sh` Stage 7 (two VDA 5050 vehicles, isolated ROS domain, no ROS trackers allowed to stand in) and Stage 8 (two local simulated vehicles, each with its own tracker/gate/chassis on two **disjoint** corridors) both assert genuine concurrency — simultaneous in-flight windows, no cross-talk, no cross-release.
+README.md:224:./scripts/check_vda5050_e2e.sh
+README.md:354:`check_vda5050_e2e.sh`, `check_rest_gateway_hardening.sh`, `check_state_persistence_e2e.sh`,
+docs/EXTENSION_ROADMAP.md:35:    端到端验收 `./scripts/check_vda5050_e2e.sh`（9 阶段全 PASS）
+docs/EXTENSION_ROADMAP.md:136:  - CI 新增 `e2e-fleet` job：`check_map_ingest_e2e.sh` 与 `check_vda5050_e2e.sh`
+.github/workflows/ci.yml:182:      #   mosquitto + paho -> check_vda5050_e2e.sh
+.github/workflows/ci.yml:234:          ./scripts/check_vda5050_e2e.sh
+scripts/mock_vda5050_vehicle.py:19:    供 check_vda5050_e2e.sh 作为第 0 步先跑
+scripts/check_vda5050_e2e.sh:3:# check_vda5050_e2e.sh - VDA 5050 车辆适配器端到端联合验收
+scripts/check_vda5050_e2e.sh:44:        exec docker exec -i -e AMR_E2E_INNER=1 -w /workspace amr_dispatcher bash /workspace/scripts/check_vda5050_e2e.sh "$@"
+===== scripts/check_watchdog_estop.sh =====
+ROADMAP_EVOLUTION.md:145:  - `check_watchdog_estop.sh`：通过 Linux 信号临时冻结控制节点进程（`kill -STOP`），验证 Watchdog 是否在 200ms 内准确触发并发布停止指令。
+ROADMAP_EVOLUTION.md:235:│  • 编写 check_watchdog_estop.sh（进程冻结看门狗急停保护演练）              │
+ROADMAP_EVOLUTION.md:255:   - 在终端运行 `./scripts/check_watchdog_estop.sh`，人为冻结控制节点。
+docs/TECHNICAL_SPECIFICATION.md:78:    ├── check_watchdog_estop.sh
+docs/TECHNICAL_SPECIFICATION.md:477:### 6.2 `scripts/check_watchdog_estop.sh`
+docs/TECHNICAL_SPECIFICATION.md:512:./scripts/check_watchdog_estop.sh
+docs/TECHNICAL_SPECIFICATION.md:535:| **Step 6** | **构建混沌演练自动化脚本矩阵** | • `scripts/check_deadlock_resolution.sh`<br>• `scripts/check_watchdog_estop.sh`<br>• `scripts/check_hardware_failover.sh`<br>• `scripts/check_all.sh` | 终端运行 `./scripts/check_all.sh`，5 个检验阶段全部通过输出绿标。 |
+scripts/check_all.sh:166:  if "${WORKSPACE_DIR}/scripts/check_watchdog_estop.sh"; then
+scripts/check_watchdog_estop.sh:17:echo "=== check_watchdog_estop.sh PASSED ==="
+===== scripts/check_web_console_e2e.sh =====
+README.md:69:   - **Browser-level acceptance**: `scripts/check_web_console_e2e.sh` drives headless Chrome over CDP and really clicks the console buttons — asserting that force-clearing an online vehicle is refused **by the server** (UI hiding is not a security boundary), that missing audit fields or an unverified physical position issue **no REST request at all**, and that the quarantine / restore round-trip is visible in the managed-vehicle panel.
+README.md:287:./scripts/check_web_console_e2e.sh
+.gitignore:25:# check_web_console_e2e.sh 在容器内工作区留下的临时运行目录
+docs/EXTENSION_ROADMAP.md:51:  - **Web 控制台浏览器端验收**：`scripts/check_web_console_e2e.sh` 用 headless Chrome
+docs/API.md:763:行为由 `./scripts/check_web_console_e2e.sh` 自动化验收（headless Chrome + CDP 真实点击）：
+scripts/check_web_console_e2e.sh:3:# check_web_console_e2e.sh - Web 操作台（tools/operator_console.html）浏览器端验收
+===== scripts/container_build.sh =====
+docs/DEPLOYMENT.md:855:| `--base-paths src` | `docker/entrypoint.server.sh` | 仓库根的 `CMakeLists.txt` 会让 colcon 把**整个仓库**当成一个包(`amr_dispatcher_workspace`),从而忽略 `src/` 下 5 个真实包,导致 `ros2 launch` 报 `package 'amr_dispatcher_ros' not found`。与 `scripts/container_build.sh` 的既有用法一致 |
+docker/entrypoint.server.sh:69:  # 该组合与 scripts/container_build.sh 中的用法一致。
+===== scripts/deploy_to_server.sh =====
+scripts/server_setup.sh:13:# - 仓库中的部署文件已推送到远程；或用 scripts/deploy_to_server.sh 从开发机带过去
+scripts/server_setup.sh:16:# 用法（服务器上，或由 deploy_to_server.sh 经 ssh 调用）：
+scripts/server_setup.sh:168:  echo "       请在开发机执行: ./scripts/deploy_to_server.sh <user>@<host>" >&2
+scripts/server_setup.sh:175:  echo "       若该文件尚未提交到远程，请从开发机用 deploy_to_server.sh 同步。" >&2
+scripts/deploy_to_server.sh:13:#   AMR_SERVER=ubuntu@1.2.3.4 ./scripts/deploy_to_server.sh
+scripts/deploy_to_server.sh:14:#   AMR_SERVER=ubuntu@1.2.3.4 ./scripts/deploy_to_server.sh --no-build   # 复用已有镜像
+docs/DEPLOYMENT.md:125:AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
+docs/DEPLOYMENT.md:468:AMR_SERVER=ubuntu@<server-ip> ./scripts/deploy_to_server.sh
+docs/DEPLOYMENT.md:585:同一份检查也在 `deploy_to_server.sh` 里（校验本地 HEAD 是否为 `origin/main` 的祖先）。
+docs/DEPLOYMENT.md:863:| 代码改由服务器从 git 同步 | `scripts/deploy_to_server.sh`、`scripts/server_setup.sh` | 原先用 `tar \| ssh \| tar x` 推代码(含 `.git/`),会把服务器的 `.git/config` 覆盖成开发机版本,一次造成两处回归:上游跟踪丢失、提交身份被改成 `tanqf`。现改为服务器 `git fetch + reset --hard origin/main`,`.git/config` 逐字节不变(已用 md5 前后比对确认) |
+docs/DEPLOYMENT.md:865:| 部署前校验本地已推送 | `scripts/deploy_to_server.sh` | 服务器只从 `origin/main` 取代码,未推送的提交不会被部署。脚本会检查 `HEAD` 是否为 `origin/main` 的祖先,否则拒绝执行(可用 `--allow-unpushed` 跳过),避免"改了代码却没生效"的困惑 |
+===== scripts/gen_demo_map.py =====
+test/maps/demo_warehouse/map.yaml:4:# 两条**互不相交**的通道（多车并发验收的基础，生成脚本见 scripts/gen_demo_map.py）：
+test/maps/demo_warehouse/markers.yaml:4:# 通道布局（几何定义见 scripts/gen_demo_map.py）：
+scripts/check_vda5050_e2e.sh:1660:# 通道设计：地图含两条互不相交的通道（见 scripts/gen_demo_map.py）：
+===== scripts/lib/inner_docker_shim.sh =====
+README.md:282:`scripts/lib/inner_docker_shim.sh` replaces `docker exec/cp/ps` with local execution,
+docs/EXTENSION_ROADMAP.md:204:    全部 PASS；两套脚本支持 `AMR_E2E_INNER=1` 内层执行（`scripts/lib/inner_docker_shim.sh`
+scripts/check_health_supervision_e2e.sh:51:    # shellcheck source=scripts/lib/inner_docker_shim.sh
+scripts/check_health_supervision_e2e.sh:52:    . "$(dirname "${BASH_SOURCE[0]}")/lib/inner_docker_shim.sh"
+scripts/check_topology_hot_update_e2e.sh:57:    # shellcheck source=scripts/lib/inner_docker_shim.sh
+scripts/check_topology_hot_update_e2e.sh:58:    . "$(dirname "${BASH_SOURCE[0]}")/lib/inner_docker_shim.sh"
+scripts/lib/inner_docker_shim.sh:3:# inner_docker_shim.sh —— 让"靠 docker exec 驱动容器"的 e2e 脚本能在容器**内部**
+scripts/lib/inner_docker_shim.sh:10:#         . "${SCRIPT_DIR}/lib/inner_docker_shim.sh"
+.github/workflows/ci.yml:163:  # scripts/lib/inner_docker_shim.sh 把 docker exec/cp/ps 顶成本地执行——
+.github/workflows/ci.yml:298:      # scripts/lib/inner_docker_shim.sh 顶成本地执行，因此不需要 DinD，
+===== scripts/mock_physical_chassis.py =====
+README.md:52:   - Tested against physical Linux pseudo-terminal PTY serial devices (`scripts/mock_physical_chassis.py`).
+README.md:345:python3 scripts/mock_physical_chassis.py
+docs/DEPLOYMENT.md:65:去掉了 `privileged: true` 和 `-v /dev:/dev`(服务器上没有 `/dev/ttyUSB0`)。入口脚本在检测不到串口设备时,自动启动项目自带的 `scripts/mock_physical_chassis.py`,解析出它创建的 `/dev/pts/N` 作为 `serial_device` 传给 launch。
+docs/DEPLOYMENT.md:666:docker exec -it amr_dispatcher bash -lc 'python3 scripts/mock_physical_chassis.py' 
+scripts/check_vda5050_e2e.sh:1704:local_run_bg "${TMP_DIR}/chassis.log" python3 -u "${SCRIPT_DIR}/mock_physical_chassis.py" \
+docker/entrypoint.server.sh:133:  if [ ! -f scripts/mock_physical_chassis.py ]; then
+docker/entrypoint.server.sh:134:    log "WARN 找不到 scripts/mock_physical_chassis.py，跳过模拟器"
+docker/entrypoint.server.sh:140:    python3 -u scripts/mock_physical_chassis.py >"$MOCK_LOG" 2>&1 &
+===== scripts/mock_plc_facility.py =====
+README.md:98:   - **Verified End-to-End**: `scripts/check_facility_integration_e2e.sh` and Python Modbus-TCP PLC simulator (`scripts/mock_plc_facility.py`).
+scripts/check_facility_integration_e2e.sh:83:python3 "${REPO_ROOT}/scripts/mock_plc_facility.py" --port "${PLC_PORT}" --door-delay 0.5 > "${TMP_DIR}/plc.log" 2>&1 &
+===== scripts/mock_vda5050_vehicle.py =====
+README.md:227:- Stage 0: `scripts/mock_vda5050_vehicle.py --self-test` (T1-T7 virtual-vehicle contract tests: order parsing, polyline stepping, released=false braking, state-file resume).
+scripts/check_web_console_e2e.sh:261:    exec python3 scripts/mock_vda5050_vehicle.py --host 127.0.0.1 --port ${WC_MQTT_PORT} \
+scripts/check_web_console_e2e.sh:287:VEHICLE_PID="$(docker exec "${CONTAINER}" bash -c "pgrep -f 'mock_vda5050_vehicle.py --host 127.0.0.1 --port ${WC_MQTT_PORT}' | head -1" | tr -d '\r')"
+scripts/check_web_console_e2e.sh:313:    exec python3 scripts/mock_vda5050_vehicle.py --host 127.0.0.1 --port ${WC_MQTT_PORT} \
+scripts/mock_vda5050_vehicle.py:3:"""mock_vda5050_vehicle.py — VDA 5050 虚拟小车模拟器 (Task 6)
+scripts/mock_vda5050_vehicle.py:24:  python3 mock_vda5050_vehicle.py --host 127.0.0.1 --port 18884 \
+scripts/mock_vda5050_vehicle.py:26:  python3 mock_vda5050_vehicle.py --self-test
+scripts/check_state_persistence_e2e.sh:189:        exec python3 scripts/mock_vda5050_vehicle.py --host 127.0.0.1 --port ${PERS_MQTT_PORT} \
+scripts/check_state_persistence_e2e.sh:274:VEHICLE_PID="$(docker exec "${CONTAINER}" bash -c "pgrep -f 'mock_vda5050_vehicle.py --host 127.0.0.1 --port ${PERS_MQTT_PORT}' | head -1" | tr -d '\r')"
+scripts/check_vda5050_e2e.sh:6:#   Stage 0: 虚拟小车自检 (mock_vda5050_vehicle.py --self-test)
+scripts/check_vda5050_e2e.sh:229:# Stage 0: 虚拟小车自检 (mock_vda5050_vehicle.py --self-test)
+scripts/check_vda5050_e2e.sh:233:if ! python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" --self-test; then
+scripts/check_vda5050_e2e.sh:234:    fail "mock_vda5050_vehicle.py --self-test 失败"
+scripts/check_vda5050_e2e.sh:554:MOCK1_PID=$(run_bg "${TMP_DIR}/mock1.log" python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" \
+scripts/check_vda5050_e2e.sh:1049:MOCK2_PID=$(run_bg "${TMP_DIR}/mock2.log" python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" \
+scripts/check_vda5050_e2e.sh:1232:MOCK3_PID=$(run_bg "${TMP_DIR}/mock3.log" python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" \
+scripts/check_vda5050_e2e.sh:1455:    dual_run_bg "${TMP_DIR}/${serial}.log" python3 "${SCRIPT_DIR}/mock_vda5050_vehicle.py" \
+scripts/check_vda5050_e2e.sh:2021: [PASS] Stage 0: 虚拟小车自检 (mock_vda5050_vehicle.py --self-test T1~T7)
+scripts/check_topology_hot_update_e2e.sh:329:exec python3 scripts/mock_vda5050_vehicle.py --host 127.0.0.1 --port ${TOPO_MQTT_PORT} \\
+docker/Dockerfile.jazzy:16:#    python3-paho-mqtt（scripts/mock_vda5050_vehicle.py 虚拟小车）、
+===== scripts/record_topics.sh =====
+USAGE.md:311:### 4.4 诊断话题录包 (`record_topics.sh`)
+USAGE.md:314:./scripts/record_topics.sh /tmp/diagnostics_bag
+===== scripts/run_demo.sh =====
+USAGE.md:46:./scripts/run_demo.sh
+===== scripts/server_setup.sh =====
+docs/DEPLOYMENT.md:134:5. 调用 `scripts/server_setup.sh`:建 swap → 服务器自行 `git fetch + reset --hard origin/main` 同步代码 → 保证镜像存在 → `compose up -d`
+docs/DEPLOYMENT.md:548:`server_setup.sh` 每次都会把工作区强制同步到 `origin/main`。实测确认：
+docs/DEPLOYMENT.md:565:`server_setup.sh` 现在会检查未推送的提交与未提交的改动，**一发现就中止**并列出内容：
+docs/DEPLOYMENT.md:582:            AMR_FORCE_SYNC=1 ./scripts/server_setup.sh
+docs/DEPLOYMENT.md:863:| 代码改由服务器从 git 同步 | `scripts/deploy_to_server.sh`、`scripts/server_setup.sh` | 原先用 `tar \| ssh \| tar x` 推代码(含 `.git/`),会把服务器的 `.git/config` 覆盖成开发机版本,一次造成两处回归:上游跟踪丢失、提交身份被改成 `tanqf`。现改为服务器 `git fetch + reset --hard origin/main`,`.git/config` 逐字节不变(已用 md5 前后比对确认) |
+docs/DEPLOYMENT.md:864:| 排除 `__pycache__` / `*.pyc` | `.dockerignore`、`scripts/server_setup.sh` | 容器以 root 运行,Python 启动 launch 文件时会在挂载的仓库里写出 root 所有的 `.pyc`。这些文件既污染 `git status`,也让基于 tar 的同步因 `Cannot utime: Operation not permitted` 失败并在 `set -e` 下中止部署(实测踩到过) |
+scripts/server_setup.sh:17:#   ./scripts/server_setup.sh
+scripts/server_setup.sh:18:#   ./scripts/server_setup.sh --swap-gb 0        # 不创建 swap
+scripts/server_setup.sh:19:#   ./scripts/server_setup.sh --repo-dir /home/ubuntu/amr_dispatcher
+scripts/deploy_to_server.sh:128:# （server_setup.sh 用 git fetch + reset --hard，见该脚本内说明）。
+scripts/deploy_to_server.sh:142:检测到本地改动而中止——见 server_setup.sh 的说明）。"
+scripts/deploy_to_server.sh:150:# git 身份与 safe.directory 由 server_setup.sh 负责，此处不再重复配置。
+scripts/deploy_to_server.sh:151:# server_setup.sh 会自行 git fetch + reset --hard 到 origin/$BRANCH。
+scripts/deploy_to_server.sh:154:  "cd '$REPO_DIR' && chmod +x scripts/*.sh docker/*.sh && ./scripts/server_setup.sh --repo-dir '$REPO_DIR' --swap-gb $SWAP_GB"
+===== scripts/tunnel.sh =====
+docs/DEPLOYMENT.md:168:AMR_SERVER=ubuntu@<server-ip> ./scripts/tunnel.sh
+docs/DEPLOYMENT.md:654:若被其他服务占用,改 compose 的 `ports`(如 `"127.0.0.1:8081:8080"`),并相应调整 `scripts/tunnel.sh -p`。
+scripts/tunnel.sh:12:#   AMR_SERVER=ubuntu@1.2.3.4 ./scripts/tunnel.sh
+scripts/tunnel.sh:13:#   AMR_SERVER=ubuntu@1.2.3.4 ./scripts/tunnel.sh -p 9090   # 本机改监听 9090
+scripts/deploy_to_server.sh:165:    AMR_SERVER=$SERVER ./scripts/tunnel.sh
+===== scripts/validate_config.py =====
+scripts/validate_config.py:20:        print("Usage: validate_config.py <file.yaml>...")
+USAGE.md:70:python3 scripts/validate_config.py config/*.yaml config/scenarios/*.yaml
+===== scripts/web_console_check.mjs =====
+scripts/web_console_check.mjs:3:// web_console_check.mjs - Web 控制台（tools/operator_console.html）浏览器端验收
+scripts/web_console_check.mjs:13:// 用法：node web_console_check.mjs <phase> <base_url>
+scripts/web_console_check.mjs:23:  console.error('usage: node web_console_check.mjs <phase> <base_url>');
+scripts/check_web_console_e2e.sh:248:    if ! out="$(CDP_PORT="${WC_CDP_PORT}" node "${SCRIPT_DIR}/web_console_check.mjs" "${phase}" "${CONSOLE_BASE}")"; then
+===== tools/bench_serial_probe.py =====
+docs/BENCH_BRINGUP_RUNBOOK.md:176:python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --baud 460800 --mode listen
+docs/BENCH_BRINGUP_RUNBOOK.md:182:python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --baud 460800 --mode drive --speed 0.15 --yaw 0.0 --seconds 3
+docs/BENCH_BRINGUP_RUNBOOK.md:261:- ② 里 `x/y/yaw` 不动 → 上行解码有问题（回 P2 用 `bench_serial_probe.py` 查）
+docs/BENCH_BRINGUP_RUNBOOK.md:320:| F3 | 错帧注入 | `bench_serial_probe.py --mode corrupt` | 坏帧被丢弃，后续帧正常 | `link_health` 的 `crc_errors` 递增 |
+tools/bench_serial_probe.py:19:    python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --baud 460800 --mode listen
+tools/bench_serial_probe.py:20:    python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --mode drive --speed 0.15 --seconds 3
+tools/bench_serial_probe.py:21:    python3 tools/bench_serial_probe.py --port /dev/ttyUSB0 --mode corrupt --seconds 3
+===== tools/operator_console.html =====
+USAGE.md:102:### 4.0 浏览器 Web 运维控制台 (`operator_console.html`)（推荐首选）
+USAGE.md:106:# 或者直接双击本地打开 tools/operator_console.html
+docs/TECHNICAL_SPECIFICATION.md:18:  - [2.5 单文件零依赖运营控制台与快照轮询机制 (借鉴 `tools/operator_console.html`)](#25-单文件零依赖运营控制台与快照轮询机制-借鉴-toolsoperator_consolehtml)
+docs/TECHNICAL_SPECIFICATION.md:29:  - [5.3 Web 控制台无缝对接：`operator_console.html`](#53-web-控制台无缝对接operator_consolehtml)
+docs/TECHNICAL_SPECIFICATION.md:74:│   └── operator_console.html                 # [搬运定制] 零依赖工业级 Web 运维控制台
+docs/TECHNICAL_SPECIFICATION.md:169:### 2.5 单文件零依赖运营控制台与快照轮询机制 (借鉴 `tools/operator_console.html`)
+docs/TECHNICAL_SPECIFICATION.md:171:`robot-project` 的 `operator_console.html` 提供了极高的交互质感与工程实用性：
+docs/TECHNICAL_SPECIFICATION.md:451:| **GET** | `/` 或 `/index.html` | 内置静态 Web 文件路由 | 直接以 `text/html` 返回 `operator_console.html` 源码 |
+docs/TECHNICAL_SPECIFICATION.md:453:### 5.3 Web 控制台无缝对接：`operator_console.html`
+docs/TECHNICAL_SPECIFICATION.md:455:- 直接从 `../robot-project/tools/operator_console.html` 搬运至本项目的 `tools/operator_console.html`。
+docs/TECHNICAL_SPECIFICATION.md:531:| **Step 2** | **搬运 Web 看板与增强 REST Gateway** | • `tools/operator_console.html`<br>• `src/amr_dispatcher_tools/src/rest_gateway.cpp` | 打开浏览器 `http://localhost:8080`，可正常看到状态看板并成功提单。 |
+ROADMAP_EVOLUTION.md:114:  - 从 `robot-project/tools/operator_console.html` 搬运并适配为 `amr_dispatcher/tools/operator_console.html`。
+ROADMAP_EVOLUTION.md:209:│  • 搬运并适配 operator_console.html Web 控制台与 rest_gateway 端点对齐   │
+ROADMAP_EVOLUTION.md:247:   - 启动 Docker 系统，浏览器打开 `operator_console.html`，同时打开 RViz2。
+docs/API.md:326:| `html_path` | `tools/operator_console.html` | 操作台单文件路径（含若干回退路径）。 |
+docs/API.md:762:`tools/operator_console.html` 是零依赖单文件控制台。上述 REST 端点的**浏览器端**
+README.md:59:   - **Single-file zero-dependency Web Console (`tools/operator_console.html`)**: browser dashboard for live metrics, task dispatch, strategy switching, emergency stop, and a **readiness red-light table + temporary-topology panel** (preview → apply with the apply button locked until the same text previews successfully).
+README.md:366:# or open tools/operator_console.html directly
+docs/DEPLOYMENT.md:59:`rest_gateway` 和 `dispatcher_visualizer_node` 用**相对路径**加载静态资源(`tools/operator_console.html`、`config/stations.yaml`)。工作目录不对会导致 Web 控制台 404、可视化节点回退到 4 个硬编码默认站点。
+docs/DEPLOYMENT.md:636:docker exec amr_dispatcher ls -l tools/operator_console.html   # 应存在
+docs/DEPLOYMENT.md:639:若 `/workspace/tools/operator_console.html` 不存在,说明代码同步不完整。`rest_gateway.cpp:280-313` 有四级回退:
+docs/DEPLOYMENT.md:641:1. 参数 `html_path`(默认 `tools/operator_console.html`,相对 CWD)
+docs/DEPLOYMENT.md:642:2. 相对路径 `tools/operator_console.html`
+docs/DEPLOYMENT.md:643:3. 容器内绝对路径 `/workspace/src/amr_dispatcher_all/tools/operator_console.html`(旧布局,**本方案下不存在**)
+docs/DEPLOYMENT.md:757:| `operator_console.html` 未被安装 | `amr_dispatcher_tools/CMakeLists.txt` 无对应 `install()`,只靠 CWD 相对路径命中 |
+scripts/check_topology_hot_update_e2e.sh:313:    -p html_path:="${CONTAINER_WORKDIR}/tools/operator_console.html" \\
+scripts/check_web_console_e2e.sh:3:# check_web_console_e2e.sh - Web 操作台（tools/operator_console.html）浏览器端验收
+scripts/check_web_console_e2e.sh:189:    -p html_path:="${CONTAINER_WORKDIR}/tools/operator_console.html" \\
+scripts/web_console_check.mjs:3:// web_console_check.mjs - Web 控制台（tools/operator_console.html）浏览器端验收
+scripts/check_health_supervision_e2e.sh:223:            'html_path': os.path.join(WORKDIR, 'tools', 'operator_console.html'),

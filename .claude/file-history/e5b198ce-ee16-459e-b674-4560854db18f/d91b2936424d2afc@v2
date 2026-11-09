@@ -1,0 +1,167 @@
+# 看板多指标趋势与现场交互三能力
+
+> 日期：2026-11-08
+> 分类：工作流外实施
+> 结果：已完成
+
+## 构思
+
+### 问题
+
+`qt_dashboard` 的趋势图只画综合分，且顶栏只有一个「刷新」按钮。这带来两个后果：
+
+1. **诊断时看不到物理量**。综合分是归一化的合成结果，现场看到「分数掉了」无法判断
+   是 RTT 变差、丢包变多，还是信号变弱。原始测量值（RTT / 抖动 / RSSI / 丢包率）
+   早就存在 `network_history` 表里，只是一直没画出来。
+2. **触摸是无消费者的孤儿**。`hid-multitouch` 外部模块 2026-11-07 已经验证可用，
+   但产品定位 v1.2 承认「现场交互终端」之后，白名单里的三项交互（趋势指标切换 /
+   时间窗切换 / 截图导出）一直停留在文档，代码里没有任何可点击点。驱动能力齐备
+   但没有业务消费者，等于不能进生产链路。
+
+### 为什么不做进 OpenSpec change
+
+功能代码此前已在工作流外写好一部分（`dashboard_data` 的 `HistoryPoint` 已扩字段），
+按项目铁律「代码已实现时不套用 change 流程追认」——追认会导致 footprint 为 0、
+`--path` 与 diff 不符、`planning changed during command` 死锁。因此本任务按
+工作流外实施处理，记录于本目录（不具备验收效力）。
+
+### 备选方案与取舍
+
+| 决策点 | 备选 | 选择 | 理由 |
+| --- | --- | --- | --- |
+| 指标来源 | A1 原始测量值 / A2 13 个 SLE 维度 | **A1** | 13 个 SLE 维度在 `network_history` 表里**没有存储列**，做不出趋势；A1 的五个指标都是真实列 |
+| 24h 降采样 | B1 全量取点 / B2 用 limit 降采样 | **B1** | 服务端是 `ORDER BY ts DESC LIMIT ?`：`limit=1440` 会让**最新的 1440 条（约 4 小时）占满名额**，剩下 20 小时一条都没有。标签写 24h、图里只有 4h 是数据保真度上的谎报。改为按 `窗口秒数 / 10s` 算足 |
+| 坐标计算 | 留在 `LineChartWidget` / 抽出独立层 | **抽出 `chart_geometry`** | 算得对不对是纯算术，应能直接断言，不该只能靠数像素间接反推 |
+| Y 轴策略 | 全部自适应 / 分数自适应 + 物理量固定基准 | **后者** | 有绝对物理含义的量（dBm、ms、%）自适应会把 `-45↔-50 dBm` 放大成满屏断崖 |
+| 截图落盘 | 只写 U 盘 / 只写 `/tmp` / U 盘优先 + `/tmp` 兜底 | **兜底方案** | 没插 U 盘就导不出图，等于现场取不了证据；但兜底必须明示实际路径 |
+
+## 实现方式
+
+### 数据层（本机可验证）
+
+`qt_dashboard/data/dashboard_data.hpp` / `.cpp`：
+
+- `HistoryMetric` 枚举：`Score` / `Rtt` / `Jitter` / `Rssi` / `TcpLoss`
+- 四个哨兵常量 `kNoRttMs = -1` / `kNoJitterMs = -1` / `kNoRssiDbm = -1000` /
+  `kNoTcpLossPct = -1`，与 `database_manager.cpp` 的 `null` 语义一一对应
+- `HistoryPoint` 扩字段 + `value(metric)` / `has(metric)`
+- `is_history_metric_absent()`、`history_metric_label()`、`history_metric_unit()`、
+  `history_metric_range()`、`history_window_*()` 四个时间窗纯函数
+- `parse_history()` 的 fallback 从 `0.0` 改为**哨兵值**——`0.0` 会让「没测到 RTT」
+  显示成「RTT = 0ms」，是最好看的假象
+
+`qt_dashboard/data/data_source.{hpp,cpp}`：
+
+- `fetch_history_raw()` 增加 `start` / `end` 参数
+- `kMaxBuffer` 从 4 MB 上调到 12 MB：24h 需要 8640 点 × 约 784 字节 ≈ 6.46 MB，
+  原上限会导致 24h 窗口永远取数失败（报错而非静默截断）
+- 在头注写明「7 天需 60480 点，超过服务端 `kMaxHistoryLimit = 10000`，因此不提供 7d」
+
+### 几何层（不依赖 Qt，本机可验证）
+
+新建 `qt_dashboard/ui/chart_geometry.{hpp,cpp}`：`compute_axis_range()` /
+`map_point()` / `axis_label_decimals()`。该 target 不 include 任何 Qt 头，
+因此可在没有 Qt 开发包的机器上编译测试。
+
+固定基准是**下限而不是硬裁剪**：数据在基准内就取基准（波动看起来是真实幅度），
+超出就向外长（不裁掉最该被看见的极值）。
+
+### UI 层
+
+`qt_dashboard/ui/line_chart_widget.{hpp,cpp}`：
+
+- 三个平行 `QVector`（scores / labels / legacy）合并为单个 `PlotPoint` 向量。
+  既有测试 `LegacyVectorStaysInSyncWithScores` 专门守三向量等长——
+  「需要写测试守的不变量，就说明设计上有可以误用的缝」
+- `setMetric()` 只重算视图，不重新取数
+- 指标名与单位由 `paint()` 自己拼进标题，避免「图上画的是 RSSI，标题写着综合分」
+- `legacy` 断开连线**仅在 Score 指标下成立**：它标的是「评分模型是旧的」，
+  不影响 RSSI 这类原始测量值的可比性
+- 两种断点分开处理：`absent` 不画点、不留标记；`break_line` 不连线但画灰色空心圆
+
+`qt_dashboard/ui/main_window.{hpp,cpp}`：白名单三项落地
+
+| 白名单项 | 实现 |
+| --- | --- |
+| 趋势指标切换 | `QComboBox`（5 项，存 enum 值而非下标）+ `onMetricSelected()` |
+| 时间窗切换 | 三个互斥可勾选 `QPushButton`（1/6/24h）+ `onWindowSelected()` |
+| 截图导出 | `export_screenshot()` + `onExportClicked()` |
+
+关键约束：**切指标不重置时间窗，切时间窗不重置指标**。两条都有专门测试。
+
+`find_usb_dir()` 的判据踩过一个真坑，写在代码注释里：`QStorageInfo` 对**普通目录**
+也会返回 `isReady() == true`，此时 `rootPath()` 是所属文件系统挂载点（通常是 `/`）。
+只看 `isReady` 会把 `/media/<user>` 这种空壳当成 U 盘，把图写进 rootfs。
+正确判据是 **`rootPath()` 必须等于候选路径本身**，并排除 proc / sysfs / tmpfs 等伪文件系统。
+
+### 验证
+
+本机虽然有 `qtbase5-dev-tools`（提供 moc）但没有 `qtbase5-dev` 本体，
+不过 `/tmp/qtstage2` 下有一份 Qt5 开发头文件与库，因此 **UI 层也能真的编译验证**：
+
+```bash
+cmake -S qt_dashboard -B /tmp/bqd-ui \
+  -DWEAKN_DASHBOARD_WITH_UI=ON \
+  -DWEAKNET_CLIENT_LIB=$PWD/build-x86/client/lib/libweaknet.so \
+  -DCMAKE_PREFIX_PATH=/tmp/qtstage2/root/usr/lib/x86_64-linux-gnu/cmake
+cmake --build /tmp/bqd-ui -j$(nproc)
+
+export LD_LIBRARY_PATH=/tmp/qtstage2/root/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export QT_PLUGIN_PATH=/tmp/qtstage2/root/usr/lib/x86_64-linux-gnu/qt5/plugins
+export QT_QPA_PLATFORM=offscreen
+ctest --test-dir /tmp/bqd-ui --output-on-failure
+```
+
+结果：**5/5 测试套件全绿**（`dashboard_data` / `chart_geometry` /
+`line_chart_widget` / `theme` / `main_window`），`-Wall -Wextra` 零警告。
+
+新增测试：
+
+- `test_json_reader.cpp`：+15 条（`HistoryMetricTest.*` 10 条 + `HistoryWindowTest.*` 5 条）
+- `test_chart_geometry.cpp`：新建 12 条
+- `test_line_chart_widget.cpp`：+4 条多指标像素测试
+- `test_main_window.cpp`：新建 8 条交互测试
+
+### 测试过程中抓到的两个真缺陷
+
+1. **`is_legacy_pixel()` 误吞抗锯齿折线边缘**。绿色 `#2E7D32` 与白底按
+   t≈0.4~0.47 混合得到约 `(140,180,140)`，三个通道都落在灰色容差
+   `158±28` 内。修法：灰色标记要求**三通道彼此接近**（`max-min ≤ 12`）。
+2. **`find_usb_dir()` 把 `/media/<user>` 当成 U 盘**（见上）。
+   测试现象是「状态栏报了路径，但文件找不到」——图被写进了
+   `/media/nomachine`（权限 777 的 rootfs 普通目录）。
+
+两个都是产品代码缺陷，不是测试写错。
+
+## 结果
+
+**已完成**。四个批次全部落地：
+
+| 批次 | 内容 | 验证 |
+| --- | --- | --- |
+| 1 数据层扩充 | 5 指标 + 4 哨兵 + 时间窗纯函数 | 本机单测 |
+| 2 图表支持指标切换 | `chart_geometry` 抽取 + `setSeries/setMetric` | 本机单测 + 像素测试 |
+| 3 UI 接线 | 指标下拉框 + 三个时间窗按钮 | offscreen 交互测试 |
+| 4 截图导出 | U 盘优先 + `/tmp` 兜底 + 状态栏明示路径 | offscreen 端到端测试（回读 PNG 魔数） |
+
+文档同步：`docs/产品定位-工业无线诊断网关.md` 第三节之二、
+`docs/架构设计-五层权责契约.md` 第四节、
+`驱动面能力引入与业务融合方案.md` §7.6.2 / §10.2 / §14 均已从
+「维度切换 / 代码待做」订正为实际实现状态。
+
+### 遗留
+
+1. **未在板端真机验证**。本机 offscreen 测试覆盖了控件逻辑与绘制，
+   但 eglfs 直出、实际触摸点按、U 盘热插拔都只在真机上才能验证。
+   板端 `libqt5charts5` 未装（本实现不依赖），但 `libQt5Widgets` 等运行库需确认。
+2. **无 U 盘时落 `/tmp` 掉电即失**。状态栏已明示，但若现场需要持久证据，
+   应考虑写入 `/home/radxa/weaknet/data/`（该路径由 OTA 布局管理，需先确认持久性）。
+3. **7 天窗口受服务端 10000 点上限阻塞**。若将来要更长历史，
+   需要服务端先支持降采样/聚合查询（当前 `queryHistory()` 只做过滤 + 截断）。
+
+### 是否升格为正式 OpenSpec change
+
+不建议。功能已完整落地并有测试覆盖，再走 change 流程属于「追认」，
+会因 footprint 为 0 与 fingerprint 反复变化而报废（见 CLAUDE.md 硬性规则）。
+若后续要在板端做真机验证并记录为受管证据，那应作为**新的** change
+（例如「看板板端真机验证」），而不是给本次实现补追溯。

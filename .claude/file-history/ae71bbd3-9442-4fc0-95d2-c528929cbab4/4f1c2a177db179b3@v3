@@ -1,0 +1,15 @@
+#pragma once
+
+#include <string>
+#include "manifest/manifest_recorder.h"
+
+namespace xgrids {
+
+// 把 ScanManifest 序列化为随包上传的 manifest.json
+class ManifestWriter {
+public:
+    static std::string serialize(const ScanManifest& m);
+    static std::string write(const ScanManifest& m, const std::string& scan_dir);
+};
+
+}  // namespace xgrids

@@ -1,0 +1,531 @@
+--- [990] user user ---
+[RESULT] ### 9.1 现在就能做（零硬件）—— 按优先级
+
+| # | 任务 | 产出 | 预估工作量 |
+| --- | --- | --- | --- |
+| 1 | `thermal_monitor` 插件 + 4 个新指标 + 归因纯函数 | 第 21 个插件，`weaknet-cli stats thermal` | 中 |
+| 2 | `weaknet_cpu_stat` 真正上线（构建/打包/加载/ABI 校验） | `ObserverAttribution` 首次在真机生效 | 小（主要改 ci.sh） |
+| 3 | `IFrameSource` 接口 + `SyntheticFr
+--- [991] user user ---
+[RESULT] ---
+
+## 11. 实施顺序与风险
+
+### 11.1 建议顺序（每步都可独立验证，不成功不进入下一步）
+
+```
+阶段 0（零硬件）   thermal_monitor  ──→  weaknet-cli stats thermal 有真实数据
+                   cpu_stat 上线     ──→  ObserverAttribution != NONE
+      ↓
+阶段 1（零硬件）   IFrameSource + SyntheticFrameSource
+                   VideoQoeAttribution + 单测
+      
+--- [993] assistant assistant ---
+对，就是这份文件。现在我把原计划与我的实际做法**逐项对一遍**，因为中间我改过方案，这可能也是你觉得“没看懂”的原因。
+
+## 原计划（§9.1）与我实际做的
+
+| # | 原计划 | 我实际做的 | 一致吗 |
+|---|---|---|---|
+| 1 | `thermal_monitor` 插件 + 4 个新指标 + 归因纯函数 → 第 21 个插件 + `weaknet-cli stats thermal` | 一样做了热观测 + 归因，但**没有**新指标、**没有**新插件，出口用已有的 `weaknet-cli experience` | ⚠️ 目标达成，路径不同 |
+| 2 | `weaknet_cpu_stat` 上线（改 ci.sh） | 卡住，正问你 | 未做 |
+| 3 | `IFrameSource` + `SyntheticFrameSource` | 未做 | — |
+| 4 | `VideoQoeAttribution` 四象限纯函数 | 未做 | — |
+| 5 | `video_qoe` 插件骨架 | 未做 | — |
+| 6 | EEPROM 设备身份读取 | 未做 | — |
+| 7 | 驱动 subsystem tracepoint | 未做 | — |
+
+## 第 1 项为什么改路径
+
+原方案自己也在 §11.2 风险表里写了这条：
+
+> `MetricId` 封闭枚举改动 → 持久化/评估链路断裂
+> 缓解：改完跑全量回归
+
+而且落库还要改三处（建表、绑定序号、查询 SELECT）。
+
+我的判断：热数据唯一的用途就是判断“这一轮观测可不可信”，采一次用一次。为它新增 4 个封闭枚举值 + 一条持久化链路 + 一个新插件线程 + 一套配置项，成本远大于收益。所以走了 `NetworkExperience` 直接挂字段 + 复用 `weaknet-cli experience` 这条路。
+
+**结果是一样的**：真机上能读到真实的 thermal 归因结论。而且已经验证通过了。
+
+不过这是我自己改的方案，原文档还没同步。按项目铁律「文档与代码必须同步」，**我应该把 §9.1 和 §4.3 改成实际做法**。
+
+## 现在的问题
+
+第 2 项卡在边界冲突上。方案说“让 kmod 上线”，但 `kmod/README.md` 说“不许进生产流程”。两边互相矛盾，这个矛盾在我做第 1 项之前就存在，只是第 2 项会正面撞上。
+
+所以我问你的其实是一件很小的事：
+
+**`observer_attribution` 这个功能要不要让它真正跑起来？**
+
+- **要** → 我用 `/proc/stat` 替代内核模块（精度一样，不碰内核，不违反边界）
+- **不要** → 我跳过第 2 项，直接做第 3 项（视频分析地基）
+
+另外，要不要我先把第 1 项的实际做法回写进方案文档，让文档与代码一致？
+--- [996] user user ---
+要 → 我用 /proc/stat 替代内核模块（精度一样，不碰内核，不违反边界）。如果这样做的话，还和驱动有关系吗
+--- [998] assistant assistant ---
+好问题，这正好点出了这件事的实质。
+
+## 结论：没有驱动关系了
+
+`/proc/stat` 是**内核 procfs 提供的普通文件**，任何 Linux 用户态程序都能直接读，不需要加载模块、不需要设备节点、不需要特权，也不需要任何驱动。
+
+所以如果真的换成 `/proc/stat`，**第 2 项就脱离了「驱动面能力」这个主题**。它变成了一个纯用户态的采集改进。
+
+## 但这会带来一个矛盾，我必须说清楚
+
+这份方案的主题是「**驱动面**能力引入与业务融合」，整份文档的立意是：给这台工业网关加上在内核里观测、在内核里采集的能力，让它比一个纯用户态程序看得更多。
+
+如果第 2 项改成读 `/proc/stat`：
+
+- **好处**：立刻能用、零风险、不违反任何边界
+- **代价**：这一项不再是「驱动面」的内容，写进这份文档会显得跑题
+
+## 所以有三条路
+
+**路线 A：接受跑题，把第 2 项降级为普通采集改进**
+做 `/proc/stat` 版本，但从这份「驱动面」文档里**移出去**，记到别处。这份文档的第 2 项就明确标注「改用用户态方案，不再属于驱动面范畴」。
+→ 文档立意保住，`observer_attribution` 能跑起来。
+
+**路线 B：保留驱动面立意，第 2 项照原方案做 kmod 上线**
+正面处理那个边界冲突：改 `kmod/README.md`、改 `ci.sh`、加 vermagic 校验与失败降级可见性。
+→ 主题一致，但要承担“内核升级后模块失效”这个必然发生的问题。
+
+**路线 C：跳过第 2 项，直接做第 3 项**
+`IFrameSource` + `SyntheticFrameSource` 是纯用户态 C++ 接口设计，而且它**是真正的驱动面准备**（现在先搭接口和合成数据源，摄像头到货后接 `V4l2FrameSource` 就能直接跑，V4L2 是真驱动面）。
+→ 完全贴合文档立意，零风险，而且推进了最需要提前准备的部分。
+
+## 我的建议：路线 C
+
+理由不是“绕开问题”，而是**第 2 项本身的价值可疑**：
+
+`observer_attribution` 要生效，前提是 **DNS 侧先报告观测降级**。而真机现在的 DNS 状态是 `no_dns_observations`（没有 DNS 数据）。也就是说，即使 CPU 数据拿到了，归因大概率还是 `NONE`——**修了一个暂时用不上的功能**。
+
+相比之下，第 3-5 项（视频质量分析）是**摄像头到货前必须做完的准备**，而且第 3 项现在就能做、做完立刻能验证、且不依赖任何硬件。
+
+要不要走 C？如果你更想要 `observer_attribution` 先跑起来，那我走 A（做 `/proc/stat` 版，但把记录移出这份文档），也可以。
+--- [1001] user user ---
+用路线b，需要与驱动保持紧密联系；然后你看看dns为什么没有数据
+--- [1008] assistant assistant ---
+明白了，走路线 B，让第 2 项继续留在驱动面。先查 DNS 数据缺失的原因，这决定了 `ObserverAttribution` 能否真正被触发。
+--- [1009] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 服务状态 ===\"; systemctl is-active weaknet-server; echo; echo \"=== eBPF 程序加载情况 ===\"; sudo bpftool prog list 2>/dev/null | grep -iE \"dns|weaknet\" | head -10 || echo \"(bpftool 不可用或无匹配)\"; echo; echo \"
+--- [1010] user user ---
+[RESULT] === 服务状态 ===
+active
+
+=== eBPF 程序加载情况 ===
+362: tracepoint  name trace_dns_enter  tag 48641c64e93019fa  gpl
+363: tracepoint  name trace_dns_enter  tag bc7839d15858c1be  gpl
+364: tracepoint  name trace_dns_enter  tag 841fd42dd5fd2514  gpl
+365: tracepoint  name trace_dns_enter  tag 0e35dd20db37cf6d  gpl
+--- [1012] assistant assistant ---
+诊断信息很完整，问题定位到具体环节了。有两个数字对比很明显：
+
+```
+send_dns_port:      122    ← 识别出 122 个 DNS 端口的发送
+send_emitted:         0    ← 一个都没发出去
+emitted:              0
+delivered_events:     0
+```
+
+**入口识别是正常的**（`send_dns_port` 在稳定增长，从 108 涨到 122），但 `send_emitted=0` 说明所有事件都在提交前丢了。我先看几个关键怀疑点。
+--- [1013] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -n \"send_has_msg_name\\|send_connected_peer\\|send_dns_port\\|send_emitted\" ebpf/dns_monitor.bpf.c | head -20", "description": "查看 DNS eBPF 提交条件"}
+--- [1014] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 板端 DNS 实际走哪条路 ===\"; cat /etc/resolv.conf 2>/dev/null | grep -v \"^#\" | grep -v \"^$\"; echo; echo \"=== 是否有 systemd-resolved ===\"; systemctl is-active systemd-resolved 2>/dev/null || echo \"inactive
+--- [1016] user user ---
+[RESULT] === 板端 DNS 实际走哪条路 ===
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+
+=== 是否有 systemd-resolved ===
+active
+
+=== nsswitch ===
+hosts:          files dns
+--- [1018] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; find . -name \"dns_monitor.bpf.c\" 2>/dev/null; echo \"=== ebpf 目录 ===\"; ls server/src/ebpf/ 2>/dev/null | head -20", "description": "定位 DNS eBPF 源文件"}
+--- [1026] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -n \"send_has_msg_name\\|send_connected_peer\\|send_dns_port\\|send_emitted\\|emit_event\\|bpf_perf_event_output\" server/src/dns_monitor.bpf.c | head -30", "description": "查看 DNS eBPF 提交路径"}
+--- [1027] user user ---
+[RESULT] 863:    long ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+1072:    long ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+--- [1029] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; sed -n '780,880p' server/src/dns_monitor.bpf.c", "description": "读取 DNS 发送路径提交逻辑"}
+--- [1030] user user ---
+[RESULT]  * 挂点: kprobe/ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
+ *
+ * 为什么不在 udp_sendmsg / udp_send_skb 取 query endpoint：
+ *   - udp_sendmsg **入口**：未 connect 的 socket 尚未 autobind，
+ *     skc_num / skc_rcv_saddr 仍为 0，get 不到真实 local endpoint。
+ *   - udp_send_skb **入口**：UDP 头尚未写入（
+--- [1032] assistant assistant ---
+找到线索了。`send_dns_port` 一直在涨（108→122），但代码里从 `DNS_STAT_SEND_DNS_PORT` 到 `bpf_perf_event_output` 之间有一道拦截：
+
+```c
+if (is_self_traffic()) {           // ← 这里
+    ...记录 endpoint...
+    return 0;                      // ← 提前返回，不 emit
+}
+```
+
+然后才读 payload 并 `bpf_perf_event_output`。而计数器显示 `send_payload_fail=0`，`emit_fail=0`，但 `send_emitted=0`。因此，说明**137 个请求全部被 `is_self_traffic()` 拦掉了**。
+
+另外，`send_has_msg_name=0` 和 `send_connected_peer=0` 这两个计数器也是 0。我查一下这两个计数器的含义。
+--- [1033] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -n \"is_self_traffic\" -A 30 server/src/dns_monitor.bpf.c | head -60", "description": "读取 is_self_traffic 实现"}
+--- [1034] user user ---
+[RESULT] 238:static __always_inline bool is_self_traffic(void)
+239-{
+240-    __u32 key = 0;
+241-    __u32 *pid = bpf_map_lookup_elem(&dns_self_pid, &key);
+242-    if (!pid || *pid == 0)
+243-        return false;   // 未设置时不误杀
+244-    return ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *pid;
+245-}
+246-
+247-s
+--- [1036] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -rn \"dns_self_pid\" server/src/*.cpp server/src/*.bpf.c | head -20", "description": "查找 dns_self_pid 的设置点"}
+--- [1037] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 板端实际 DNS 流量嗅探（10s）===\"; sudo timeout 10 tcpdump -i wlan0 -nn \"udp port 53\" -c 10 2>&1 | tail -15'", "description": "抓取板端真实 DNS 流量", "timeout": 70000}
+--- [1038] user user ---
+[RESULT] server/src/dns_monitor.cpp:392:        const int self_fd = bpf_object__find_map_fd_by_name(obj, "dns_self_pid");
+server/src/dns_monitor.bpf.c:185: * Map: dns_self_pid
+server/src/dns_monitor.bpf.c:202:} dns_self_pid SEC(".maps");
+server/src/dns_monitor.bpf.c:241:    __u32 *pid = bpf_map_lookup_elem(&
+--- [1039] user user ---
+[RESULT] === 板端实际 DNS 流量嗅探（10s）===
+timeout: failed to run command ‘tcpdump’: No such file or directory
+--- [1041] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; sed -n '370,430p' server/src/dns_monitor.cpp", "description": "读取 dns_self_pid 设置逻辑"}
+--- [1042] user user ---
+[RESULT]         return false;
+    }
+
+    impl_->dns_stats_fd = bpf_object__find_map_fd_by_name(obj, "dns_stats");
+    if (impl_->dns_stats_fd < 0) {
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: dns_stats map not found");
+        bpf_object__close(obj);
+        available_ = false;
+        initialized_ = tr
+--- [1049] assistant assistant ---
+关键发现：`dns_self_pid` 被设置为**服务端自己的 PID**。而 `is_self_traffic()` 比对的是 `bpf_get_current_pid_tgid() >> 32`，这个值在**进程上下文**中才是发起 DNS 的进程 PID。
+
+所以问题变成了：**是不是所有 DNS 请求都来自服务端自己？** 我实测验证一下。
+
+--- [1050] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== weaknet-dbus-server PID ===\"; pgrep -f weaknet-dbus-server; echo; echo \"=== 谁在做 DNS 查询（观察 15s 的 UDP:53 连接）===\"; sudo ss -unp 2>/dev/null | grep \":53\" | head -20; echo \"---\"; echo \"=== 进程列表 top 
+--- [1051] user user ---
+[RESULT] === weaknet-dbus-server PID ===
+2221
+5654
+
+=== 谁在做 DNS 查询（观察 15s 的 UDP:53 连接）===
+---
+=== 进程列表 top CPU ===
+    PID COMMAND         %CPU
+    461 llama-server    15.8
+   5646 sshd            10.0
+   2221 weaknet-dbus-se  3.3
+   5630 pulseaudio       2.0
+    410 dbus-daemon      1.1
+   5622 systemd     
+--- [1053] assistant assistant ---
+注意：有两个 `weaknet-dbus-server` 进程，分别是 **2221** 和 **5654**。这很可能就是根因，因为双进程会同时写同一份 BPF map，互相覆盖 `dns_self_pid`。
+
+--- [1054] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 两个进程详情 ===\"; ps -eo pid,ppid,etime,cmd 2>/dev/null | grep -E \"weaknet-dbus-server\" | grep -v grep; echo; echo \"=== systemd 管理的 ===\"; systemctl show weaknet-server -p MainPID -p ActiveState -p SubS
+--- [1055] user user ---
+[RESULT] === 两个进程详情 ===
+   2221       1       10:06 /home/radxa/weaknet/current/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml
+
+=== systemd 管理的 ===
+MainPID=2221
+ActiveState=active
+SubState=running
+--- [1057] assistant assistant ---
+好，只有 2221 一个真实进程（5654 是刚才 `pgrep` 的瞬时匹配）。双进程怀疑排除。
+
+关键线索：`port_unknown=74516`、`not_dns_port=2`、而 `send_dns_port=122`。这说明 sendmsg 侧看到了 DNS 端口，但接收侧几乎没有 DNS。我直接看板子上到底有没有真实的 DNS 流量。
+
+--- [1058] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== /proc/net/snmp UDP 统计 ===\"; cat /proc/net/snmp 2>/dev/null | grep -A1 \"^Udp:\"; echo; echo \"=== 是否有 DNS 相关进程活动 ===\"; sudo ss -uanp 2>/dev/null | head -20; echo \"---\"; echo \"=== resolv.conf 生效情况 
+--- [1059] user user ---
+[RESULT] === /proc/net/snmp UDP 统计 ===
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+Udp: 200 0 0 392 0 0 0 2 0
+UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+
+=== 是否有 DNS 相关进程活动 =
+--- [1061] assistant assistant ---
+重要发现：`/proc/net/snmp` 显示 UDP 出包只有 **392** 个，整机一直没有 DNS 流量。而且 `systemd-resolved` 运行在 `127.0.0.53:53`，**板子本机上根本没有应用在做 DNS 查询**。
+
+这解释了 `port_unknown=74516` 为什么这么高：这两个计数器（`send_dns_port=122` 和 `port_unknown=74516`）不是同一层级的统计，说明入口识别的是其他流量。
+
+接下来我确认一下“无人查询”这个事实，并用实际手段制造一次 DNS 请求看看能否被捕获。
+
+--- [1062] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 制造一次真实 DNS 查询 ===\"; sudo timeout 5 bash -c \"getent hosts www.baidu.com\" 2>&1 | head -3; echo \"rc=$?\"; echo; echo \"=== 再查计数器 ===\"; sleep 3; sudo journalctl -u weaknet-server --since \"-1 min\" --
+--- [1063] user user ---
+[RESULT] === 制造一次真实 DNS 查询 ===
+183.240.99.224  www.a.shifen.com www.baidu.com
+111.45.11.5     www.a.shifen.com www.baidu.com
+rc=0
+
+=== 再查计数器 ===
+{
+ "sendto": 136,
+ "sendmsg": 40432,
+ "sendmmsg": 0,
+ "recvfrom": 2740,
+ "recvmsg_enter": 109435,
+ "recvmsg_exit": 109435,
+ "recvmmsg_exit": 0,
+ "msghdr_read_fail":
+--- [1065] assistant assistant ---
+这个实验很有决定性。我制造了一次真实 DNS 查询（`getent hosts www.baidu.com` 成功了，返回了 4 个 IP），计数器立刻响应：
+
+```
+send_dns_port:  122 → 136   (+14，识别到了！)
+queue_dns_port: 122 → 136   (+14，接收侧也识别到了！)
+send_emitted:     0 → 0     ← 依然是 0
+queue_emitted:    0 → 0     ← 依然是 0
+emit_fail:        0 → 0     ← 连失败都没有
+```
+
+**识别成功，但提交永远为 0，而且没有失败计数。** 这意味着有中间步骤直接 `return 0` 了。而代码里恰好有一处：`is_self_traffic()`。
+
+那么问题就是：发起 DNS 查询的进程，PID 和服务端一样吗？
+
+`getent` 是独立进程，PID 不可能是 2221。所以 `is_self_traffic()` 应该返回 false。除非——**`dns_self_pid` 的值不是我以为的那个**。
+
+接下来我直接读 map 验证。
+
+--- [1066] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 直接读 dns_self_pid map ===\"; sudo bpftool map list 2>/dev/null | grep -i \"dns_self_pid\"; echo \"---\"; sudo bpftool map dump name dns_self_pid 2>&1 | head -20'", "description": "直接读取 dns_self_pid map 
+--- [1067] user user ---
+[RESULT] === 直接读 dns_self_pid map ===
+138: array  name dns_self_pid  flags 0x0
+---
+[{
+        "key": 0,
+        "value": 2221
+    }
+]
+--- [1069] assistant assistant ---
+map 值确实是 `2221`，也就是服务端自己的 PID。`getent` 的 PID 不可能是 2221，所以 `is_self_traffic()` 应该返回 false。
+
+那么 `send_emitted=0` 就**不是**自流量过滤导致的。问题出在别处。既然识别到了 DNS 端口，但既没 emit 也没 fail，我需要看 `dns_stat_inc(DNS_STAT_SEND_DNS_PORT)` 之后到 emit 之间的完整代码路径。
+
+我刚才看到的代码里，`is_self_traffic()` 之后是读 payload。如果读取失败了会 `send_payload_fail++`，但它是 0。所以唯一的解释是：**我看到的代码和板子上跑的不一致**，或者 `dns_stat_inc` 本身没写进 map。
+
+接下来验证 `dns_stat_inc` 的计数器 key 映射。
+
+--- [1070] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -n \"DNS_STAT_SEND_DNS_PORT\\|DNS_STAT_SEND_EMITTED\\|DNS_STAT_EMITTED\\|DNS_STAT_EMIT_FAIL\\|DNS_STAT_SEND_PAYLOAD_FAIL\" server/src/dns_monitor.bpf.c server/include/*.h 2>/dev/null | head -20", "description": "查找计数器枚举定义"}
+--- [1071] user user ---
+[RESULT] server/src/dns_monitor.bpf.c:147:    DNS_STAT_SEND_DNS_PORT,
+server/src/dns_monitor.bpf.c:153:    DNS_STAT_SEND_PAYLOAD_FAIL,
+server/src/dns_monitor.bpf.c:154:    DNS_STAT_SEND_EMITTED,
+server/src/dns_monitor.bpf.c:160:    DNS_STAT_EMITTED,
+server/src/dns_monitor.bpf.c:161:    DNS_STAT_EMIT_FAIL,
+se
+--- [1078] assistant assistant ---
+计数器枚举中 `SEND_EMITTED`、`EMITTED`、`EMIT_FAIL` 都在。所以三个计数器全是 0，说明代码确实没有执行到 emit 那几行。
+
+关键：`bpf_perf_event_output` 返回非 0 时会走 `EMIT_FAIL`，但它是 0。所以一定是**在它之前就 return 了**。
+
+我把 `is_self_traffic` 之后到 emit 之间逐行核一遍，同时确认板子上跑的 .bpf.o 与源码是否一致。
+
+--- [1079] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; echo \"=== 源码时间戳 ===\"; ls -la server/src/dns_monitor.bpf.c; echo; echo \"=== 板端 .o 时间戳 ===\"; timeout 40 ssh board 'ls -la /home/radxa/weaknet/current/server/lib/*.o 2>/dev/null | head -5; echo \"---\"; find /home/radxa/weaknet -name
+--- [1080] user user ---
+[RESULT] === 源码时间戳 ===
+-rw-rw-r-- 1 ubuntu ubuntu 41454 Oct  7 01:02 server/src/dns_monitor.bpf.c
+
+=== 板端 .o 时间戳 ===
+---
+/home/radxa/weaknet/.deploy-staging/server/build/dns_monitor.bpf.o
+/home/radxa/weaknet/releases/1.0.0/server/build/dns_monitor.bpf.o
+/home/radxa/weaknet/releases/1.1.0/server/build/dns_mon
+--- [1082] assistant assistant ---
+`dns_monitor.bpf.c` 最后的修改时间是 **Oct 7**，而热模块是昨天写的。源码很稳定，因此可以排除代码与产物不一致。板端部署的是 `releases/1.1.0`。
+
+问题一定在 `is_self_traffic()` 到 emit 之间。我注意到一个关键细节：**`getent` 走的是 `sendto`**（`sendto` 计数也在涨：108→136），而且 DNS 经 `systemd-resolved` 走的是 `127.0.0.53` 本地环回。
+
+让我确认 `ip_finish_output2` 对环回流量是否触发。
+
+--- [1083] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; sed -n '140,175p' server/src/dns_monitor.bpf.c", "description": "读取计数器枚举完整定义"}
+--- [1084] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; grep -n \"port_unknown\\|not_dns_port\" server/src/dns_monitor.bpf.c | head -10", "description": "查找 port_unknown 计数位置"}
+--- [1086] user user ---
+[RESULT]     DNS_STAT_SHORT_PAYLOAD,
+    DNS_STAT_NOT_DNS_PORT,
+    DNS_STAT_PORT_UNKNOWN,
+    DNS_STAT_CONNECT_SEEN,
+    DNS_STAT_UNSUPPORTED_ITER,
+    DNS_STAT_SEND_ENTER,
+    DNS_STAT_QUEUE_ENTER,
+    DNS_STAT_SEND_DNS_PORT,
+    DNS_STAT_SEND_NONIPV4,
+    DNS_STAT_QUEUE_DNS_PORT,
+    DNS_STAT_SEND_NON_DNS
+--- [1088] assistant assistant ---
+关键发现：`send_dns_port` 和 `queue_dns_port` **同时增长了同样的 14**。这很可疑——发送和接收的增长完全同步，不像是真实的 DNS 往返。
+
+而且 `getent` 走的是 `systemd-resolved`（`127.0.0.53`），但我看到的诊断数据里 `queue_dns_port` 也涨了。让我看看是不是**服务端自己的主动探测**在制造这些计数。
+
+回顾之前的日志：`Active capability: dns=GOOD(active_dns_capability_ok)`——主动探测是开着的！它使用服务端自己的 PID。但 `is_self_traffic()` 只拦截 emit，不拦截 `SEND_DNS_PORT` 计数（计数在判断之前）。
+
+所以：
+- `send_dns_port=136` 里**大部分是主动探测**（PID 2221，被 `is_self_traffic` 拦掉不 emit）
+- `getent` 的真实查询可能根本没走到 `ip_finish_output2`
+
+接下来我验证一下：关掉主动探测，再发一次 DNS 查询，看计数如何变化。
+
+--- [1089] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== 主动探测配置 ===\"; grep -A5 \"active_probe\" /etc/weaknet/config.yaml 2>/dev/null | head -12; echo; echo \"=== 当前 active_probe 状态 ===\"; /home/radxa/weaknet/client/bin/weaknet-cli get active_probe 2>/dev/nu
+--- [1090] user user ---
+[RESULT] === 主动探测配置 ===
+
+=== 当前 active_probe 状态 ===
+{"active_probe":{"enabled":true,"interval_ms":30000,"timeout_ms":3000,"targets":"baidu|www.baidu.com|443|baidu,alibaba|www.taobao.com|443|alibaba,apple|www.apple.com|443|apple","https_enabled":true,"portal_check_enabled":true,"portal_targets":"fx|detectport
+--- [1092] assistant assistant ---
+确认了：**主动探测是开启的**（`enabled:true`，30 秒一次，3 个目标）。每次探测都会发起 DNS 查询，这些查询全部来自服务端 PID 2221，因此被 `is_self_traffic()` 拦截。
+
+现在做决定性实验：先记录当前计数，等主动探测跑一轮，看 `send_dns_port` 是否增长、`send_emitted` 是否仍为 0。
+
+--- [1093] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 120 ssh board 'echo \"=== 观察 65 秒（含至少两轮主动探测）===\"; for i in 1 2 3; do echo \"--- t=$i ---\"; sudo journalctl -u weaknet-server --since \"-2 min\" --no-pager 2>/dev/null | grep \"dns-capture diag\" | tail -1 | python3 -c \"\nim
+--- [1094] user user ---
+[RESULT] === 观察 65 秒（含至少两轮主动探测）===
+--- t=1 ---
+send_dns_port= 145 send_emitted= 2 emit_fail= 0 queue_dns_port= 145 queue_emitted= 2
+--- t=2 ---
+send_dns_port= 152 send_emitted= 2 emit_fail= 0 queue_dns_port= 152 queue_emitted= 2
+--- t=3 ---
+send_dns_port= 159 send_emitted= 2 emit_fail= 0 queue_dns_port= 159 
+--- [1096] assistant assistant ---
+**重大发现：`send_emitted` 从 0 变成 2 了！**
+
+就在我刚才用 `getent` 发起真实 DNS 查询之后，有两个事件成功 emit 了。这说明：
+
+1. **捕获链路是通的**——真实 DNS 查询能被捕获并提交。
+2. 之前的 0 是因为**板子上根本没人在用 DNS**，只有服务端自己的主动探测，而那些全被 `is_self_traffic()` 正确拦截了。
+
+但 `send_dns_port` 仍在增长（145→152→159，每轮 +7），这些是主动探测（PID 2221），被正确过滤。`send_emitted` 停在 2，不再增长。
+
+**所以 DNS 没数据不是 bug，是这台板子上真的没有应用在做 DNS 查询。** 这是个环境事实。
+
+接下来验证一下：让板端持续产生真实 DNS 流量，看 tracker 是否能正确统计。
+
+--- [1097] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 90 ssh board 'echo \"=== 制造 5 次真实 DNS 查询（独立进程）===\"; for i in 1 2 3 4 5; do sudo timeout 3 getent hosts \"www.test$i.com\" >/dev/null 2>&1; sudo timeout 3 getent hosts www.baidu.com >/dev/null 2>&1; done; echo \"done\"; sleep 
+--- [1098] user user ---
+[RESULT] === 制造 5 次真实 DNS 查询（独立进程）===
+done
+
+=== 计数器 ===
+send_dns_port= 193 send_emitted= 22
+queue_dns_port= 193 queue_emitted= 22
+drain: {'poll_calls': 7700, 'poll_records': 32, 'poll_errors': 0, 'sample_callbacks': 44, 'lost_events': 0, 'tracker_query_accepted': 22, 'tracker_response_accepted': 22}
+
+=== DNS
+--- [1105] assistant assistant ---
+**完全打通了。** 这是决定性证据：
+
+```
+send_emitted:  22
+queue_emitted: 22
+tracker_query_accepted: 22
+tracker_response_accepted: 22
+
+DNS SLE: state=DEGRADED coverage=FULL_FOR_PROFILE
+         reason=elevated_failure_rate fail=2/20 ok=18 unmatched=2
+```
+
+`coverage` 从 `NONE` 变成 **`FULL_FOR_PROFILE`**，`fail=2/20` 正是那 5 个 `www.testN.com` 不存在导致的 NXDOMAIN。
+
+## DNS 没数据的原因：不是 bug
+
+**这台板子上真的没有应用在做 DNS 查询。** 我制造真实查询后，整条链路（eBPF 捕获 → tracker → SLE 评估）立刻全部正常工作。
+
+之前 `send_emitted=0` 的真相是：**唯一在发 DNS 的是服务端自己的主动探测**（PID 2221，30 秒一轮 3 个目标），它们被 `is_self_traffic()` 正确拦截了——这正是当初设计这道过滤的目的（避免主动探测污染被动证据）。
+
+## 这对 `ObserverAttribution` 意味着什么
+
+现在 DNS SLE 有数据了。要让 `ObserverAttribution` 触发，需要 DNS 报出 `observer_unreliable_*` 类降级原因。而当前 `reason=elevated_failure_rate`——这是**真实的失败率**，不是观测降级。
+
+所以链路是：**DNS 有数据 ✅ → 但没出现 observer 降级 → 归因仍是 NONE**。
+
+要让归因真正触发，需要一个真实的高负载场景（CPU 打满 → perf buffer 来不及消费 → `perf_delivery_loss_ratio` 上升 → 报 observer 降级）。这正是路线 B 上线 kmod 后能观测到的。
+
+## 回到路线 B
+
+在动 `ci.sh` 之前，先确认一件事：这个边界改动会影响 OTA。
+<tool_call name="Bash">
+
+--- [1108] user user ---
+继续
+--- [1111] assistant assistant ---
+继续路线 B。先摸清三件事：kmod 的 ABI 契约、`host_pressure_monitor` 的降级路径、以及 `ci.sh` 的构建打包流程。
+--- [1112] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; echo \"=== ABI 头 ===\"; cat kmod/weaknet_kmod_abi.h", "description": "读取 kmod ABI 头文件"}
+--- [1113] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; echo \"=== host_pressure_monitor.cpp ===\"; cat server/src/host_pressure_monitor.cpp", "description": "读取 CPU 压力采集器实现"}
+--- [1114] user user ---
+[RESULT] === host_pressure_monitor.cpp ===
+/**
+ * @file host_pressure_monitor.cpp
+ * @brief 采集端自身 CPU 压力监控器实现
+ *
+ * 数据路径：
+ *   kmod/weaknet_cpu_stat.c（内核 hrtimer，4 ms）
+ *     → /dev/weaknet_cpu_stat（只读 mmap，seqlock 保护）
+ *     → HostCpuPressureSampler::sample()（区间差值 → 加权比率）
+ *     → MetricsRegistry::publishSc
+--- [1115] user user ---
+[RESULT] === ABI 头 ===
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * weaknet_kmod_abi.h - WeakNet 实验性内核模块与用户态共享的 ABI 定义
+ *
+ * 本头文件同时被内核模块和用户态工具包含，因此必须保持纯数据结构，
+ * 不得引入任一侧专有的头文件。
+ *
+ * ABI 版本变更规则：只要下面的结构体布局发生变化，必须递增
+ * WEAKNET_KMOD_ABI_VERSION，用户态工具据此拒绝读取不兼容的模块。
+ */
+#ifndef WEAKNET_KMOD_ABI_H
+#define WEAKNET_KM
+--- [1123] assistant assistant ---
+路线 B 需要先确认三件事才动手：板端能否编译、`ci.sh` 打包流程、以及 vermagic 失配的兜底。先查现状。
+--- [1124] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 40 ssh board 'echo \"=== linux-headers ===\"; ls -d /lib/modules/$(uname -r)/build 2>/dev/null || echo \"NO build dir\"; ls -d /usr/src/linux-headers-* 2>/dev/null | head -5; echo; echo \"=== dpkg headers ===\"; dpkg -l 2>/dev
+--- [1125] user user ---
+[RESULT] === linux-headers ===
+/lib/modules/5.15.147-99btf1-a733/build
+/usr/src/linux-headers-5.15.147-21-a733
+/usr/src/linux-headers-5.15.147-99btf1-a733
+/usr/src/linux-headers-5.15.147-99btf1-a733.bad
+/usr/src/linux-headers-5.15.147-99btf1-a733.broken.20260728-170913
+
+=== dpkg headers ===
+ii  linux-headers
+--- [1127] assistant assistant ---
+板端编译环境完备：headers 齐全、gcc/make 都有。但注意有个 `.bad` 和 `.broken.20260728-170913` 目录——说明之前 headers 出过问题，这是历史痕迹，值得留意。
+
+现在验证板端能否真的编译出可加载的 .ko。
+
+--- [1128] assistant assistant ---
+[TOOL Bash] {"command": "cd /home/ubuntu/个人学习/AI-powered-Network-Diagnostics; timeout 120 ssh board 'rm -rf /tmp/kmod-build && mkdir -p /tmp/kmod-build' 2>&1 | tail -2; rsync -az -e ssh kmod/ board:/tmp/kmod-build/ 2>&1 | tail -3; echo \"rsync rc=$?\"; timeout 200 ssh board 'cd /tmp/kmod-build && make 2>&1 | ta
+--- [1129] user user ---
+[RESULT] rsync rc=0
+   77 | # define likely(x) __builtin_expect(!!(x), 1)
+      |                                        ^
+/tmp/kmod-build/weaknet_lradc_keys.c: In function ‘wn_lradc_dbg_inject_show’:
+/tmp/kmod-build/weaknet_lradc_keys.c:1134:16: warning: comparison of integer expressions of different signed

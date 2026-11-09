@@ -1,0 +1,47 @@
+import base64, json, subprocess, sys
+from nacl import encoding, public
+
+REPO = "dd2006tqf/internet-bluetooth-diagnose"
+KEY_FILE = "/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/secrets/release_priv.pem"
+SECRET_NAME = "WEAKNET_RELEASE_PRIV_KEY"
+
+def token():
+    out = subprocess.run(
+        ["bash", "-c",
+         "sed -n 's#https://\\([^:]*\\):\\([^@]*\\)@.*#\\2#p' ~/.git-credentials | head -1"],
+        capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+def gh(method, path, data=None):
+    cmd = ["curl", "-s", "-X", method,
+           "-H", f"Authorization: token {TOKEN}",
+           "-H", "Accept: application/vnd.github+json",
+           f"https://api.github.com{path}"]
+    if data is not None:
+        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(data)]
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return out.stdout
+
+TOKEN = token()
+if not TOKEN:
+    sys.exit("no token")
+
+# 1) 取仓库 secrets 公钥
+pk = json.loads(gh("GET", f"/repos/{REPO}/actions/secrets/public-key"))
+key_id, key_b64 = pk["key_id"], pk["key"]
+
+# 2) libsodium sealed box 加密
+pub = public.PublicKey(key_b64.encode(), encoding.Base64Encoder())
+sealed = public.SealedBox(pub).encrypt(open(KEY_FILE, "rb").read())
+encrypted = base64.b64encode(sealed).decode()
+
+# 3) 上传
+resp = gh("PUT", f"/repos/{REPO}/actions/secrets/{SECRET_NAME}",
+          {"encrypted_value": encrypted, "key_id": key_id})
+print("PUT response:", resp.strip() or "(empty, HTTP 201/204 means ok)")
+
+# 4) 回读确认（只返回名字与时间，不返回值）
+lst = json.loads(gh("GET", f"/repos/{REPO}/actions/secrets"))
+print("total:", lst.get("total_count"))
+for s in lst.get("secrets", []):
+    print(" -", s["name"], s["updated_at"])

@@ -1,0 +1,29 @@
+---
+name: phase11-ops-observability
+description: 相位 11 的探针/守护/拓扑热生效实现要点与踩过的坑（域 92/93/94、overlay 语义、accept 快车道）
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 6a40e643-c3c3-49a0-ae96-1b0f7e7e3a27
+  modified: 2026-10-29T15:19:51.328Z
+---
+
+相位 11（生产可观测性 + 在线拓扑热生效）已于 2026-10-29 完成并全量验收通过。以下是非显而易见的决定与坑，改动相关代码前必读：
+
+**测试域/端口固定分配**：92 = 探针/守护/告警（REST 18100、webhook 18111），93 = 拓扑热更新（REST 18101、MQTT 18102），94 = L2 守护契约（launch_testing）。生产 42/8080/1883 绝不触碰。
+
+**两套新 e2e 支持 `AMR_E2E_INNER=1`**：脚本本身是 `docker exec` 驱动写法，靠 `scripts/lib/inner_docker_shim.sh` 用同名 shell 函数顶掉 `docker exec/cp/ps`，从而能在 CI 的 ROS 容器里直接跑。shim 只覆盖这 4 个语义，未覆盖的用法会直接报错——宁可炸也不静默跑错。
+
+**叠加层语义（不要改）**：封路 = `enabled=false`，单向 = `bidirectional=false` + 必要时**交换 from/to**；不是维护"禁用键"运行态（`FindRoutePathAvoiding` 的键无序，用它表达单向会连合法方向一起封死）。`map_hash` 原样拷贝——叠加层**不是**新地图版本，所以状态快照的版本门禁不受影响。
+
+**提交顺序是安全铁律**：落盘 → 预约新锁 → 释放废弃锁 → Block → Unblock → 换内存 → 同步 planner → 下发改道。写前持久化让"磁盘失败"分支消失（内存零改动）。`topology_overlay_file` 为空时**必须**返回 `overlay_disabled`(501)，不能让施工区"内存生效、重启就没"。
+
+**accept 快车道三件套**（rest_gateway）：`head_complete` 与 `head_ok` 必须分开（头字节已消费 vs 头合法）；accept 读头有 `kAcceptReadBudgetMs=50ms` 预算（主线程是单点，不能为慢客户端等满 5s）；`ReadRequestHead` 的 `prebuffered` 既是入参也是出参。这三处任何一处写错，`check_rest_gateway_hardening.sh` 的 400/413 断言就会变成连接重置。
+
+**协调器 `MarkDispatcherUnavailable`**：`get_state` 服务不可用时不能直接 return（会让缓存的 `active` 永久撒谎）——这是"容器 Up 8 days"事故的直接病根。它发 `ready_flag=false`，`/system/ready` 报 INITIALIZING，`/system/healthy` 报 false。
+
+**`/readyz` 字段名以 `health_probe.hpp` 为准**：数组键 `components`，组件名键 `component`（不是 `name`），liveness 是 `uptime_seconds`（不是 `uptime_sec`）。文档曾写错，已修。
+
+**e2e 测试前提的坑（都是"测试错、代码对"）**：拓扑夹具的旁路必须**比主链长**（否则封不封 b-c 的最短路一样，测不出路径是否改变）；必须**两条旁路**（只一条时封第一条会先撞 `would_disconnect_topology`，永远测不到在途仲裁）；VDA 订单的节点 id 只能从车辆落盘的 `raw_order` 读（dispatcher 日志行没有节点 id）。
+
+相关：[[vda5050-fleet-contract-rulings]]、[[resume-kb-sync-workflow]]

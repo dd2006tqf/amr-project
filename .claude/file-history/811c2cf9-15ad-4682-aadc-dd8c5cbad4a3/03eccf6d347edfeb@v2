@@ -1,0 +1,218 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "controller/config_manager.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstring>
+#include <string>
+#include <utility>
+
+#include "camera_netd_client.h"
+#include "common_netd_common.h"
+#include "ins_base/log.h"
+#include "ins_base/string_helper.h"
+#include "ins_bll/controller/config/config_param_controller.h"
+#include "ins_config/live_broadcast.h"
+#include "ins_config/media_video.h"
+#include "ins_config_key.h"
+#include "ins_error_code_string.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "ConfigManager"
+
+// 直播续播场景的最小必要校验：
+// - 空 SSID 表示“未记录上次 WiFi”，属于合法哨兵值
+// - 非空 SSID 仅允许 ASCII 可打印字符，长度不超过 32 字节
+
+bool IsStoredSsidLegal(const std::string& ssid) {
+  if (ssid.empty()) {
+    return false;
+  }
+  if (ssid.size() > ::ins::config::kLiveBroadcastMaxSsidLength - 1) {
+    return false;
+  }
+  // 禁止包含换行符和不可见控制字符
+  for (char ch : ssid) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    if (c < static_cast<unsigned char>(0x20) ||
+        c == static_cast<unsigned char>(0x7F)) {
+      return false;  // 可选，增强安全
+    }
+  }
+  return true;
+}
+
+// 对从 configd 读出的配置做合法性校验，非法字段就地清空，避免下游使用异常数据
+void SanitizeLoadedConfig(::ins::config::LiveBroadcastConfig* cfg) {
+  if (cfg == nullptr) {
+    return;
+  }
+  const size_t rtmp_address_len =
+      strnlen(cfg->rtmp_address.data(), cfg->rtmp_address.size());
+  if (rtmp_address_len == cfg->rtmp_address.size() && rtmp_address_len > 0) {
+    ILOGS_W << "rtmp_address rejected: length is not valid " << rtmp_address_len
+            << " > " << cfg->rtmp_address.size() - 1;
+    cfg->rtmp_address.fill('\0');
+  }
+
+  const size_t ssid_len =
+      strnlen(cfg->last_connected_ssid.data(), cfg->last_connected_ssid.size());
+  if (ssid_len == cfg->last_connected_ssid.size() && ssid_len > 0) {
+    ILOGS_W << "ssid rejected: length is not valid " << ssid_len << " > "
+            << cfg->last_connected_ssid.size() - 1;
+    cfg->last_connected_ssid.fill('\0');
+  } else {
+    std::string ssid_str(cfg->last_connected_ssid.data(), ssid_len);
+    if (!IsStoredSsidLegal(ssid_str)) {
+      ILOGS_W << "ssid is not legal: " << ssid_str;
+      cfg->last_connected_ssid.fill('\0');
+    }
+  }
+}
+
+}  // namespace
+
+ConfigManager::ConfigManager()
+    : current_config_(std::make_shared<LiveBroadcastConfig>()) {}
+
+ConfigManager::~ConfigManager() = default;
+
+InsErrorCode ConfigManager::Initialize() {
+  InsErrorCode ret = LoadConfigFromConfigd();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "LoadConfigFromConfigd failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+    return ret;
+  }
+  ILOGS_I << "ConfigManager initialized, config loaded from configd";
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode ConfigManager::LoadConfigFromConfigd() {
+  auto live_broadcast_cfg =
+      ::ins::bll::ConfigController::GetInstance()
+          .GetConfig<::ins::config::ConfigKey::kLiveBroadcast>();
+  if (!live_broadcast_cfg.has_value()) {
+    ILOGS_W << "GetConfig kLiveBroadcast failed: "
+            << ins::errc::GetInsErrorCodeString(live_broadcast_cfg.error());
+    return live_broadcast_cfg.error();
+  }
+
+  // 先写入新对象，再原子替换，避免读者看到半更新状态
+  ::ins::config::LiveBroadcastConfig cfg = live_broadcast_cfg.value();
+  SanitizeLoadedConfig(&cfg);
+  auto new_config = std::make_shared<LiveBroadcastConfig>(std::move(cfg));
+  {
+    ins::base::AutoMutex lock(config_mutex_);
+    current_config_ = std::move(new_config);
+  }
+  return kInsErrorCode_Comm_Success;
+}
+
+std::shared_ptr<const LiveBroadcastConfig> ConfigManager::GetConfig() const {
+  ins::base::AutoMutex lock(config_mutex_);
+  return current_config_;
+}
+
+// 由 Manager::OnConfigUpdate 在收到 Config Topic
+// 变更时调用，调用方传入当前状态。 直播状态为 kRunning 时不允许重新载入；非
+// kRunning 时立即重载配置。
+// 直播状态为Running时，重载也不会生效，转为Idle状态时会重载配置一次
+void ConfigManager::OnConfigChanged(LiveBroadcastState current_state) {
+  if (current_state == LiveBroadcastState::kRunning) {
+    ILOGS_I << "Config changed, skip reload when live state is Running";
+    return;
+  }
+  InsErrorCode ret = LoadConfigFromConfigd();
+  if (ret == kInsErrorCode_Comm_Success) {
+    ILOGS_I << "Config reloaded on change";
+  } else {
+    ILOGS_E << "Config reload failed: "
+            << ins::errc::GetInsErrorCodeString(ret);
+  }
+}
+
+std::string ConfigManager::GetRtmpUrl() const {
+  ins::base::AutoMutex lock(config_mutex_);
+  const auto& rtmp = current_config_->rtmp_address;
+  const size_t len = strnlen(rtmp.data(), rtmp.size());
+  if (len == rtmp.size() && len > 0) {
+    return {};
+  }
+  return std::string(rtmp.data(), len);
+}
+
+std::string ConfigManager::GetLastConnectedSsid() const {
+  ins::base::AutoMutex lock(config_mutex_);
+  const auto& ssid = current_config_->last_connected_ssid;
+  const size_t len = strnlen(ssid.data(), ssid.size());
+  if (len == ssid.size() && len > 0) {
+    return {};  // 非法记录（已在 SanitizeLoadedConfig 处理过，此处兜底）
+  }
+  return std::string(ssid.data(), len);
+}
+
+InsErrorCode ConfigManager::SaveConnectedWifiSsid() {
+  auto wifi_info_ret =
+      ins::ibus::camera::netd::NetdWifiUtilsClient::GetInstance()
+          .WifiUtilsGetAllInfo(ins::ibus::common::netd::OperateOwner::kLive);
+
+  if (!wifi_info_ret.has_value()) {
+    ILOGS_E << "Get Connected Wifi SSID failed: "
+            << ins::errc::GetInsErrorCodeString(wifi_info_ret.error());
+    return wifi_info_ret.error();
+  }
+  const auto& info = wifi_info_ret.value();
+  using StaStatus = ins::ibus::common::netd::StaStatus;
+  if (info.wifi_status.sta_status == StaStatus::kConnected) {
+    if (!IsStoredSsidLegal(info.sta_info.ssid)) {
+      ILOGS_E << "Connected Wifi SSID is not legal or empty";
+      return kInsErrorCode_Comm_Einval;
+    }
+
+    std::array<char, ::ins::config::kLiveBroadcastMaxSsidLength> stored_ssid{};
+    const InsErrorCode copy_ssid_ret =
+        ins::base::StringHelper::CopyStringToArray(info.sta_info.ssid,
+                                                   stored_ssid);
+    if (copy_ssid_ret != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "Copy Last Connected Wifi SSID failed, ret="
+              << ins::errc::GetInsErrorCodeString(copy_ssid_ret);
+      return copy_ssid_ret;
+    }
+    InsErrorCode ret =
+        ins::bll::ConfigParamController::GetInstance()
+            .SetGeneralConfig<ins::config::ConfigKey::kLiveBroadcast>(
+                [stored_ssid](
+                    ins::config::LiveBroadcastConfig& config) noexcept {
+                  config.last_connected_ssid = stored_ssid;
+                });
+
+    if (ret != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "Set Last Connected Wifi SSID failed: "
+              << ins::errc::GetInsErrorCodeString(ret);
+      return ret;
+    }
+    {
+      ins::base::AutoMutex lock(config_mutex_);
+      LiveBroadcastConfig updated = *current_config_;
+      updated.last_connected_ssid = stored_ssid;
+      current_config_ =
+          std::make_shared<LiveBroadcastConfig>(std::move(updated));
+    }
+    ILOGS_I << "Save Connected WiFi success";
+  } else {
+    ILOGS_E << "Save Connected WiFi rejected: sta_status is not connected";
+    return kInsErrorCode_Comm_Einval;
+  }
+  return kInsErrorCode_Comm_Success;
+}
+}  // namespace live_broadcast
+}  // namespace ins

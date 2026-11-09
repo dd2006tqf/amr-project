@@ -1,0 +1,118 @@
+// 阶段 0 的冒烟验证：
+//  1) proto 代码生成正确、字段可读写
+//  2) 类型注册宏可用、create_publisher/create_subscription 能编译并运行
+//  3) 端到端 pub/sub 数据完整
+//
+// 这不是正式测试，是骨架自检。正式的 gtest 在 test/ 下（后续补）。
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include <rclcpp/rclcpp.hpp>
+
+#include "amr_dispatcher_proto/register_protobuf_type.hpp"
+#include "chassis.pb.h"
+
+// 一行完成注册，替代手写四处特化。
+AMR_PROTO_REGISTER_TYPE(amr_dispatcher::proto::ChassisLinkHealth)
+
+using namespace std::chrono_literals;
+using ChassisLinkHealth = amr_dispatcher::proto::ChassisLinkHealth;
+
+namespace
+{
+
+class SmokeNode : public rclcpp::Node
+{
+public:
+  explicit SmokeNode(const rclcpp::NodeOptions & options)
+  : rclcpp::Node("proto_smoke", options)
+  {
+    pub_ = this->create_publisher<ChassisLinkHealth>("proto_smoke", rclcpp::QoS(10));
+
+    sub_ = this->create_subscription<ChassisLinkHealth>(
+      "proto_smoke", rclcpp::QoS(10),
+      [this](const ChassisLinkHealth & msg) { this->on_msg(msg); });
+
+    timer_ = this->create_wall_timer(100ms, [this]() { this->tick(); });
+  }
+
+  bool passed() const {return received_ > 0 && last_frames_total_ == expected_frames_total_;}
+
+private:
+  void tick()
+  {
+    ChassisLinkHealth msg;
+    msg.mutable_header()->mutable_stamp()->set_sec(123);
+    msg.mutable_header()->mutable_stamp()->set_nanosec(456);
+    msg.mutable_header()->set_frame_id("base_link");
+    msg.set_backend_name("serial");
+    msg.set_tier(ChassisLinkHealth::TIER_HEALTHY);
+    msg.set_frames_total(expected_frames_total_);
+    msg.set_frames_success(expected_frames_total_ - 3);
+    msg.set_frames_crc_error(3);
+    msg.set_is_healthy(true);
+    // -1 哨兵值 -> valid=false 的翻译验证
+    msg.set_command_delivery_rate_valid(false);
+    msg.set_command_delivery_rate(0.0);
+    pub_->publish(msg);
+  }
+
+  void on_msg(const ChassisLinkHealth & msg)
+  {
+    ++received_;
+    last_frames_total_ = msg.frames_total();
+
+    // 逐字段校验：确认 protobuf 的完整往返无损
+    const bool ok =
+      msg.header().frame_id() == "base_link" &&
+      msg.header().stamp().sec() == 123 &&
+      msg.header().stamp().nanosec() == 456u &&
+      msg.backend_name() == "serial" &&
+      msg.tier() == ChassisLinkHealth::TIER_HEALTHY &&
+      msg.frames_total() == expected_frames_total_ &&
+      msg.frames_success() == expected_frames_total_ - 3 &&
+      msg.frames_crc_error() == 3 &&
+      msg.is_healthy() &&
+      !msg.command_delivery_rate_valid();
+
+    if (ok) {
+      ++verified_;
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "field mismatch on round-trip");
+    }
+
+    RCLCPP_INFO(
+      this->get_logger(), "recv #%d frames_total=%llu verified=%d",
+      received_, static_cast<unsigned long long>(msg.frames_total()), verified_);
+  }
+
+  static constexpr uint64_t expected_frames_total_ = 1000000ULL;
+
+  rclcpp::Publisher<ChassisLinkHealth>::SharedPtr pub_;
+  rclcpp::Subscription<ChassisLinkHealth>::SharedPtr sub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  int received_{0};
+  int verified_{0};
+  uint64_t last_frames_total_{0};
+};
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<SmokeNode>(rclcpp::NodeOptions{});
+
+  // 跑 1 秒，收到足够样本后自行退出
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+    rclcpp::spin_some(node);
+  }
+
+  const bool ok = node->passed();
+  RCLCPP_INFO(node->get_logger(), "SMOKE RESULT: %s", ok ? "PASS" : "FAIL");
+  rclcpp::shutdown();
+  return ok ? 0 : 1;
+}

@@ -1,0 +1,62 @@
+// 关键：把具体 protobuf 类型接入 ROS 2 的两处特化。
+//
+// 与 ROS2-Protobuf 仓库（fork rclcpp）的做法对比：
+//   - 那边改的是 rclcpp 的 get_message_type_support_handle.hpp / publisher.hpp /
+//     is_ros_compatible_type.hpp，每次 ROS 升级都要重做一遍。
+//   - 这里只依赖 rosidl 已经留好的两个特化点，rclcpp 一行不改。
+#ifndef SPIKE__TELEMETRY_TYPESUPPORT_HPP_
+#define SPIKE__TELEMETRY_TYPESUPPORT_HPP_
+
+#include <type_traits>
+
+#include "rclcpp/rclcpp.hpp"
+
+#include "spike/protobuf_typesupport.hpp"
+#include "telemetry.pb.h"
+
+// ---- 1) 让 rclcpp 的编译期门禁认得这个类型 -------------------------------
+// rclcpp::is_ros_compatible_type<T> 的判据是
+//   is_message<T> || TypeAdapter<T>::is_specialized || ...
+// 生成代码正是用「为具体类型特化 is_message」来宣告「我是消息」的，
+// 所以这里走的是官方同一条路，而不是绕过它。
+namespace rosidl_generator_traits
+{
+
+template<>
+struct is_message<amr_dispatcher::proto::FleetTelemetry> : std::true_type {};
+
+// rosbag2 / 部分工具会读这两个；生成代码里同样会特化它们。
+template<>
+inline const char * name<amr_dispatcher::proto::FleetTelemetry>()
+{
+  return "amr_dispatcher::proto::FleetTelemetry";
+}
+
+template<>
+inline const char * data_type<amr_dispatcher::proto::FleetTelemetry>()
+{
+  return "amr_dispatcher::proto::FleetTelemetry";
+}
+
+// 显式特化不会自动带 inline，而本头文件会被多个 TU 包含，
+// 因此下面的函数模板特化必须显式标注 inline，避免 ODR 冲突。
+
+}  // namespace rosidl_generator_traits
+
+// ---- 2) 让 typesupport 查询返回我们自己的 handle ---------------------------
+// rclcpp::get_message_type_support_handle 的第一重载（is_message 为真）会调用
+// rosidl_typesupport_cpp::get_message_type_support_handle<MessageT>()。
+// 为具体类型特化它，即可在不改 rclcpp 的前提下注入 typesupport。
+namespace rosidl_typesupport_cpp
+{
+
+template<>
+inline const rosidl_message_type_support_t *
+get_message_type_support_handle<amr_dispatcher::proto::FleetTelemetry>()
+{
+  return &spike::GetProtobufTypeSupport<amr_dispatcher::proto::FleetTelemetry>();
+}
+
+}  // namespace rosidl_typesupport_cpp
+
+#endif  // SPIKE__TELEMETRY_TYPESUPPORT_HPP_

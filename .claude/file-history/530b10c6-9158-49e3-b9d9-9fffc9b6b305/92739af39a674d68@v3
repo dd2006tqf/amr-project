@@ -1,0 +1,56 @@
+# ============================================================================
+# cmake/toolchain-arm64-cross.cmake
+# 原生 Clang 交叉编译工具链（x86_64 宿主机 -> aarch64 目标机）
+#
+# 核心优势：
+# 1. Clang 是原生交叉编译器，直接运行在宿主 x86 CPU 上（跑满 -j$(nproc) 多核，秒级完成）。
+# 2. 彻底杜绝 GCC-13 默认拾取 Ubuntu 24.04 (glibc 2.39) 导致目标板 (glibc 2.31)
+#    链接失败或运行时 GLIBC 版本冲突的问题。
+# 3. 严格限定搜索路径在 /opt/sysroot-bullseye-arm64 内，保证二进制绝对兼容。
+# ============================================================================
+
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+# 目标平台三重命名
+set(TARGET_TRIPLE "aarch64-linux-gnu")
+
+# 宿主机原生 Clang 编译器
+set(CMAKE_C_COMPILER clang)
+set(CMAKE_C_COMPILER_TARGET ${TARGET_TRIPLE})
+
+set(CMAKE_CXX_COMPILER clang++)
+set(CMAKE_CXX_COMPILER_TARGET ${TARGET_TRIPLE})
+
+# 目标 Sysroot
+set(SYSROOT_DIR "/opt/sysroot-bullseye-arm64")
+set(CMAKE_SYSROOT ${SYSROOT_DIR})
+set(CMAKE_FIND_ROOT_PATH ${SYSROOT_DIR})
+
+# 告知 generate_vmlinux.sh 我们正在针对 aarch64 交叉编译
+set(ENV{TARGET_ARCH} "aarch64")
+
+# Clang 交叉编译编译与链接标志（严格使用 Bullseye libstdc++ 和 sysroot 路径）
+set(TARGET_FLAGS "--target=${TARGET_TRIPLE} --sysroot=${SYSROOT_DIR} -I${SYSROOT_DIR}/usr/include -I${SYSROOT_DIR}/usr/include/aarch64-linux-gnu -I${SYSROOT_DIR}/usr/local/include")
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TARGET_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TARGET_FLAGS} -stdlib=libstdc++")
+
+# 强制链接器搜索 sysroot 内的库目录与 rpath-link
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --target=${TARGET_TRIPLE} --sysroot=${SYSROOT_DIR} -L${SYSROOT_DIR}/usr/lib/aarch64-linux-gnu -L${SYSROOT_DIR}/lib/aarch64-linux-gnu -L${SYSROOT_DIR}/usr/local/lib -Wl,-rpath-link,${SYSROOT_DIR}/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,${SYSROOT_DIR}/lib/aarch64-linux-gnu -fuse-ld=lld")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --target=${TARGET_TRIPLE} --sysroot=${SYSROOT_DIR} -L${SYSROOT_DIR}/usr/lib/aarch64-linux-gnu -L${SYSROOT_DIR}/lib/aarch64-linux-gnu -L${SYSROOT_DIR}/usr/local/lib -Wl,-rpath-link,${SYSROOT_DIR}/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,${SYSROOT_DIR}/lib/aarch64-linux-gnu -fuse-ld=lld")
+
+# 资源搜索隔离策略
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# Pkg-config 交叉编译环境变量注入
+set(ENV{PKG_CONFIG_DIR} "")
+set(ENV{PKG_CONFIG_LIBDIR} "${SYSROOT_DIR}/usr/lib/aarch64-linux-gnu/pkgconfig:${SYSROOT_DIR}/usr/share/pkgconfig")
+set(ENV{PKG_CONFIG_SYSROOT_DIR} "${SYSROOT_DIR}")
+
+# 私有依赖路径映射
+set(WEAKNET_OPENSSL_SYSROOT "${SYSROOT_DIR}/opt/weaknet-openssl-1.1" CACHE PATH "" FORCE)
+set(WEAKNET_CURL_SYSROOT "${SYSROOT_DIR}/opt/weaknet-libcurl" CACHE PATH "" FORCE)

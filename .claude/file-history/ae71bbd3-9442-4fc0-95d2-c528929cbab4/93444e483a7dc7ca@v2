@@ -1,0 +1,60 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+// ============================================================
+// 存储后端：应用层对"原始数据落盘"的抽象
+// 一个扫描 = 一个数据包目录，内部含：
+//   frames/ch{c}.bin     每路相机的帧流（简化二进制）
+//   lidar.bin            LiDAR 点云流
+//   imu.bin              IMU 采样
+//   manifest.json        完整性清单（ManifestRecorder 生成）
+//   index.bin            帧索引（ts -> offset），供回放/上传时随机访问
+// ============================================================
+
+struct DataPacketInfo {
+    std::string scan_dir;
+    int64_t start_ts_us, end_ts_us;
+    uint64_t total_bytes;
+};
+
+class StorageBackend {
+public:
+    explicit StorageBackend(const std::string& root);
+
+    // 开始一次扫描：建目录、开各通道文件句柄
+    bool begin_scan(const std::string& scan_id, int64_t start_ts_us);
+
+    // 写一帧（按类型分文件），返回偏移量供索引
+    int64_t write(const ImageFrame& f);
+    int64_t write(const LidarFrame& f);
+    int64_t write(const ImuPacket& p);
+
+    // 结束扫描：flush 文件、写 manifest、产出包信息
+    DataPacketInfo finish_scan(int64_t end_ts_us,
+                               const std::string& manifest_json);
+
+    // 供质量反馈观测
+    double free_gb() const;
+    double current_write_rate_gbps() const;
+
+private:
+    std::string root_;
+    std::string cur_dir_;
+    std::array<std::string, 4> cam_files_;
+    std::string lidar_file_, imu_file_;
+    int64_t scan_start_us_ = -1;
+    uint64_t bytes_written_ = 0;
+    mutable int64_t last_rate_ts_us_ = -1;
+    mutable uint64_t last_rate_bytes_ = 0;
+    mutable double rate_gbps_ = 0;
+    mutable std::mutex rate_mu_;
+};
+
+}  // namespace xgrids

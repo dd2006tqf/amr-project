@@ -1,0 +1,48 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#pragma once
+
+#include <cstdint>
+
+#include "state_machine/live_state_base.h"
+
+namespace ins {
+namespace live_broadcast {
+
+/**
+ * @brief Running（运行中）状态类
+ * @details 直播运行阶段，正在进行RTMP推流，在此状态下可以处理：
+ *          - 停止请求（转Stopping状态）
+ *          - 错误事件（网络错误等，根据错误类型决定是否重连或停止）
+ *          - 系统异常事件（过温、低电等，保存续播记录后转Stopping状态）
+ */
+class LiveStateRunning : public LiveStateMachine {
+ public:
+  LiveStateRunning();
+  ~LiveStateRunning() = default;
+
+  // LiveStateMachine接口实现
+  void OnEntry() override;
+  void OnExit() override;
+
+  // 事件处理
+  void OnEvent(const EventStopRequest& event) override;
+  void OnEvent(const EventError& event) override;
+  void OnEvent(const EventNetworkRecovered& event) override;
+
+ private:
+  /**
+   * @brief 根据停止原因判断是否需要保存续播记录
+   * @param reason 停止原因
+   * @return true需要保存续播记录，false不需要
+   */
+  bool ShouldSaveResumeRecord(LiveBroadcastStopReason reason) const;
+
+  /// 网络错误触发的重连尝试次数（进入Running时清零；
+  /// 重连成功由EventNetworkRecovered复位），连续失败超过
+  /// config::kMaxReconnectAttempts 后保存续播记录并转Stopping
+  uint32_t network_reconnect_attempts_{0};
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

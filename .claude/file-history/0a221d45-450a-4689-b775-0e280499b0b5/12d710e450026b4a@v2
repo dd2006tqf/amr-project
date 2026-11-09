@@ -1,0 +1,28 @@
+import json, urllib.request, re
+
+def get(url, timeout=40):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+print('=== radxa-pkg/linux-a733 .gitmodules ===')
+for p in ['.gitmodules', 'Makefile']:
+    for ref in ['main', 'master']:
+        try:
+            s = get(f'https://raw.githubusercontent.com/radxa-pkg/linux-a733/{ref}/{p}')
+            print(f'--- {ref}/{p} ({len(s)} bytes) ---')
+            print(s[:1200])
+            break
+        except Exception as e:
+            print(f'{ref}/{p}: {e}')
+
+print()
+print('=== linux-a733 root tree ===')
+try:
+    d = json.loads(get('https://api.github.com/repos/radxa-pkg/linux-a733/contents/?ref=main'))
+    if isinstance(d, dict):
+        print('msg:', d.get('message'))
+    else:
+        print([(x['type'], x['name']) for x in d][:40])
+except Exception as e:
+    print('ERR', e)

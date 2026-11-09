@@ -1,0 +1,66 @@
+# Task 1 代码审查报告（R0，审查代理产出）
+
+**审查对象：** Commit `364f88b`（feat(ros): NavigateSequence 桥接节点与 ExecuteMission/NavigateSequence Action 接线）
+**基准：** 计划 Task 1 设计决策 1-4 / Step 1-7、briefs/task1.md 硬约束 1-6、实现者报告 /tmp/amr-tier1-task1-report.md
+
+## 一、规格符合性
+
+| 条目 | 判定 | 说明 |
+|---|---|---|
+| 设计决策 1（bridge fallback：Path 转换 / arrived 推进 / loop） | 满足 | 逐点单点 Path + arrived 推进，冒烟通过 |
+| 设计决策 2（Nav2 模式条件编译 + 降级） | 满足 | AMR_HAVE_NAV2_MSGS 宏完整，缺依赖 FATAL 降级 |
+| 设计决策 3（dispatcher action 模式接线） | **偏差** | TrackingErrorCb 未屏蔽；成功路径漏清 tracking_mission_id_ |
+| 设计决策 4（ExecuteMission server） | **偏差（合理）** | 校验/预占/无线程完备；非 action 客户端取消降级 abort(error_code=3) 合乎 rclcpp_action 状态机 |
+| 硬约束 1（默认 plan 模式逐字节不变） | 满足 | 空 handle/pending 提前 return，461/461 |
+| 硬约束 2（nav2_msgs QUIET） | 满足 | |
+| 硬约束 3（不改 .action/.msg/.srv） | 满足 | |
+| 硬约束 4（不动 core/bt） | 满足 | |
+| 硬约束 5（ExecuteActionTask 无调用点后删） | 满足 | grep 无残留 |
+| 硬约束 6（范围外只记录） | 满足 | concerns 如实上报 |
+
+## 二、问题清单
+
+### Critical
+
+**C1. `NavResultCb` 成功路径未清理 `tracking_mission_id_` → 单车槽永久锁死**
+- 位置：dispatcher_node.cpp:1115-1121、1148-1165
+- 场景：action 模式派发时 `tracking_mission_id_ = m.id`（:1072）；导航 SUCCEEDED → `NavResultCb` → `CompleteMission`，其内部从不清理 `tracking_mission_id_`（plan 模式靠 TrackingErrorCb 清，action 模式收不到）。下一 tick `ScheduleTick` :890 见非空直接 return → **后续任务永远无法派发，调度停摆**。
+- 修法：`CompleteMission` 开头（或 NavResultCb 成功分支）`if (tracking_mission_id_ == mission_id) tracking_mission_id_.clear();`
+
+### Important
+
+**I2. action 模式未屏蔽 `TrackingErrorCb` → 跨层背刺**
+- 位置：dispatcher_node.cpp:1137-1146
+- 场景：action+fallback 时 path_tracker 到点发 `/tracking/error`，dispatcher 与 bridge 双双响应；dispatcher 先到则 CompleteMission 内 `async_cancel_goal` 把已完成 goal 打成 CANCELED。
+- 修法：`TrackingErrorCb` 开头 `if (navigation_backend_ == "action") return;`
+
+**I3. bridge cancel/abort 不发空 `/plan` → 小车失控**
+- 位置：navigate_sequence_bridge_node.cpp:216-237（CancelPollTick 及 abort 终结路径）
+- 场景：fallback 运动中被取消，仅内存重置，path_tracker 继续追踪旧航点。
+- 修法：`!use_nav2_` 时发布空 `nav_msgs/Path`（frame_id="map"）。
+
+**I4. `NavGoalResponseCb` 孤儿 goal 竞态**
+- 位置：dispatcher_node.cpp:892-904
+- 场景：async_send_goal 等待窗口内任务被取消（pending 已清），goal response 到达时无校验直接存句柄 → bridge 盲跑 + 句柄残留。
+- 修法：回调检查 `active_missions_` 含该 mission，否则 `async_cancel_goal(goal_handle)` 并返回。
+
+**I5. `/v2/cancel_queued_mission` 与 `CancelOrder(order_id)` 批量路径不终结 ExecuteMission**
+- 位置：dispatcher_node.cpp:380-388、480-515
+- 场景：队列任务被批量取消 → handle 永不 finish（客户端挂起）+ HandleGoal 预占资源泄漏；cancel_active=true 时 pending_nav 悬挂锁死槽位。
+- 修法：提取 CancelOrderCb 已有的"终结 handle + 清 pending_nav + 释放预占"为辅助函数，三处复用。
+
+### Minor
+
+**M6. hpp 残留废弃成员 `action_server_`**（dispatcher_node.hpp:216，与新 `execute_action_server_` 并存）→ grep 无引用后删除。
+**M7. `ExecuteMission::Result::total_duration_sec` 恒 0**（dispatcher_node.cpp:802）→ 用 dispatch 起始时间填充。
+
+## 三、优点
+
+1. rclcpp_action 状态机理解正确：无客户端 cancel 协议时降级 abort(error_code=3)，避免断言崩溃。
+2. HandleGoal ACCEPT_AND_DEFER + 显式 execute()，规避版本差异。
+3. nav2_msgs 条件编译 + 运行时 FATAL 降级，容器构建稳定。
+4. 冒烟脚本覆盖多航点/loop/cancel，trap 清理完备。
+
+## 四、总评
+
+**NEEDS_FIXES** —— 必须修复：C1、I2、I3（前置合并裁决：I4、I5 同轮修复；M6、M7 顺手带）。

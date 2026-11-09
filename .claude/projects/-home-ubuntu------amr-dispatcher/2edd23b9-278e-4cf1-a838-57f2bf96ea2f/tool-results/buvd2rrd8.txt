@@ -1,0 +1,649 @@
+########## SubmitOrder
+docs/API.md:54:### `/dispatcher/submit_order` (`amr_dispatcher_interfaces/srv/SubmitOrder`)
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:22:    submit_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:39:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::SubmitOrder::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:113:  rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:359:    submit_cli_ = create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1662:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::SubmitOrder::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2450:  rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
+src/amr_dispatcher_interfaces/CMakeLists.txt:21:  "srv/SubmitOrder.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:113:      const std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:114:      std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:538:  rclcpp::Service<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_srv_;
+test/unit/test_submit_order_router.cpp:143:// 运行时文档化类型 charge / patrol 必须能路由（SubmitOrder.srv 注释承诺
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:374:  submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:784:    const std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:785:    std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:803:    RCLCPP_WARN(get_logger(), "SubmitOrder rejected by router: %s", resp->message.c_str());
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:838:                "SubmitOrder routed via BT: branch=%s kind=%d type=%s start_if_idle=%d",
+src/amr_dispatcher_core/src/workflow/submit_order_router.cpp:55:  // （SubmitOrder srv 的 pickup/dropoff 字段）提供，路由到 transport 分支。
+########## CancelOrder
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:23:    cancel_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:59:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::CancelOrder::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:114:  rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:360:    cancel_cli_ = create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1697:    // 批次 6.4：整单取消。`CancelOrder.srv` 的契约是"mission_id 为空则按
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1705:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::CancelOrder::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2451:  rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
+src/amr_dispatcher_core/include/amr_dispatcher_core/fleet/vehicle_adapter_interface.hpp:87:  virtual bool CancelOrder(const std::string& vehicle_id, const std::string& order_id) = 0;
+src/amr_dispatcher_core/include/amr_dispatcher_core/fleet/vehicle_adapter_interface.hpp:99:  bool CancelOrder(const std::string& vehicle_id, const std::string& order_id) override;
+test/unit/test_vehicle_adapter_interface.cpp:123:  EXPECT_TRUE(adapter.CancelOrder("amr_01", "order_1001"));
+test/unit/test_vehicle_adapter_interface.cpp:137:  EXPECT_FALSE(adapter.CancelOrder("amr_01", "order_not_dispatched"));
+test/unit/test_vehicle_adapter_interface.cpp:138:  EXPECT_FALSE(adapter.CancelOrder("ghost_vehicle", "order_1001"));
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_queue.hpp:71:  std::size_t CancelOrder(const std::string& order_id);  // 整单取消，返回删除数
+docs/API.md:74:### `/dispatcher/cancel_order` (`amr_dispatcher_interfaces/srv/CancelOrder`)
+docs/API.md:755:- **Response**: `{"status": "ok", "canceled": true}`（`canceled` 反映 CancelOrder 的 `success`）
+test/unit/test_mission_queue.cpp:88:  EXPECT_EQ(q.CancelOrder("order_b"), 1u);
+src/amr_dispatcher_interfaces/CMakeLists.txt:22:  "srv/CancelOrder.srv"
+src/amr_dispatcher_core/src/fleet/vehicle_adapter_interface.cpp:15:bool MockVehicleAdapter::CancelOrder(const std::string& vehicle_id, const std::string& order_id) {
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:116:      const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:117:      std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:215:  // 清 action 模式在途 NavigateSequence goal（CancelOrder/CancelQueued/整单批量复用）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:539:  rclcpp::Service<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_srv_;
+src/amr_dispatcher_core/src/dispatcher/mission_queue.cpp:181:std::size_t MissionQueue::CancelOrder(const std::string& order_id) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:377:  cancel_srv_ = create_service<amr_dispatcher_interfaces::srv::CancelOrder>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:861:    const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:862:    std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:918:    std::size_t count = queue_->CancelOrder(req->order_id);
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1192:    const std::size_t order_count = queue_->CancelOrder(req->mission_id);
+########## PauseMission
+docs/API.md:84:### `/dispatcher/pause_mission` (`amr_dispatcher_interfaces/srv/PauseMission`)
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:24:    pause_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::PauseMission>("/dispatcher/pause_mission");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:76:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::PauseMission::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:115:  rclcpp::Client<amr_dispatcher_interfaces::srv::PauseMission>::SharedPtr pause_cli_;
+src/amr_dispatcher_interfaces/CMakeLists.txt:23:  "srv/PauseMission.srv"
+scripts/check_state_persistence_e2e.sh:247:    ros2 service call /dispatcher/pause_mission amr_dispatcher_interfaces/srv/PauseMission \
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:119:      const std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:120:      std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:540:  rclcpp::Service<amr_dispatcher_interfaces::srv::PauseMission>::SharedPtr pause_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:380:  pause_srv_ = create_service<amr_dispatcher_interfaces::srv::PauseMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:936:    const std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:937:    std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Response> resp) {
+########## ResumeMission
+docs/API.md:89:### `/dispatcher/resume_mission` (`amr_dispatcher_interfaces/srv/ResumeMission`)
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:25:    resume_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::ResumeMission>("/dispatcher/resume_mission");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:89:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::ResumeMission::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:116:  rclcpp::Client<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_cli_;
+src/amr_dispatcher_interfaces/CMakeLists.txt:24:  "srv/ResumeMission.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:122:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:123:      std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:541:  rclcpp::Service<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:383:  resume_srv_ = create_service<amr_dispatcher_interfaces::srv::ResumeMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:950:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:951:    std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Response> resp) {
+########## GetSystemReadiness
+src/amr_dispatcher_interfaces/CMakeLists.txt:27:  "srv/GetSystemReadiness.srv"
+src/amr_dispatcher_tools/src/rest_gateway.cpp:361:    readiness_cli_ = create_client<amr_dispatcher_interfaces::srv::GetSystemReadiness>("/system/ready");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1565:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2452:  rclcpp::Client<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_cli_;
+test/l2_launch_contracts/test_supervision_contracts.py:40:from amr_dispatcher_interfaces.srv import GetSystemReadiness, ListStations
+test/l2_launch_contracts/test_supervision_contracts.py:285:        cls.ready_cli = cls.node.create_client(GetSystemReadiness, "/system/ready")
+test/l2_launch_contracts/test_supervision_contracts.py:299:        future = self.ready_cli.call_async(GetSystemReadiness.Request())
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:60:    readiness_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:62:        [this](const std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request> /*req*/,
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:63:               std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:67:    healthy_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:69:        [this](const std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request> /*req*/,
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:70:               std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:168:  void EvaluateReadiness(std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:238:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_srv_;
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:239:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr healthy_srv_;
+test/l2_launch_contracts/test_lifecycle_contracts.py:39:from amr_dispatcher_interfaces.srv import GetSystemReadiness
+test/l2_launch_contracts/test_lifecycle_contracts.py:93:        cls.ready_cli = cls.node.create_client(GetSystemReadiness, "/system/ready")
+test/l2_launch_contracts/test_lifecycle_contracts.py:94:        cls.healthy_cli = cls.node.create_client(GetSystemReadiness, "/system/healthy")
+test/l2_launch_contracts/test_lifecycle_contracts.py:117:        future = client.call_async(GetSystemReadiness.Request())
+########## VehicleLinkState
+docs/API.md:473:| `amr_vehicle_online{vehicle_id}` / `amr_vehicle_busy{vehicle_id}` | gauge | `VehicleLinkState[]` |
+docs/API.md:501:查询**受管车辆**的链路与调度状态（结构化消息 `VehicleLinkState`，
+src/amr_dispatcher_interfaces/CMakeLists.txt:17:  "msg/VehicleLinkState.msg"
+src/amr_dispatcher_interfaces/msg/DispatcherState.msg:10:VehicleLinkState[] vehicle_links   # 受管车辆链路与调度状态（结构化，替代平行数组）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5116:    amr_dispatcher_interfaces::msg::VehicleLinkState vlink;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5140:    amr_dispatcher_interfaces::msg::VehicleLinkState vlink;
+########## ChassisLinkHealth
+HARDWARE_INTEGRATION.md:177:- **A7A 侧**：300 ms 没有有效上行帧 → `link_alive_ = false` → `ChassisLinkHealth.is_healthy = false`、心跳发 `false` → `safety_gate` 的 500 ms 看门狗接管零速。
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:53:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_health_sub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/chassis_driver_node.hpp:43:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr health_pub_;
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:158:  link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:160:      [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:411:    link_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:413:        [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2466:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2473:  amr_dispatcher_interfaces::msg::ChassisLinkHealth latest_link_;
+src/amr_dispatcher_ros/src/chassis_driver_node.cpp:142:  health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/chassis_driver_node.cpp:411:  amr_dispatcher_interfaces::msg::ChassisLinkHealth msg;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:24:      auto sub = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:26:          [this, t](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:32:    aggregated_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:47:    amr_dispatcher_interfaces::msg::ChassisLinkHealth agg;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:86:  std::vector<rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr> subs_;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:87:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr aggregated_pub_;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:89:  std::unordered_map<std::string, amr_dispatcher_interfaces::msg::ChassisLinkHealth> latest_health_;
+docs/API.md:9:| `/chassis/link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 底盘硬件通信链路健康指标（丢包率、CRC错、RTT时延） |
+docs/API.md:16:| `/system/aggregated_link_health` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 2 Hz | 聚合系统多链路的整体健康评级 |
+docs/API.md:33:| `/chassis/link_health/{vid}` | `amr_dispatcher_interfaces/msg/ChassisLinkHealth` | 该车链路健康指标 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:12:  "msg/ChassisLinkHealth.msg"
+########## DispatcherState
+README.md:340:Without a `DispatcherState` publisher the scheduling gauges degrade to `0` instead of
+docs/API.md:10:| `/dispatcher/state` | `amr_dispatcher_interfaces/msg/DispatcherState` | 2 Hz | 调度器全局状态（当前策略、队列深度、活跃任务列表、死锁状态、`vehicle_links[]` 受管车辆状态；相位 11 追加 `overlay_active` / `overlay_revision` / `blocked_edges` / `one_way_edges` 供控制台免服务调用展示 —— rosidl 末尾追加，旧订阅方不受影响） |
+docs/API.md:498:未收到 `DispatcherState` 时，调度类指标输出 `0` 而不是缺样本（抓取端无需处理空洞）。
+docs/API.md:734:`/api/v1/topology/overlay` 的 `one_way_edges` 或 `DispatcherState.one_way_edge_count`。
+scripts/check_metrics_e2e.sh:16:#           不依赖 dispatcher（无 DispatcherState 时指标应退化为 0 而不是崩溃）。
+scripts/check_metrics_e2e.sh:200:# 2.5 无 DispatcherState 时退化为 0（而不是缺样本或崩溃）
+scripts/check_metrics_e2e.sh:248:echo "   - 无状态退化：未收到 DispatcherState 时调度指标为 0，且不产生空族"
+src/amr_dispatcher_interfaces/CMakeLists.txt:11:  "msg/DispatcherState.msg"
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:27:    state_sub_ = node_->create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:29:        [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:117:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:118:  amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:378:    state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:380:        [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:385:          // 拓扑叠加层状态随 DispatcherState 一起下发，指标与 /readyz 都不用再打服务
+src/amr_dispatcher_tools/src/rest_gateway.cpp:386:          // 字段名以 DispatcherState.msg 为准（overlay_active / overlay_revision /
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2464:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2471:  amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2498:  // 拓扑叠加层状态（由 DispatcherState 带下来，供 /metrics 与告警详情）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:628:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_pub_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:231:  state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5080:  amr_dispatcher_interfaces::msg::DispatcherState msg;
+########## MissionEvent
+docs/API.md:11:| `/dispatcher/events` | `amr_dispatcher_interfaces/msg/MissionEvent` | 事件触发 | 任务生命周期状态跃迁审计事件 |
+test/unit/test_mission_event_log.cpp:9:MissionEvent Evt(const std::string& id, const std::string& ev) {
+test/unit/test_mission_event_log.cpp:10:  MissionEvent e;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:431:    event_sub_ = create_subscription<amr_dispatcher_interfaces::msg::MissionEvent>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:433:        [this](const amr_dispatcher_interfaces::msg::MissionEvent::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2467:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2474:  std::vector<amr_dispatcher_interfaces::msg::MissionEvent> recent_events_;
+test/unit/test_workflow_control.cpp:15:MissionEvent MakeEvent(const std::string& mission_id, const std::string& state) {
+test/unit/test_workflow_control.cpp:16:  MissionEvent event;
+test/unit/test_workflow_mission_event_log.cpp:8:MissionEvent Event(const std::string& mission_id, const std::string& state) {
+test/unit/test_workflow_mission_event_log.cpp:9:  MissionEvent event;
+test/unit/test_workflow_mission_event_log.cpp:29:  std::vector<MissionEvent> events{
+test/unit/test_workflow_mission_event_log.cpp:41:  std::vector<MissionEvent> events{Event("m1", "QUEUED")};
+test/unit/test_workflow_mission_event_log.cpp:49:  std::vector<MissionEvent> events{Event("m1", "QUEUED"), Event("m2", "RUNNING")};
+test/unit/test_workflow_mission_event_log.cpp:62:  const std::vector<MissionEvent> events{
+test/unit/test_workflow_mission_event_log.cpp:73:  const std::vector<MissionEvent> events{
+src/amr_dispatcher_interfaces/CMakeLists.txt:13:  "msg/MissionEvent.msg"
+test/unit/test_operator_snapshot.cpp:35:  const std::vector<MissionEvent> events{
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:629:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_pub_;
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_event_log.hpp:11:struct MissionEvent {
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_event_log.hpp:29:  void Append(MissionEvent event);
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_event_log.hpp:32:  std::vector<MissionEvent> Recent(
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_event_log.hpp:37:  std::vector<MissionEvent> Snapshot() const;
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/mission_event_log.hpp:53:  std::vector<MissionEvent> slots_;
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:23:void MissionEventLog::Append(MissionEvent event) {
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:32:std::vector<MissionEvent> MissionEventLog::Recent(
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:35:  std::vector<MissionEvent> selected;
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:41:    const MissionEvent& event = slots_[IndexFromOldest(offset - 1)];
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:53:std::vector<MissionEvent> MissionEventLog::Snapshot() const {
+src/amr_dispatcher_core/src/dispatcher/mission_event_log.cpp:54:  std::vector<MissionEvent> snapshot;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:233:  event_pub_ = create_publisher<amr_dispatcher_interfaces::msg::MissionEvent>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:841:    amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:848:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1055:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1477:      amr_dispatcher_core::workflow::MissionEvent wfe;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2161:          amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2172:          amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2260:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2385:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2432:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2531:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2542:    amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2599:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2668:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2679:      amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2879:              amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2949:          amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3057:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3068:      amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3407:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3418:    amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3943:        amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3991:      amr_dispatcher_core::dispatcher::MissionEvent evt;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4181:      amr_dispatcher_interfaces::msg::MissionEvent ev;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4215:      amr_dispatcher_interfaces::msg::MissionEvent ev;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4296:      amr_dispatcher_interfaces::msg::MissionEvent ev;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4755:        amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4779:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/operator_snapshot.hpp:41:  std::vector<MissionEvent> mission_events;
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:9:struct MissionEvent {
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:18:MissionEvent MakeMissionEvent(
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:25:std::size_t TrimMissionEvents(std::vector<MissionEvent>& events, std::size_t max_events);
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:28:    std::vector<MissionEvent>& events, MissionEvent event, std::size_t max_events);
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:30:std::vector<MissionEvent> SelectRecentMissionEvents(
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:31:    const std::vector<MissionEvent>& events, std::size_t limit,
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/workflow_control.hpp:75:  std::vector<MissionEvent> events;
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:8:MissionEvent MakeMissionEvent(
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:11:  MissionEvent event;
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:28:std::size_t TrimMissionEvents(std::vector<MissionEvent>& events, const std::size_t max_events) {
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:38:    std::vector<MissionEvent>& events, MissionEvent event, const std::size_t max_events) {
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:43:std::vector<MissionEvent> SelectRecentMissionEvents(
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:44:    const std::vector<MissionEvent>& events, const std::size_t limit,
+src/amr_dispatcher_core/src/workflow/mission_event_log.cpp:46:  std::vector<MissionEvent> selected;
+########## SafetyState
+docs/TECHNICAL_SPECIFICATION.md:62:│   │       └── SafetyState.msg               # [新增] 对齐工业多源安全状态
+docs/TECHNICAL_SPECIFICATION.md:326:#### 3. `msg/SafetyState.msg`
+docs/API.md:14:| `/safety/state` | `amr_dispatcher_interfaces/msg/SafetyState` | 10 Hz | 安全门控运行状态（是否允许运动、当前限速比例、阻断源） |
+src/amr_dispatcher_tools/src/rest_gateway.cpp:394:    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:396:        [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2339:       // 未收到任何 SafetyState 时不渲染急停（默认值会误报 estop）
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2465:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2472:  amr_dispatcher_interfaces::msg::SafetyState latest_safety_;
+src/amr_dispatcher_interfaces/CMakeLists.txt:15:  "msg/SafetyState.msg"
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:52:    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:54:        [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:236:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:174:  safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:374:  amr_dispatcher_interfaces::msg::SafetyState state_msg;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:57:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
+########## TopologyState
+docs/TECHNICAL_SPECIFICATION.md:23:  - [4.1 接口扩展：`ExecuteMission.action` 与 `TopologyState.msg`](#41-接口扩展executemissionaction-与-topologystatemsg)
+docs/TECHNICAL_SPECIFICATION.md:61:│   │       ├── TopologyState.msg             # [新增] 拓扑边锁与死锁状态聚合
+docs/TECHNICAL_SPECIFICATION.md:290:### 4.1 接口扩展：`ExecuteMission.action` 与 `TopologyState.msg`
+docs/TECHNICAL_SPECIFICATION.md:316:#### 2. `msg/TopologyState.msg`
+docs/TECHNICAL_SPECIFICATION.md:410:void DispatcherVisualizerNode::PublishMarkers(const TopologyState::SharedPtr state) {
+docs/TECHNICAL_SPECIFICATION.md:533:| **Step 4** | **ROS 2 接口扩展与 Lifecycle 升级** | • `amr_dispatcher_interfaces/action/ExecuteMission.action`<br>• `amr_dispatcher_interfaces/msg/TopologyState.msg`<br>• `src/amr_dispatcher_ros/src/dispatcher_lifecycle_node.cpp` | 支持标准的 `ros2 lifecycle` 状态机切换与 `ros2 action send_goal` 提单。 |
+docs/API.md:12:| `/dispatcher/topology_state` | `amr_dispatcher_interfaces/msg/TopologyState` | 2 Hz | 动态路网拓扑状态（任务活跃边、预约锁边及持有者、死锁站点、死锁标志），供 safety_gate 与 RViz 可视化消费 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:16:  "msg/TopologyState.msg"
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/topology_projection.hpp:12:// 字段与 amr_dispatcher_interfaces/msg/TopologyState.msg 逐字段对应
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:630:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:54:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_state_sub_;
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:167:  topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:169:      [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:237:  topology_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5205:    amr_dispatcher_interfaces::msg::TopologyState topology_msg;
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:48:    topology_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:50:        [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:239:  amr_dispatcher_interfaces::msg::TopologyState latest_topology_;
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:242:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_sub_;
+########## TrackingError
+docs/API.md:15:| `/tracking/error` | `amr_dispatcher_interfaces/msg/TrackingError` | 20 Hz | 循迹跟踪误差（横向误差、航向误差、前视距离、到达标记） |
+docs/API.md:28:| `/tracking/error/{vid}` | `amr_dispatcher_interfaces/msg/TrackingError` | 该车循迹跟踪误差与到达标记 |
+scripts/check_navigate_sequence_bridge.sh:23:#   ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError "{arrived: true}"
+scripts/check_navigate_sequence_bridge.sh:167:ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError \
+scripts/check_navigate_sequence_bridge.sh:172:ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError \
+scripts/check_navigate_sequence_bridge.sh:193:ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError \
+scripts/check_navigate_sequence_bridge.sh:285:ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError \
+scripts/check_navigate_sequence_bridge.sh:310:ros2 topic pub -1 /tracking/error amr_dispatcher_interfaces/msg/TrackingError \
+scripts/check_vda5050_e2e.sh:440:from amr_dispatcher_interfaces.msg import TrackingError
+scripts/check_vda5050_e2e.sh:461:        self.err_pub = self.create_publisher(TrackingError, "/tracking/error", 10)
+scripts/check_vda5050_e2e.sh:511:        err = TrackingError()
+src/amr_dispatcher_interfaces/CMakeLists.txt:14:  "msg/TrackingError.msg"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/path_tracker_node.hpp:33:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr error_pub_;
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:46:  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:135:    const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:330:  void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:347:                                 const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:633:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:646:  std::unordered_map<std::string, rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr>
+src/amr_dispatcher_ros/src/path_tracker_node.cpp:77:  error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/path_tracker_node.cpp:157:  amr_dispatcher_interfaces::msg::TrackingError err_msg;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:51:  void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:82:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:240:  // 位姿与到达信号订阅：path_tracker 的 TrackingError.arrived 驱动任务完成
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:243:  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2453:    const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3120:        create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3122:            [this, vehicle_id](const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:3170:    const std::string& vehicle_id, const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+########## ExecuteMission
+README.md:61:   - **ROS 2 Action (`ExecuteMission.action`)**: asynchronous long-duration mission streaming and client cancellation/preemption.
+README.md:173:   │  • ExecuteMission Action Server (Streaming & Cancel)│
+ROADMAP_EVOLUTION.md:163:- **接口定义**：`amr_dispatcher_interfaces/action/ExecuteMission.action`
+ROADMAP_EVOLUTION.md:216:│  • 实现 ExecuteMission.action 动作服务与任务异步流式反馈/取消抢占机制     │
+scripts/check_navigate_sequence_bridge.sh:9:#   4) dispatcher action 模式（navigation_backend:=action）：连续两个 ExecuteMission
+scripts/check_navigate_sequence_bridge.sh:32:#   ros2 action send_goal /execute_mission amr_dispatcher_interfaces/action/ExecuteMission \
+scripts/check_navigate_sequence_bridge.sh:230:# ---------- 4. dispatcher action 模式：连续两个 ExecuteMission goal（槽位锁死防回归） ----------
+scripts/check_navigate_sequence_bridge.sh:279:timeout 60 ros2 action send_goal /execute_mission amr_dispatcher_interfaces/action/ExecuteMission \
+scripts/check_navigate_sequence_bridge.sh:297:  fail "ExecuteMission result total_duration_sec expected > 0, got '${dur:-missing}'"
+scripts/check_navigate_sequence_bridge.sh:304:timeout 60 ros2 action send_goal /execute_mission amr_dispatcher_interfaces/action/ExecuteMission \
+docs/DEPLOYMENT.md:250:> - **第 5 条不是笔误** —— 仓库 README 与 `test_report_matrix.json` 宣称的 `ExecuteMission.action` **实际上从未被创建**:`dispatcher_node.cpp` 里没有任何 `rclcpp_action::create_server` 调用(头文件有声明,无实例化)。所以 `ros2 action list` 为空是**当前代码的正确行为**。
+docs/DEPLOYMENT.md:751:| `ExecuteMission.action` 未实现 | `dispatcher_node.cpp` 无 `create_server` 调用;头文件有声明但从未实例化。README 与测试报告中的 action 契约不可用 |
+docs/TECHNICAL_SPECIFICATION.md:23:  - [4.1 接口扩展：`ExecuteMission.action` 与 `TopologyState.msg`](#41-接口扩展executemissionaction-与-topologystatemsg)
+docs/TECHNICAL_SPECIFICATION.md:59:│   │   │   └── ExecuteMission.action         # [新增] 异步长任务调度与流式进度/取消协议
+docs/TECHNICAL_SPECIFICATION.md:290:### 4.1 接口扩展：`ExecuteMission.action` 与 `TopologyState.msg`
+docs/TECHNICAL_SPECIFICATION.md:294:#### 1. `action/ExecuteMission.action`
+docs/TECHNICAL_SPECIFICATION.md:358:   - 实例化 Action Server `rclcpp_action::create_server<ExecuteMission>`。
+docs/TECHNICAL_SPECIFICATION.md:533:| **Step 4** | **ROS 2 接口扩展与 Lifecycle 升级** | • `amr_dispatcher_interfaces/action/ExecuteMission.action`<br>• `amr_dispatcher_interfaces/msg/TopologyState.msg`<br>• `src/amr_dispatcher_ros/src/dispatcher_lifecycle_node.cpp` | 支持标准的 `ros2 lifecycle` 状态机切换与 `ros2 action send_goal` 提单。 |
+docs/API.md:189:### `/execute_mission` (`amr_dispatcher_interfaces/action/ExecuteMission`)
+src/amr_dispatcher_interfaces/CMakeLists.txt:50:  "action/ExecuteMission.action"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:195:  using ExecuteMission = amr_dispatcher_interfaces::action::ExecuteMission;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:196:  using GoalHandleExecute = rclcpp_action::ServerGoalHandle<ExecuteMission>;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:202:      std::shared_ptr<const ExecuteMission::Goal> goal);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:207:  // ExecuteMission goal 终结方式：成功 succeed / 失败 abort / 取消 canceled
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:548:  // ExecuteMission action server（HandleGoal 校验 + HandleAccepted 入队，不起线程）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:549:  rclcpp_action::Server<ExecuteMission>::SharedPtr execute_action_server_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:552:  // mission_id -> 仍在执行的 ExecuteMission goal handle（终态时查表 finish 并移除）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:556:  // mission_id -> 派发时刻（ExecuteMission result.total_duration_sec 计算用，
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:458:  // ExecuteMission action server：HandleGoal 校验（非空/不重复/资源可预占），
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:460:  execute_action_server_ = rclcpp_action::create_server<ExecuteMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:681:  // B2：clean up 前先逐个收口在途 ExecuteMission goal——
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:693:    auto result = std::make_shared<ExecuteMission::Result>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:892:        // helper：终结 ExecuteMission goal（未受理 action cancel → 降级 abort(3)）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1589:    std::shared_ptr<const ExecuteMission::Goal> goal) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1591:    RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: empty mission_id");
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1596:    RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: duplicate mission_id %s",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1604:                  "ExecuteMission goal rejected: reservation table unavailable for %s",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1610:      RCLCPP_WARN(get_logger(), "ExecuteMission goal rejected: reserve failed for %s: %s",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1640:    auto result = std::make_shared<ExecuteMission::Result>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1669:    auto result = std::make_shared<ExecuteMission::Result>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1674:    RCLCPP_WARN(get_logger(), "ExecuteMission enqueue rejected for %s: %s", m.id.c_str(),
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1682:              "ExecuteMission accepted: %s -> queued (target=%s, prio=%d, resources=%zu)",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1710:  auto result = std::make_shared<ExecuteMission::Result>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1731:    RCLCPP_INFO(get_logger(), "ExecuteMission goal finished: %s kind=%d (%s)",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1806:    RCLCPP_INFO(get_logger(), "ExecuteMission cancel accepted by action client: %s", id.c_str());
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1886:  // NavigateSequence feedback -> ExecuteMission feedback 映射
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1892:  auto fb = std::make_shared<ExecuteMission::Feedback>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1941:  // 已受理的 ExecuteMission action 取消需在提前返回之前处理（10Hz 延迟 ≤100ms）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2275:    // ExecuteMission goal 须就地 abort：该分支不经 Complete/Fail，不收口则
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2333:  // 记录派发起点：ExecuteMission feedback 按此直线距离折算 percent_complete
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2335:  // 派发时刻：ExecuteMission result.total_duration_sec 由此计时
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2496:  // ExecuteMission goal 成功收口；action 模式清在途导航 goal（result 到达前的兜底取消）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2568:  // ExecuteMission goal 失败收口（error_code=1）；action 模式取消在途导航 goal
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2931:        // 死锁恢复取消的级联：清在途 NavigateSequence goal + 终结 ExecuteMission goal
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5157:  // ExecuteMission 进度反馈：按派发起点的直线距离折算 percent_complete
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5183:    auto fb = std::make_shared<ExecuteMission::Feedback>();
+########## NavigateSequence
+docs/API.md:171:### `/navigate_sequence` (`amr_dispatcher_interfaces/action/NavigateSequence`)
+scripts/check_navigate_sequence_bridge.sh:3:# NavigateSequence 桥接节点容器内端到端冒烟（fallback 模式 + dispatcher action 模式）
+scripts/check_navigate_sequence_bridge.sh:18:#   ros2 action send_goal /navigate_sequence amr_dispatcher_interfaces/action/NavigateSequence \
+scripts/check_navigate_sequence_bridge.sh:138:echo "=== [Smoke] NavigateSequence 桥接节点端到端冒烟（fallback 模式 + dispatcher action 模式） ==="
+scripts/check_navigate_sequence_bridge.sh:160:timeout 40 ros2 action send_goal /navigate_sequence amr_dispatcher_interfaces/action/NavigateSequence \
+scripts/check_navigate_sequence_bridge.sh:179:grep -q "NavigateSequence goal succeeded" "$BRIDGE_LOG" ||
+scripts/check_navigate_sequence_bridge.sh:186:timeout 50 ros2 action send_goal /navigate_sequence amr_dispatcher_interfaces/action/NavigateSequence \
+scripts/check_navigate_sequence_bridge.sh:226:grep -q "NavigateSequence goal canceled" "$BRIDGE_LOG" ||
+scripts/check_navigate_sequence_bridge.sh:283:  fail "mission smoke_m1 not dispatched to bridge (dispatcher did not send NavigateSequence goal)"
+src/amr_dispatcher_interfaces/CMakeLists.txt:49:  "action/NavigateSequence.action"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:197:  using NavigateSequence = amr_dispatcher_interfaces::action::NavigateSequence;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:198:  using GoalHandleNavigate = rclcpp_action::ClientGoalHandle<NavigateSequence>;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:215:  // 清 action 模式在途 NavigateSequence goal（CancelOrder/CancelQueued/整单批量复用）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:223:  // NavigateSequence 客户端回调（navigation_backend=action 派发链）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:226:                     const std::shared_ptr<const NavigateSequence::Feedback> feedback);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:550:  // NavigateSequence 客户端（navigation_backend=action 时向桥接节点发单点 goal）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:551:  rclcpp_action::Client<NavigateSequence>::SharedPtr nav_client_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/nav_pose_builder.hpp:11:// NavigateSequence 航点位姿构建（B3）：
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:23:// NavigateSequence 桥接节点：把 /navigate_sequence 语义接到既有执行链。
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:38:  using NavigateSequence = amr_dispatcher_interfaces::action::NavigateSequence;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:39:  using GoalHandleNavSeq = rclcpp_action::ServerGoalHandle<NavigateSequence>;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:43:      std::shared_ptr<const NavigateSequence::Goal> goal);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:54:  // 发布 NavigateSequence feedback（current_index/total/current_station/state）
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:80:  rclcpp_action::Server<NavigateSequence>::SharedPtr action_server_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:89:  // 当前执行中的 NavigateSequence goal（单车模型：同时只执行一个）
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:38:  action_server_ = rclcpp_action::create_server<NavigateSequence>(
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:54:  RCLCPP_INFO(get_logger(), "NavigateSequence bridge up: backend=%s, plan_topic=%s",
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:60:    std::shared_ptr<const NavigateSequence::Goal> goal) {
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:62:    RCLCPP_WARN(get_logger(), "Rejecting NavigateSequence goal: waypoints empty");
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:67:                "Rejecting NavigateSequence goal: previous goal still active (single-vehicle model)");
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:104:  RCLCPP_INFO(get_logger(), "NavigateSequence goal accepted: %zu waypoint(s), loop=%d, backend=%s",
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:163:      auto result = std::make_shared<NavigateSequence::Result>();
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:173:                  "NavigateSequence goal succeeded: %d waypoint(s) completed, %d failed",
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:192:  auto fb = std::make_shared<NavigateSequence::Feedback>();
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:225:  auto result = std::make_shared<NavigateSequence::Result>();
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:234:  RCLCPP_INFO(get_logger(), "NavigateSequence goal canceled (%d waypoint(s) completed)",
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:246:    auto result = std::make_shared<NavigateSequence::Result>();
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:287:  // 身份校验：只处理仍属于当前 NavigateSequence goal 的在途反馈
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:311:  auto res = std::make_shared<NavigateSequence::Result>();
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:451:  // 导航后端：默认 plan（行为与既有代码逐字节一致）；action 模式派发改发 NavigateSequence 单点 goal
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:466:    nav_client_ = rclcpp_action::create_client<NavigateSequence>(this, "/navigate_sequence");
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:893:        // 并级联取消在途 NavigateSequence goal（清 pending_nav_*）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1746:  // action 模式级联：取消在途 NavigateSequence goal 并清 pending 标记
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1829:    // action 模式级联：取消在途的 NavigateSequence goal 并清 pending 标记
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1848:    RCLCPP_WARN(get_logger(), "NavigateSequence goal rejected by bridge for mission %s",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1867:                "Stale NavigateSequence goal response for %s (mission gone); canceling orphan goal",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1881:    const std::shared_ptr<const NavigateSequence::Feedback> feedback) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1886:  // NavigateSequence feedback -> ExecuteMission feedback 映射
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2350:    NavigateSequence::Goal nav_goal;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2362:    rclcpp_action::Client<NavigateSequence>::SendGoalOptions opts;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2368:                                                const std::shared_ptr<const NavigateSequence::Feedback> fb) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2380:                "Dispatched mission via NavigateSequence: %s (order=%s, type=%s, prio=%d, %s->%s)",
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2455:  // dispatcher 若自行 CompleteMission 会对同一 NavigateSequence goal 发
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:2931:        // 死锁恢复取消的级联：清在途 NavigateSequence goal + 终结 ExecuteMission goal
+########## BlockEdge
+src/amr_dispatcher_tools/src/rest_gateway.cpp:367:    block_edge_cli_ = create_client<amr_dispatcher_interfaces::srv::BlockEdge>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1459:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::BlockEdge::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2457:  rclcpp::Client<amr_dispatcher_interfaces::srv::BlockEdge>::SharedPtr block_edge_cli_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:168:      const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:169:      std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:618:  rclcpp::Service<amr_dispatcher_interfaces::srv::BlockEdge>::SharedPtr block_edge_srv_;
+src/amr_dispatcher_interfaces/CMakeLists.txt:43:  "srv/BlockEdge.srv"
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:423:  block_edge_srv_ = create_service<amr_dispatcher_interfaces::srv::BlockEdge>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4794:    const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4795:    std::shared_ptr<amr_dispatcher_interfaces::srv::BlockEdge::Response> resp) {
+docs/API.md:160:| `/v2/block_edge` | `BlockEdge` | `from_station`, `to_station`, `action`, `direction`, `reason`, `operator_id`, `expected_map_hash`, `confirm`, `allow_edge_under_vehicle` | `success`, `error_code`, `message`, `resource_id`, `impacted_vehicles[]`, `impacted_missions[]`, `rerouted`, `overlay_revision` | 完整实现 |
+########## BlockStationRoute
+src/amr_dispatcher_interfaces/CMakeLists.txt:33:  "srv/BlockStationRoute.srv"
+docs/API.md:153:| `/v2/block_station_route` | `BlockStationRoute` | `from_station`, `to_station`, `reason` | `success`, `message`, `resource_id` | 完整实现 |
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:160:      const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:161:      std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:616:  rclcpp::Service<amr_dispatcher_interfaces::srv::BlockStationRoute>::SharedPtr block_route_srv_;
+USAGE.md:285:ros2 service call /v2/block_station_route amr_dispatcher_interfaces/srv/BlockStationRoute \
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:419:  block_route_srv_ = create_service<amr_dispatcher_interfaces::srv::BlockStationRoute>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1320:    const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1321:    std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Response> resp) {
+########## CancelQueuedMission
+docs/API.md:149:| `/v2/cancel_queued_mission` | `CancelQueuedMission` | `mission_id`, `cancel_active` | `success`, `message`, `queue_size` | 完整实现 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:29:  "srv/CancelQueuedMission.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:148:      const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:149:      std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:612:  rclcpp::Service<amr_dispatcher_interfaces::srv::CancelQueuedMission>::SharedPtr cancel_queued_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:407:  cancel_queued_srv_ = create_service<amr_dispatcher_interfaces::srv::CancelQueuedMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1170:    const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1171:    std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Response> resp) {
+USAGE.md:269:ros2 service call /v2/cancel_queued_mission amr_dispatcher_interfaces/srv/CancelQueuedMission \
+########## DetectTrafficDeadlock
+USAGE.md:289:ros2 service call /v2/detect_traffic_deadlock amr_dispatcher_interfaces/srv/DetectTrafficDeadlock "{}"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:177:      const std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:178:      std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:621:  rclcpp::Service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>::SharedPtr detect_deadlock_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:432:  detect_deadlock_srv_ = create_service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1335:    const std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1336:    std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Response> resp) {
+src/amr_dispatcher_interfaces/CMakeLists.txt:34:  "srv/DetectTrafficDeadlock.srv"
+src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/deadlock_snapshot_assembly.hpp:6:// DetectTrafficDeadlock 服务安全复用（读操作会改状态）。
+docs/API.md:154:| `/v2/detect_traffic_deadlock` | `DetectTrafficDeadlock` | （无请求字段） | `success`, `message`, `deadlocked`, `mission_ids[]`, `conflict_resource_ids[]`, `conflict_station_ids[]`, `descriptions[]` | 完整实现 |
+########## EnqueueMission
+USAGE.md:265:ros2 service call /v2/enqueue_mission amr_dispatcher_interfaces/srv/EnqueueMission \
+docs/API.md:148:| `/v2/enqueue_mission` | `EnqueueMission` | `mission_file`, `priority`, `start_if_idle` | `success`, `message`, `queue_size` | 完整实现 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:28:  "srv/EnqueueMission.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:145:      const std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:146:      std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:611:  rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:404:  enqueue_srv_ = create_service<amr_dispatcher_interfaces::srv::EnqueueMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1135:    const std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1136:    std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1164:    RCLCPP_INFO(get_logger(), "EnqueueMission via BT: branch=%s request_queue_start=%d",
+########## EstimateMissionCost
+USAGE.md:281:ros2 service call /v2/estimate_mission_cost amr_dispatcher_interfaces/srv/EstimateMissionCost \
+docs/API.md:152:| `/v2/estimate_mission_cost` | `EstimateMissionCost` | `mission_file`, `nominal_speed_mps`, `battery_voltage` | `success`, `message`, `mission_id`, `waypoint_count`, `distance_m`, `eta_sec`, `battery_drop_v`, `projected_battery_voltage`, `battery_sufficient` | 基础实现 |
+test/unit/test_mission_profile.cpp:100:  const auto estimate = EstimateMissionCost(profile, 2.0, 24.0, 0.1, 22.0);
+test/unit/test_mission_profile.cpp:118:  const auto estimate = EstimateMissionCost(profile, 1.0, 22.5, 0.1, 22.0);
+src/amr_dispatcher_interfaces/CMakeLists.txt:32:  "srv/EstimateMissionCost.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:157:      const std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:158:      std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:615:  rclcpp::Service<amr_dispatcher_interfaces::srv::EstimateMissionCost>::SharedPtr estimate_cost_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:416:  estimate_cost_srv_ = create_service<amr_dispatcher_interfaces::srv::EstimateMissionCost>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1259:    const std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1260:    std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Response> resp) {
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_estimator.hpp:20:MissionCostEstimate EstimateMissionCost(
+src/amr_dispatcher_core/src/workflow/mission_preflight.cpp:49:  return EstimateMissionCost(
+src/amr_dispatcher_core/src/workflow/mission_estimator.cpp:18:MissionCostEstimate EstimateMissionCost(
+########## ForceClearVda5050Link
+deploy/alerts/amr_dispatcher.rules.yml:163:            隔离来自操作员强清离线链路（ForceClearVda5050Link）。恢复需要
+scripts/check_vda5050_e2e.sh:1113:    amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
+scripts/check_vda5050_e2e.sh:1168:    amr_dispatcher_interfaces/srv/ForceClearVda5050Link \
+scripts/check_vda5050_e2e.sh:1174:    fail "ForceClearVda5050Link 服务未被受理成功: ${FORCE_RESULT}"
+docs/API.md:110:### `/dispatcher/force_clear_vda5050_link` (`amr_dispatcher_interfaces/srv/ForceClearVda5050Link`)
+docs/API.md:133:- **前置**: 该车曾被 `ForceClearVda5050Link` 隔离。
+src/amr_dispatcher_interfaces/CMakeLists.txt:40:  "srv/ForceClearVda5050Link.srv"
+src/amr_dispatcher_interfaces/srv/RestoreVda5050Link.srv:3:# 前置：该车曾被 ForceClearVda5050Link 隔离。
+src/amr_dispatcher_tools/src/rest_gateway.cpp:362:    force_clear_cli_ = create_client<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1281:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2453:  rclcpp::Client<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:135:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:136:      std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:544:  rclcpp::Service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>::SharedPtr
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:393:      create_service<amr_dispatcher_interfaces::srv::ForceClearVda5050Link>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:992:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:993:    std::shared_ptr<amr_dispatcher_interfaces::srv::ForceClearVda5050Link::Response> resp) {
+########## GetOperatorSnapshot
+USAGE.md:302:ros2 service call /v2/get_operator_snapshot amr_dispatcher_interfaces/srv/GetOperatorSnapshot "{event_limit: 10}"
+docs/API.md:158:| `/v2/get_operator_snapshot` | `GetOperatorSnapshot` | `event_limit` | `success`, `message`, `mission_state`, `active_mission_id`, `mission_active`, `paused`, `queue_size`, `queued_*`, `paused_workflow_order_ids[]`, `fleet_*`, `remote_task_*`, `facility_*`, `business_*`, `recent_event_*`（完整字段见 `.srv`） | 基础实现 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:38:  "srv/GetOperatorSnapshot.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:189:      const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:190:      std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:625:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetOperatorSnapshot>::SharedPtr snapshot_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:444:  snapshot_srv_ = create_service<amr_dispatcher_interfaces::srv::GetOperatorSnapshot>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1441:    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1442:    std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Response> resp) {
+########## GetTopologyOverlay
+docs/API.md:162:| `/v2/get_topology_overlay` | `GetTopologyOverlay` | `include_yaml` | `success`, `message`, `overlay_yaml`, `revision`, `blocked_edge_count`, `one_way_edge_count`, `marker_count`, `base_map_hash`, `effective_map_hash`, `overlay_active` | 完整实现 |
+src/amr_dispatcher_tools/src/rest_gateway.cpp:373:        create_client<amr_dispatcher_interfaces::srv::GetTopologyOverlay>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1402:        std::make_shared<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2460:  rclcpp::Client<amr_dispatcher_interfaces::srv::GetTopologyOverlay>::SharedPtr
+src/amr_dispatcher_interfaces/CMakeLists.txt:45:  "srv/GetTopologyOverlay.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:174:      const std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:175:      std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:620:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetTopologyOverlay>::SharedPtr get_topology_overlay_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:429:  get_topology_overlay_srv_ = create_service<amr_dispatcher_interfaces::srv::GetTopologyOverlay>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4449:  // 2b. 请求体自带的 base_map_hash（例如从 GetTopologyOverlay 回读后原样提交）
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5026:    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:5027:    std::shared_ptr<amr_dispatcher_interfaces::srv::GetTopologyOverlay::Response> resp) {
+########## ListStations
+docs/ARCHITECTURE.md:224:                   SkeletonPlanner          CBS / TimeSpace          ListStations
+docs/API.md:155:| `/v2/list_stations` | `ListStations` | （无请求字段） | `success`, `message`, `station_ids[]`, `frame_ids[]`, `x[]`, `y[]`, `yaw[]` | 基础实现 |
+test/l2_launch_contracts/test_supervision_contracts.py:40:from amr_dispatcher_interfaces.srv import GetSystemReadiness, ListStations
+test/l2_launch_contracts/test_supervision_contracts.py:399:        cli = self.node.create_client(ListStations, "/v2/list_stations")
+test/l2_launch_contracts/test_supervision_contracts.py:403:            future = cli.call_async(ListStations.Request())
+scripts/check_topology_hot_update_e2e.sh:484:            amr_dispatcher_interfaces/srv/ListStations '{}' 2>/dev/null \
+src/amr_dispatcher_interfaces/CMakeLists.txt:35:  "srv/ListStations.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:180:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:181:      std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:622:  rclcpp::Service<amr_dispatcher_interfaces::srv::ListStations>::SharedPtr list_stations_srv_;
+USAGE.md:292:ros2 service call /v2/list_stations amr_dispatcher_interfaces/srv/ListStations "{}"
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:435:  list_stations_srv_ = create_service<amr_dispatcher_interfaces::srv::ListStations>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1367:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1368:    std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp) {
+########## ListTrafficReservations
+USAGE.md:295:ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}"
+scripts/check_vda5050_e2e.sh:755:if ! RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_vda5050_e2e.sh:1013:RESERVATIONS_M2=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>/dev/null || echo "")
+scripts/check_vda5050_e2e.sh:1088:if ! FINAL_RESERVATIONS=$(timeout 15 ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_vda5050_e2e.sh:1158:        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_vda5050_e2e.sh:1190:        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_vda5050_e2e.sh:1639:        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_vda5050_e2e.sh:1996:        amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1); then
+scripts/check_map_ingest_e2e.sh:525:RESERVATIONS_OUTPUT=$(ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1 || true)
+scripts/check_map_ingest_e2e.sh:599:AFTER_LOCKS=$(ros2 service call /v2/list_traffic_reservations amr_dispatcher_interfaces/srv/ListTrafficReservations "{}" 2>&1 || true)
+scripts/check_topology_hot_update_e2e.sh:771:        amr_dispatcher_interfaces/srv/ListTrafficReservations '{}' 2>/dev/null | tail -n +2
+scripts/check_topology_hot_update_e2e.sh:827:        amr_dispatcher_interfaces/srv/ListTrafficReservations '{}' 2>/dev/null | tail -n +2
+src/amr_dispatcher_interfaces/CMakeLists.txt:36:  "srv/ListTrafficReservations.srv"
+docs/API.md:156:| `/v2/list_traffic_reservations` | `ListTrafficReservations` | （无请求字段） | `success`, `message`, `resource_ids[]`, `owner_ids[]`, `reservation_types[]` | 完整实现 |
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:438:  list_reservations_srv_ = create_service<amr_dispatcher_interfaces::srv::ListTrafficReservations>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1387:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1388:    std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Response> resp) {
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:183:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:184:      std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:623:  rclcpp::Service<amr_dispatcher_interfaces::srv::ListTrafficReservations>::SharedPtr list_reservations_srv_;
+########## PreemptMission
+docs/API.md:150:| `/v2/preempt_mission` | `PreemptMission` | `mission_file`, `priority` | `success`, `message`, `mission_id`, `queue_size` | 完整实现 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:30:  "srv/PreemptMission.srv"
+USAGE.md:273:ros2 service call /v2/preempt_mission amr_dispatcher_interfaces/srv/PreemptMission \
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:151:      const std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:152:      std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:613:  rclcpp::Service<amr_dispatcher_interfaces::srv::PreemptMission>::SharedPtr preempt_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:410:  preempt_srv_ = create_service<amr_dispatcher_interfaces::srv::PreemptMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1224:    const std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1225:    std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Response> resp) {
+########## ReleaseResource
+docs/API.md:105:### `/dispatcher/release_resource` (`amr_dispatcher_interfaces/srv/ReleaseResource`)
+src/amr_dispatcher_interfaces/CMakeLists.txt:26:  "srv/ReleaseResource.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:128:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:129:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:543:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:389:  release_srv_ = create_service<amr_dispatcher_interfaces::srv::ReleaseResource>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:979:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:980:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Response> resp) {
+########## ReprioritizeQueuedMission
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:187:bool ReprioritizeQueuedMission(
+test/unit/test_queued_mission.cpp:67:  EXPECT_TRUE(ReprioritizeQueuedMission(queue, "delivery_a", 9));
+test/unit/test_queued_mission.cpp:70:  EXPECT_FALSE(ReprioritizeQueuedMission(queue, "missing", 5));
+src/amr_dispatcher_interfaces/CMakeLists.txt:31:  "srv/ReprioritizeQueuedMission.srv"
+docs/API.md:151:| `/v2/reprioritize_queued_mission` | `ReprioritizeQueuedMission` | `mission_id`, `priority` | `success`, `message`, `queue_size` | 完整实现 |
+src/amr_dispatcher_core/src/workflow/queued_mission.cpp:40:bool ReprioritizeQueuedMission(
+src/amr_dispatcher_core/src/workflow/queued_mission.cpp:354:  if (ReprioritizeQueuedMission(decision.remaining_queue, request.mission_id, request.priority)) {
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:154:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:155:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:614:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission>::SharedPtr reprioritize_srv_;
+USAGE.md:277:ros2 service call /v2/reprioritize_queued_mission amr_dispatcher_interfaces/srv/ReprioritizeQueuedMission \
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:413:  reprioritize_srv_ = create_service<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1245:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1246:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Response> resp) {
+########## ReserveFacilityResource
+USAGE.md:298:ros2 service call /v2/reserve_facility_resource amr_dispatcher_interfaces/srv/ReserveFacilityResource \
+docs/API.md:157:| `/v2/reserve_facility_resource` | `ReserveFacilityResource` | `resource_id`, `holder_id`, `mission_id`, `release_existing_for_holder` | `success`, `message`, `resource_id`, `holder_id`, `status`（`RESERVED`/`OCCUPIED`） | 完整实现 |
+src/amr_dispatcher_interfaces/CMakeLists.txt:37:  "srv/ReserveFacilityResource.srv"
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:186:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:187:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:624:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveFacilityResource>::SharedPtr reserve_facility_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:441:  reserve_facility_srv_ = create_service<amr_dispatcher_interfaces::srv::ReserveFacilityResource>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1405:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1406:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Response> resp) {
+src/amr_dispatcher_bt/src/facility_behavior_tree.cpp:70:      <ReserveFacilityResource/>
+src/amr_dispatcher_bt/src/facility_behavior_tree.cpp:108:      "ReserveFacilityResource", [&context](BT::TreeNode&) {
+src/amr_dispatcher_core/include/amr_dispatcher_core/facility/facility_reservation.hpp:73:FacilityReservationResult ReserveFacilityResource(
+test/unit/test_facility_reservation.cpp:53:      ReserveFacilityResource(reservations, resource, "holder_a", "mission_a", false);
+test/unit/test_facility_reservation.cpp:68:      ReserveFacilityResource(reservations, resource, "holder_a", "mission_a", false);
+test/unit/test_facility_reservation.cpp:82:      ReserveFacilityResource(reservations, resource, "holder_new", "mission_new", false);
+test/unit/test_facility_reservation.cpp:98:      ReserveFacilityResource(reservations, resource, "holder_a", "mission_new", true);
+test/unit/test_facility_reservation.cpp:115:      ReserveFacilityResource(reservations, resource, "holder_new", "mission_new", true);
+src/amr_dispatcher_core/src/facility/facility_reservation.cpp:88:FacilityReservationResult ReserveFacilityResource(
+src/amr_dispatcher_core/src/facility/facility_reservation.cpp:127:  auto result = ReserveFacilityResource(
+########## ReserveResource
+USAGE.md:258:ros2 service call /dispatcher/reserve_resource amr_dispatcher_interfaces/srv/ReserveResource \
+src/amr_dispatcher_interfaces/CMakeLists.txt:25:  "srv/ReserveResource.srv"
+docs/API.md:94:### `/dispatcher/reserve_resource` (`amr_dispatcher_interfaces/srv/ReserveResource`)
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:125:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:126:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:542:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveResource>::SharedPtr reserve_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:386:  reserve_srv_ = create_service<amr_dispatcher_interfaces::srv::ReserveResource>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:965:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:966:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Response> resp) {
+########## RestoreVda5050Link
+src/amr_dispatcher_interfaces/CMakeLists.txt:41:  "srv/RestoreVda5050Link.srv"
+scripts/check_vda5050_e2e.sh:1258:    amr_dispatcher_interfaces/srv/RestoreVda5050Link \
+scripts/check_vda5050_e2e.sh:1262:    fail "RestoreVda5050Link 未被受理成功: ${RESTORE_RESULT}"
+src/amr_dispatcher_tools/src/rest_gateway.cpp:364:    restore_cli_ = create_client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1327:    auto request = std::make_shared<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2455:  rclcpp::Client<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr restore_cli_;
+src/amr_dispatcher_core/include/amr_dispatcher_core/fleet/force_clear_link.hpp:21://      恢复需显式调用 RestoreVda5050Link（并声明已核实车辆位置）。
+src/amr_dispatcher_interfaces/srv/ForceClearVda5050Link.srv:7:#     但不再参与自动分配；恢复需调用 RestoreVda5050Link。
+docs/API.md:131:### `/dispatcher/restore_vda5050_link` (`amr_dispatcher_interfaces/srv/RestoreVda5050Link`)
+src/amr_dispatcher_core/src/workflow/fleet_link_guard.cpp:18:      // 恢复需显式调用 RestoreVda5050Link（并核实物理位置）。
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:140:      const std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:141:      std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:546:  rclcpp::Service<amr_dispatcher_interfaces::srv::RestoreVda5050Link>::SharedPtr
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:398:      create_service<amr_dispatcher_interfaces::srv::RestoreVda5050Link>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1100:    const std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1101:    std::shared_ptr<amr_dispatcher_interfaces::srv::RestoreVda5050Link::Response> resp) {
+########## TopologyHotUpdate
+src/amr_dispatcher_interfaces/CMakeLists.txt:44:  "srv/TopologyHotUpdate.srv"
+src/amr_dispatcher_tools/src/rest_gateway.cpp:370:        create_client<amr_dispatcher_interfaces::srv::TopologyHotUpdate>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:1518:        std::make_shared<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:2458:  rclcpp::Client<amr_dispatcher_interfaces::srv::TopologyHotUpdate>::SharedPtr
+docs/API.md:161:| `/v2/topology_hot_update` | `TopologyHotUpdate` | `overlay_yaml`, `expected_map_hash`, `operator_id`, `reason`, `dry_run`, `clear`, `allow_edge_under_vehicle`, `confirm` | `success`, `error_code`, `message`, `unreachable_nodes[]`, `impacted_vehicles[]`, `impacted_missions[]`, `reroute_failures[]`, `catalog_map_hash`, `overlay_revision`, `file_written` | 完整实现 |
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:171:      const std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:172:      std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:619:  rclcpp::Service<amr_dispatcher_interfaces::srv::TopologyHotUpdate>::SharedPtr topology_hot_update_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:426:  topology_hot_update_srv_ = create_service<amr_dispatcher_interfaces::srv::TopologyHotUpdate>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4942:    const std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:4943:    std::shared_ptr<amr_dispatcher_interfaces::srv::TopologyHotUpdate::Response> resp) {
+########## ValidateSiteConfig
+src/amr_dispatcher_interfaces/CMakeLists.txt:39:  "srv/ValidateSiteConfig.srv"
+src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/payload_schema.hpp:10://    并输出明确可读的错误信息，同时可复用于 ValidateSiteConfig 与订单准入阶段。
+docs/API.md:159:| `/v2/validate_site_config` | `ValidateSiteConfig` | `bundle_dir`, `version_id` | `success`, `message`, `version_id`, `checked_files[]`, `errors[]`, `diff_report` | 基础实现 |
+USAGE.md:305:ros2 service call /v2/validate_site_config amr_dispatcher_interfaces/srv/ValidateSiteConfig \
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:192:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:193:      std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:626:  rclcpp::Service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>::SharedPtr validate_site_srv_;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:447:  validate_site_srv_ = create_service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1533:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1534:    std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Response> resp) {

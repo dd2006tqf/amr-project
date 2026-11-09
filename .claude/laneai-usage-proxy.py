@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""laneai-usage-proxy - 给不上报 usage 的中转站补上 input_tokens。
+
+问题: laneai.dev 对 deepseek 系列永远返回 input_tokens=0，而 Claude Code 靠它算上下文:
+    dSn(usage) = input_tokens + cache_creation + cache_read
+恒为 0 => 自动压缩永不触发 => 会话一直涨 => 上游静默截断历史 =>
+表现为「模型重复上一轮、无视新指令」。
+
+本代理按请求体估算 prompt token 数，写回响应的 usage.input_tokens。
+
+比例来自对该网关静默截断边界的实测(按 256K 窗口反推):
+  英文/代码 978,125 字符触发截断 -> 3.82 字符/token
+  中文     325,000 字符触发截断 -> 1.27 字符/token
+
+用法: python3 ~/.claude/laneai-usage-proxy.py
+      然后 ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+"""
+import json, os, re, sys, ssl, time, http.client, http.server, socketserver
+
+UPSTREAM_HOST = os.environ.get("LANEAI_UPSTREAM_HOST", "laneai.dev")
+UPSTREAM_PORT = int(os.environ.get("LANEAI_UPSTREAM_PORT", "443"))
+LISTEN_HOST = os.environ.get("LANEAI_PROXY_HOST", "127.0.0.1")
+LISTEN_PORT = int(os.environ.get("LANEAI_PROXY_PORT", "8787"))
+ASCII_CPT = float(os.environ.get("LANEAI_ASCII_CPT", "3.82"))
+CJK_CPT = float(os.environ.get("LANEAI_CJK_CPT", "1.27"))
+SAFETY = float(os.environ.get("LANEAI_TOKEN_SAFETY", "1.06"))
+VERBOSE = os.environ.get("LANEAI_PROXY_VERBOSE", "") not in ("", "0")
+LOG_PATH = os.path.expanduser(os.environ.get("LANEAI_PROXY_LOG", "~/.claude/laneai-proxy.log"))
+RAW_DUMP = os.environ.get("LANEAI_RAW_DUMP", "")
+
+_CJK_RE = re.compile("[぀-ヿ㐀-䶿一-鿿가-힯　-〿＀-￯]")
+
+def _log(msg):
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except Exception:
+        pass
+
+def _count_text(s):
+    if not s:
+        return 0.0
+    cjk = len(_CJK_RE.findall(s))
+    return cjk / CJK_CPT + (len(s) - cjk) / ASCII_CPT
+
+def _count_content(c):
+    if c is None:
+        return 0.0
+    if isinstance(c, str):
+        return _count_text(c)
+    if not isinstance(c, list):
+        return _count_text(str(c))
+    total = 0.0
+    for b in c:
+        if not isinstance(b, dict):
+            total += _count_text(str(b)); continue
+        t = b.get("type")
+        if t == "text":
+            total += _count_text(b.get("text") or "")
+        elif t == "thinking":
+            total += _count_text(b.get("thinking") or "")
+        elif t == "tool_use":
+            total += _count_text(b.get("name") or "")
+            total += _count_text(json.dumps(b.get("input") or {}, ensure_ascii=False))
+        elif t == "tool_result":
+            total += _count_content(b.get("content"))
+        elif t == "image":
+            total += 1600.0
+        else:
+            total += _count_text(json.dumps(b, ensure_ascii=False))
+    return total
+
+def estimate_prompt_tokens(payload):
+    total = _count_content(payload.get("system"))
+    for t in payload.get("tools") or []:
+        total += _count_text(json.dumps(t, ensure_ascii=False)) + 8.0
+    for m in payload.get("messages") or []:
+        total += 4.0
+        total += _count_content(m.get("content"))
+    return max(1, int(total * SAFETY))
+
+def _patch_usage(obj, tokens):
+    if not isinstance(obj, dict):
+        return False
+    u = obj.get("usage")
+    if not isinstance(u, dict):
+        return False
+    u["input_tokens"] = tokens
+    if not u.get("cache_creation_input_tokens"):
+        u["cache_creation_input_tokens"] = 0
+    if not u.get("cache_read_input_tokens"):
+        u["cache_read_input_tokens"] = 0
+    return True
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "laneai-usage-proxy/1.0"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_HEAD(self):
+        self._handle("HEAD")
+
+    def _handle(self, method):
+        if self.path.split("?", 1)[0] in ("/healthz", "/_health"):
+            self._send_json(200, {"status": "ok", "service": "laneai-usage-proxy", "version": "1.0"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        body = self.rfile.read(length) if length else b""
+
+        is_messages = self.path.split("?", 1)[0].endswith("/v1/messages")
+        tokens = 0
+        stream = False
+        if body and is_messages:
+            try:
+                payload = json.loads(body)
+                tokens = estimate_prompt_tokens(payload)
+                stream = bool(payload.get("stream"))
+            except Exception as e:
+                _log("estimate failed: %r" % (e,))
+
+        hdrs = {}
+        for k, v in self.headers.items():
+            if k.lower() in ("host", "connection", "accept-encoding", "content-length"):
+                continue
+            hdrs[k] = v
+        hdrs["Accept-Encoding"] = "identity"
+        if body:
+            hdrs["Content-Length"] = str(len(body))
+
+        conn = None
+        try:
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=900, context=ctx)
+            conn.request(method, self.path, body=body or None, headers=hdrs)
+            resp = conn.getresponse()
+        except Exception as e:
+            _log("upstream connect failed: %r" % (e,))
+            self._send_simple(502, "upstream error: %s" % e)
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+            return
+
+        try:
+            is_sse = "text/event-stream" in (resp.getheader("Content-Type") or "")
+            if is_messages and resp.status == 200 and (stream or is_sse):
+                self._relay_stream(resp, tokens)
+            else:
+                self._relay_buffered(resp, tokens, is_messages)
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+    def _send_simple(self, code, text):
+        data = text.encode("utf-8", "replace")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try: self.wfile.write(data)
+        except Exception: pass
+
+    def _send_json(self, code, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try: self.wfile.write(data)
+        except Exception: pass
+
+    def _relay_buffered(self, resp, tokens, is_messages):
+        raw = resp.read()
+        out = raw
+        if is_messages and resp.status == 200:
+            try:
+                obj = json.loads(raw)
+                if _patch_usage(obj, tokens):
+                    out = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                    if VERBOSE:
+                        _log("BUFFERED patched input_tokens=%d" % tokens)
+            except Exception as e:
+                _log("buffered patch failed: %r" % (e,))
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() in ("content-length", "transfer-encoding", "connection",
+                             "content-encoding"):
+                continue
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        try: self.wfile.write(out)
+        except Exception: pass
+
+    def _relay_stream(self, resp, tokens):
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() in ("content-length", "transfer-encoding", "connection",
+                             "content-encoding"):
+                continue
+            self.send_header(k, v)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        patched = False
+        _dump = None
+        if RAW_DUMP:
+            try:
+                _dump = open(RAW_DUMP, "ab")
+                _dump.write(b"\n===== NEW STREAM %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S").encode())
+                _dump.flush()
+            except Exception:
+                _dump = None
+        try:
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                if _dump is not None:
+                    try:
+                        _dump.write(line)
+                        _dump.flush()
+                    except Exception:
+                        pass
+                if line.lstrip().startswith(b"data:"):
+                    idx = line.find(b"data:")
+                    prefix, payload = line[:idx + 5], line[idx + 5:].strip()
+                    if payload and payload != b"[DONE]":
+                        try:
+                            ev = json.loads(payload)
+                            typ = ev.get("type")
+                            if typ == "message_start" and _patch_usage(ev.get("message"), tokens):
+                                patched = True
+                                line = prefix + b" " + json.dumps(ev, ensure_ascii=False).encode("utf-8") + b"\n"
+                            elif typ == "message_delta":
+                                u = ev.get("usage")
+                                if isinstance(u, dict) and not u.get("input_tokens"):
+                                    u["input_tokens"] = tokens
+                                    patched = True
+                                    line = prefix + b" " + json.dumps(ev, ensure_ascii=False).encode("utf-8") + b"\n"
+                        except Exception:
+                            pass
+                self._write_chunk(line)
+            self._write_chunk(b"")
+            if _dump is not None:
+                try: _dump.close()
+                except Exception: pass
+            if VERBOSE or not patched:
+                _log("STREAM input_tokens=%d patched=%s" % (tokens, patched))
+        except Exception as e:
+            _log("stream relay failed: %r" % (e,))
+
+    def _write_chunk(self, data):
+        try:
+            self.wfile.write(b"%x\r\n" % len(data))
+            if data:
+                self.wfile.write(data)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+        except Exception:
+            raise
+
+class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+if __name__ == "__main__":
+    srv = ThreadingServer((LISTEN_HOST, LISTEN_PORT), Handler)
+    # Windows 下用 pythonw.exe 启动时没有控制台，stdout/stderr 为 None，
+    # 任何 print 都会抛 AttributeError 把进程打死。
+    _out = sys.stdout or open(os.devnull, "w")
+    _err = sys.stderr or open(os.devnull, "w")
+
+    def _say(msg=""):
+        try:
+            _out.write(str(msg) + "\n")
+            _out.flush()
+        except Exception:
+            pass
+
+    _say("laneai-usage-proxy listening on http://%s:%d" % (LISTEN_HOST, LISTEN_PORT))
+    _say("upstream: https://%s:%d" % (UPSTREAM_HOST, UPSTREAM_PORT))
+    _say("ratio: ascii %.2f chars/tok, cjk %.2f chars/tok, safety %.2f" % (ASCII_CPT, CJK_CPT, SAFETY))
+    _say("log: %s" % LOG_PATH)
+    _log("proxy started on %s:%d (pid=%d)" % (LISTEN_HOST, LISTEN_PORT, os.getpid()))
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        _say("\nbye")

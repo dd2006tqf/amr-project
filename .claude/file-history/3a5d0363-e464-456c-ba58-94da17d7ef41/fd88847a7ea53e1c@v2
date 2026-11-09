@@ -1,0 +1,40 @@
+# B7：按 ROS 参数文件规范组织——节点名顶层键 + ros__parameters，
+# 由 launch/full_system.launch.py 通过 ament_index_python 解析 share 路径注入；
+# serial_device/health_rate_hz 由 launch LaunchConfiguration 覆盖（保留命令行可调）。
+chassis_driver_node:
+  ros__parameters:
+    serial_device: "/dev/ttyUSB0"
+    serial_baud: 115200
+    udp_host: "192.168.1.10"
+    udp_port: 9000
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    publish_tf: true
+    poll_rate_hz: 50.0
+    # 链路协议：text（ODOM/STATE 文本行）| mick_binary（0xAE 0xEA ... 0xEF 0xFE 帧）。
+    # 接真实底盘 MCU 时改成 mick_binary；两侧协议必须一致，
+    # 否则下行用二进制发、上行按文本切，odom 会全部丢弃。
+    protocol: "text"
+    # 电压 -> 电量百分比端点（下游只认 percent：min_battery_percent / auto_charging_*）。
+    # 12V 台架：12.6 / 11.0；换成 24V 整车改成 25.2 / 21.0。
+    battery_full_voltage: 12.6
+    battery_empty_voltage: 11.0
+    # 上行里程计超时：超过该时长无有效帧即判定链路假活，健康上报与心跳随之下沉，
+    # 由 safety_gate 的 500ms 看门狗接管零速。必须小于 heartbeat_timeout_ms。
+    odom_timeout_ms: 300
+    # B1：健康/心跳上报 5Hz——500ms 心跳超时阈值下必须留足余量（2Hz 边界会误报失联）
+    health_rate_hz: 5.0
+    # B1：指令龄超时阈值；超时后 ReadPollLoop 每拍主动写零速帧兜底
+    cmd_stale_timeout_ms: 500
+    # 阶段 2 双发：/chassis/link_health_proto。
+    # false 时连 publisher 都不建（DDS 里不会留空话题）；rosidl 侧逐位不变。
+    # 现场确认没有 proto 消费者后关掉，可省掉一份 5Hz 的序列化开销。
+    proto_dual_publish: true
+    # 阶段 4b 切流：rosidl 侧开关（默认 true = 行为与改动前逐位一致）。
+    # false 时本节点只发 /chassis/link_health_proto，DDS 里**不会**再有
+    # /chassis/link_health——这就是「切流」。与 proto_dual_publish 相互独立：
+    # 两个都 false = 一条都不发（只用于测试）。
+    #
+    # 打开前必须确认没有第三方还订阅着 rosidl 话题：DDS 不会因为
+    # 「话题没有发布者」而报错，订阅端也不会超时退出，只会无限等下去。
+    proto_rosidl_publish: true

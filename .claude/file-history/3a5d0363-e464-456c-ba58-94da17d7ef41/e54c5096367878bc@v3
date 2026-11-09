@@ -1,0 +1,124 @@
+# 自包含的 AMR Dispatcher 运行镜像（ROS 2 Jazzy）
+#
+# 设计要点
+# --------
+# 1. 替代旧的 docker/Dockerfile —— 后者 `FROM robot-amr:latest` 依赖一个只存在于
+#    开发机、未随仓库分发的基础镜像，导致在任何新机器上构建直接失败。
+#
+# 2. 基础镜像用官方 `ros:jazzy-ros-base`（Ubuntu 24.04 noble / amd64），
+#    已实测可从本机拉取。
+#
+# 3. 只补装项目真正需要的依赖。全仓库 find_package 扫描 + 实测确认：
+#    base 镜像已含 15/17 项，仅 behaviortree_cpp 与 hardware_interface 缺失。
+#    清单保留全部项作为幂等兜底。Task 4 补 Eclipse Paho MQTT C/C++
+#    （vda5050_gateway_node 的 MQTT 客户端；CMake 检测不到时该目标自动跳过，
+#    但清单收录保证完整构建）。Task 6 补 VDA 5050 验收链路依赖：
+#    python3-paho-mqtt（scripts/mock_vda5050_vehicle.py 虚拟小车）、
+#    mosquitto + mosquitto-clients（e2e 脚本起独立 broker 18884 与联调工具）。
+#
+#    注意：base 镜像的 apt 源本来就是明文 http
+#    (http://packages.ros.org + http://archive.ubuntu.com)，实测可达，
+#    因此无需替换为国内镜像源。
+#
+# 4. 项目源码【不烘焙进镜像】：运行时由 /workspace 绑定挂载提供。
+#    这样避免 rest_gateway.cpp / dispatcher_visualizer_node.cpp 依赖的
+#    相对路径加载因工作目录不确定而失效，也让镜像与代码解耦。
+#
+# 构建（在仓库根目录）：
+#   docker build -f docker/Dockerfile.jazzy -t amr-dispatcher:jazzy .
+
+# 滚动 tag 风险：ros:jazzy-ros-base 未钉 digest，上游重建会静默改变镜像内容
+# （CI 的 build-ros2-jazzy job 使用同一镜像）。有条件时用
+# `docker manifest inspect ros:jazzy-ros-base` 取 digest 钉死，形如：
+#   FROM ros:jazzy-ros-base@sha256:<digest>
+# 当前环境无法访问 registry（manifest inspect 超时），暂保持滚动 tag 并依赖 CI 把关。
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-jazzy-behaviortree-cpp \
+      ros-jazzy-hardware-interface \
+      ros-jazzy-rclcpp-lifecycle \
+      ros-jazzy-rclcpp-action \
+      ros-jazzy-nav-msgs \
+      ros-jazzy-visualization-msgs \
+      ros-jazzy-tf2-ros \
+      ros-jazzy-tf2-geometry-msgs \
+      ros-jazzy-pluginlib \
+      ros-jazzy-nav2-map-server \
+      ros-jazzy-ament-index-cpp \
+      ros-jazzy-ament-cmake-gtest \
+      ros-jazzy-rosidl-default-generators \
+      ros-jazzy-rosidl-default-runtime \
+      libyaml-cpp-dev \
+      libgtest-dev \
+      libpaho-mqtt-dev \
+      libpaho-mqttpp-dev \
+      python3-paho-mqtt \
+      python3-serial \
+      libprotobuf-dev \
+      protobuf-compiler \
+      python3-protobuf \
+      pybind11-dev \
+      mosquitto \
+      mosquitto-clients \
+      python3-colcon-common-extensions \
+      build-essential \
+      ccache \
+ && rm -rf /var/lib/apt/lists/*
+
+# 构建后自检：确认 protobuf 运行时真的装进来了。
+#
+# 为什么需要这一层 —— 这不是防御性编程，是修一个真实的静默失败：
+# 上面那条 RUN 一直列着 libprotobuf-dev / protobuf-compiler / python3-protobuf，
+# 但 2026-11-07 发现线上正在跑的镜像里**这三个包一个都没有**
+# （`dpkg -l | grep protobuf` 为空，`ldconfig -p` 找不到 libprotobuf.so.32）。
+# 所有 amr_dispatcher_* 可执行文件因此全部以 exit code 127 退出：
+#   "error while loading shared libraries: libprotobuf.so.32: cannot open shared
+#    object file: No such file or directory"
+#
+# 它能被瞒到现在，是因为旧容器从 `docker restart` 一路活下来，文件系统里保留了
+# 手工装的库；一旦 `docker compose up -d` 重建容器，缺陷立刻显形。这个坑的代价
+# 是「整套系统起不来」，而症状（缺 .so）与原因（apt 层没装成功）隔得很远。
+#
+# 为什么不能只靠上面的 RUN 成功就认为装上了：`apt-get install` 在某些情况下
+# 会以 0 退出而实际什么都没装（包名在该发行版上不存在时尤其如此 —— Ubuntu
+# 24.04 的运行时包叫 libprotobuf32t64，不是历史文章里的 libprotobuf32）。
+# 所以这里直接问 dpkg 和 ldconfig，而不是相信退出码。
+RUN dpkg -s libprotobuf-dev protobuf-compiler python3-protobuf >/dev/null \
+ && ldconfig -p | grep -q 'libprotobuf\.so'
+
+COPY docker/entrypoint.server.sh /workspace-docker/entrypoint.server.sh
+RUN chmod +x /workspace-docker/entrypoint.server.sh
+
+# 并发度推导脚本的镜像内副本。
+#
+# 入口脚本优先执行挂载的 /workspace/scripts/lib/build_workers.sh，这里烘焙一份
+# 兜底 —— 否则「未挂载仓库时用镜像内 entrypoint」这条路径上会缺依赖，只能
+# 回退成并发 1。**这一份与仓库里的那份是同一个文件**，不是内联复制品：
+# 修改时只需改 scripts/lib/build_workers.sh，镜像重建自然带上。
+COPY scripts/lib/build_workers.sh /workspace-docker/build_workers.sh
+RUN chmod +x /workspace-docker/build_workers.sh
+
+# /workspace 是项目根，运行时由绑定挂载填充
+WORKDIR /workspace
+
+# 入口脚本优先使用挂载进容器的那一份（/workspace/docker/entrypoint.server.sh），
+# 这样修改脚本只需 git pull + docker restart，不必重建镜像；镜像内烘焙的
+# 副本（/workspace-docker）作为未挂载仓库时的兜底。
+#
+# 注意：不要用 `COPY ... /usr/local/bin/` 后直接 ENTRYPOINT 那个路径 —— 那样
+# 脚本一经修改就必须重建镜像，否则容器会静默使用过期版本（这个坑踩过一次）。
+CMD ["/bin/bash", "-c", "\
+  if [ -x /workspace/docker/entrypoint.server.sh ]; then \
+    exec /workspace/docker/entrypoint.server.sh; \
+  else \
+    echo '[amr] WARN 未找到 /workspace/docker/entrypoint.server.sh，使用镜像内兜底副本' >&2; \
+    exec /workspace-docker/entrypoint.server.sh; \
+  fi"]
+
+# 交互式检查用，例如：
+#   docker run --rm -it -v "$PWD":/workspace amr-dispatcher:jazzy bash
+ENTRYPOINT []

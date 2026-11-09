@@ -1,0 +1,1657 @@
+commit 7a9a59a1d718bfc07a1eb29e9226eb190d3ecc2f
+Author: dd2006tqf <dd2006tqf@users.noreply.github.com>
+Date:   Mon Oct 12 16:20:02 2026 +0800
+
+    feat(bluetooth): add HCI ACL data-path observation
+    
+    Co-Authored-By: Claude Code <noreply@anthropic.com>
+
+diff --git a/server/CMakeLists.txt b/server/CMakeLists.txt
+index 00e947f..919fee8 100644
+--- a/server/CMakeLists.txt
++++ b/server/CMakeLists.txt
+@@ -258,6 +258,19 @@ add_custom_command(
+     COMMENT "Compiling eBPF: bt_events.bpf.c"
+ )
+ 
++# bt_hci_traffic：工业蓝牙 HCI ACL 数据通道双向流量观测（Phase 1 新架构）
++add_custom_command(
++    OUTPUT ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
++    COMMAND ${CLANG} -g -O2 -target bpf
++        -I${BPF_BUILD_DIR}
++        -c ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_hci_traffic.bpf.c
++        -o ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
++    DEPENDS
++        ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_hci_traffic.bpf.c
++        ${VMLINUX_H}
++    COMMENT "Compiling eBPF: bt_hci_traffic.bpf.c"
++)
++
+ # 汇总 eBPF 目标（默认构建，但不阻塞服务端二进制）
+ add_custom_target(ebpf
+     DEPENDS
+@@ -270,6 +283,7 @@ add_custom_target(ebpf
+         ${BPF_BUILD_DIR}/skb_drop.bpf.o
+         ${BPF_BUILD_DIR}/a2dp_media.bpf.o
+         ${BPF_BUILD_DIR}/bt_events.bpf.o
++        ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
+         ${BPF_BUILD_DIR}/tcp_connect.bpf.o
+         ${BPF_BUILD_DIR}/tcp_rtt.bpf.o
+ )
+diff --git a/server/include/bt_data_path_analyzer.hpp b/server/include/bt_data_path_analyzer.hpp
+new file mode 100644
+index 0000000..84ce757
+--- /dev/null
++++ b/server/include/bt_data_path_analyzer.hpp
+@@ -0,0 +1,154 @@
++#pragma once
++
++#include <chrono>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "bt_hci_connection_tracker.hpp"
++#include "ebpf_monitor_interface.hpp"
++#include "ebpf_monitor_metrics.hpp"
++
++// 前置声明 libbpf 类型
++struct bpf_object;
++struct bpf_link;
++
++namespace weaknet_dbus {
++
++/**
++ * @brief L1 蓝牙 HCI ACL 纯净数据通路观测 DTO
++ * 严格只保存客观事实与计数，绝不包含任何推断与假阳性故障判定。
++ */
++struct BtDataPathObservation {
++    std::string observation_type{"BT_HCI_ACL_TRAFFIC"};
++    std::string controller_id{"hci0"};
++    uint16_t connection_handle{0};
++    uint32_t connection_generation{0};
++    std::string attribution_scope{"unknown"}; // "device" | "controller" | "unknown"
++    std::optional<std::string> device_id{std::nullopt}; // 设备规范 MAC（若已知）
++
++    uint32_t window_ms{0};
++    uint64_t tx_bytes{0};       // 窗口内增量 ACL payload 字节
++    uint64_t rx_bytes{0};       // 窗口内增量 ACL payload 字节
++    uint64_t tx_packets{0};     // 窗口内增量 ACL 报文数
++    uint64_t rx_packets{0};     // 窗口内增量 ACL 报文数
++
++    double tx_throughput_bps{0.0}; // 窗口内平均速率 bits/s
++    double rx_throughput_bps{0.0}; // 窗口内平均速率 bits/s
++
++    uint32_t max_gap_ms{0};     // 窗口内相邻收发最大时间跨度（毫秒）
++    std::string status{"OBSERVED"};
++
++    // 原始单调时间戳（纳秒）
++    uint64_t last_tx_ktime_ns{0};
++    uint64_t last_rx_ktime_ns{0};
++
++    std::string toJson() const;
++};
++
++/**
++ * @brief 内核 BPF Map 中的原始累计值镜像
++ */
++struct RawAclTrafficVal {
++    uint64_t tx_packets{0};
++    uint64_t tx_bytes{0};
++    uint64_t rx_packets{0};
++    uint64_t rx_bytes{0};
++    uint64_t last_tx_ktime_ns{0};
++    uint64_t last_rx_ktime_ns{0};
++    uint64_t non_acl_dropped{0};
++    uint64_t short_pkt_dropped{0};
++};
++
++/**
++ * @brief 工业蓝牙 HCI ACL 数据通道流量分析器
++ * 负责加载 bt_hci_traffic.bpf.o，周期性扫描 Map 并结合 BtHciConnectionTracker
++ * 产出具备代次隔离和真实设备/控制器归因的 BtDataPathObservation。
++ */
++class BtDataPathAnalyzer : public IEbpfMonitor {
++public:
++    explicit BtDataPathAnalyzer(std::shared_ptr<weaknet::BtHciConnectionTracker> tracker = nullptr);
++    ~BtDataPathAnalyzer() override;
++
++    BtDataPathAnalyzer(const BtDataPathAnalyzer&) = delete;
++    BtDataPathAnalyzer& operator=(const BtDataPathAnalyzer&) = delete;
++
++    /**
++     * @brief 初始化并加载 eBPF 对象
++     * @param bpfObjectPath 编译好的 bt_hci_traffic.bpf.o 路径
++     * @param controller 默认控制器名称（如 "hci0"）
++     * @return true 挂载成功；false 降级为离线模式
++     */
++    bool init(const std::string& bpfObjectPath, const std::string& controller = "hci0");
++
++    /// 停止分析器：释放挂点与 BPF 对象
++    void stop();
++
++    // ---- IEbpfMonitor 统一接口 ----
++    const char* monitorName() const override { return "BtDataPathAnalyzer"; }
++    EbpfMonitorState commonState() const override;
++    bool isAvailable() const override;
++    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
++    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
++    void resetMetrics() override { stateSupport_.resetMetrics(); }
++
++    std::string attachedHookName() const;
++    std::string lastError() const;
++
++    /**
++     * @brief 周期性采样并计算当前时间窗口内的观测增量
++     * @param now_point 当前参考时间点（若默认则采用 steady_clock::now()）
++     * @return 活跃/有流量连接的观测列表
++     */
++    std::vector<BtDataPathObservation> collectObservations(
++        std::chrono::steady_clock::time_point now_point = std::chrono::steady_clock::now());
++
++    /**
++     * @brief 直接从内核 Map 读取单连接累计原始值（测试与诊断）
++     */
++    bool readRawMapValue(uint16_t handle, RawAclTrafficVal* out) const;
++
++    /**
++     * @brief 手动注入原始累计数据（无内核环境下的单元测试与算法验证桩）
++     */
++    void injectMockSample(uint16_t handle, const RawAclTrafficVal& val);
++
++    std::shared_ptr<weaknet::BtHciConnectionTracker> connectionTracker() const {
++        return tracker_;
++    }
++
++private:
++    struct LastSample {
++        RawAclTrafficVal val;
++        std::chrono::steady_clock::time_point time;
++        uint32_t generation{0};
++    };
++
++    mutable std::mutex mutex_;
++    std::shared_ptr<weaknet::BtHciConnectionTracker> tracker_;
++    std::string controller_id_{"hci0"};
++    std::string bpfObjectPath_;
++
++    bpf_object* bpfObj_ = nullptr;
++    bpf_link* link_tx_ = nullptr;
++    bpf_link* link_rx_ = nullptr;
++    int mapFd_ = -1;
++    int globalMapFd_ = -1;
++
++    EbpfMonitorState state_{EbpfMonitorState::Uninitialized};
++    std::string lastError_;
++    std::string attachedHookName_;
++    EbpfMonitorStateSupport stateSupport_{"BtDataPathAnalyzer"};
++
++    // 历史采样快照缓存：key = handle (12位) -> LastSample
++    std::unordered_map<uint16_t, LastSample> last_samples_;
++
++    // 内存测试桩数据（当 mapFd_ < 0 时生效）
++    std::unordered_map<uint16_t, RawAclTrafficVal> mock_map_;
++};
++
++} // namespace weaknet_dbus
+diff --git a/server/include/bt_hci_connection_tracker.hpp b/server/include/bt_hci_connection_tracker.hpp
+new file mode 100644
+index 0000000..f2c2f1f
+--- /dev/null
++++ b/server/include/bt_hci_connection_tracker.hpp
+@@ -0,0 +1,100 @@
++#pragma once
++
++#include <chrono>
++#include <cstdint>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++namespace weaknet {
++
++/// 三元组连接身份主键：控制器 + 12位句柄 + 连接代次（防御句柄复用串设备）
++struct HciConnectionKey {
++    std::string controller_id;
++    uint16_t handle{0};
++    uint32_t generation{0};
++
++    bool operator==(const HciConnectionKey& other) const {
++        return controller_id == other.controller_id &&
++               handle == other.handle &&
++               generation == other.generation;
++    }
++};
++
++struct HciConnectionKeyHash {
++    std::size_t operator()(const HciConnectionKey& k) const {
++        std::size_t h1 = std::hash<std::string>{}(k.controller_id);
++        std::size_t h2 = std::hash<uint16_t>{}(k.handle);
++        std::size_t h3 = std::hash<uint32_t>{}(k.generation);
++        return h1 ^ (h2 << 1) ^ (h3 << 2);
++    }
++};
++
++struct HciConnectionRecord {
++    HciConnectionKey key;
++    std::string device_mac;     // 大写规整 MAC，若未知为空
++    std::string address_type;   // "PUBLIC" | "RANDOM" | "UNKNOWN"
++    std::string attribution_scope; // "device" | "controller" | "unknown"
++    std::chrono::steady_clock::time_point connected_at;
++    std::optional<std::chrono::steady_clock::time_point> disconnected_at;
++    bool is_active{true};
++};
++
++class BtHciConnectionTracker {
++public:
++    BtHciConnectionTracker() = default;
++    ~BtHciConnectionTracker() = default;
++
++    BtHciConnectionTracker(const BtHciConnectionTracker&) = delete;
++    BtHciConnectionTracker& operator=(const BtHciConnectionTracker&) = delete;
++
++    /**
++     * @brief 记录连接建立事件
++     * @param controller 控制器名（如 "hci0"）
++     * @param handle 12 位连接句柄（0..4095）
++     * @param mac 关联设备 MAC（可选，未知时传空）
++     * @param addr_type 地址类型
++     * @return 当前分配的稳定 HciConnectionKey
++     */
++    HciConnectionKey onConnectionEstablished(const std::string& controller,
++                                             uint16_t handle,
++                                             const std::string& mac = "",
++                                             const std::string& addr_type = "UNKNOWN");
++
++    /**
++     * @brief 记录连接断开事件
++     * @return true 若找到并成功标记断开；false 句柄未曾记录
++     */
++    bool onConnectionDisconnected(const std::string& controller, uint16_t handle);
++
++    /**
++     * @brief 按当前活跃句柄查找身份
++     */
++    std::optional<HciConnectionRecord> getActiveConnection(const std::string& controller,
++                                                           uint16_t handle) const;
++
++    /**
++     * @brief 获取指定控制器的所有活跃连接快照
++     */
++    std::vector<HciConnectionRecord> getActiveConnections(const std::string& controller) const;
++
++    /**
++     * @brief 控制器复位时清理活动连接（代次历史继续递增以防复用）
++     */
++    void resetController(const std::string& controller);
++
++    size_t activeCount() const;
++
++private:
++    mutable std::mutex mutex_;
++
++    // 每个控制器下每个 handle 当前分配到的最大代次：key = "controller:handle" -> generation
++    std::unordered_map<std::string, uint32_t> generation_counter_;
++
++    // 当前活跃句柄映射：key = "controller:handle" -> HciConnectionRecord
++    std::unordered_map<std::string, HciConnectionRecord> active_map_;
++};
++
++} // namespace weaknet
+diff --git a/server/include/server.hpp b/server/include/server.hpp
+index 255eaf5..092764c 100644
+--- a/server/include/server.hpp
++++ b/server/include/server.hpp
+@@ -53,6 +53,7 @@ class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
+ class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
+ class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
+ class TcpRttMonitor;        // 前置声明：被动 TCP RTT 监控（eBPF）
++class BtDataPathAnalyzer;   // 前置声明：蓝牙 HCI ACL 数据通道分析器（eBPF）
+ class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
+ class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
+ class BtLinkQualityTracker; // 前置声明：蓝牙链路质量跟踪器（Phase 2）
+@@ -114,6 +115,7 @@ struct ServerContext {
+     SkbDropMonitor* skb_drop_monitor = nullptr;
+     TcpConnectMonitor* tcp_connect_monitor = nullptr;
+     TcpRttMonitor* tcp_rtt_monitor = nullptr;
++    BtDataPathAnalyzer* bt_hci_analyzer = nullptr;
+ 
+     /// 受控主动连通性探测（宿主能力证据的唯一来源）
+     std::unique_ptr<ActiveConnectivityMonitor> active_probe;
+diff --git a/server/include/weaknet_config.hpp b/server/include/weaknet_config.hpp
+index d3b797c..b56b234 100644
+--- a/server/include/weaknet_config.hpp
++++ b/server/include/weaknet_config.hpp
+@@ -123,6 +123,9 @@ struct WeakNetConfig {
+         /// 后者是工业无线诊断的主线。
+         ConfigString events_bpf_obj{"build/bt_events.bpf.o"};
+ 
++        /// Phase 1 HCI ACL 工业数据通道流量探针对象（bt_hci_traffic.bpf.o）
++        ConfigString hci_traffic_bpf_obj{"build/bt_hci_traffic.bpf.o"};
++
+         // ---------- Phase 3a: 区域关联阈值（SiteIncident）----------
+         //
+         // 这五个值决定 SiteIncidentCorrelator 的**构造期**配置：插件 start 时
+diff --git a/server/src/bpf/bt_hci_traffic.bpf.c b/server/src/bpf/bt_hci_traffic.bpf.c
+new file mode 100644
+index 0000000..418f5a8
+--- /dev/null
++++ b/server/src/bpf/bt_hci_traffic.bpf.c
+@@ -0,0 +1,168 @@
++/*
++ * 文件: server/src/bpf/bt_hci_traffic.bpf.c
++ * 职责: 工业蓝牙 HCI ACL 数据通道观测（Phase 1 事实源）
++ *
++ * 核心设计:
++ *   1. 双向对称采集:
++ *      - TX: kprobe/hci_send_frame
++ *      - RX: kprobe/hci_recv_frame
++ *   2. 严格防御过滤:
++ *      - 在解引用数据前，读取 skb->cb 的 pkt_type，仅放行 HCI_ACLDATA_PKT (0x02)
++ *      - 严格校验 skb->len >= 4
++ *   3. 精准事实提取:
++ *      - handle: 提取低 12 位 (raw_handle & 0x0FFF)
++ *      - bytes:  累加 dlen (ACL 净荷字节数，不计物理层/HCI 传输开销)
++ *   4. 零音频语义、零硬编码结构体偏移，原生依赖内核网络核心 sk_buff (CO-RE 友好)
++ */
++
++#define __TARGET_ARCH_arm64
++#include "vmlinux.h"
++#include <bpf/bpf_helpers.h>
++#include <bpf/bpf_core_read.h>
++#include <bpf/bpf_tracing.h>
++
++char LICENSE[] SEC("license") = "GPL";
++
++#define HCI_ACLDATA_PKT 0x02
++
++struct bpf_acl_traffic_val {
++    __u64 tx_packets;
++    __u64 tx_bytes;
++    __u64 rx_packets;
++    __u64 rx_bytes;
++    __u64 last_tx_ktime_ns;
++    __u64 last_rx_ktime_ns;
++    __u64 non_acl_dropped;
++    __u64 short_pkt_dropped;
++};
++
++// 以 connection_handle (低 12 位，取值 0..4095) 为 Key 记录流量统计
++struct {
++    __uint(type, BPF_MAP_TYPE_HASH);
++    __uint(max_entries, 64);
++    __type(key, __u32);
++    __type(value, struct bpf_acl_traffic_val);
++} bt_acl_traffic SEC(".maps");
++
++// 全局开关与未归类统计
++struct {
++    __uint(type, BPF_MAP_TYPE_ARRAY);
++    __uint(max_entries, 4);
++    __type(key, __u32);
++    __type(value, __u64);
++} bt_acl_global_stats SEC(".maps");
++
++static __always_inline void bump_global_counter(__u32 idx, __u64 val) {
++    __u64 *p = bpf_map_lookup_elem(&bt_acl_global_stats, &idx);
++    if (p) {
++        __sync_fetch_and_add(p, val);
++    }
++}
++
++// ----------------------------------------------------------------------------
++// TX 挂点: kprobe/hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
++// ----------------------------------------------------------------------------
++SEC("kprobe/hci_send_frame")
++int BPF_KPROBE(bt_hci_send_frame, void *hdev, struct sk_buff *skb) {
++    if (!skb) return 0;
++
++    // 1. 报文类型门控 (bt_cb(skb)->pkt_type 位于 skb->cb 第 0 字节)
++    __u8 pkt_type = 0;
++    if (bpf_probe_read_kernel(&pkt_type, sizeof(pkt_type),
++                              (const char *)skb + offsetof(struct sk_buff, cb)) < 0) {
++        return 0;
++    }
++
++    if (pkt_type != HCI_ACLDATA_PKT) {
++        bump_global_counter(0, 1); // TX 非 ACL 过滤
++        return 0;
++    }
++
++    // 2. 报文长度防御
++    __u32 len = BPF_CORE_READ(skb, len);
++    if (len < 4) {
++        bump_global_counter(2, 1); // TX 短报文丢弃
++        return 0;
++    }
++
++    const unsigned char *data = BPF_CORE_READ(skb, data);
++    if (!data) return 0;
++
++    // 3. 读取并解析 ACL 报头 (handle: 12bit, dlen: 16bit)
++    __u16 raw_handle = 0;
++    __u16 dlen = 0;
++    if (bpf_probe_read_kernel(&raw_handle, sizeof(raw_handle), data) < 0) return 0;
++    if (bpf_probe_read_kernel(&dlen, sizeof(dlen), data + 2) < 0) return 0;
++
++    __u32 handle = raw_handle & 0x0FFF;
++
++    // 4. 更新 Handle 统计
++    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
++    if (!stat) {
++        struct bpf_acl_traffic_val init = {};
++        bpf_map_update_elem(&bt_acl_traffic, &handle, &init, BPF_NOEXIST);
++        stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
++        if (!stat) return 0;
++    }
++
++    __u64 now = bpf_ktime_get_ns();
++    __sync_fetch_and_add(&stat->tx_packets, 1);
++    __sync_fetch_and_add(&stat->tx_bytes, dlen);
++    stat->last_tx_ktime_ns = now;
++
++    return 0;
++}
++
++// ----------------------------------------------------------------------------
++// RX 挂点: kprobe/hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
++// ----------------------------------------------------------------------------
++SEC("kprobe/hci_recv_frame")
++int BPF_KPROBE(bt_hci_recv_frame, void *hdev, struct sk_buff *skb) {
++    if (!skb) return 0;
++
++    // 1. 报文类型门控
++    __u8 pkt_type = 0;
++    if (bpf_probe_read_kernel(&pkt_type, sizeof(pkt_type),
++                              (const char *)skb + offsetof(struct sk_buff, cb)) < 0) {
++        return 0;
++    }
++
++    if (pkt_type != HCI_ACLDATA_PKT) {
++        bump_global_counter(1, 1); // RX 非 ACL 过滤 (如底噪 HCI Event)
++        return 0;
++    }
++
++    // 2. 报文长度防御
++    __u32 len = BPF_CORE_READ(skb, len);
++    if (len < 4) {
++        bump_global_counter(3, 1); // RX 短报文丢弃
++        return 0;
++    }
++
++    const unsigned char *data = BPF_CORE_READ(skb, data);
++    if (!data) return 0;
++
++    // 3. 读取并解析 ACL 报头
++    __u16 raw_handle = 0;
++    __u16 dlen = 0;
++    if (bpf_probe_read_kernel(&raw_handle, sizeof(raw_handle), data) < 0) return 0;
++    if (bpf_probe_read_kernel(&dlen, sizeof(dlen), data + 2) < 0) return 0;
++
++    __u32 handle = raw_handle & 0x0FFF;
++
++    // 4. 更新 Handle 统计
++    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
++    if (!stat) {
++        struct bpf_acl_traffic_val init = {};
++        bpf_map_update_elem(&bt_acl_traffic, &handle, &init, BPF_NOEXIST);
++        stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
++        if (!stat) return 0;
++    }
++
++    __u64 now = bpf_ktime_get_ns();
++    __sync_fetch_and_add(&stat->rx_packets, 1);
++    __sync_fetch_and_add(&stat->rx_bytes, dlen);
++    stat->last_rx_ktime_ns = now;
++
++    return 0;
++}
+diff --git a/server/src/bt_data_path_analyzer.cpp b/server/src/bt_data_path_analyzer.cpp
+new file mode 100644
+index 0000000..4fde7c5
+--- /dev/null
++++ b/server/src/bt_data_path_analyzer.cpp
+@@ -0,0 +1,342 @@
++#include "bt_data_path_analyzer.hpp"
++#include "logger.hpp"
++#include "utils/json_escape.hpp"
++
++#include <bpf/bpf.h>
++#include <bpf/libbpf.h>
++#include <cstring>
++#include <sstream>
++#include <algorithm>
++
++namespace weaknet_dbus {
++
++std::string BtDataPathObservation::toJson() const {
++    std::ostringstream oss;
++    oss << "{"
++        << "\"observation_type\":\"" << observation_type << "\","
++        << "\"controller_id\":\"" << weaknet_utils::escapeJsonString(controller_id) << "\","
++        << "\"connection_handle\":" << connection_handle << ","
++        << "\"connection_generation\":" << connection_generation << ","
++        << "\"attribution_scope\":\"" << attribution_scope << "\",";
++    if (device_id.has_value()) {
++        oss << "\"device_id\":\"" << weaknet_utils::escapeJsonString(*device_id) << "\",";
++    } else {
++        oss << "\"device_id\":null,";
++    }
++    oss << "\"window_ms\":" << window_ms << ","
++        << "\"tx_bytes\":" << tx_bytes << ","
++        << "\"rx_bytes\":" << rx_bytes << ","
++        << "\"tx_packets\":" << tx_packets << ","
++        << "\"rx_packets\":" << rx_packets << ","
++        << "\"tx_throughput_bps\":" << tx_throughput_bps << ","
++        << "\"rx_throughput_bps\":" << rx_throughput_bps << ","
++        << "\"max_gap_ms\":" << max_gap_ms << ","
++        << "\"status\":\"" << status << "\""
++        << "}";
++    return oss.str();
++}
++
++BtDataPathAnalyzer::BtDataPathAnalyzer(std::shared_ptr<weaknet::BtHciConnectionTracker> tracker)
++    : tracker_(tracker ? std::move(tracker) : std::make_shared<weaknet::BtHciConnectionTracker>()) {}
++
++BtDataPathAnalyzer::~BtDataPathAnalyzer() {
++    stop();
++}
++
++bool BtDataPathAnalyzer::init(const std::string& bpfObjectPath, const std::string& controller) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    controller_id_ = controller.empty() ? "hci0" : controller;
++    bpfObjectPath_ = bpfObjectPath;
++    lastError_.clear();
++    state_ = EbpfMonitorState::Initializing;
++    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading bt_hci_traffic BPF object");
++
++    bpfObj_ = bpf_object__open(bpfObjectPath.c_str());
++    if (!bpfObj_) {
++        lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " + std::string(strerror(errno));
++        LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_ << " — fallback mode");
++        state_ = EbpfMonitorState::Fallback;
++        stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
++        return false;
++    }
++
++    if (bpf_object__load(bpfObj_) != 0) {
++        lastError_ = "bpf_object__load failed: " + std::string(strerror(errno));
++        LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_ << " — fallback mode");
++        bpf_object__close(bpfObj_);
++        bpfObj_ = nullptr;
++        state_ = EbpfMonitorState::Fallback;
++        stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
++        return false;
++    }
++
++    mapFd_ = bpf_object__find_map_fd_by_name(bpfObj_, "bt_acl_traffic");
++    globalMapFd_ = bpf_object__find_map_fd_by_name(bpfObj_, "bt_acl_global_stats");
++
++    if (mapFd_ < 0) {
++        lastError_ = "Failed to find 'bt_acl_traffic' map in BPF object";
++        LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_);
++        bpf_object__close(bpfObj_);
++        bpfObj_ = nullptr;
++        state_ = EbpfMonitorState::Fallback;
++        stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
++        return false;
++    }
++
++    // 挂载 TX 与 RX kprobe 探针
++    bpf_program* prog_tx = bpf_object__find_program_by_name(bpfObj_, "bt_hci_send_frame");
++    bpf_program* prog_rx = bpf_object__find_program_by_name(bpfObj_, "bt_hci_recv_frame");
++
++    int attached_count = 0;
++    std::string hooks;
++
++    if (prog_tx) {
++        link_tx_ = bpf_program__attach(prog_tx);
++        if (!libbpf_get_error(link_tx_)) {
++            attached_count++;
++            hooks += "kprobe/hci_send_frame";
++        } else {
++            link_tx_ = nullptr;
++        }
++    }
++
++    if (prog_rx) {
++        link_rx_ = bpf_program__attach(prog_rx);
++        if (!libbpf_get_error(link_rx_)) {
++            attached_count++;
++            if (!hooks.empty()) hooks += ",";
++            hooks += "kprobe/hci_recv_frame";
++        } else {
++            link_rx_ = nullptr;
++        }
++    }
++
++    if (attached_count == 0) {
++        lastError_ = "All kprobe attach attempts failed (hci_send_frame, hci_recv_frame)";
++        LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_ << " — fallback mode");
++        bpf_object__close(bpfObj_);
++        bpfObj_ = nullptr;
++        mapFd_ = -1;
++        globalMapFd_ = -1;
++        state_ = EbpfMonitorState::Fallback;
++        stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
++        return false;
++    }
++
++    attachedHookName_ = hooks;
++    state_ = EbpfMonitorState::Attached;
++    stateSupport_.setState(EbpfMonitorState::Attached, true, attachedHookName_);
++    LOG_INFO(LogModule::BLUETOOTH, "BtDataPathAnalyzer attached successfully: " << attachedHookName_);
++    return true;
++}
++
++void BtDataPathAnalyzer::stop() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (link_tx_) {
++        bpf_link__destroy(link_tx_);
++        link_tx_ = nullptr;
++    }
++    if (link_rx_) {
++        bpf_link__destroy(link_rx_);
++        link_rx_ = nullptr;
++    }
++    if (bpfObj_) {
++        bpf_object__close(bpfObj_);
++        bpfObj_ = nullptr;
++    }
++    mapFd_ = -1;
++    globalMapFd_ = -1;
++    state_ = EbpfMonitorState::Stopped;
++    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
++}
++
++EbpfMonitorState BtDataPathAnalyzer::commonState() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return state_;
++}
++
++bool BtDataPathAnalyzer::isAvailable() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return state_ == EbpfMonitorState::Attached;
++}
++
++std::string BtDataPathAnalyzer::attachedHookName() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return attachedHookName_;
++}
++
++std::string BtDataPathAnalyzer::lastError() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return lastError_;
++}
++
++bool BtDataPathAnalyzer::readRawMapValue(uint16_t handle, RawAclTrafficVal* out) const {
++    if (!out) return false;
++    uint32_t key = handle & 0x0FFF;
++
++    if (mapFd_ >= 0) {
++        int ret = bpf_map_lookup_elem(mapFd_, &key, out);
++        return (ret == 0);
++    }
++
++    // 内存测试桩回退
++    auto it = mock_map_.find(handle & 0x0FFF);
++    if (it != mock_map_.end()) {
++        *out = it->second;
++        return true;
++    }
++    return false;
++}
++
++void BtDataPathAnalyzer::injectMockSample(uint16_t handle, const RawAclTrafficVal& val) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    mock_map_[handle & 0x0FFF] = val;
++}
++
++std::vector<BtDataPathObservation> BtDataPathAnalyzer::collectObservations(
++    std::chrono::steady_clock::time_point now_point) {
++
++    std::vector<BtDataPathObservation> observations;
++    std::lock_guard<std::mutex> lock(mutex_);
++
++    // 1. 搜集当前存在的所有 Handle
++    std::vector<uint32_t> handles;
++
++    if (mapFd_ >= 0) {
++        uint32_t key = 0;
++        uint32_t next_key = 0;
++        int ret = bpf_map_get_next_key(mapFd_, nullptr, &next_key);
++        while (ret == 0) {
++            key = next_key;
++            handles.push_back(key);
++            ret = bpf_map_get_next_key(mapFd_, &key, &next_key);
++        }
++    } else {
++        for (const auto& [h, _] : mock_map_) {
++            handles.push_back(h);
++        }
++    }
++
++    // 同时补充 tracker 中当前活跃但内核 map 尚未建立条目的连接（保证 0 流量也观测到）
++    if (tracker_) {
++        auto active_conns = tracker_->getActiveConnections(controller_id_);
++        for (const auto& conn : active_conns) {
++            uint32_t h = conn.key.handle & 0x0FFF;
++            if (std::find(handles.begin(), handles.end(), h) == handles.end()) {
++                handles.push_back(h);
++            }
++        }
++    }
++
++    // 2. 逐 Handle 提取、核算滑动增量与速率
++    for (uint32_t raw_h : handles) {
++        uint16_t h = static_cast<uint16_t>(raw_h & 0x0FFF);
++        RawAclTrafficVal curr_val{};
++        readRawMapValue(h, &curr_val);
++
++        // 查找 Tracker 身份与代次
++        uint32_t current_generation = 0;
++        std::string attribution_scope = "unknown";
++        std::optional<std::string> device_id = std::nullopt;
++
++        if (tracker_) {
++            auto conn_rec = tracker_->getActiveConnection(controller_id_, h);
++            if (conn_rec.has_value()) {
++                current_generation = conn_rec->key.generation;
++                attribution_scope = conn_rec->attribution_scope;
++                if (!conn_rec->device_mac.empty()) {
++                    device_id = conn_rec->device_mac;
++                }
++            } else {
++                // 未知具体连接归属，但属于该 controller
++                attribution_scope = "controller";
++            }
++        }
++
++        // 增量计算
++        uint64_t tx_bytes = 0;
++        uint64_t rx_bytes = 0;
++        uint64_t tx_pkts = 0;
++        uint64_t rx_pkts = 0;
++        uint32_t window_ms = 0;
++        uint32_t max_gap_ms = 0;
++
++        auto last_it = last_samples_.find(h);
++        if (last_it != last_samples_.end()) {
++            // 防复用检查：若代次变化或累计计数回绕（如重启），重置增量基准
++            if (last_it->second.generation == current_generation &&
++                curr_val.tx_bytes >= last_it->second.val.tx_bytes &&
++                curr_val.rx_bytes >= last_it->second.val.rx_bytes) {
++
++                tx_bytes = curr_val.tx_bytes - last_it->second.val.tx_bytes;
++                rx_bytes = curr_val.rx_bytes - last_it->second.val.rx_bytes;
++                tx_pkts = curr_val.tx_packets - last_it->second.val.tx_packets;
++                rx_pkts = curr_val.rx_packets - last_it->second.val.rx_packets;
++
++                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    now_point - last_it->second.time).count();
++                window_ms = (elapsed > 0) ? static_cast<uint32_t>(elapsed) : 1;
++            } else {
++                // 代次跃迁，首次观测当前代次
++                tx_bytes = curr_val.tx_bytes;
++                rx_bytes = curr_val.rx_bytes;
++                tx_pkts = curr_val.tx_packets;
++                rx_pkts = curr_val.rx_packets;
++                window_ms = 1000;
++            }
++        } else {
++            // 首次观测
++            tx_bytes = curr_val.tx_bytes;
++            rx_bytes = curr_val.rx_bytes;
++            tx_pkts = curr_val.tx_packets;
++            rx_pkts = curr_val.rx_packets;
++            window_ms = 1000;
++        }
++
++        // 吞吐率计算（bits/s，ACL payload）
++        double tx_bps = 0.0;
++        double rx_bps = 0.0;
++        if (window_ms > 0) {
++            tx_bps = (static_cast<double>(tx_bytes) * 8.0 * 1000.0) / window_ms;
++            rx_bps = (static_cast<double>(rx_bytes) * 8.0 * 1000.0) / window_ms;
++        }
++
++        // 计算最后一次收发时间差（gap）
++        if (curr_val.last_tx_ktime_ns > 0 && curr_val.last_rx_ktime_ns > 0) {
++            uint64_t diff_ns = (curr_val.last_tx_ktime_ns > curr_val.last_rx_ktime_ns)
++                ? (curr_val.last_tx_ktime_ns - curr_val.last_rx_ktime_ns)
++                : (curr_val.last_rx_ktime_ns - curr_val.last_tx_ktime_ns);
++            max_gap_ms = static_cast<uint32_t>(diff_ns / 1000000ULL);
++        }
++
++        // 构造纯净 L1 DTO
++        BtDataPathObservation obs;
++        obs.observation_type = "BT_HCI_ACL_TRAFFIC";
++        obs.controller_id = controller_id_;
++        obs.connection_handle = h;
++        obs.connection_generation = current_generation;
++        obs.attribution_scope = attribution_scope;
++        obs.device_id = device_id;
++        obs.window_ms = window_ms;
++        obs.tx_bytes = tx_bytes;
++        obs.rx_bytes = rx_bytes;
++        obs.tx_packets = tx_pkts;
++        obs.rx_packets = rx_pkts;
++        obs.tx_throughput_bps = tx_bps;
++        obs.rx_throughput_bps = rx_bps;
++        obs.max_gap_ms = max_gap_ms;
++        obs.status = "OBSERVED";
++        obs.last_tx_ktime_ns = curr_val.last_tx_ktime_ns;
++        obs.last_rx_ktime_ns = curr_val.last_rx_ktime_ns;
++
++        observations.push_back(std::move(obs));
++
++        // 更新历史快照
++        last_samples_[h] = LastSample{curr_val, now_point, current_generation};
++    }
++
++    stateSupport_.recordReadSuccess(0, !observations.empty());
++    return observations;
++}
++
++} // namespace weaknet_dbus
+diff --git a/server/src/bt_hci_connection_tracker.cpp b/server/src/bt_hci_connection_tracker.cpp
+new file mode 100644
+index 0000000..b59a21f
+--- /dev/null
++++ b/server/src/bt_hci_connection_tracker.cpp
+@@ -0,0 +1,129 @@
++#include "bt_hci_connection_tracker.hpp"
++#include <algorithm>
++#include <cctype>
++
++namespace weaknet {
++
++namespace {
++
++std::string makeSlotKey(const std::string& controller, uint16_t handle) {
++    return controller + ":" + std::to_string(handle & 0x0FFF);
++}
++
++std::string normalizeMac(const std::string& mac) {
++    if (mac.empty()) return "";
++    std::string out;
++    out.reserve(mac.size());
++    for (char c : mac) {
++        out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
++    }
++    return out;
++}
++
++} // namespace
++
++HciConnectionKey BtHciConnectionTracker::onConnectionEstablished(
++    const std::string& controller,
++    uint16_t handle,
++    const std::string& mac,
++    const std::string& addr_type) {
++
++    uint16_t valid_handle = handle & 0x0FFF;
++    std::string slot_key = makeSlotKey(controller, valid_handle);
++    std::string clean_mac = normalizeMac(mac);
++
++    std::lock_guard<std::mutex> lock(mutex_);
++
++    auto it = active_map_.find(slot_key);
++    if (it != active_map_.end() && it->second.is_active) {
++        // 重复通知幂等处理：若 MAC 一致，直接复用当前代次
++        if (!clean_mac.empty() && it->second.device_mac == clean_mac) {
++            return it->second.key;
++        }
++        // 若 MAC 发生冲突或前连接未正常收到 disconnect，强制递增代次
++        it->second.is_active = false;
++        it->second.disconnected_at = std::chrono::steady_clock::now();
++    }
++
++    uint32_t next_gen = ++generation_counter_[slot_key];
++
++    HciConnectionKey key{controller, valid_handle, next_gen};
++    HciConnectionRecord record;
++    record.key = key;
++    record.device_mac = clean_mac;
++    record.address_type = addr_type.empty() ? "UNKNOWN" : addr_type;
++    record.attribution_scope = clean_mac.empty() ? "controller" : "device";
++    record.connected_at = std::chrono::steady_clock::now();
++    record.is_active = true;
++
++    active_map_[slot_key] = record;
++    return key;
++}
++
++bool BtHciConnectionTracker::onConnectionDisconnected(
++    const std::string& controller, uint16_t handle) {
++
++    uint16_t valid_handle = handle & 0x0FFF;
++    std::string slot_key = makeSlotKey(controller, valid_handle);
++
++    std::lock_guard<std::mutex> lock(mutex_);
++    auto it = active_map_.find(slot_key);
++    if (it == active_map_.end() || !it->second.is_active) {
++        return false;
++    }
++
++    it->second.is_active = false;
++    it->second.disconnected_at = std::chrono::steady_clock::now();
++    return true;
++}
++
++std::optional<HciConnectionRecord> BtHciConnectionTracker::getActiveConnection(
++    const std::string& controller, uint16_t handle) const {
++
++    uint16_t valid_handle = handle & 0x0FFF;
++    std::string slot_key = makeSlotKey(controller, valid_handle);
++
++    std::lock_guard<std::mutex> lock(mutex_);
++    auto it = active_map_.find(slot_key);
++    if (it != active_map_.end() && it->second.is_active) {
++        return it->second;
++    }
++    return std::nullopt;
++}
++
++std::vector<HciConnectionRecord> BtHciConnectionTracker::getActiveConnections(
++    const std::string& controller) const {
++
++    std::lock_guard<std::mutex> lock(mutex_);
++    std::vector<HciConnectionRecord> res;
++    for (const auto& [k, v] : active_map_) {
++        if (v.is_active && v.key.controller_id == controller) {
++            res.push_back(v);
++        }
++    }
++    return res;
++}
++
++void BtHciConnectionTracker::resetController(const std::string& controller) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    auto now = std::chrono::steady_clock::now();
++    for (auto& [k, v] : active_map_) {
++        if (v.key.controller_id == controller && v.is_active) {
++            v.is_active = false;
++            v.disconnected_at = now;
++            // 控制器复位时提前递增代次计数，避免硬件重启后立即重分配同句柄造成串号
++            generation_counter_[k]++;
++        }
++    }
++}
++
++size_t BtHciConnectionTracker::activeCount() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    size_t count = 0;
++    for (const auto& [k, v] : active_map_) {
++        if (v.is_active) count++;
++    }
++    return count;
++}
++
++} // namespace weaknet
+diff --git a/server/src/dbus_service.cpp b/server/src/dbus_service.cpp
+index 37b7d1d..2b9a130 100644
+--- a/server/src/dbus_service.cpp
++++ b/server/src/dbus_service.cpp
+@@ -44,6 +44,7 @@
+ #include "net_ping.h"
+ #include "bt_monitor.hpp"
+ #include "bt_audio_analyzer.hpp"
++#include "bt_data_path_analyzer.hpp"
+ #include "bt_audio_fusion.hpp"
+ #include "dns_monitor.hpp"
+ #include "wifi_packet_loss_monitor.hpp"
+@@ -1373,7 +1374,8 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage*
+             {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
+             {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
+             {"TcpRttMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_rtt_monitor)},
+-            {"BtAudioAnalyzer", bt_audio}
++            {"BtAudioAnalyzer", bt_audio},
++            {"BtDataPathAnalyzer", static_cast<const IEbpfMonitor*>(ctx_->bt_hci_analyzer)}
+         };
+ 
+         // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义
+diff --git a/server/src/monitor_ebpf_plugins.cpp b/server/src/monitor_ebpf_plugins.cpp
+index e80ab89..9a72358 100644
+--- a/server/src/monitor_ebpf_plugins.cpp
++++ b/server/src/monitor_ebpf_plugins.cpp
+@@ -28,6 +28,8 @@
+ #include "tcp_connect_monitor.hpp"
+ #include "tcp_rtt_monitor.hpp"
+ #include "bt_event_monitor.hpp"
++#include "bt_data_path_analyzer.hpp"
++#include "bt_hci_connection_tracker.hpp"
+ #include "bt_link_quality_tracker.hpp"
+ #include "site_incident_correlator.hpp"
+ #include "wireless_event_store.hpp"
+@@ -585,6 +587,77 @@ public:
+     }
+ };
+ 
++// ---------------------------------------------------------------------------
++// 工业蓝牙 HCI ACL 数据通道流量监测（Phase 1 新架构，order 10）
++// ---------------------------------------------------------------------------
++class BtHciTrafficPlugin : public IMonitorPlugin {
++    ServerContext* ctx_ = nullptr;
++    std::shared_ptr<weaknet::BtHciConnectionTracker> tracker_;
++    std::unique_ptr<BtDataPathAnalyzer> analyzer_;
++    std::thread worker_;
++    std::atomic<bool> stop_{false};
++public:
++    const char* name() const override { return "bt_hci_traffic"; }
++    int order() const override { return 10; }
++    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
++    bool start(ServerContext* ctx) override {
++        if (!ctx->cfg.bluetooth.enabled.load()) {
++            LOG_INFO(LogModule::BLUETOOTH, "bt_hci_traffic plugin disabled by config (bluetooth.enabled=false)");
++            return true;
++        }
++
++        tracker_ = std::make_shared<weaknet::BtHciConnectionTracker>();
++        analyzer_ = std::make_unique<BtDataPathAnalyzer>(tracker_);
++
++        std::string bpf_path = ctx->cfg.bluetooth.hci_traffic_bpf_obj.get();
++        if (!analyzer_->init(bpf_path, "hci0")) {
++            LOG_WARNING(LogModule::BLUETOOTH, "BtHciTrafficPlugin: init failed for "
++                        << bpf_path << " — falling back to offline mode ("
++                        << analyzer_->lastError() << ")");
++        }
++
++        {
++            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
++            ctx->bt_hci_analyzer = analyzer_.get();
++        }
++
++        stop_.store(false);
++        worker_ = std::thread([this]() {
++            while (!stop_.load() && ctx_ && ctx_->running.load()) {
++                std::this_thread::sleep_for(std::chrono::seconds(2));
++                if (analyzer_ && analyzer_->isAvailable()) {
++                    auto obs = analyzer_->collectObservations();
++                    if (!obs.empty()) {
++                        LOG_DEBUG(LogModule::BLUETOOTH, "BtDataPathAnalyzer collected "
++                                  << obs.size() << " observations");
++                    }
++                }
++            }
++        });
++
++        LOG_INFO(LogModule::BLUETOOTH, "BtHciTrafficPlugin started successfully, hooks: "
++                 << analyzer_->attachedHookName());
++        return true;
++    }
++    void stop() override {
++        stop_.store(true);
++        if (worker_.joinable()) {
++            worker_.join();
++        }
++        if (analyzer_) {
++            analyzer_->stop();
++        }
++        if (ctx_) {
++            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
++            if (ctx_->bt_hci_analyzer == analyzer_.get()) {
++                ctx_->bt_hci_analyzer = nullptr;
++            }
++        }
++        analyzer_.reset();
++        tracker_.reset();
++    }
++};
++
+ void registerEbpfPlugins() {
+     registerPlugin("dns",             [] { return std::make_unique<DnsPlugin>(); });
+     registerPlugin("wifi_loss",       [] { return std::make_unique<WifiLossPlugin>(); });
+@@ -596,6 +669,7 @@ void registerEbpfPlugins() {
+     registerPlugin("tcp_connect",     [] { return std::make_unique<TcpConnectPlugin>(); });
+     registerPlugin("tcp_rtt",         [] { return std::make_unique<TcpRttPlugin>(); });
+     registerPlugin("bt_events",       [] { return std::make_unique<BtEventsPlugin>(); });
++    registerPlugin("bt_hci_traffic",  [] { return std::make_unique<BtHciTrafficPlugin>(); });
+ }
+ 
+ }  // namespace weaknet_dbus
+\ No newline at end of file
+diff --git a/server/src/weaknet_config.cpp b/server/src/weaknet_config.cpp
+index b2e6070..cbcd7b4 100644
+--- a/server/src/weaknet_config.cpp
++++ b/server/src/weaknet_config.cpp
+@@ -603,11 +603,11 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
+     else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
+     else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
+     else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
+-    // bt_events 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
+-    // 但它们是两个独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
+-    // bt_events 走内核 eBPF 采集断连事件。MonitorManager::startConfigured()
+-    // 对本表查不到的名字会直接判 Failed，因此这里必须登记。
++    // bt_events 与 bt_hci_traffic 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
++    // 但它们是独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
++    // bt_events 走内核 eBPF 采集断连事件，bt_hci_traffic 走 eBPF 采集 ACL 双向流量。
+     else if (monitor == "bt_events") *enabled = cfg.bluetooth.enabled.load();
++    else if (monitor == "bt_hci_traffic") *enabled = cfg.bluetooth.enabled.load();
+     else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
+     else if (monitor == "tcp_connect") *enabled = cfg.tcp_connect.enabled.load();
+     else if (monitor == "active_probe") *enabled = cfg.active_probe.enabled.load();
+@@ -632,6 +632,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
+     else if (monitor == "quality") cfg->quality.enabled.store(enabled);
+     else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
+     else if (monitor == "bt_events") cfg->bluetooth.enabled.store(enabled);
++    else if (monitor == "bt_hci_traffic") cfg->bluetooth.enabled.store(enabled);
+     else if (monitor == "dns") cfg->dns.enabled.store(enabled);
+     else if (monitor == "tcp_connect") cfg->tcp_connect.enabled.store(enabled);
+     else if (monitor == "active_probe") cfg->active_probe.enabled.store(enabled);
+diff --git a/server/test/CMakeLists.txt b/server/test/CMakeLists.txt
+index 0b282fe..1fc2377 100644
+--- a/server/test/CMakeLists.txt
++++ b/server/test/CMakeLists.txt
+@@ -216,6 +216,14 @@ add_executable(test_edge_ai_scheduler_gtest
+     unit/test_edge_ai_scheduler_gtest.cpp)
+ target_link_libraries(test_edge_ai_scheduler_gtest PRIVATE ${TEST_COMMON_LIBS})
+ 
++add_executable(test_bt_hci_traffic_gtest
++    unit/test_bt_hci_traffic_gtest.cpp)
++target_link_libraries(test_bt_hci_traffic_gtest PRIVATE ${TEST_COMMON_LIBS})
++
++add_executable(runner_bt_hci_analyzer
++    runner_bt_hci_analyzer.cpp)
++target_link_libraries(runner_bt_hci_analyzer PRIVATE ${TEST_COMMON_LIBS})
++
+ # 交叉校验规格表 default_entries 与 .bpf.c 编译期常量的一致性：
+ # 需要读取 server/ 下的 BPF 源码，故显式传入源码目录
+ add_executable(test_map_sizing_spec_sync_gtest
+@@ -275,7 +283,8 @@ foreach(test_target
+     test_map_sizing_spec_sync_gtest
+     test_per_key_counter_tracker_gtest
+     test_action_catalog_version_gtest
+-    test_edge_ai_scheduler_gtest)
++    test_edge_ai_scheduler_gtest
++    test_bt_hci_traffic_gtest)
+     add_test(NAME ${test_target} COMMAND ${test_target})
+ endforeach()
+ 
+diff --git a/server/test/runner_bt_hci_analyzer.cpp b/server/test/runner_bt_hci_analyzer.cpp
+new file mode 100644
+index 0000000..3dda975
+--- /dev/null
++++ b/server/test/runner_bt_hci_analyzer.cpp
+@@ -0,0 +1,74 @@
++#include <iostream>
++#include <iomanip>
++#include <thread>
++#include <chrono>
++#include <csignal>
++#include <atomic>
++
++#include "bt_data_path_analyzer.hpp"
++#include "bt_hci_connection_tracker.hpp"
++
++using namespace weaknet_dbus;
++using namespace weaknet;
++
++static std::atomic<bool> g_running{true};
++void sigint_handler(int) {
++    g_running.store(false);
++}
++
++int main(int argc, char** argv) {
++    std::signal(SIGINT, sigint_handler);
++    std::signal(SIGTERM, sigint_handler);
++
++    std::string bpf_path = "server/build/bt_hci_traffic.bpf.o";
++    if (argc > 1) {
++        bpf_path = argv[1];
++    }
++
++    std::cout << "====================================================" << std::endl;
++    std::cout << "  BtDataPathAnalyzer 板端真机实测运行器" << std::endl;
++    std::cout << "  BPF 目标文件: " << bpf_path << std::endl;
++    std::cout << "====================================================" << std::endl;
++
++    auto tracker = std::make_shared<BtHciConnectionTracker>();
++    // 注入当前已知的 vivo X300s 身份映射（Handle 129 -> D0:96:EA:52:30:AC）
++    tracker->onConnectionEstablished("hci0", 129, "D0:96:EA:52:30:AC", "PUBLIC");
++    std::cout << "ℹ️  已预设 Tracker 身份映射: hci0 Handle 129 -> D0:96:EA:52:30:AC" << std::endl;
++
++    BtDataPathAnalyzer analyzer(tracker);
++    if (!analyzer.init(bpf_path, "hci0")) {
++        std::cerr << "❌ BtDataPathAnalyzer 初始化失败: " << analyzer.lastError() << std::endl;
++        return 1;
++    }
++
++    std::cout << "✅ eBPF 探针挂载成功: " << analyzer.attachedHookName() << std::endl;
++    std::cout << "📡 开始周期采样 (每 1 秒一次，按 Ctrl+C 退出)..." << std::endl;
++
++    int tick = 0;
++    while (g_running.load() && tick < 10) { // 默认采样 10 轮
++        std::this_thread::sleep_for(std::chrono::seconds(1));
++        tick++;
++
++        auto obs_list = analyzer.collectObservations();
++        std::cout << "\n--- [Tick " << tick << "] 观测项数量: " << obs_list.size() << " ---" << std::endl;
++
++        for (const auto& obs : obs_list) {
++            std::cout << "  [Handle " << obs.connection_handle
++                      << " (gen " << obs.connection_generation << ")]"
++                      << " Scope: " << obs.attribution_scope
++                      << " Device: " << (obs.device_id ? *obs.device_id : "N/A")
++                      << " | TX: " << obs.tx_packets << " pkts (" << obs.tx_bytes << " B, "
++                      << std::fixed << std::setprecision(1) << obs.tx_throughput_bps << " bps)"
++                      << " | RX: " << obs.rx_packets << " pkts (" << obs.rx_bytes << " B, "
++                      << obs.rx_throughput_bps << " bps)"
++                      << " | Gap: " << obs.max_gap_ms << " ms"
++                      << " | Status: " << obs.status
++                      << std::endl;
++            std::cout << "    JSON: " << obs.toJson() << std::endl;
++        }
++    }
++
++    analyzer.stop();
++    std::cout << "\n✅ 实测运行结束，分析器安全退出。" << std::endl;
++    return 0;
++}
+diff --git a/server/test/unit/test_bt_hci_traffic_gtest.cpp b/server/test/unit/test_bt_hci_traffic_gtest.cpp
+new file mode 100644
+index 0000000..cd845ac
+--- /dev/null
++++ b/server/test/unit/test_bt_hci_traffic_gtest.cpp
+@@ -0,0 +1,246 @@
++#include <gtest/gtest.h>
++#include <chrono>
++#include <thread>
++
++#include "bt_hci_connection_tracker.hpp"
++#include "bt_data_path_analyzer.hpp"
++
++using namespace weaknet;
++using namespace weaknet_dbus;
++
++// ============================================================================
++// 测试套件 1: BtHciConnectionTracker 单元测试（8项关键验证）
++// ============================================================================
++
++TEST(BtHciConnectionTrackerTest, BasicLifecycle) {
++    BtHciConnectionTracker tracker;
++
++    EXPECT_EQ(tracker.activeCount(), 0u);
++
++    // 建立连接
++    auto key1 = tracker.onConnectionEstablished("hci0", 129, "D0:96:EA:52:30:AC", "PUBLIC");
++    EXPECT_EQ(key1.controller_id, "hci0");
++    EXPECT_EQ(key1.handle, 129);
++    EXPECT_EQ(key1.generation, 1u);
++    EXPECT_EQ(tracker.activeCount(), 1u);
++
++    // 查询活跃连接
++    auto rec = tracker.getActiveConnection("hci0", 129);
++    ASSERT_TRUE(rec.has_value());
++    EXPECT_EQ(rec->device_mac, "D0:96:EA:52:30:AC");
++    EXPECT_EQ(rec->attribution_scope, "device");
++    EXPECT_TRUE(rec->is_active);
++
++    // 断开连接
++    bool disconn_ok = tracker.onConnectionDisconnected("hci0", 129);
++    EXPECT_TRUE(disconn_ok);
++    EXPECT_EQ(tracker.activeCount(), 0u);
++
++    // 断开后查询应为 nullopt
++    auto rec_after = tracker.getActiveConnection("hci0", 129);
++    EXPECT_FALSE(rec_after.has_value());
++}
++
++TEST(BtHciConnectionTrackerTest, GenerationIncrementOnReconnect) {
++    BtHciConnectionTracker tracker;
++
++    // 第一次连接 handle 42
++    auto key1 = tracker.onConnectionEstablished("hci0", 42, "AA:BB:CC:DD:EE:01");
++    EXPECT_EQ(key1.generation, 1u);
++
++    tracker.onConnectionDisconnected("hci0", 42);
++
++    // 相同 handle 被新设备复用
++    auto key2 = tracker.onConnectionEstablished("hci0", 42, "11:22:33:44:55:66");
++    EXPECT_EQ(key2.generation, 2u); // generation 必须递增，防御句柄复用串设备
++
++    auto rec = tracker.getActiveConnection("hci0", 42);
++    ASSERT_TRUE(rec.has_value());
++    EXPECT_EQ(rec->device_mac, "11:22:33:44:55:66");
++    EXPECT_EQ(rec->key.generation, 2u);
++}
++
++TEST(BtHciConnectionTrackerTest, IdempotentNotifications) {
++    BtHciConnectionTracker tracker;
++
++    // 首次建立
++    auto key1 = tracker.onConnectionEstablished("hci0", 100, "AA:BB:CC:DD:EE:FF");
++    EXPECT_EQ(key1.generation, 1u);
++
++    // 重复收到相同 MAC 的建链通知（如 D-Bus 与底层事件重叠）
++    auto key2 = tracker.onConnectionEstablished("hci0", 100, "AA:BB:CC:DD:EE:FF");
++    EXPECT_EQ(key2.generation, 1u); // 幂等保持相同 generation
++    EXPECT_EQ(tracker.activeCount(), 1u);
++}
++
++TEST(BtHciConnectionTrackerTest, UnknownDeviceScope) {
++    BtHciConnectionTracker tracker;
++
++    // 无法获取 MAC 的连接
++    auto key = tracker.onConnectionEstablished("hci0", 200, "");
++    EXPECT_EQ(key.handle, 200);
++
++    auto rec = tracker.getActiveConnection("hci0", 200);
++    ASSERT_TRUE(rec.has_value());
++    EXPECT_EQ(rec->attribution_scope, "controller"); // 明确降级为 controller，不瞎猜
++    EXPECT_TRUE(rec->device_mac.empty());
++}
++
++TEST(BtHciConnectionTrackerTest, MultipleControllersIsolation) {
++    BtHciConnectionTracker tracker;
++
++    tracker.onConnectionEstablished("hci0", 10, "AA:00:00:00:00:01");
++    tracker.onConnectionEstablished("hci1", 10, "BB:00:00:00:00:02");
++
++    EXPECT_EQ(tracker.activeCount(), 2u);
++
++    auto rec0 = tracker.getActiveConnection("hci0", 10);
++    auto rec1 = tracker.getActiveConnection("hci1", 10);
++    ASSERT_TRUE(rec0.has_value());
++    ASSERT_TRUE(rec1.has_value());
++    EXPECT_EQ(rec0->device_mac, "AA:00:00:00:00:01");
++    EXPECT_EQ(rec1->device_mac, "BB:00:00:00:00:02");
++
++    tracker.onConnectionDisconnected("hci0", 10);
++    EXPECT_FALSE(tracker.getActiveConnection("hci0", 10).has_value());
++    EXPECT_TRUE(tracker.getActiveConnection("hci1", 10).has_value());
++}
++
++TEST(BtHciConnectionTrackerTest, ResetController) {
++    BtHciConnectionTracker tracker;
++
++    tracker.onConnectionEstablished("hci0", 1, "AA:01");
++    tracker.onConnectionEstablished("hci0", 2, "AA:02");
++    tracker.onConnectionEstablished("hci1", 1, "BB:01");
++
++    EXPECT_EQ(tracker.activeCount(), 3u);
++
++    tracker.resetController("hci0");
++    EXPECT_EQ(tracker.activeCount(), 1u);
++    EXPECT_FALSE(tracker.getActiveConnection("hci0", 1).has_value());
++    EXPECT_FALSE(tracker.getActiveConnection("hci0", 2).has_value());
++    EXPECT_TRUE(tracker.getActiveConnection("hci1", 1).has_value());
++
++    // reset 后再次建立同一 handle，代次必须继续递增
++    auto key_re = tracker.onConnectionEstablished("hci0", 1, "AA:01_NEW");
++    EXPECT_GT(key_re.generation, 1u);
++}
++
++// ============================================================================
++// 测试套件 2: BtDataPathAnalyzer 单元测试（吞吐、窗口计算与纯净 DTO）
++// ============================================================================
++
++TEST(BtDataPathAnalyzerTest, FallbackOnMissingBpfObject) {
++    BtDataPathAnalyzer analyzer;
++    bool ok = analyzer.init("/non_existent_path/bt_hci_traffic.bpf.o");
++    EXPECT_FALSE(ok);
++    EXPECT_FALSE(analyzer.isAvailable());
++    EXPECT_EQ(analyzer.commonState(), EbpfMonitorState::Fallback);
++}
++
++TEST(BtDataPathAnalyzerTest, ObservationComputationAndRate) {
++    auto tracker = std::make_shared<BtHciConnectionTracker>();
++    BtDataPathAnalyzer analyzer(tracker);
++
++    // 1. 登记连接身份
++    tracker->onConnectionEstablished("hci0", 129, "D0:96:EA:52:30:AC", "PUBLIC");
++
++    auto t0 = std::chrono::steady_clock::now();
++
++    // 2. 注入第一次采样数据（handle 129: TX 9 pkts/416 B, RX 9 pkts/416 B）
++    RawAclTrafficVal v1{};
++    v1.tx_packets = 9;
++    v1.tx_bytes = 416;
++    v1.rx_packets = 9;
++    v1.rx_bytes = 416;
++    v1.last_tx_ktime_ns = 1000000000ULL;
++    v1.last_rx_ktime_ns = 1050000000ULL; // 50ms gap
++    analyzer.injectMockSample(129, v1);
++
++    auto obs_list1 = analyzer.collectObservations(t0);
++    ASSERT_EQ(obs_list1.size(), 1u);
++
++    const auto& obs1 = obs_list1[0];
++    EXPECT_EQ(obs1.observation_type, "BT_HCI_ACL_TRAFFIC");
++    EXPECT_EQ(obs1.controller_id, "hci0");
++    EXPECT_EQ(obs1.connection_handle, 129);
++    EXPECT_EQ(obs1.connection_generation, 1u);
++    EXPECT_EQ(obs1.attribution_scope, "device");
++    ASSERT_TRUE(obs1.device_id.has_value());
++    EXPECT_EQ(*obs1.device_id, "D0:96:EA:52:30:AC");
++    EXPECT_EQ(obs1.tx_bytes, 416u);
++    EXPECT_EQ(obs1.rx_bytes, 416u);
++    EXPECT_EQ(obs1.max_gap_ms, 50u);
++    EXPECT_EQ(obs1.status, "OBSERVED");
++
++    // 3. 模拟 1000ms 后增量注入（TX 新增 1000 字节，RX 新增 2000 字节）
++    auto t1 = t0 + std::chrono::milliseconds(1000);
++    RawAclTrafficVal v2 = v1;
++    v2.tx_packets += 10;
++    v2.tx_bytes += 1000;
++    v2.rx_packets += 20;
++    v2.rx_bytes += 2000;
++    v2.last_tx_ktime_ns += 1000000000ULL;
++    v2.last_rx_ktime_ns += 1000000000ULL;
++    analyzer.injectMockSample(129, v2);
++
++    auto obs_list2 = analyzer.collectObservations(t1);
++    ASSERT_EQ(obs_list2.size(), 1u);
++
++    const auto& obs2 = obs_list2[0];
++    EXPECT_EQ(obs2.tx_bytes, 1000u);
++    EXPECT_EQ(obs2.rx_bytes, 2000u);
++    EXPECT_EQ(obs2.tx_packets, 10u);
++    EXPECT_EQ(obs2.rx_packets, 20u);
++    EXPECT_EQ(obs2.window_ms, 1000u);
++    // 速率校验：1000B * 8 / 1s = 8000 bps
++    EXPECT_DOUBLE_EQ(obs2.tx_throughput_bps, 8000.0);
++    // 速率校验：2000B * 8 / 1s = 16000 bps
++    EXPECT_DOUBLE_EQ(obs2.rx_throughput_bps, 16000.0);
++
++    // 4. JSON 序列化验证
++    std::string json = obs2.toJson();
++    EXPECT_NE(json.find("\"observation_type\":\"BT_HCI_ACL_TRAFFIC\""), std::string::npos);
++    EXPECT_NE(json.find("\"device_id\":\"D0:96:EA:52:30:AC\""), std::string::npos);
++    EXPECT_NE(json.find("\"tx_bytes\":1000"), std::string::npos);
++    EXPECT_NE(json.find("\"status\":\"OBSERVED\""), std::string::npos);
++}
++
++TEST(BtDataPathAnalyzerTest, HandleReuseProtection) {
++    auto tracker = std::make_shared<BtHciConnectionTracker>();
++    BtDataPathAnalyzer analyzer(tracker);
++
++    // 设备 1 占用 handle 50
++    tracker->onConnectionEstablished("hci0", 50, "AA:11:11:11:11:11");
++    auto t0 = std::chrono::steady_clock::now();
++
++    RawAclTrafficVal val1{};
++    val1.tx_bytes = 500;
++    val1.rx_bytes = 500;
++    analyzer.injectMockSample(50, val1);
++    analyzer.collectObservations(t0);
++
++    // 断开设备 1
++    tracker->onConnectionDisconnected("hci0", 50);
++
++    // 设备 2 复用 handle 50
++    tracker->onConnectionEstablished("hci0", 50, "BB:22:22:22:22:22");
++    auto t1 = t0 + std::chrono::milliseconds(500);
++
++    // 模拟内核计数器在代次变更时的采样
++    RawAclTrafficVal val2{};
++    val2.tx_bytes = 600;
++    val2.rx_bytes = 700;
++    analyzer.injectMockSample(50, val2);
++
++    auto obs_list = analyzer.collectObservations(t1);
++    ASSERT_EQ(obs_list.size(), 1u);
++    const auto& obs = obs_list[0];
++
++    EXPECT_EQ(obs.connection_generation, 2u);
++    ASSERT_TRUE(obs.device_id.has_value());
++    EXPECT_EQ(*obs.device_id, "BB:22:22:22:22:22");
++    // 代次跃迁后，增量被独立隔离核算，不发生跨设备污染
++    EXPECT_EQ(obs.tx_bytes, 600u);
++    EXPECT_EQ(obs.rx_bytes, 700u);
++}
+diff --git a/tools/bt_hci_probe_test.bpf.c b/tools/bt_hci_probe_test.bpf.c
+new file mode 100644
+index 0000000..8caf534
+--- /dev/null
++++ b/tools/bt_hci_probe_test.bpf.c
+@@ -0,0 +1,143 @@
++#define __TARGET_ARCH_arm64
++#include "vmlinux.h"
++#include <bpf/bpf_helpers.h>
++#include <bpf/bpf_core_read.h>
++#include <bpf/bpf_tracing.h>
++
++char LICENSE[] SEC("license") = "GPL";
++
++#define HCI_ACLDATA_PKT 0x02
++
++struct acl_stat {
++    __u64 tx_pkts;
++    __u64 tx_bytes;
++    __u64 rx_pkts;
++    __u64 rx_bytes;
++    __u64 non_acl_dropped;
++    __u64 short_pkt_dropped;
++};
++
++// 以 handle (低 12 位) 为 key 聚合统计
++struct {
++    __uint(type, BPF_MAP_TYPE_HASH);
++    __uint(max_entries, 64);
++    __type(key, __u32);
++    __type(value, struct acl_stat);
++} hci_acl_stats SEC(".maps");
++
++// 全局底噪与非 ACL 计数（Key 0: TX non-acl, Key 1: RX non-acl）
++struct {
++    __uint(type, BPF_MAP_TYPE_ARRAY);
++    __uint(max_entries, 4);
++    __type(key, __u32);
++    __type(value, __u64);
++} global_drop_stats SEC(".maps");
++
++// 辅助递增全局 drop
++static __always_inline void bump_global_drop(__u32 idx) {
++    __u64 *val = bpf_map_lookup_elem(&global_drop_stats, &idx);
++    if (val) {
++        __sync_fetch_and_add(val, 1);
++    }
++}
++
++// ----------------------------------------------------------------------------
++// TX 挂点: kprobe/hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
++// ----------------------------------------------------------------------------
++SEC("kprobe/hci_send_frame")
++int BPF_KPROBE(probe_hci_send_frame, void *hdev, struct sk_buff *skb) {
++    if (!skb) return 0;
++
++    // 1. 检查报文类型: 蓝牙子系统将 pkt_type 存放在 skb->cb 中 (bt_cb(skb)->pkt_type)
++    // 根据内核定义，bt_skb_cb.pkt_type 位于 skb->cb 的第 0 字节
++    __u8 pkt_type = 0;
++    if (bpf_probe_read_kernel(&pkt_type, sizeof(pkt_type), (const char *)skb + offsetof(struct sk_buff, cb)) < 0) {
++        return 0;
++    }
++
++    if (pkt_type != HCI_ACLDATA_PKT) {
++        bump_global_drop(0); // TX 非 ACL 丢弃计数
++        return 0;
++    }
++
++    // 2. 检查 skb 长度与数据指针
++    __u32 len = BPF_CORE_READ(skb, len);
++    if (len < 4) {
++        bump_global_drop(2); // TX 过短报文
++        return 0;
++    }
++
++    const unsigned char *data = BPF_CORE_READ(skb, data);
++    if (!data) return 0;
++
++    // 3. 读取 HCI ACL Header
++    __u16 raw_handle = 0;
++    __u16 dlen = 0;
++    if (bpf_probe_read_kernel(&raw_handle, sizeof(raw_handle), data) < 0) return 0;
++    if (bpf_probe_read_kernel(&dlen, sizeof(dlen), data + 2) < 0) return 0;
++
++    __u32 handle = raw_handle & 0x0FFF;
++
++    // 4. 统计更新
++    struct acl_stat *stat = bpf_map_lookup_elem(&hci_acl_stats, &handle);
++    if (!stat) {
++        struct acl_stat zero = {};
++        bpf_map_update_elem(&hci_acl_stats, &handle, &zero, BPF_NOEXIST);
++        stat = bpf_map_lookup_elem(&hci_acl_stats, &handle);
++        if (!stat) return 0;
++    }
++
++    __sync_fetch_and_add(&stat->tx_pkts, 1);
++    __sync_fetch_and_add(&stat->tx_bytes, dlen);
++    return 0;
++}
++
++// ----------------------------------------------------------------------------
++// RX 挂点: kprobe/hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
++// ----------------------------------------------------------------------------
++SEC("kprobe/hci_recv_frame")
++int BPF_KPROBE(probe_hci_recv_frame, void *hdev, struct sk_buff *skb) {
++    if (!skb) return 0;
++
++    // 1. 检查报文类型
++    __u8 pkt_type = 0;
++    if (bpf_probe_read_kernel(&pkt_type, sizeof(pkt_type), (const char *)skb + offsetof(struct sk_buff, cb)) < 0) {
++        return 0;
++    }
++
++    if (pkt_type != HCI_ACLDATA_PKT) {
++        bump_global_drop(1); // RX 非 ACL 丢弃计数 (例如海量的 HCI Event)
++        return 0;
++    }
++
++    // 2. 检查 skb 长度
++    __u32 len = BPF_CORE_READ(skb, len);
++    if (len < 4) {
++        bump_global_drop(3); // RX 过短报文
++        return 0;
++    }
++
++    const unsigned char *data = BPF_CORE_READ(skb, data);
++    if (!data) return 0;
++
++    // 3. 读取 HCI ACL Header
++    __u16 raw_handle = 0;
++    __u16 dlen = 0;
++    if (bpf_probe_read_kernel(&raw_handle, sizeof(raw_handle), data) < 0) return 0;
++    if (bpf_probe_read_kernel(&dlen, sizeof(dlen), data + 2) < 0) return 0;
++
++    __u32 handle = raw_handle & 0x0FFF;
++
++    // 4. 统计更新
++    struct acl_stat *stat = bpf_map_lookup_elem(&hci_acl_stats, &handle);
++    if (!stat) {
++        struct acl_stat zero = {};
++        bpf_map_update_elem(&hci_acl_stats, &handle, &zero, BPF_NOEXIST);
++        stat = bpf_map_lookup_elem(&hci_acl_stats, &handle);
++        if (!stat) return 0;
++    }
++
++    __sync_fetch_and_add(&stat->rx_pkts, 1);
++    __sync_fetch_and_add(&stat->rx_bytes, dlen);
++    return 0;
++}

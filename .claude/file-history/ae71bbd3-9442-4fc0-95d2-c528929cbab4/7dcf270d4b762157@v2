@@ -1,0 +1,58 @@
+#include "sync/sync_monitor.h"
+#include <cmath>
+
+namespace xgrids {
+
+SyncMonitor::SyncMonitor(Config cfg, AlertCallback on_alert)
+    : cfg_(cfg), on_alert_(std::move(on_alert)), grouper_(cfg.max_skew_us) {}
+
+void SyncMonitor::on_frame(const FrameMeta& f) {
+    if (f.channel_id < 0 || f.channel_id >= 4) return;
+
+    SyncGroup g;
+    bool grouped = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto& st = ch_[f.channel_id];
+        st.frame_count++;
+
+        // 1) 帧号连续性：seq 跳变 → 丢帧
+        if (st.last_seq >= 0 && f.seq > (uint32_t)st.last_seq + 1) {
+            st.dropped_seq += f.seq - st.last_seq - 1;
+            if (on_alert_) on_alert_(f.channel_id, "frame_gap");
+        }
+        st.last_seq = f.seq;
+
+        // 2) 帧间隔抖动：与 EMA 偏离超阈值
+        if (st.last_ts_us >= 0) {
+            int64_t dt = f.ts_us - st.last_ts_us;
+            if (st.ema_interval_us > 0 &&
+                std::abs((double)dt - st.ema_interval_us) > cfg_.jitter_thresh_us) {
+                st.jitter_violations++;
+                if (on_alert_) on_alert_(f.channel_id, "jitter");
+            }
+            const double alpha = 0.1;
+            st.ema_interval_us = (st.ema_interval_us <= 0)
+                ? (double)dt
+                : (alpha * dt + (1 - alpha) * st.ema_interval_us);
+        }
+        st.last_ts_us = f.ts_us;
+
+        // 3) 喂给 grouper 尝试凑组
+        grouped = grouper_.push(f, g);
+        if (grouped) {
+            group_count_++;
+            if (!g.complete || g.max_skew_us > cfg_.max_skew_us) {
+                violation_count_++;
+                if (on_alert_) on_alert_(f.channel_id, "skew_exceed");
+            }
+        }
+    }
+}
+
+std::array<ChannelStats, 4> SyncMonitor::stats() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return ch_;
+}
+
+}  // namespace xgrids

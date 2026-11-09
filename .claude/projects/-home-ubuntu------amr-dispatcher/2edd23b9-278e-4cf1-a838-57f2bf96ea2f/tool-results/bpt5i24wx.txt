@@ -1,0 +1,870 @@
+########## CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_workspace)
+     3	
+     4	# 支持直接 cmake -B build 编译 core，或通过 colcon 整体构建工作区
+     5	add_subdirectory(src/amr_dispatcher_core)
+########## src/amr_dispatcher_bt/CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_bt VERSION 1.0.0 LANGUAGES CXX)
+     3	
+     4	if(NOT CMAKE_CXX_STANDARD)
+     5	  set(CMAKE_CXX_STANDARD 17)
+     6	  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+     7	endif()
+     8	if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+     9	  add_compile_options(-Wall -Wextra -Wpedantic)
+    10	endif()
+    11	
+    12	find_package(ament_cmake REQUIRED)
+    13	find_package(amr_dispatcher_core REQUIRED)
+    14	find_package(behaviortree_cpp REQUIRED)
+    15	
+    16	add_library(${PROJECT_NAME}
+    17	  src/docking_behavior_tree.cpp
+    18	  src/facility_behavior_tree.cpp
+    19	  src/mission_queue_behavior_tree.cpp
+    20	  src/mission_recovery_behavior_tree.cpp
+    21	  src/mission_resource_cleanup_behavior_tree.cpp
+    22	  src/mission_result_behavior_tree.cpp
+    23	  src/mission_runtime_behavior_tree.cpp
+    24	  src/queued_mission_start_behavior_tree.cpp
+    25	  src/station_sequence_behavior_tree.cpp
+    26	  src/submit_order_behavior_tree.cpp
+    27	)
+    28	
+    29	target_include_directories(${PROJECT_NAME} PUBLIC
+    30	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    31	  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+    32	)
+    33	
+    34	target_link_libraries(${PROJECT_NAME} PUBLIC
+    35	  ${amr_dispatcher_core_LIBRARIES}
+    36	  amr_dispatcher_core::amr_dispatcher_core
+    37	  behaviortree_cpp::behaviortree_cpp
+    38	)
+    39	
+    40	target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+    41	set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    42	
+    43	if(BUILD_TESTING)
+    44	  find_package(ament_lint_auto QUIET)
+    45	  find_package(GTest REQUIRED)
+    46	  include(GoogleTest)
+    47	
+    48	  set(BT_TESTS
+    49	    docking_behavior_tree_test
+    50	    facility_behavior_tree_test
+    51	    mission_queue_behavior_tree_test
+    52	    mission_recovery_behavior_tree_test
+    53	    mission_resource_cleanup_behavior_tree_test
+    54	    mission_result_behavior_tree_test
+    55	    mission_runtime_behavior_tree_test
+    56	    queued_mission_start_behavior_tree_test
+    57	    station_sequence_behavior_tree_test
+    58	    submit_order_behavior_tree_test
+    59	  )
+    60	
+    61	  foreach(test_name IN LISTS BT_TESTS)
+    62	    set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
+    63	    if(EXISTS "${test_src}")
+    64	      add_executable(${test_name} "${test_src}")
+    65	      target_link_libraries(${test_name} PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+    66	      gtest_discover_tests(${test_name})
+    67	    endif()
+    68	  endforeach()
+    69	endif()
+    70	
+    71	install(
+    72	  DIRECTORY include/
+    73	  DESTINATION include/${PROJECT_NAME}
+    74	)
+    75	
+    76	install(
+    77	  TARGETS ${PROJECT_NAME}
+    78	  EXPORT export_${PROJECT_NAME}
+    79	  ARCHIVE DESTINATION lib
+    80	  LIBRARY DESTINATION lib
+    81	  RUNTIME DESTINATION bin
+    82	)
+    83	
+    84	ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+    85	ament_export_dependencies(amr_dispatcher_core behaviortree_cpp)
+    86	ament_package()
+########## src/amr_dispatcher_core/CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_core VERSION 1.0.0 LANGUAGES CXX)
+     3	
+     4	if(NOT CMAKE_CXX_STANDARD)
+     5	  set(CMAKE_CXX_STANDARD 17)
+     6	  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+     7	endif()
+     8	if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+     9	  add_compile_options(-Wall -Wextra -Wpedantic)
+    10	endif()
+    11	
+    12	find_package(ament_cmake QUIET)
+    13	find_package(yaml-cpp REQUIRED)
+    14	find_package(Threads REQUIRED)
+    15	
+    16	# yaml-cpp 的 CMake 目标名在 0.7 与 0.8 之间变了，这里做版本兼容。
+    17	#   0.7（Ubuntu 22.04）     只提供裸目标 yaml-cpp
+    18	#   0.8（Ubuntu 24.04/Jazzy）提供带命名空间的 yaml-cpp::yaml-cpp
+    19	# 本文件下方与 amr_dispatcher_ros 都用 yaml-cpp::yaml-cpp，在 0.7 上会直接报错：
+    20	#   Target "amr_dispatcher_core" links to target "yaml-cpp::yaml-cpp" but the
+    21	#   target was not found. Perhaps a find_package() call is missing...
+    22	# 本库是零 ROS 依赖的核心库，应当能在任意发行版上独立构建，故补一个别名。
+    23	if(TARGET yaml-cpp AND NOT TARGET yaml-cpp::yaml-cpp)
+    24	  add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+    25	endif()
+    26	
+    27	add_library(${PROJECT_NAME}
+    28	  src/chassis/chassis_packet.cpp
+    29	  src/chassis/chassis_packet_stream.cpp
+    30	  src/chassis/chassis_kinematics.cpp
+    31	  src/chassis/chassis_backend_factory.cpp
+    32	  src/chassis/mock_backend.cpp
+    33	  src/chassis/serial_backend.cpp
+    34	  src/chassis/udp_backend.cpp
+    35	  src/chassis/link_quality.cpp
+    36	  src/chassis/link_recovery.cpp
+    37	  src/chassis/backend_degradation.cpp
+    38	  src/path_tracking/pure_pursuit.cpp
+    39	  src/path_tracking/stanley.cpp
+    40	  src/planning/map_geometry_utils.cpp
+    41	  src/planning/safety_space_filter.cpp
+    42	  src/planning/skeleton_extractor.cpp
+    43	  src/planning/topology_graph_builder.cpp
+    44	  src/planning/skeleton_planner.cpp
+    45	  src/planning/space_time_astar.cpp
+    46	  src/planning/conflict_based_search.cpp
+    47	  src/planning/prioritized_planning.cpp
+    48	  src/planning/mapf_solver.cpp
+    49	  src/dispatcher/mission_queue.cpp
+    50	  src/dispatcher/mission_state.cpp
+    51	  src/dispatcher/dispatch_state_snapshot.cpp
+    52	  src/dispatcher/audit_log.cpp
+    53	  src/dispatcher/deadlock_snapshot_assembly.cpp
+    54	  src/dispatcher/mission_comparator.cpp
+    55	  src/dispatcher/traffic_reservation.cpp
+    56	  src/dispatcher/mission_event_log.cpp
+    57	  src/dispatcher/deadlock_detector.cpp
+    58	  src/dispatcher/recovery_policy.cpp
+    59	  src/dispatcher/station_topology.cpp
+    60	  src/dispatcher/topology_projection.cpp
+    61	  src/dispatcher/mission_cost_estimator.cpp
+    62	  src/dispatcher/dock_catalog.cpp
+    63	  src/catalog/station_catalog.cpp
+    64	  src/catalog/topology_overlay.cpp
+    65	  src/catalog/topology_connectivity.cpp
+    66	  src/catalog/scenario_catalog.cpp
+    67	  src/catalog/business_order_catalog.cpp
+    68	  src/catalog/zone_catalog.cpp
+    69	  src/fleet/fleet_catalog.cpp
+    70	  src/fleet/fleet_runtime_state.cpp
+    71	  src/fleet/vda5050_link_state.cpp
+    72	  src/fleet/vehicle_adapter_interface.cpp
+    73	  src/fleet/vda5050_serializer.cpp
+    74	  src/fleet/vda5050_order_builder.cpp
+    75	  src/fleet/force_clear_link.cpp
+    76	  src/fleet/vehicle_assignment.cpp
+    77	  src/fleet/vehicle_assignment_request_builder.cpp
+    78	  src/fleet/vehicle_selection_strategy.cpp
+    79	  src/facility/facility_catalog.cpp
+    80	  src/facility/facility_reservation.cpp
+    81	  src/facility/facility_workflow.cpp
+    82	  src/facility/facility_adapter_interface.cpp
+    83	  src/facility/modbus_tcp_client.cpp
+    84	  src/facility/modbus_facility_adapter.cpp
+    85	  src/facility/facility_interlocking_planning.cpp
+    86	  src/workflow/mission_profile.cpp
+    87	  src/workflow/order_payload.cpp
+    88	  src/workflow/payload_schema.cpp
+    89	  src/workflow/fulfillment_workflow.cpp
+    90	  src/workflow/payload_workflow.cpp
+    91	  src/workflow/mission_runtime_workflow.cpp
+    92	  src/workflow/mission_result_workflow.cpp
+    93	  src/workflow/mission_safety_workflow.cpp
+    94	  src/workflow/mission_recovery_policy.cpp
+    95	  src/workflow/mission_event_log.cpp
+    96	  src/workflow/traffic_planning.cpp
+    97	  src/workflow/dynamic_unlocking.cpp
+    98	  src/workflow/fleet_link_guard.cpp
+    99	  src/workflow/time_space_planning.cpp
+   100	  src/workflow/cbs_traffic_coordinator.cpp
+   101	  src/workflow/auto_charging_planning.cpp
+   102	  src/workflow/workflow_control.cpp
+   103	  src/workflow/mission_estimator.cpp
+   104	  src/workflow/mission_preflight.cpp
+   105	  src/workflow/station_transport_workflow.cpp
+   106	  src/workflow/station_sequence_workflow.cpp
+   107	  src/workflow/order_batch_bundling.cpp
+   108	  src/workflow/traffic_coordination_model.cpp
+   109	  src/workflow/in_flight_reroute_planning.cpp
+   110	  src/workflow/topology_change_impact.cpp
+   111	  src/workflow/traffic_recovery_coordinator.cpp
+   112	  src/workflow/docking_workflow.cpp
+   113	  src/workflow/mission_charging_workflow.cpp
+   114	  src/workflow/mission_resource_cleanup.cpp
+   115	  src/workflow/queued_mission.cpp
+   116	  src/workflow/mission_profile_builders.cpp
+   117	  src/workflow/operator_snapshot.cpp
+   118	  src/workflow/dock_catalog.cpp
+   119	  src/workflow/submit_order_router.cpp
+   120	  src/safety/cmd_vel_gate.cpp
+   121	  src/safety/watchdog.cpp
+   122	  src/safety/safety_sources.cpp
+   123	  src/safety/fault_supervisor.cpp
+   124	  src/config/config_loader.cpp
+   125	  src/logging/async_logger.cpp
+   126	)
+   127	target_include_directories(${PROJECT_NAME} PUBLIC
+   128	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   129	  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+   130	)
+   131	target_link_libraries(${PROJECT_NAME} PUBLIC yaml-cpp::yaml-cpp PRIVATE Threads::Threads)
+   132	target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+   133	set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+   134	add_library(amr::core ALIAS ${PROJECT_NAME})
+   135	
+   136	if(BUILD_TESTING)
+   137	  find_package(GTest REQUIRED)
+   138	  include(GoogleTest)
+   139	  enable_testing()
+   140	  set(UNIT_TESTS
+   141	    test_chassis_packet
+   142	    test_chassis_packet_stream
+   143	    test_chassis_kinematics
+   144	    test_battery_voltage
+   145	    test_pure_pursuit
+   146	    test_stanley
+   147	    test_mission_queue
+   148	    test_mission_state
+   149	    test_dispatch_state_snapshot
+   150	    test_audit_log
+   151	    test_deadlock_snapshot_assembly
+   152	    test_traffic_coordination_model
+   153	    test_in_flight_reroute_planning
+   154	    test_traffic_recovery_coordinator
+   155	    test_fleet_link_guard
+   156	    test_vda5050_link_state
+   157	    test_traffic_reservation
+   158	    test_mission_event_log
+   159	    test_link_quality
+   160	    test_link_recovery
+   161	    test_backend_degradation
+   162	    test_serial_udp_backend
+   163	    test_deadlock_detector
+   164	    test_recovery_policy
+   165	    test_cmd_vel_gate
+   166	    test_watchdog
+   167	    test_safety_sources
+   168	    test_config_loader
+   169	    test_logger
+   170	    test_station_topology
+   171	    test_transport_and_diagnostics
+   172	    test_mock_linear_planner
+   173	    test_map_geometry_utils
+   174	    test_safety_space_filter
+   175	    test_skeleton_extractor
+   176	    test_topology_graph_builder
+   177	    test_skeleton_planner
+   178	    test_mission_profile
+   179	    test_mission_profile_builders
+   180	    test_queued_mission
+   181	    test_order_payload
+   182	    test_payload_schema
+   183	    test_fulfillment_workflow
+   184	    test_payload_workflow
+   185	    test_mission_runtime_workflow
+   186	    test_mission_result_workflow
+   187	    test_mission_safety_workflow
+   188	    test_mission_recovery_policy
+   189	    test_workflow_mission_event_log
+   190	    test_traffic_planning
+   191	    test_dynamic_unlocking
+   192	    test_time_space_planning
+   193	    test_workflow_control
+   194	    test_station_transport_workflow
+   195	    test_station_sequence_workflow
+   196	    test_docking_workflow
+   197	    test_mission_charging_workflow
+   198	    test_mission_resource_cleanup
+   199	    test_operator_snapshot
+   200	    test_dock_catalog
+   201	    test_station_catalog
+   202	    test_scenario_catalog
+   203	    test_business_order_catalog
+   204	    test_zone_catalog
+   205	    test_fleet_catalog
+   206	    test_fleet_runtime_state
+   207	    test_vehicle_adapter_interface
+   208	    test_vda5050_serializer
+   209	    test_vda5050_order_builder
+   210	    test_force_clear_link
+   211	    test_vehicle_assignment
+   212	    test_vehicle_assignment_request_builder
+   213	    test_vehicle_selection_strategy
+   214	    test_auto_charging_planning
+   215	    test_order_batch_bundling
+   216	    test_assignment_dispatch_action
+   217	    test_vda5050_vehicle_binding
+   218	    test_dispatch_gate_planning
+   219	    test_dispatch_endpoint_resolution
+   220	    test_dispatch_tick_planning
+   221	    test_find_route_path_avoiding
+   222	    test_topology_overlay
+   223	    test_topology_connectivity
+   224	    test_topology_change_impact
+   225	    test_topology_overlay_file
+   226	    test_facility_catalog
+   227	    test_facility_reservation
+   228	    test_facility_lease
+   229	    test_facility_workflow
+   230	    test_facility_adapter_interface
+   231	    test_modbus_tcp_client
+   232	    test_facility_interlocking_planning
+   233	    test_space_time_astar
+   234	    test_conflict_based_search
+   235	    test_prioritized_planning
+   236	    test_mapf_solver
+   237	    test_cbs_traffic_coordinator
+   238	    test_submit_order_router
+   239	    test_topology_projection
+   240	    test_end_to_end_pipeline
+   241	    test_multi_vehicle_time_space
+   242	  )
+   243	  foreach(test_name IN LISTS UNIT_TESTS)
+   244	    if(test_name STREQUAL "test_end_to_end_pipeline" OR test_name STREQUAL "test_multi_vehicle_time_space")
+   245	      set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/integration/${test_name}.cpp")
+   246	    else()
+   247	      set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/../../test/unit/${test_name}.cpp")
+   248	    endif()
+   249	    if(EXISTS "${test_src}")
+   250	      add_executable(${test_name} "${test_src}")
+   251	      target_link_libraries(${test_name} PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+   252	      gtest_discover_tests(${test_name})
+   253	    endif()
+   254	  endforeach()
+   255	endif()
+   256	
+   257	if(ament_cmake_FOUND)
+   258	  install(
+   259	    DIRECTORY include/
+   260	    DESTINATION include/${PROJECT_NAME}
+   261	  )
+   262	  install(
+   263	    TARGETS ${PROJECT_NAME}
+   264	    EXPORT export_${PROJECT_NAME}
+   265	    ARCHIVE DESTINATION lib
+   266	    LIBRARY DESTINATION lib
+   267	    RUNTIME DESTINATION bin
+   268	  )
+   269	  ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+   270	  ament_export_dependencies(yaml-cpp Threads)
+   271	  ament_package()
+   272	endif()
+########## src/amr_dispatcher_interfaces/CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_interfaces)
+     3	
+     4	find_package(ament_cmake REQUIRED)
+     5	find_package(rosidl_default_generators REQUIRED)
+     6	find_package(std_msgs REQUIRED)
+     7	find_package(geometry_msgs REQUIRED)
+     8	find_package(builtin_interfaces REQUIRED)
+     9	
+    10	set(msg_files
+    11	  "msg/DispatcherState.msg"
+    12	  "msg/ChassisLinkHealth.msg"
+    13	  "msg/MissionEvent.msg"
+    14	  "msg/TrackingError.msg"
+    15	  "msg/SafetyState.msg"
+    16	  "msg/TopologyState.msg"
+    17	  "msg/VehicleLinkState.msg"
+    18	)
+    19	
+    20	set(srv_files
+    21	  "srv/SubmitOrder.srv"
+    22	  "srv/CancelOrder.srv"
+    23	  "srv/PauseMission.srv"
+    24	  "srv/ResumeMission.srv"
+    25	  "srv/ReserveResource.srv"
+    26	  "srv/ReleaseResource.srv"
+    27	  "srv/GetSystemReadiness.srv"
+    28	  "srv/EnqueueMission.srv"
+    29	  "srv/CancelQueuedMission.srv"
+    30	  "srv/PreemptMission.srv"
+    31	  "srv/ReprioritizeQueuedMission.srv"
+    32	  "srv/EstimateMissionCost.srv"
+    33	  "srv/BlockStationRoute.srv"
+    34	  "srv/DetectTrafficDeadlock.srv"
+    35	  "srv/ListStations.srv"
+    36	  "srv/ListTrafficReservations.srv"
+    37	  "srv/ReserveFacilityResource.srv"
+    38	  "srv/GetOperatorSnapshot.srv"
+    39	  "srv/ValidateSiteConfig.srv"
+    40	  "srv/ForceClearVda5050Link.srv"
+    41	  "srv/RestoreVda5050Link.srv"
+    42	  # 相位 11：在线拓扑热生效
+    43	  "srv/BlockEdge.srv"
+    44	  "srv/TopologyHotUpdate.srv"
+    45	  "srv/GetTopologyOverlay.srv"
+    46	)
+    47	
+    48	set(action_files
+    49	  "action/NavigateSequence.action"
+    50	  "action/ExecuteMission.action"
+    51	)
+    52	
+    53	rosidl_generate_interfaces(${PROJECT_NAME}
+    54	  ${msg_files}
+    55	  ${srv_files}
+    56	  ${action_files}
+    57	  DEPENDENCIES
+    58	    std_msgs
+    59	    geometry_msgs
+    60	    builtin_interfaces
+    61	)
+    62	
+    63	ament_export_dependencies(rosidl_default_runtime)
+    64	ament_package()
+########## src/amr_dispatcher_ros/CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_ros)
+     3	
+     4	if(NOT CMAKE_CXX_STANDARD)
+     5	  set(CMAKE_CXX_STANDARD 17)
+     6	  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+     7	endif()
+     8	
+     9	find_package(ament_cmake REQUIRED)
+    10	find_package(rclcpp REQUIRED)
+    11	find_package(rclcpp_lifecycle REQUIRED)
+    12	find_package(rclcpp_action REQUIRED)
+    13	find_package(std_msgs REQUIRED)
+    14	find_package(geometry_msgs REQUIRED)
+    15	find_package(nav_msgs REQUIRED)
+    16	find_package(sensor_msgs REQUIRED)
+    17	find_package(visualization_msgs REQUIRED)
+    18	find_package(yaml-cpp REQUIRED)
+    19	find_package(tf2 REQUIRED)
+    20	find_package(tf2_ros REQUIRED)
+    21	find_package(tf2_geometry_msgs REQUIRED)
+    22	find_package(hardware_interface REQUIRED)
+    23	find_package(pluginlib REQUIRED)
+    24	find_package(amr_dispatcher_core REQUIRED)
+    25	find_package(amr_dispatcher_interfaces REQUIRED)
+    26	find_package(amr_dispatcher_bt REQUIRED)
+    27	# nav2_msgs 可选：镜像缺包时 QUIET 跳过，桥接节点 Nav2 分支条件编译，容器构建永不因 Nav2 挂掉
+    28	find_package(nav2_msgs QUIET)
+    29	# Eclipse Paho MQTT C++ 可选（Task 4 vda5050_gateway_node）：镜像缺包时跳过该目标编译，
+    30	# full_system.launch.py 默认 use_vda5050=false 不引用该可执行文件，构建永不因缺 Paho 挂掉。
+    31	# I1：C++ 头/库与 C 库三者齐备才启用——C 库是条件链接（pp3 依赖 MQTTAsync_* 符号，
+    32	# 半装环境会编译通过再在链接期报 undefined reference）；NAMES 只列异步变体
+    33	# （同步 3c/3cs 无 MQTTAsync_*，链上也无法满足 pp3 的依赖）。
+    34	find_path(PAHO_MQTTPP_INCLUDE_DIR NAMES mqtt/async_client.h)
+    35	find_library(PAHO_MQTTPP_LIBRARY NAMES paho-mqttpp3)
+    36	find_library(PAHO_MQTT_LIBRARY NAMES paho-mqtt3as paho-mqtt3a)
+    37	if(PAHO_MQTTPP_INCLUDE_DIR AND PAHO_MQTTPP_LIBRARY AND PAHO_MQTT_LIBRARY)
+    38	  set(AMR_HAVE_PAHO_MQTT TRUE)
+    39	else()
+    40	  set(AMR_HAVE_PAHO_MQTT FALSE)
+    41	  message(WARNING "未找到 Eclipse Paho MQTT C++ (libpaho-mqttpp-dev) 或异步 C 客户端库 (libpaho-mqtt-dev)，跳过 vda5050_gateway_node 编译")
+    42	endif()
+    43	
+    44	# 1. chassis_driver_node
+    45	add_executable(chassis_driver_node
+    46	  src/chassis_driver_node.cpp
+    47	)
+    48	target_include_directories(chassis_driver_node PUBLIC
+    49	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    50	  $<INSTALL_INTERFACE:include>
+    51	)
+    52	ament_target_dependencies(chassis_driver_node
+    53	  rclcpp
+    54	  geometry_msgs
+    55	  nav_msgs
+    56	  sensor_msgs
+    57	  tf2
+    58	  tf2_ros
+    59	  tf2_geometry_msgs
+    60	  amr_dispatcher_core
+    61	  amr_dispatcher_interfaces
+    62	)
+    63	
+    64	# 2. dispatcher_node
+    65	add_executable(dispatcher_node
+    66	  src/dispatcher_node.cpp
+    67	)
+    68	target_include_directories(dispatcher_node PUBLIC
+    69	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    70	  $<INSTALL_INTERFACE:include>
+    71	)
+    72	ament_target_dependencies(dispatcher_node
+    73	  rclcpp
+    74	  rclcpp_lifecycle
+    75	  rclcpp_action
+    76	  nav_msgs
+    77	  geometry_msgs
+    78	  amr_dispatcher_core
+    79	  amr_dispatcher_interfaces
+    80	)
+    81	# 行为树编排层：订单路由、出队派发门控、恢复与结果决策
+    82	target_link_libraries(dispatcher_node amr_dispatcher_bt::amr_dispatcher_bt)
+    83	
+    84	# 2.1 navigate_sequence_bridge_node
+    85	# /navigate_sequence action server：fallback 转 /plan（复用 path_tracker 链），
+    86	# use_nav2:=true 时条件编译走 Nav2 navigate_to_pose（镜像缺 nav2_msgs 则自动降级）
+    87	add_executable(navigate_sequence_bridge_node
+    88	  src/navigate_sequence_bridge_node.cpp
+    89	)
+    90	target_include_directories(navigate_sequence_bridge_node PUBLIC
+    91	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    92	  $<INSTALL_INTERFACE:include>
+    93	)
+    94	ament_target_dependencies(navigate_sequence_bridge_node
+    95	  rclcpp
+    96	  rclcpp_action
+    97	  nav_msgs
+    98	  geometry_msgs
+    99	  amr_dispatcher_interfaces
+   100	)
+   101	if(nav2_msgs_FOUND)
+   102	  target_compile_definitions(navigate_sequence_bridge_node PRIVATE AMR_HAVE_NAV2_MSGS)
+   103	  ament_target_dependencies(navigate_sequence_bridge_node nav2_msgs)
+   104	endif()
+   105	
+   106	# 3. safety_gate_node
+   107	add_executable(safety_gate_node
+   108	  src/safety_gate_node.cpp
+   109	)
+   110	target_include_directories(safety_gate_node PUBLIC
+   111	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   112	  $<INSTALL_INTERFACE:include>
+   113	)
+   114	ament_target_dependencies(safety_gate_node
+   115	  rclcpp
+   116	  geometry_msgs
+   117	  std_msgs
+   118	  amr_dispatcher_core
+   119	  amr_dispatcher_interfaces
+   120	)
+   121	
+   122	# 4. path_tracker_node
+   123	add_executable(path_tracker_node
+   124	  src/path_tracker_node.cpp
+   125	)
+   126	target_include_directories(path_tracker_node PUBLIC
+   127	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   128	  $<INSTALL_INTERFACE:include>
+   129	)
+   130	ament_target_dependencies(path_tracker_node
+   131	  rclcpp
+   132	  geometry_msgs
+   133	  nav_msgs
+   134	  tf2
+   135	  tf2_geometry_msgs
+   136	  amr_dispatcher_core
+   137	  amr_dispatcher_interfaces
+   138	)
+   139	
+   140	# 5. link_health_publisher
+   141	add_executable(link_health_publisher
+   142	  src/link_health_publisher.cpp
+   143	)
+   144	target_include_directories(link_health_publisher PUBLIC
+   145	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   146	  $<INSTALL_INTERFACE:include>
+   147	)
+   148	ament_target_dependencies(link_health_publisher
+   149	  rclcpp
+   150	  amr_dispatcher_core
+   151	  amr_dispatcher_interfaces
+   152	)
+   153	
+   154	# 6. dispatcher_visualizer_node
+   155	add_executable(dispatcher_visualizer_node
+   156	  src/dispatcher_visualizer_node.cpp
+   157	)
+   158	target_include_directories(dispatcher_visualizer_node PUBLIC
+   159	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   160	  $<INSTALL_INTERFACE:include>
+   161	)
+   162	ament_target_dependencies(dispatcher_visualizer_node
+   163	  rclcpp
+   164	  geometry_msgs
+   165	  std_msgs
+   166	  visualization_msgs
+   167	  amr_dispatcher_core
+   168	  amr_dispatcher_interfaces
+   169	)
+   170	target_link_libraries(dispatcher_visualizer_node yaml-cpp)
+   171	
+   172	# 7. lifecycle_coordinator_node
+   173	add_executable(lifecycle_coordinator_node
+   174	  src/lifecycle_coordinator_node.cpp
+   175	)
+   176	target_include_directories(lifecycle_coordinator_node PUBLIC
+   177	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   178	  $<INSTALL_INTERFACE:include>
+   179	)
+   180	ament_target_dependencies(lifecycle_coordinator_node
+   181	  rclcpp
+   182	  lifecycle_msgs
+   183	  std_msgs
+   184	  amr_dispatcher_interfaces
+   185	)
+   186	
+   187	# 8. map_ingest_node（Task 8）：/map -> 核心库算法流水线（安全空间腐蚀、
+   188	# 骨架细化、受保护剪枝、拓扑构建）-> 原子写出 stations.yaml + 拓扑 Marker。
+   189	add_executable(map_ingest_node
+   190	  src/map_ingest_node.cpp
+   191	)
+   192	target_include_directories(map_ingest_node PUBLIC
+   193	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   194	  $<INSTALL_INTERFACE:include>
+   195	)
+   196	ament_target_dependencies(map_ingest_node
+   197	  rclcpp
+   198	  nav_msgs
+   199	  geometry_msgs
+   200	  std_msgs
+   201	  visualization_msgs
+   202	  amr_dispatcher_core
+   203	)
+   204	# yaml-cpp：解析 markers_file 的 anchors 段（与 dispatcher_visualizer 同一链接方式）
+   205	target_link_libraries(map_ingest_node yaml-cpp)
+   206	
+   207	# 8.1 vda5050_gateway_node（Task 4）：VDA 5050 <-> ROS 2 MQTT 薄壳网关。
+   208	# MQTT 类型封装在 .cpp（pimpl），核心库 amr_dispatcher_core 保持零 MQTT 依赖（Spec §1 铁律）；
+   209	# 仅在检测到 Paho 时编译（见文件头 AMR_HAVE_PAHO_MQTT 判定）
+   210	if(AMR_HAVE_PAHO_MQTT)
+   211	  add_executable(vda5050_gateway_node
+   212	    src/vda5050_gateway_node.cpp
+   213	  )
+   214	  target_include_directories(vda5050_gateway_node PUBLIC
+   215	    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   216	    $<INSTALL_INTERFACE:include>
+   217	  )
+   218	  ament_target_dependencies(vda5050_gateway_node
+   219	    rclcpp
+   220	    std_msgs
+   221	    geometry_msgs
+   222	    amr_dispatcher_core
+   223	  )
+   224	  # 三元守卫已保证 C 异步库存在；显式链接 C 客户端，
+   225	  # 防止 C++ 封装静态链接场景缺 MQTTAsync_* 符号
+   226	  target_link_libraries(vda5050_gateway_node
+   227	    ${PAHO_MQTTPP_LIBRARY}
+   228	    ${PAHO_MQTT_LIBRARY}
+   229	  )
+   230	endif()
+   231	
+   232	# 6. ros2_control hardware plugin
+   233	add_library(amr_chassis_hardware_interface SHARED
+   234	  src/chassis_hardware_interface.cpp
+   235	)
+   236	
+   237	target_include_directories(amr_chassis_hardware_interface PUBLIC
+   238	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   239	  $<INSTALL_INTERFACE:include>
+   240	)
+   241	ament_target_dependencies(amr_chassis_hardware_interface
+   242	  rclcpp
+   243	  hardware_interface
+   244	  pluginlib
+   245	  amr_dispatcher_core
+   246	  amr_dispatcher_interfaces
+   247	)
+   248	pluginlib_export_plugin_description_file(hardware_interface chassis_hardware_interface.xml)
+   249	
+   250	# 单元测试：可抽离的纯逻辑（B1 周期发布判定 / B3 航点位姿 / B4 任务戳记）
+   251	# 以 header-only 库 + gtest 单测落地，模式与 amr_dispatcher_core 的 BUILD_TESTING 分支一致。
+   252	if(BUILD_TESTING)
+   253	  find_package(GTest REQUIRED)
+   254	  include(GoogleTest)
+   255	  enable_testing()
+   256	
+   257	  add_library(amr_dispatcher_ros_helpers INTERFACE)
+   258	  target_include_directories(amr_dispatcher_ros_helpers INTERFACE
+   259	    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   260	    $<INSTALL_INTERFACE:include>
+   261	  )
+   262	  ament_target_dependencies(amr_dispatcher_ros_helpers INTERFACE
+   263	    geometry_msgs
+   264	    amr_dispatcher_core
+   265	  )
+   266	
+   267	  set(ROS_UNIT_TESTS
+   268	    test_safety_publish_decision
+   269	    test_nav_pose_builder
+   270	    test_mission_identity
+   271	    test_report_freshness
+   272	    test_assignment_dispatch_decision
+   273	  )
+   274	  foreach(test_name IN LISTS ROS_UNIT_TESTS)
+   275	    set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
+   276	    if(EXISTS "${test_src}")
+   277	      add_executable(${test_name} "${test_src}")
+   278	      target_link_libraries(${test_name} PRIVATE
+   279	        amr_dispatcher_ros_helpers GTest::gtest GTest::gtest_main)
+   280	      gtest_discover_tests(${test_name})
+   281	    endif()
+   282	  endforeach()
+   283	
+   284	  # L2 契约测试：真进程 + 真服务调用（不再是 assertTrue(True)）。
+   285	  # 只在 launch_testing 可用时注册——宿主机的纯 CMake 构建没有它。
+   286	  find_package(launch_testing_ament_cmake QUIET)
+   287	  if(launch_testing_ament_cmake_FOUND)
+   288	    add_launch_test(
+   289	      "${CMAKE_CURRENT_SOURCE_DIR}/../../test/l2_launch_contracts/test_lifecycle_contracts.py"
+   290	      TARGET test_lifecycle_contracts
+   291	      TIMEOUT 120
+   292	    )
+   293	    # 守护契约：respawn 起新进程 + 协调器重新提拉 + on_configure 服务重建。
+   294	    # 域 94（与上面 91 域分开）：两套夹具的节点互相看见会让断言不可信。
+   295	    # 预算 60s + 重生延迟/提拉/重建服务，给慢 CI 留余量。
+   296	    add_launch_test(
+   297	      "${CMAKE_CURRENT_SOURCE_DIR}/../../test/l2_launch_contracts/test_supervision_contracts.py"
+   298	      TARGET test_supervision_contracts
+   299	      TIMEOUT 240
+   300	    )
+   301	  endif()
+   302	endif()
+   303	
+   304	# 安装
+   305	install(TARGETS
+   306	  chassis_driver_node
+   307	  dispatcher_node
+   308	  navigate_sequence_bridge_node
+   309	  safety_gate_node
+   310	  path_tracker_node
+   311	  link_health_publisher
+   312	  dispatcher_visualizer_node
+   313	  lifecycle_coordinator_node
+   314	  map_ingest_node
+   315	  DESTINATION lib/${PROJECT_NAME}
+   316	)
+   317	
+   318	# vda5050_gateway_node 仅在 Paho 可用时生成，条件安装
+   319	if(TARGET vda5050_gateway_node)
+   320	  install(TARGETS vda5050_gateway_node
+   321	    DESTINATION lib/${PROJECT_NAME}
+   322	  )
+   323	endif()
+   324	
+   325	install(TARGETS
+   326	  amr_chassis_hardware_interface
+   327	  ARCHIVE DESTINATION lib
+   328	  LIBRARY DESTINATION lib
+   329	  RUNTIME DESTINATION bin
+   330	)
+   331	
+   332	install(DIRECTORY include/
+   333	  DESTINATION include
+   334	)
+   335	
+   336	install(FILES chassis_hardware_interface.xml
+   337	  DESTINATION share/${PROJECT_NAME}
+   338	)
+   339	
+   340	# B7：站点/节点参数文件与 launch 安装到 share，ros2 launch 用 get_package_share_directory 引用，
+   341	# 避免依赖 colcon 工作区相对路径（修复 stations_file 在容器外运行时找不到的问题）。
+   342	install(DIRECTORY
+   343	  ${CMAKE_CURRENT_SOURCE_DIR}/../../config
+   344	  ${CMAKE_CURRENT_SOURCE_DIR}/../../launch
+   345	  DESTINATION share/${PROJECT_NAME}
+   346	)
+   347	
+   348	ament_package()
+########## src/amr_dispatcher_tools/CMakeLists.txt ##########
+     1	cmake_minimum_required(VERSION 3.16)
+     2	project(amr_dispatcher_tools)
+     3	
+     4	if(NOT CMAKE_CXX_STANDARD)
+     5	  set(CMAKE_CXX_STANDARD 17)
+     6	  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+     7	endif()
+     8	
+     9	find_package(ament_cmake REQUIRED)
+    10	find_package(ament_index_cpp REQUIRED)
+    11	find_package(rclcpp REQUIRED)
+    12	find_package(std_msgs REQUIRED)
+    13	find_package(amr_dispatcher_core REQUIRED)
+    14	find_package(amr_dispatcher_interfaces REQUIRED)
+    15	
+    16	# 1. dispatcher_cli
+    17	add_executable(dispatcher_cli
+    18	  src/dispatcher_cli.cpp
+    19	)
+    20	target_include_directories(dispatcher_cli PUBLIC
+    21	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    22	  $<INSTALL_INTERFACE:include>
+    23	)
+    24	ament_target_dependencies(dispatcher_cli
+    25	  rclcpp
+    26	  amr_dispatcher_core
+    27	  amr_dispatcher_interfaces
+    28	)
+    29	
+    30	# 2. rest_gateway
+    31	add_executable(rest_gateway
+    32	  src/rest_gateway.cpp
+    33	)
+    34	target_include_directories(rest_gateway PUBLIC
+    35	  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    36	  $<INSTALL_INTERFACE:include>
+    37	)
+    38	ament_target_dependencies(rest_gateway
+    39	  rclcpp
+    40	  ament_index_cpp
+    41	  std_msgs
+    42	  amr_dispatcher_core
+    43	  amr_dispatcher_interfaces
+    44	)
+    45	
+    46	install(TARGETS
+    47	  dispatcher_cli
+    48	  rest_gateway
+    49	  DESTINATION lib/${PROJECT_NAME}
+    50	)
+    51	
+    52	# 单元测试：把网关里"会打死进程"的解析逻辑抽成纯函数后单测覆盖。
+    53	# 模式与 amr_dispatcher_ros 的 ROS_UNIT_TESTS 一致：header-only 接口库 + gtest。
+    54	if(BUILD_TESTING)
+    55	  find_package(GTest REQUIRED)
+    56	  include(GoogleTest)
+    57	  enable_testing()
+    58	
+    59	  add_library(amr_dispatcher_tools_helpers INTERFACE)
+    60	  target_include_directories(amr_dispatcher_tools_helpers INTERFACE
+    61	    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    62	  )
+    63	
+    64	  set(TOOLS_UNIT_TESTS
+    65	    test_http_limits
+    66	    test_bearer_auth
+    67	    test_idempotency_store
+    68	    test_json_escape
+    69	    test_metrics_format
+    70	    test_health_probe
+    71	    test_alerting
+    72	    test_alert_webhook_client
+    73	  )
+    74	  foreach(test_name IN LISTS TOOLS_UNIT_TESTS)
+    75	    set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/test/${test_name}.cpp")
+    76	    if(EXISTS "${test_src}")
+    77	      add_executable(${test_name} "${test_src}")
+    78	      target_link_libraries(${test_name} PRIVATE
+    79	        amr_dispatcher_tools_helpers GTest::gtest GTest::gtest_main)
+    80	      gtest_discover_tests(${test_name})
+    81	    endif()
+    82	  endforeach()
+    83	endif()
+    84	
+    85	install(DIRECTORY include/
+    86	  DESTINATION include
+    87	)
+    88	
+    89	ament_package()

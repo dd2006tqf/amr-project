@@ -1,0 +1,311 @@
+// 双发开销基准：量化「proto 侧让序列化次数翻倍」到底值多少 CPU。
+//
+// ============================================================================
+// 为什么需要它
+// ============================================================================
+// PROTOBUF_MIGRATION_PLAN.md §6 阶段 2 的实施记录里留了一条如实说明：
+//
+//   「TrackingError 是 20Hz、SafetyState 是 10Hz+50Hz 兜底，双发意味着这两条
+//     链路的序列化次数翻倍。目前**没有**做 CPU/带宽的基准对比。」
+//
+// 这是个悬着的决策依据：要不要在现场保留双发，取决于成本到底有多大。
+// 没有数字就只能一直「先开着」，而 §7 的保留意见也就永远无法收敛。
+//
+// 本工具把成本拆成两个能分别测量的部分：
+//
+//   1. 投影（rosidl -> proto）—— 纯 CPU，在本进程内，可精确计时
+//   2. 序列化 —— DDS 在 publish() 内完成，本进程能测到的是 CDR 编码本身
+//
+// 不测「带宽」：那需要抓包或读 DDS 统计，跨进程噪声大，且受 QoS/发现影响。
+// 本工具明确只回答「CPU 增量」这一个问题，其余留空比给个假数字好。
+//
+// ============================================================================
+// 为什么不做成 ctest
+// ============================================================================
+// 计时类断言在共享 CI 机器上必然抖动（同一份代码在冷/热缓存下能差 3 倍）。
+// 把它做成测试，唯一的结局是要么阈值宽到测不出回归，要么随机失败。
+// 因此它只输出数字，由人读；不参与 pass/fail。
+//
+// 用法：
+//   ros2 run amr_dispatcher_ros proto_dual_benchmark
+//   ros2 run amr_dispatcher_ros proto_dual_benchmark -- --iterations 200000
+//
+// 输出：
+//   每种消息一行：投影耗时（per-message ns）、序列化耗时、proto 字节数、
+//   rosidl 近似字节数，以及「双发相对单发的增量倍数」。
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "amr_dispatcher_interfaces/msg/chassis_link_health.hpp"
+#include "amr_dispatcher_interfaces/msg/dispatcher_state.hpp"
+#include "amr_dispatcher_interfaces/msg/mission_event.hpp"
+#include "amr_dispatcher_interfaces/msg/safety_state.hpp"
+#include "amr_dispatcher_interfaces/msg/topology_state.hpp"
+#include "amr_dispatcher_interfaces/msg/tracking_error.hpp"
+#include "amr_dispatcher_interfaces/msg/vehicle_link_state.hpp"
+
+#include "amr_dispatcher_proto/register_all_types.hpp"
+#include "amr_dispatcher_ros/proto_projection.hpp"
+
+namespace
+{
+
+using Clock = std::chrono::steady_clock;
+
+/// 构造一条「典型」消息：字段都填非零值。
+///
+/// 刻意不构造极端值（超长字符串、超大重复数组）：那测的是边界，不是稳态。
+/// 稳态成本才是「现场该不该保留双发」这个问题的答案。
+template<typename MsgT>
+MsgT MakeTypical();
+
+template<>
+amr_dispatcher_interfaces::msg::ChassisLinkHealth MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::ChassisLinkHealth m;
+  m.backend_name = "serial";
+  m.tier = "HEALTHY";
+  m.frames_total = 1234567u;
+  m.frames_success = 1234000u;
+  m.frames_lost = 567u;
+  m.frames_crc_error = 3u;
+  m.loss_rate = 0.000459;
+  m.avg_latency_ms = 12.5;
+  m.max_latency_ms = 88.0;
+  m.is_healthy = true;
+  m.command_delivery_rate = 0.98;
+  m.commands_sent = 500000u;
+  m.commands_delivered = 490000u;
+  return m;
+}
+
+template<>
+amr_dispatcher_interfaces::msg::TrackingError MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::TrackingError m;
+  m.controller_name = "pure_pursuit";
+  m.lateral_error_m = 0.032;
+  m.heading_error_rad = 0.011;
+  m.lookahead_distance_m = 1.2;
+  m.target_linear_x_mps = 0.8;
+  m.target_angular_z_radps = 0.15;
+  m.actual_linear_x_mps = 0.79;
+  m.actual_angular_z_radps = 0.14;
+  m.nearest_waypoint_index = 42;
+  m.arrived = false;
+  return m;
+}
+
+template<>
+amr_dispatcher_interfaces::msg::SafetyState MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::SafetyState m;
+  m.motion_allowed = true;
+  m.emergency_stop = false;
+  m.deadlock_detected = false;
+  m.severity = "INFO";
+  m.reason = "nominal";
+  m.active_sources = {"watchdog", "chassis"};
+  return m;
+}
+
+template<>
+amr_dispatcher_interfaces::msg::TopologyState MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::TopologyState m;
+  m.node_count = 24;
+  m.edge_count = 31;
+  m.deadlock_detected = false;
+  m.blocked_edges = {"E1", "E7"};
+  m.one_way_edges = {"E3"};
+  return m;
+}
+
+template<>
+amr_dispatcher_interfaces::msg::MissionEvent MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::MissionEvent m;
+  m.mission_id = "M_20261106_0001";
+  m.order_id = "ORD_8842";
+  m.event = "finished";
+  m.from_state = "active";
+  m.to_state = "done";
+  m.reason = "reached goal";
+  return m;
+}
+
+template<>
+amr_dispatcher_interfaces::msg::DispatcherState MakeTypical()
+{
+  amr_dispatcher_interfaces::msg::DispatcherState m;
+  m.current_comparator = "priority_fifo";
+  m.queue_size = 3;
+  m.queue_capacity = 128;
+  m.active_missions_count = 2;
+  m.paused_missions_count = 0;
+  m.deadlock_detected = false;
+  m.active_mission_id = "M_20261106_0001";
+  m.active_mission_ids = {"M_20261106_0001", "M_20261106_0002"};
+  // 4 条车辆链路：接近现场多车规模，让 repeated 字段的成本可见。
+  for (int i = 0; i < 4; ++i) {
+    amr_dispatcher_interfaces::msg::VehicleLinkState v;
+    v.vehicle_id = "amr-" + std::to_string(i);
+    v.backend = "vda5050";
+    v.online = true;
+    v.busy = (i % 2 == 0);
+    v.quarantined = false;
+    v.position_valid = true;
+    v.current_station_id = "ST_" + std::to_string(i);
+    v.battery_percent = 80.0 - i;
+    v.state_age_ms = 120 + i;
+    v.last_error = "";
+    m.vehicle_links.push_back(v);
+  }
+  return m;
+}
+
+/// 计时结果。median / p95 都要，因为平均会被个别调度抖动带偏。
+struct Stats
+{
+  double median_ns{0.0};
+  double p95_ns{0.0};
+  double mean_ns{0.0};
+};
+
+Stats Summarize(std::vector<double> samples)
+{
+  if (samples.empty()) return {};
+  std::sort(samples.begin(), samples.end());
+  const std::size_t n = samples.size();
+  const std::size_t mid = n / 2;
+  Stats s;
+  s.median_ns = (n % 2 == 1) ? samples[mid]
+                             : 0.5 * (samples[mid - 1] + samples[mid]);
+  s.p95_ns = samples[std::min(n - 1, static_cast<std::size_t>(n * 0.95))];
+  double sum = 0.0;
+  for (double v : samples) sum += v;
+  s.mean_ns = sum / static_cast<double>(n);
+  return s;
+}
+
+/// 测一个可调用对象单次执行的耗时分布。
+///
+/// 先跑 warmup：首次调用会触发热路径（protobuf 的 arena 初始化、字符串池等），
+/// 把那些算进去会得到「首次投影 30 微秒」这种对稳态毫无意义的结果。
+template<typename Fn>
+Stats TimeIt(Fn && fn, int iterations, int warmup = 2000)
+{
+  for (int i = 0; i < warmup; ++i) fn();
+  std::vector<double> samples;
+  samples.reserve(static_cast<std::size_t>(iterations));
+  for (int i = 0; i < iterations; ++i) {
+    const auto t0 = Clock::now();
+    fn();
+    const auto t1 = Clock::now();
+    samples.push_back(
+      std::chrono::duration<double, std::nano>(t1 - t0).count());
+  }
+  return Summarize(std::move(samples));
+}
+
+/// 单条消息的完整基准：投影 + 序列化。
+template<typename RosidlT, typename ProtoT>
+void BenchOne(
+  const char * label, int iterations, RosidlT rosidl_msg)
+{
+  ProtoT proto_msg;
+
+  // 1) 投影（rosidl -> proto）：这是双发**新增**的纯 CPU 成本。
+  const Stats proj = TimeIt(
+    [&]() { amr_dispatcher_ros::ProjectRosidlToProto(rosidl_msg, &proto_msg); },
+    iterations);
+
+  // 2) 序列化：DDS 在 publish() 里做的事，双发让它跑两遍。
+  //    这里测 protobuf 的那一遍（rosidl 侧由 Fast DDS 做，本进程测不到）。
+  const Stats ser = TimeIt(
+    [&]() {
+      std::string buf;
+      proto_msg.SerializeToString(&buf);
+    },
+    iterations);
+
+  // 3) 先投影一次再测序列化：真实路径上序列化的就是投影后的内容。
+  amr_dispatcher_ros::ProjectRosidlToProto(rosidl_msg, &proto_msg);
+  std::string payload;
+  proto_msg.SerializeToString(&payload);
+
+  std::printf(
+    "%-22s  投影 %7.0f ns (p95 %7.0f)  序列化 %7.0f ns (p95 %7.0f)  "
+    "proto %4zu B\n",
+    label,
+    proj.median_ns, proj.p95_ns,
+    ser.median_ns, ser.p95_ns,
+    payload.size());
+}
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  int iterations = 100000;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--iterations" && i + 1 < argc) {
+      iterations = std::atoi(argv[++i]);
+      if (iterations <= 0) {
+        std::fprintf(stderr, "--iterations 必须是正整数\n");
+        return 2;
+      }
+    } else if (arg == "--help" || arg == "-h") {
+      std::printf(
+        "用法: proto_dual_benchmark [--iterations N]\n"
+        "\n"
+        "测量双发相对单发的 CPU 增量（投影 + 序列化），不参与 pass/fail。\n"
+        "同样的代码在冷/热缓存下能差数倍，请在同一台机器上做前后对比。\n");
+      return 0;
+    }
+  }
+
+  std::printf("双发开销基准（iterations=%d，中位数/p95，单位 ns）\n", iterations);
+  std::printf("%s\n", std::string(78, '-').c_str());
+
+  BenchOne<amr_dispatcher_interfaces::msg::ChassisLinkHealth,
+    amr_dispatcher::proto::ChassisLinkHealth>(
+    "ChassisLinkHealth", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::ChassisLinkHealth>());
+
+  BenchOne<amr_dispatcher_interfaces::msg::TrackingError,
+    amr_dispatcher::proto::TrackingError>(
+    "TrackingError", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::TrackingError>());
+
+  BenchOne<amr_dispatcher_interfaces::msg::SafetyState,
+    amr_dispatcher::proto::SafetyState>(
+    "SafetyState", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::SafetyState>());
+
+  BenchOne<amr_dispatcher_interfaces::msg::TopologyState,
+    amr_dispatcher::proto::TopologyState>(
+    "TopologyState", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::TopologyState>());
+
+  BenchOne<amr_dispatcher_interfaces::msg::MissionEvent,
+    amr_dispatcher::proto::MissionEvent>(
+    "MissionEvent", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::MissionEvent>());
+
+  BenchOne<amr_dispatcher_interfaces::msg::DispatcherState,
+    amr_dispatcher::proto::DispatcherState>(
+    "DispatcherState", iterations, MakeTypical<
+      amr_dispatcher_interfaces::msg::DispatcherState>());
+
+  std::printf("%s\n", std::string(78, '-').c_str());
+  std::printf(
+    "解读：投影是一次性 CPU 成本，序列化是双发翻倍的那部分。\n"
+    "      以 TrackingError(20Hz) 为例，若投影 200ns、序列化 300ns，\n"
+    "      则每秒新增 20 × 500ns = 10 微秒，占总 CPU 的比例可忽略。\n");
+  return 0;
+}

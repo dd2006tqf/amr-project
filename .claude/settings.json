@@ -1,0 +1,64 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+    "ANTHROPIC_AUTH_TOKEN": "sk-cnb-8142a2bc344415b90eeb106bd5273973819d74d5ac188bd9",
+    "ANTHROPIC_MODEL": "",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-pro-0813",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "CLAUDE_CODE_MAX_RETRY_DELAY": "30000",
+    "CLAUDE_CODE_MAX_RETRIES": "10",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "200000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "modelOverrides": {
+    "claude-opus-5-5": "deepseek-v4.1-flash",
+    "claude-opus-4-7": "deepseek-v4.1-flash",
+    "claude-sonnet-5-5": "deepseek-v4.1-flash",
+    "claude-sonnet-4-6": "deepseek-v4.1-flash",
+    "claude-haiku-4-5": "deepseek-v4.1-flash",
+    "deepseek-v4-pro-0813": "deepseek-v4.1-flash",
+    "deepseek-v4-pro-0813[1m]": "deepseek-v4.1-flash",
+    "deepseek-v4-pro": "deepseek-v4.1-flash",
+    "deepseek-v4-flash": "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash": "deepseek-v4.1-flash"
+  },
+  "disableClaudeAiConnectors": false,
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "setsid bash -c 'echo -ne \"\\a\"' >/dev/null 2>&1",
+            "shell": "bash",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "respondToBashCommands": false,
+  "skipWebFetchPreflight": true,
+  "awaySummaryEnabled": false,
+  "skipDangerousModePermissionPrompt": true,
+  "mcpServers": {
+    "fast-web-search": {
+      "command": "/home/ubuntu/.npm-global/bin/fast-web-search-mcp",
+      "env": {
+        "FWSMCP_LOG_LEVEL": "warn",
+        "FWSMCP_DEFAULT_REGION": "us-en",
+        "FWSMCP_DEFAULT_LANGUAGE": "en",
+        "FWSMCP_PROVIDERS": "bing"
+      }
+    }
+  }
+}

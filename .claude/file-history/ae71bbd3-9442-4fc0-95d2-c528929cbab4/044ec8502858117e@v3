@@ -1,0 +1,74 @@
+#include "manifest/manifest_writer.h"
+#include <fstream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sstream>
+#include <cstdio>
+
+namespace xgrids {
+
+static const char* reason_name(GapReason r) {
+    switch (r) {
+        case GapReason::kFrameDrop:      return "frame_drop";
+        case GapReason::kSensorFault:    return "sensor_fault";
+        case GapReason::kBackpressure:   return "backpressure";
+        case GapReason::kSyncIncomplete: return "sync_incomplete";
+        case GapReason::kRtkLossLock:    return "rtk_loss";
+    }
+    return "unknown";
+}
+
+std::string ManifestWriter::serialize(const ScanManifest& m) {
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"scan_start_us\": " << m.scan_start_us << ",\n"
+       << "  \"scan_end_us\": " << m.scan_end_us << ",\n"
+       << "  \"clean\": " << (m.clean ? "true" : "false") << ",\n"
+       << "  \"total_imu_samples\": " << m.total_imu_samples << ",\n"
+       << "  \"channels\": [\n";
+    for (size_t i = 0; i < m.channels.size(); ++i) {
+        const auto& c = m.channels[i];
+        if (c.channel_id < 0) continue;
+        os << "    {\"ch\":" << c.channel_id
+           << ",\"frames\":" << c.frames
+           << ",\"lost\":" << c.lost
+           << ",\"bytes\":" << c.bytes
+           << ",\"gaps\":[";
+        for (size_t j = 0; j < c.gaps.size(); ++j) {
+            const auto& g = c.gaps[j];
+            os << "{\"start_us\":" << g.start_ts_us
+               << ",\"end_us\":" << g.end_ts_us
+               << ",\"seq\":\"" << g.seq_from << "-" << g.seq_to
+               << "\",\"reason\":\"" << reason_name(g.reason) << "\"}";
+            if (j + 1 < c.gaps.size()) os << ",";
+        }
+        os << "]}";
+        if (i + 1 < m.channels.size()) os << ",";
+        os << "\n";
+    }
+    os << "  ],\n  \"rtk_loss_windows\": [";
+    for (size_t i = 0; i < m.rtk_loss_windows.size(); ++i) {
+        os << "{\"s\":" << m.rtk_loss_windows[i].start_ts_us
+           << ",\"e\":" << m.rtk_loss_windows[i].end_ts_us << "}";
+        if (i + 1 < m.rtk_loss_windows.size()) os << ",";
+    }
+    os << "],\n  \"rescan_windows\": [";
+    for (size_t i = 0; i < m.rescan_windows.size(); ++i) {
+        os << "{\"s\":" << m.rescan_windows[i].first
+           << ",\"e\":" << m.rescan_windows[i].second << "}";
+        if (i + 1 < m.rescan_windows.size()) os << ",";
+    }
+    os << "]\n}\n";
+    return os.str();
+}
+
+std::string ManifestWriter::write(const ScanManifest& m,
+                                  const std::string& scan_dir) {
+    mkdir(scan_dir.c_str(), 0755);
+    std::string path = scan_dir + "/manifest.json";
+    std::ofstream f(path);
+    if (f) f << serialize(m);
+    return path;
+}
+
+}  // namespace xgrids

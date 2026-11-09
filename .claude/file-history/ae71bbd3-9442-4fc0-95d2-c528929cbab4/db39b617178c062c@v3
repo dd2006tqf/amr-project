@@ -1,0 +1,125 @@
+#pragma once
+
+#include <cstdint>
+#include <atomic>
+#include <thread>
+#include <vector>
+#include <memory>
+#include <string>
+#include <functional>
+
+#include "common/ring_buffer.h"
+#include "common/async_logger.h"
+#include "sensors/sensor_drivers.h"
+#include "sync/time_aligner.h"
+#include "sync/sync_monitor.h"
+#include "sync/interpolator.h"
+#include "manifest/manifest_recorder.h"
+#include "quality/quality_feedback.h"
+#include "backend/storage_backend.h"
+#include "backend/uploader.h"
+
+namespace xgrids {
+
+enum class SessionState { kIdle, kCapturing, kFinishing, kDone, kFailed };
+
+struct SessionReport {
+    SessionState state;
+    std::string scan_id;
+    ScanManifest manifest;
+    QualityLevel quality;
+    uint64_t uploaded_bytes;
+    std::vector<std::string> notes;
+};
+
+// ============================================================
+// 采集会话：应用层对"一次扫描任务"的完整生命周期封装
+//
+// 深度点：
+//   - 每路相机/激光雷达独立 ClockModel，估计并校正时钟漂移
+//   - TimeAligner 对 LiDAR/IMU 做插值而非最近邻
+//   - 存储带帧索引 + CRC + 包头
+//   - 上传带断点续传 + manifest 优先 + 指数退避
+//   - 故障剧本 + manifest 快照做回归对账
+// ============================================================
+class CaptureSession {
+public:
+    struct Config {
+        std::string data_root = "/tmp/xgrids";
+        std::string device_sn = "SIM001";
+        std::string calib_hash = "calib_v1";
+        int cam_fps = 20;
+        int64_t sync_window_us = 5000;
+        size_t write_queue_cap = 512;
+        int num_camera_channels = 4;
+        // 分辨率：测试用 640x480 控制数据量；演示用全分辨率
+        uint32_t frame_width = 1920, frame_height = 1080;
+        bool use_clock_model = true;
+        bool use_imu_interp = true;
+    };
+
+    using UiCb = std::function<void(const QualityReport&)>;
+    using DoneCb = std::function<void(const SessionReport&)>;
+
+    CaptureSession(Config cfg, UiCb ui_cb, DoneCb done_cb);
+    ~CaptureSession();
+
+    bool start(const std::string& scan_id);
+    SessionReport stop();
+    SessionState state() const { return state_.load(); }
+
+    // 故障注入（测试用）
+    void inject_camera_drop(int ch, int n);
+    void inject_rtk_loss(int ms);
+    void inject_cpu_heat(int temp_x10);
+    void inject_slowdown(int ch, double factor);
+    void inject_camera_jitter(int ch, int64_t jitter_us);
+
+    // 诊断观测（测试/调试用）
+    double cam_drift_ppm(int ch) const;
+    bool clock_converged() const;
+    const TimeAligner& aligner() const { return aligner_; }
+
+private:
+    void writer_loop();
+    void aligner_loop();
+    void quality_loop();
+    void process_event(const SensorEvent& e);
+
+    Config cfg_;
+    UiCb ui_cb_;
+    DoneCb done_cb_;
+    std::atomic<SessionState> state_{SessionState::kIdle};
+    std::atomic<bool> running_{false};
+
+    TimeAligner aligner_;
+    SyncMonitor monitor_;
+    ManifestRecorder manifest_;
+    QualityFeedback quality_;
+    StorageBackend storage_;
+    std::unique_ptr<Uploader> uploader_;
+
+    std::vector<std::unique_ptr<CameraSim>> cams_;
+    std::unique_ptr<LidarSim> lidar_;
+    std::unique_ptr<ImuSim> imu_;
+    std::unique_ptr<GnssSim> gnss_;
+
+    // 硬件触发：四路相机共享同一触发脉冲（模拟真实曝光同步）
+    HwTrigger trig_;
+    std::thread trig_thread_;
+
+    std::vector<std::thread> cam_threads_;
+    std::thread writer_th_, align_th_, quality_th_;
+
+    RingBuffer<SensorEvent> event_q_{4096};
+    RingBuffer<AlignedSlice> write_q_{cfg_.write_queue_cap};
+
+    std::string scan_id_;
+    int64_t scan_start_us_ = -1;
+    std::atomic<int> cpu_temp_x10_{250};
+    std::atomic<double> motion_speed_{0.5};
+    std::atomic<double> ambient_lux_{300.0};
+    std::atomic<bool> rtk_locked_{true};
+};
+
+}  // namespace xgrids

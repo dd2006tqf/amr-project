@@ -1,0 +1,61 @@
+build/
+*.pyc
+__pycache__/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+install/
+log/
+
+# ccache 缓存目录（entrypoint.server.sh 把容器内 CCACHE_DIR 指到
+# /workspace/.ccache，映射到宿主机的 <repo>/.ccache）。属本地产物，不入库。
+.ccache/
+
+# 个人简历等非项目文件，不应进入公开仓库
+*.pdf
+*简历知识库.md
+
+# 工作流计划与审查产物（不入库）
+docs/superpowers/
+
+# check_all.sh 每次运行生成的测试矩阵（由脚本如实重写，只作本地产物）
+test_report_matrix.json
+
+# 地图导入引擎生成的拓扑站点文件（由 map_ingest_node 运行时生成）
+config/generated/
+
+# check_web_console_e2e.sh 在容器内工作区留下的临时运行目录
+.wc_stamp/
+
+# 运行时持久化产物（调度状态快照 / 审计 JSONL / 幂等键），由节点按参数生成
+runtime/
+# e2e 在容器内工作区留下的临时运行目录
+.pers_stamp/
+.hard_stamp/
+.metrics_stamp/
+.health_stamp/
+.topo_stamp/
+*.tmp
+.tmp
+
+# 本地截图/临时图片，不入库
+*.png
+
+# ============================================================
+# vendor/ 的硬件资料必须入库（放在最后，因为 git 规则「后写优先」）
+# ------------------------------------------------------------
+# 上面的 `*.pdf` 是为排除个人简历而设的，但会把 vendor 下真正需要的
+# 原理图一并排掉：
+#   · 硬件/5.原理图/主控板.pdf   —— 查 GPIO 走线与 AT8236 的
+#     ISEN/nFAULT 是否接线的**唯一依据**，缺了就无法补 G3
+#   · 硬件/5.原理图/图传摄像头.pdf
+#   · leap_ros.png               —— README 引用的整车照片
+#
+# 用**精确路径**而不是 `vendor/**` 通配：后者会连带放行 micro-ROS 的
+# banner 图与测试夹具 png，那些是上游自己都忽略的二进制产物。
+# ============================================================
+!vendor/leap_ros2/硬件/5.原理图/
+!vendor/leap_ros2/硬件/5.原理图/**
+!vendor/leap_ros2/leap_ros.png

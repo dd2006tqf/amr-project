@@ -1,0 +1,30 @@
+p='scripts/setup_openssl_sysroot.sh'
+s=open(p,encoding='utf-8').read()
+old = (
+    "    close($fh);\n"
+    "  ' \"$1\" \"$2\"\n"
+    "}\n"
+    "\n"
+    "download() {  # $1=url  $2=outfile\n"
+    "  if command -v curl >/dev/null 2>&1; then\n"
+    "    curl -fsSL --max-time 300 -o \"$2\" \"$1\"\n"
+    "  elif command -v wget >/dev/null 2>&1; then\n"
+    "    wget -q -O \"$2\" \"$1\"\n"
+)
+new = (
+    "    close($fh);\n"
+    "    alarm 0;\n"
+    "  ' \"$1\" \"$2\"\n"
+    "}\n"
+    "\n"
+    "download() {  # $1=url  $2=outfile\n"
+    "  if command -v curl >/dev/null 2>&1; then\n"
+    "    # --connect-timeout 15 + --max-time 60：源不可达时快速失败换下一个源，\n"
+    "    # 不把整个 sysroot 步骤挂死在一个连不上的站点上。\n"
+    "    curl -fsSL --connect-timeout 15 --max-time 60 -o \"$2\" \"$1\"\n"
+    "  elif command -v wget >/dev/null 2>&1; then\n"
+    "    wget -q --connect-timeout=15 --timeout=60 -O \"$2\" \"$1\"\n"
+)
+assert s.count(old) == 1, s.count(old)
+open(p,'w',encoding='utf-8').write(s.replace(old,new))
+print("patched openssl")

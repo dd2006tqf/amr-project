@@ -1,0 +1,176 @@
+import re
+
+p = 'scripts/check_topology_hot_update_e2e.sh'
+s = open(p).read()
+
+# ---- 1. 夹具说明：旁路必须比主链**长**，否则"封 b-c"根本改变不了最短路 ----
+old = '''# ---------------------------------------------------------------------------
+# 夹具拓扑：
+#   a - b - c - d - e      主链（a-b-c-d-e = 8m）
+#   a - n1 - d             旁路（a-n1-d = 4m，所以默认最短路径是 a-n1-d-e）
+# 桥边：d-e 与 a-n1（封掉 a-n1 后 a 仍可经 a-b 连通，但封掉 d-e 会让 e 孤立）
+# 非桥边：b-c（封掉两侧仍连通）
+# ---------------------------------------------------------------------------'''
+new = '''# ---------------------------------------------------------------------------
+# 夹具拓扑：
+#
+#     a -2- b -2- c -2- d -2- e      主链 a..e = 8m
+#      \\                        /
+#       +--5------ n1 ------5--+     旁路 a-n1-d = 10m
+#
+# **旁路刻意比主链长**：这样无叠加层时最短路径是主链 a-b-c-d-e，
+# 封掉 b-c 之后才被迫改走 a-n1-d-e。- 若旁路更短（a-n1-d=6m < 8m），
+# 则封不封 b-c 的最短路都一样是旁路，"路径是否换了"这件事根本测不出来。
+#
+# 边分类（决定每个断言能测什么）：
+#   * 桥边 d-e：封掉后 e 孤立 -> T2 的 would_disconnect_topology
+#   * 非桥边 b-c：a 仍可经 a-n1-d 到 c/d/e，全图连通
+#     -> T4 的"合法提交"，并让 T7 能观察"最短路真的被改写"
+#   * 旁路首段 a-n1：T7 派单后车正压在这条边上 -> T8 的 edge_occupied_in_flight
+# ---------------------------------------------------------------------------'''
+assert old in s
+s = s.replace(old, new)
+
+# ---- 2. 旁路几何：n1 移到 (3,4)，两条边各 5m ----
+s = s.replace('''road_nodes:
+  - id: "n1"
+    x: 3.0
+    y: 1.0
+    yaw: 0.0''', '''road_nodes:
+  - id: "n1"
+    x: 3.0
+    y: 4.0
+    yaw: 0.0''')
+
+s = s.replace('''  - from: "a"
+    to: "n1"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [0.0, 0.0]
+      - [3.0, 1.0]
+  - from: "n1"
+    to: "d"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [3.0, 1.0]
+      - [6.0, 0.0]''', '''  - from: "a"
+    to: "n1"
+    distance_m: 5.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [0.0, 0.0]
+      - [3.0, 4.0]
+  - from: "n1"
+    to: "d"
+    distance_m: 5.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [3.0, 4.0]
+      - [6.0, 0.0]''')
+
+# ---- 3. T7 断言改为读车辆实收订单 ----
+old_t7_head = '''# ---------------------------------------------------------------------------
+# T7：提单 -> 存档路径已避开被封边
+# ---------------------------------------------------------------------------
+echo ""
+echo "[T7] 提单 a->e -> 存档路径避开被封的 b-c"
+# b-c 被封后最短路径应为 a-n1-d-e（a-n1=2, n1-d=2, d-e=2 = 6m），
+# 或者 a-b 绕行（a-b=2，b-c 封了之后 b 回不去）—— 所以只能走 n1 旁路。'''
+new_t7_head = '''# ---------------------------------------------------------------------------
+# T7：提单 -> 下发的 VDA 订单真的绕开了被封边
+# ---------------------------------------------------------------------------
+echo ""
+echo "[T7] 提单 a->e -> 下发的 VDA 订单不含 b、改走旁路 n1"
+# b-c 被封后主链断开，a->e 只能走 a-n1-d-e（5+5+2 = 12m）。
+# 断言对象必须是**车辆实收的订单**，而不是 dispatcher 的日志行：
+# 那条 "VDA 5050 order published: ... (orderId=..., N nodes, M edges, X bytes)"
+# 只有节点计数、没有节点 id，用 grep 找 n1 永远匹配不到（本脚本踩过这个坑）。
+# 模拟车把收到的原始订单原样写进 vehicle_state.json 的 raw_order，
+# 那是"车实际收到了什么"的唯一真源。'''
+assert old_t7_head in s
+s = s.replace(old_t7_head, new_t7_head)
+
+old_assert = '''# 存档路径（mission_route_paths_）体现在下发的 VDA 订单节点序列里：
+# 走 a-n1-d-e 应有 n1 节点，走 a-b-c-d-e 则不会出现 n1
+docker exec "${CONTAINER}" bash -c "grep -o 'orderId=m_topo[^)]*' '${STAMP_DIR}/dispatcher.log' | tail -1" \\
+    | grep -q 'n1' \\
+    || fail "T7 存档路径未绕开被封的 b-c（订单里没有旁路节点 n1）"
+echo "[T7] 派发路径已避开被封边（经过旁路 n1）(PASS)"'''
+
+new_assert = '''# 从车辆状态文件读实收订单的节点序列。模拟车在收到订单时立即落盘，
+# 之后每 0.5s 刷一次；轮询到 orderId 对上为止。
+cat > /tmp/topo_order_nodes.py <<'PYNODES'
+import json
+import sys
+
+path, want = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    print("")
+    raise SystemExit(0)
+raw = data.get("raw_order") or {}
+if raw.get("orderId") != want:
+    print("")
+    raise SystemExit(0)
+print(" ".join(n.get("nodeId", "") for n in raw.get("nodes", [])))
+PYNODES
+docker cp /tmp/topo_order_nodes.py "${CONTAINER}:${STAMP_DIR}/order_nodes.py" >/dev/null
+
+NODES=""
+for ((i = 0; i < 40; i++)); do
+    NODES="$(docker exec "${CONTAINER}" python3 "${STAMP_DIR}/order_nodes.py" \\
+        "${STAMP_DIR}/vehicle_state.json" "m_topo" 2>/dev/null | tr -d '\\r')"
+    [ -n "${NODES}" ] && break
+    sleep 0.25
+done
+[ -n "${NODES}" ] || fail "T7 车辆未收到 m_topo 的订单（raw_order 为空或仍是旧单）"
+echo "[T7] 车辆实收订单节点序列: ${NODES}"
+
+# 双条件：不含被封的 b，且必须经过旁路 n1。
+# 只看"不含 b"不够（路径畸形时也可能不含 b）；只看"含 n1"也不够
+# （无叠加层时主链更短，本来就不该含 n1）。两者同时成立才唯一证明
+# "叠加层生效到了派发路径"。
+case " ${NODES} " in
+    *" b "*) fail "T7 订单里仍有被封的 b（叠加层未生效到派发路径）: ${NODES}" ;;
+esac
+case " ${NODES} " in
+    *" n1 "*) : ;;
+    *) fail "T7 订单未经过旁路 n1（路径没换）: ${NODES}" ;;
+esac
+case " ${NODES} " in
+    *" c "*) fail "T7 订单里仍有被封的 c（b-c 两侧都该绕开）: ${NODES}" ;;
+esac
+echo "[T7] 派发路径已避开被封边，改走旁路 n1 (PASS)"'''
+assert old_assert in s
+s = s.replace(old_assert, new_assert)
+
+# ---- 4. T8：去掉固定 sleep（车一旦到 n1 就测不到"压在边上"）----
+old_t8 = '''echo "[T8] 在途车压在将要封的边上 -> 409 edge_occupied_in_flight"
+# 停掉车辆以外的一切影响：先让车真正起步（离开 a 之前，safe_node 仍是 a）
+sleep 1
+UNDER="$(api block '{"from_station":"a","to_station":"n1","operator_id":"op_e2e","reason":"under vehicle","confirm":true}')"'''
+new_t8 = '''echo "[T8] 在途车压在将要封的边上 -> 409 edge_occupied_in_flight"
+# T7 的订单是 a-n1-d-e，车刚起步（0.6m/s，a-n1 = 5m 要 8.3s）：
+# 此刻 lastNodeId 仍是 a，但物理上正走 a-n1 —— 封这条边就是从车轮下抽路。
+# 不额外 sleep：拖久了车会到 n1，那时 a-n1 已不在剩余航段里，
+# 请求会变成 kUnaffected 而合法通过（那是另一个正确行为，测不到本用例）。
+UNDER="$(api block '{"from_station":"a","to_station":"n1","operator_id":"op_e2e","reason":"under vehicle","confirm":true}')"'''
+assert old_t8 in s
+s = s.replace(old_t8, new_t8)
+
+# ---- 5. 收尾摘要同步 ----
+old_sum = '''echo "   T7  提单路径已避开被封边"'''
+new_sum = '''echo "   T7  下发订单不含被封的 b、改走旁路 n1"'''
+assert old_sum in s
+s = s.replace(old_sum, new_sum)
+
+open(p, 'w').write(s)
+print("patched")

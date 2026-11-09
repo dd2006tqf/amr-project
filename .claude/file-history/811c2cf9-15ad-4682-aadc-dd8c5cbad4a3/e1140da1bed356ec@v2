@@ -1,0 +1,127 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "controller/resume_manager.h"
+
+#include <ctime>
+
+#include "ins_base/log.h"
+#include "ins_base/string_helper.h"
+#include "ins_bll/controller/config/config_param_controller.h"
+#include "ins_config/live_broadcast.h"
+#include "ins_config_key.h"
+#include "ins_error_code_string.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "ResumeManager"
+
+// 续播记录的哨兵语义：last_stop_reason == kUserStop 表示"无有效续播记录"
+// （正常停播或用户已放弃续播）。仅当 last_stop_reason != kUserStop 时
+// 认为存在异常中断遗留的续播现场。
+bool IsAbnormalStop(int32_t stored_reason) {
+  return stored_reason !=
+         static_cast<int32_t>(LiveBroadcastStopReason::kUserStop);
+}
+
+}  // namespace
+
+ResumeManager::ResumeManager() = default;
+
+ResumeManager::~ResumeManager() = default;
+
+InsErrorCode ResumeManager::Initialize() {
+  // 续播记录复用 bll 配置通道，无独立 ibus client；此处仅做可达性自检，
+  // 读失败只告警不阻塞——续播是增强能力，不应阻塞直播主流程。
+  auto readback = ::ins::bll::ConfigController::GetInstance()
+                      .GetConfig<::ins::config::ConfigKey::kLiveBroadcast>();
+  if (!readback.has_value()) {
+    ILOGS_W << "ResumeManager init: config readback failed (non-fatal): "
+            << ins::errc::GetInsErrorCodeString(readback.error());
+  } else {
+    ILOGS_I << "ResumeManager initialized, has_record="
+            << (IsAbnormalStop(readback.value().last_stop_reason) ? "true"
+                                                                  : "false");
+  }
+  return kInsErrorCode_Comm_Success;
+}
+
+bool ResumeManager::HasResumeRecord() {
+  auto readback = ::ins::bll::ConfigController::GetInstance()
+                      .GetConfig<::ins::config::ConfigKey::kLiveBroadcast>();
+  if (!readback.has_value()) {
+    ILOGS_E << "HasResumeRecord: config read failed: "
+            << ins::errc::GetInsErrorCodeString(readback.error());
+    return false;
+  }
+  return IsAbnormalStop(readback.value().last_stop_reason);
+}
+
+InsErrorCode ResumeManager::SaveResumeRecord(LiveBroadcastStopReason reason,
+                                             uint32_t duration_seconds) {
+  // 哨兵守卫：kUserStop 是"无记录"语义，绝不允许写入，防止调用方误用
+  // ShouldSaveResumeRecord 之外的路径把记录"洗掉"。
+  if (reason == LiveBroadcastStopReason::kUserStop) {
+    ILOGS_E << "SaveResumeRecord rejected: kUserStop means no-record, "
+               "use ClearResumeRecord() instead";
+    return kInsErrorCode_Comm_Einval;
+  }
+
+  const uint32_t stop_time_utc = static_cast<uint32_t>(::time(nullptr));
+
+  // 三字段原子化写入：SetGeneralConfig 内部"读共享配置→改字段→写回configd"
+  // 一次完成，避免竞态窗口内被其他写者覆盖。
+  InsErrorCode ret =
+      ::ins::bll::ConfigParamController::GetInstance()
+          .SetGeneralConfig<::ins::config::ConfigKey::kLiveBroadcast>(
+              [reason, duration_seconds, stop_time_utc](
+                  ::ins::config::LiveBroadcastConfig& config) noexcept {
+                config.last_stop_reason =
+                    static_cast<int32_t>(reason);
+                config.last_duration_seconds = duration_seconds;
+                config.last_stop_time = stop_time_utc;
+              });
+
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "SaveResumeRecord failed: "
+            << ins::errc::GetInsErrorCodeString(ret) << " ("
+            << static_cast<int32_t>(ret) << ")";
+    return ret;
+  }
+
+  ILOGS_I << "Save resume record: reason=" << static_cast<int32_t>(reason)
+          << ", duration=" << duration_seconds
+          << "s, stop_time_utc=" << stop_time_utc;
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode ResumeManager::ClearResumeRecord() {
+  // 清除 = 写入哨兵值 kUserStop 并归零附属字段，
+  // 保证下次开机 HasResumeRecord() 严格返回 false。
+  InsErrorCode ret =
+      ::ins::bll::ConfigParamController::GetInstance()
+          .SetGeneralConfig<::ins::config::ConfigKey::kLiveBroadcast>(
+              [](::ins::config::LiveBroadcastConfig& config) noexcept {
+                config.last_stop_reason = static_cast<int32_t>(
+                    LiveBroadcastStopReason::kUserStop);
+                config.last_duration_seconds = 0;
+                config.last_stop_time = 0;
+              });
+
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "ClearResumeRecord failed: "
+            << ins::errc::GetInsErrorCodeString(ret) << " ("
+            << static_cast<int32_t>(ret) << ")";
+    return ret;
+  }
+
+  ILOGS_I << "Clear resume record";
+  return kInsErrorCode_Comm_Success;
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

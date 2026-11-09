@@ -1,0 +1,88 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 续播管理器
+
+#pragma once
+
+#include <cstdint>
+
+#include "camera_live_broadcast_common.h"  // ERPC生成的枚举定义
+#include "ins_error_code/ins_errorcode.h"
+
+namespace ins {
+namespace live_broadcast {
+
+// ERPC公共类型别名
+// 说明：将ERPC生成的类型引入本命名空间，用于续播管理器接口
+// 作用域：仅限于 ins::live_broadcast 命名空间内部
+
+/// 直播停止原因枚举（来自ERPC定义）
+using LiveBroadcastStopReason =
+    ::ins::ibus::camera::live_broadcast::LiveBroadcastStopReason;
+
+/**
+ * @brief 续播管理器
+ * @details 负责异常续播记录的保存和恢复
+ *          根据顶层设计文档要求：
+ *          - 通过configd持久化存储续播状态
+ *          - 判断续播：last_stop_reason != kUserStop
+ *          - 异常停播时保存：last_stop_reason, last_duration_seconds,
+ * last_stop_time
+ *          - 正常停播或用户取消续播时清除：last_stop_reason = kUserStop
+ * @note 不可复制，仅可移动（管理持久化状态）
+ */
+class ResumeManager {
+ public:
+  ResumeManager();
+  ~ResumeManager();
+
+  // 禁止拷贝
+  ResumeManager(const ResumeManager&) = delete;
+  ResumeManager& operator=(const ResumeManager&) = delete;
+
+  // 允许移动
+  ResumeManager(ResumeManager&&) = default;
+  ResumeManager& operator=(ResumeManager&&) = default;
+
+  /**
+   * @brief 初始化续播管理器
+   * @details 创建ibus config client
+   * @return InsErrorCode
+   */
+  InsErrorCode Initialize();
+
+  /**
+   * @brief 检查是否有续播记录
+   * @details 从configd读取last_stop_reason，判断是否为异常停播
+   * @return true: 有续播记录（last_stop_reason != kUserStop）
+   *         false: 无续播记录（last_stop_reason == kUserStop）
+   */
+  bool HasResumeRecord();
+
+  /**
+   * @brief 保存续播记录
+   * @details 异常停播时调用，写入configd
+   * @param[in] reason 停止原因（kNetworkError/kSystemError/kBatteryLow等）
+   * @param[in] duration_seconds 直播时长（秒）
+   * @return InsErrorCode
+   * @retval kInsErrorCode_Comm_Success 成功
+   * @retval kInsErrorCode_Comm_Failure 失败
+   */
+  InsErrorCode SaveResumeRecord(LiveBroadcastStopReason reason,
+                                uint32_t duration_seconds);
+
+  /**
+   * @brief 清除续播记录
+   * @details 正常停播或用户取消续播时调用，设置last_stop_reason=kUserStop
+   * @return InsErrorCode
+   * @retval kInsErrorCode_Comm_Success 成功
+   * @retval kInsErrorCode_Comm_Failure 失败
+   */
+  InsErrorCode ClearResumeRecord();
+
+ private:
+  // TODO(yinjun|2025-12-30): 添加成员变量
+  // std::shared_ptr<ibus::ConfigClient> config_client_;
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

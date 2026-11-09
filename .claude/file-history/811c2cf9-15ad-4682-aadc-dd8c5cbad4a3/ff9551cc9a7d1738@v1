@@ -1,0 +1,149 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+#include "camera_live_broadcast_common.h"  // ERPC生成的枚举定义
+#include "ins_base/fsm.hpp"
+
+namespace ins {
+namespace live_broadcast {
+
+// 前向声明
+class LiveStateMachine;
+class StreamController;
+class NetworkController;
+class ConfigManager;
+class ResumeManager;
+
+// ============================================================================
+// ERPC公共类型别名
+// ============================================================================
+// 说明：将ERPC生成的类型引入本命名空间，简化模块内部使用
+// 理由：这些类型在直播模块内部被广泛使用，使用类型别名可提高可读性
+// 作用域：仅限于 ins::live_broadcast 命名空间内部
+
+/// 直播状态枚举（来自ERPC定义）
+using LiveBroadcastState =
+    ::ins::ibus::camera::live_broadcast::LiveBroadcastState;
+
+/// 直播停止原因枚举（来自ERPC定义）
+using LiveBroadcastStopReason =
+    ::ins::ibus::camera::live_broadcast::LiveBroadcastStopReason;
+
+/// 直播错误码枚举（来自ERPC定义）
+using LiveBroadcastErrorCode =
+    ::ins::ibus::camera::live_broadcast::LiveBroadcastErrorCode;
+
+/**
+ * @brief 直播状态机内部事件枚举
+ * @details 用于状态机内部事件驱动，不对外暴露
+ */
+enum class LiveBroadcastEvent : int32_t {
+  // 进入准备状态（对应RPC: LiveBroadcastPrepare）
+  kIntoPrepare = 0,
+
+  // 准备完成（WIFI连接成功，可以开始推流）
+  kPrepareComplete,
+
+  // 启动成功（RTMP连接成功，进入Running状态）
+  kStartSuccess,
+
+  // 启动失败（模式切换失败或RTMP连接失败）
+  kStartFailed,
+
+  // 恢复续播（用户选择继续上次直播，对应RPC: LiveBroadcastResume）
+  kResume,
+
+  // 丢弃续播（用户选择不继续上次直播，对应RPC: LiveBroadcastDiscardResume）
+  kDiscardResume,
+
+  // 停止请求（对应RPC: LiveBroadcastStop）
+  kStopRequest,
+
+  // 停止完成（资源清理完成，回到Idle状态）
+  kStopComplete,
+
+  // 取消操作（用户取消当前操作，如取消配网）
+  kCancel,
+
+  // 错误事件（网络错误、系统异常等）
+  kError,
+
+  // 事件总数
+  kEventNum,
+};
+
+// ============================================================================
+// tinyfsm事件结构体
+// ============================================================================
+
+/**
+ * @brief 准备请求事件
+ */
+struct EventPrepareRequest : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 准备完成事件（WIFI连接成功）
+ */
+struct EventPrepareComplete : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 启动请求事件
+ */
+struct EventStartRequest : public ins::base::tinyfsm::Event {
+  std::string rtmp_url;  ///< RTMP推流地址
+};
+
+/**
+ * @brief 启动成功事件（RTMP连接成功）
+ */
+struct EventStartSuccess : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 启动失败事件
+ */
+struct EventStartFailed : public ins::base::tinyfsm::Event {
+  LiveBroadcastErrorCode error_code;  ///< 错误码
+  std::string message;                ///< 错误消息
+};
+
+/**
+ * @brief 停止请求事件
+ */
+struct EventStopRequest : public ins::base::tinyfsm::Event {
+  LiveBroadcastStopReason reason;  ///< 停止原因
+};
+
+/**
+ * @brief 停止完成事件
+ */
+struct EventStopComplete : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 取消操作事件
+ */
+struct EventCancel : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 错误事件
+ */
+struct EventError : public ins::base::tinyfsm::Event {
+  LiveBroadcastErrorCode error_code;  ///< 错误码
+  std::string message;                ///< 错误消息
+};
+
+/**
+ * @brief 恢复续播事件（对应RPC: LiveBroadcastResume）
+ */
+struct EventResume : public ins::base::tinyfsm::Event {};
+
+/**
+ * @brief 丢弃续播事件（对应RPC: LiveBroadcastDiscardResume）
+ */
+struct EventDiscardResume : public ins::base::tinyfsm::Event {};
+
+}  // namespace live_broadcast
+}  // namespace ins

@@ -1,0 +1,120 @@
+# Phase 10 — 大规模多智能体协同寻路引擎强化（PBS 优先级时空规划与自适应降级）
+
+> 本阶段为高层协同寻路算法的强化阶段（**Phase 10: Prioritized Planning / PBS & Solver Fallback**）。
+> Phase 8 (工业物理设施 Modbus-TCP) 与 Phase 9 (CBS 核心搜索器) 已全绿归档（`phase-8-green` / `phase-9-green`）。
+> 全仓 1031/1031 测试与 7 套 E2E 脚本全部通过。
+
+## Context
+
+在仓储密集作业区，多智能体路径规划（MAPF）面临着两极化挑战：
+1. **小规模/强冲突场景（2~5 台在瓶颈单道交互）**：CBS（基于冲突树搜索）能够穷举时空约束分支，找到具有全局最优性（Sum-of-Costs 最小）的无碰撞轨迹；
+2. **大规模/高密度车队场景（8~16 台车并发交错，或极端复杂拓扑）**：CBS 高层约束树的节点展开数呈指数级上升，若超过计算预算或时限，CBS 会直接返回无解；
+3. **目标点占有（Goal-Hold）安全盲区**：当车辆到达目标站后原地驻留，其位置在原有模型中随轨迹结束而消失，若后续车辆途径同一站点极易发生物理冲撞。
+
+### 核心设计原则
+1. **零 ROS / 纯 C++ 核心，高速可测**：
+   - 算法实现位于 `src/amr_dispatcher_core/planning/`；
+   - 依赖现有 `SpaceTimeAStar` 底层引擎，100% 可以在宿主机执行纯 C++ 单测秒级回归。
+2. **多求解器协同分级策略（Solver Fallback & Auto Tiering）**：
+   - **智能分流（Adaptive Policy）**：
+     - 当协同任务数 $\le 8$ 且拓扑良好时：优先运行 **CBS 搜索**，力求全局最优；
+     - 当任务数较多或 CBS 触发超时/最大约束树节点数（`max_ct_nodes`）耗尽时：**无缝自适应降级至带优先级的时空搜索（Prioritized Planning / PBS）**；
+   - **确定性优先级编排（Deterministic Priority Ordering）**：
+     - 支持按预设优先级、行程长短（Shortest First / Longest First）排序，同分依据 `agent_id` 全序打破 tie-break，保证计算过程 100% 确定性可复现。
+3. **目标点终态驻留安全保证（Goal-Hold Constraint）**：
+   - 智能体到达终点后，自动向后续低优先级智能体注入持续至时间地平线（Horizon）的顶点约束，确保到达驻留的车辆绝对不被后来车辆“穿身穿越”。
+4. **统一校验与零冲突门禁（Zero-Collision Verifier）**：
+   - 所有求解器输出必须通过 `DetectFirstConflict` 终审门禁校验，若存在残留冲突绝不提交，保证真实安全性。
+
+---
+
+## 阶段规划 (P0 → P1 → P2 → P3)
+
+### P0：优先时空规划引擎实现 (Prioritized Path Finder)
+
+#### 目标
+实现纯函数 `PlanPrioritizedPaths`，支持高优先级车辆先走、低优先级车辆按先走车辆的时空轨迹作为硬约束进行动态避让规划。
+
+#### 核心文件 (`src/amr_dispatcher_core/planning/prioritized_planning.hpp` & `.cpp`)
+1. **优先级编排枚举与参数**：
+   - `PriorityOrder`：`kGiven`（指定优先级）、`kShortestFirst`（最短行程优先）、`kLongestFirst`（长程优先）；
+   - `PrioritizedOptions`：重试阶梯（`horizon_retries` 动态放宽时空地平线）、`hold_agents_at_goal`（目标驻留保护）。
+2. **执行流程**：
+   - 排序阶段：根据各智能体单车最短路耗时与预设计算优先级排序；
+   - 迭代求解：对高优先级智能体依次规划时空轨迹，将规划所得的 `TimedPath` 转换为后续低优先级智能体的 `VertexConstraint` 与 `EdgeConstraint`；
+   - 驻留约束注入：高优先级车辆到达终点 $G$ 于时刻 $t_{arrive}$，自动注入 $\forall t \in [t_{arrive}, T_{horizon}], (G, t)$ 顶点禁止约束；
+   - 最终冲突校验：运行全局冲突检测，保证完全零碰撞。
+
+#### 单元测试 (`test/unit/test_prioritized_planning.cpp`)
+- 2 车狭窄通道错峰：高优先级直达，低优先级自动寻找时空避让点或原地等待；
+- 目标点驻留保护测试：前车停靠终点，后车绝对绕开该站点，杜绝终态冲撞；
+- 4~6 车密集队列串行化通行测试。
+
+---
+
+### P1：高层 MAPF 综合求解器门面与自适应降级 (Unified MAPF Solver)
+
+#### 目标
+将 CBS 与 Prioritized 统一收拢至门面求解器 `SolveMAPF`，实现策略驱动的自动降级调度。
+
+#### 核心文件 (`src/amr_dispatcher_core/planning/mapf_solver.hpp` & `.cpp`)
+1. **策略模型与结果**：
+   - `MAPFPolicy`：`kAuto`（根据车数与预算自动降级）、`kCBSOnly`、`kPrioritizedOnly`；
+   - `cbs_agent_threshold = 8`：智能体 $\ge 8$ 时直接走高速 PBS；
+   - `fallback_to_prioritized = true`：CBS 超预算（`kBudgetExhausted`）自动回退到 PBS；
+   - `MAPFSolution`：记录最终求解器（`cbs`、`prioritized` 或 `cbs->prioritized`）及降级原因 `fallback_reason`。
+
+#### 单元测试 (`test/unit/test_mapf_solver.cpp`)
+- CBS 节点超限主动降级为 PBS 并成功输出无冲突路径；
+- 大规模智能体自动选择 PBS 高速求解；
+- 求解失败安全回退与全状态机保底。
+
+---
+
+### P2：调度器时空协调工作流接入 (Workflow Integration)
+
+#### 目标
+在 `cbs_traffic_coordinator` 中引入 `MAPFPolicy`，并在调度主节点支持多智能体批量求解。
+
+#### 核心改动 (Core & ROS)
+1. **协调器升级 (`cbs_traffic_coordinator.hpp` & `.cpp`)**：
+   - 接口兼容：保留 `PlanCBSMultiMissionCoordination` 接口（内部调用 `SolveMAPF` 具备降级能力）；
+   - 在途与排队批量协同：支持对多车队列统一派发联合时空窗口。
+2. **参数扩展 (`dispatcher_node.cpp`)**：
+   - 支持配置 `cbs_agent_threshold` 与 `mapf_policy`。
+
+---
+
+### P3：端到端集成测试与 CI 流水线 (Verification)
+
+#### 目标
+通过端到端仿真，对比验证 CBS 与 Prioritized Planning 在多车狭窄场景下的协同效果。
+
+#### 交付物
+1. **集成测试扩充 (`scripts/check_cbs_coordination_e2e.sh`)**：
+   - 增加 Stage 5：验证高密度智能体下 CBS 触发降级后 PBS 成功错峰通行的自动化断言；
+2. **全仓测试回归**：
+   - `ctest --test-dir build/core` 全绿；
+   - Docker 容器内全包测试回归。
+
+---
+
+## 验证与验收准则
+
+| 检验项 | 命令 | 预期 |
+|---|---|---|
+| Core 单测 | `ctest --test-dir build/core` | 全绿（现有 895 + 新增 PBS 单测全 PASS） |
+| ROS 测试 | `colcon test --packages-select amr_dispatcher_core amr_dispatcher_ros` | 全绿 |
+| 现有全部 7 套 E2E | 依次运行既有 e2e 脚本 | 全部 PASS（零回归） |
+| CBS+PBS 协同 E2E | `./scripts/check_cbs_coordination_e2e.sh` | 退出码 0，断言降级回退与多车错峰通行 |
+| 文档同步 | 更新 `README.md` | 如实记录 Prioritized Planning 与自适应降级机制 |
+
+---
+
+## 提交批次规划
+
+1. `feat(core): 优先级时空多智能体寻路算法 (Prioritized Planning) 与目标驻留保护 (P0)`
+2. `feat(core): 统一MAPF门面求解器与CBS超限自适应降级引擎 (P1)`
+3. `feat(core+ros): 协同交通协调器接入降级策略与批量调度优化 (P2)`
+4. `test(e2e): check_cbs_coordination_e2e脚本接入PBS降级断言 (P3)`
+5. `docs: 更新 README 与多车交通协调特性文档`

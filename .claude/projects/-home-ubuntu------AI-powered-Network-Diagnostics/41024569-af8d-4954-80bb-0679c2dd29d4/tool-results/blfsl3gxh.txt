@@ -1,0 +1,886 @@
+=========== docs/架构设计-五层权责契约.md ===========
+575 docs/架构设计-五层权责契约.md
+# 架构设计：五层权责契约 v1
+
+> **文档状态**：v1 架构权威文档（2026-10-03 定稿）
+> **权威关系**：本文是产品分层权责与层间契约的唯一权威来源；领域对象语义仍以
+> `docs/产品定位-工业无线诊断网关.md` 为唯一权威来源，两者互补不冲突。
+> **适用范围**：后续所有 Prediction（预测）、Network Operations Council（决策）、
+> Web（呈现与交互）改动，均以本文契约为验收依据；违背本文分层的提案，应被
+> Code Review 直接驳回。
+
+---
+
+## 总则（一句话原则）
+
+> **事实只由 L1 产生；诊断只由 L2 产生；预测只由 L3 产生；动作权限只在 L4 收口；
+> L5 只执行已批准动作。执行结果只能作为新的 L1 事实回流。
+> Web 不推断、不裁决、不直接执行，只承载展示与人工审批。**
+
+这句话是本文档的最高条款。后续任何人提出"让 Council 顺便判断根因""前端按钮直接调
+`pending_actions`""预测模型顺便修改板端告警阈值"之类的建议，均以此句作答：
+**不属于这一层的权力。**
+
+---
+
+## 一、总架构图
+
+```text
+                 工业现场（唯一事实源）
+                      │
+      ┌───────────────▼────────────────┐
+      │ L1 OBSERVATION  观测层          │  ← WeakNet 边缘（C++ / eBPF）
+      │ 边缘实时观测，权威事实源       │
+      │ device_events / site_incidents  │
+      │ baselines / env_window / SLE    │
+      └───────┬────────────────┬───────┘
+              │                │
+    【契约A：事实下行】    【契约A：事实下行】
+              │                │
+      ┌───────▼───────┐  ┌─────▼──────────┐
+      │ L2 DIAGNOSIS  │  │ L3 PREDICTION  │
+      │ 诊断层        │  │ 预测层         │
+      │ 现在为什么坏  │  │ 未来可能怎样   │
+      │ Phase 4b      │  │ RiskWindow     │
+      └───────┬───────┘  └─────┬──────────┘
+              │                │
+   【契约B：Canonical】  【契约C：RiskWindow】
+              └────────┬───────┘
+                       │ 【契约D：CouncilInput（只读消费）】
+              ┌────────▼─────────┐
+              │ L4 DECISION      │
+              │ 决策层           │  ← Network Operations Council
+              │ 现在应该做什么    │     + Action Policy Validator
+              │                  │     + Risk Policy + Human Approval
+              └────────┬─────────┘
+                       │ 【契约E1/E2：ApprovedAction】
+    
+=========== docs/网络体验评价体系.md ===========
+732 docs/网络体验评价体系.md
+# WeakNet 网络体验评价体系
+
+> 本文档是 WeakNet 评价模型的正式说明。阈值与判定逻辑**以代码为准**，文档描述当前实现状态；标注「待补」的部分属于后续增量。
+>
+> 最近更新：2026-09-12
+
+## 一、这份文档要回答什么
+
+WeakNet 的交付物不是一堆 eBPF 探针，而是一套评价体系。它要回答用户真正关心的三个问题：
+
+> **现在网络能不能正常用？**
+> **如果不能用，问题出在哪一层？**
+> **系统有什么真实证据证明这个结论？**
+
+反面例子：`网络质量：68 分`。这种输出既无法解释，也无法定位。
+
+正面例子：
+
+```text
+Internet Access: BAD
+Primary Issue: DNS resolution failure
+
+Evidence:
+  ✓ Wi-Fi link healthy
+  ✓ IP gateway reachable
+  ✓ RTT median 21 ms
+  ✓ TCP retransmission 0.4%
+  ✗ DNS transactions timed out (3 consecutive, no success interleaved)
+  ✓ Observer healthy, no capture loss
+
+Conclusion: 基础网络正常，当前故障位于 DNS 服务层。
+```
+
+## 二、模型结构
+
+```text
+                       Raw Evidence
+    Ping / eBPF / nl80211 / Netlink / DNS
+                              │
+                              ▼
+                    Evidence Capture
+                              │
+                              ▼
+                【Evidence Quality】          ← 本增量新增的关键一层
+                              │
+                              ▼
+                  Metrics / Transactions
+                              │
+             ┌────────────────┼────────────────┐
+             ▼                ▼                ▼
+      Core Network SLE   Service SLE      Advisory SLE
+             │                │                │
+      Reachability           DNS              RF Health
+      Responsiveness     TCP Connect      共存干扰
+      Reliability        HTTP Access
+                           Captive Portal
+             └────────────────┼────────────────┘
+                              ▼
+                   OverallPolicy(profile)
+                              │
+                  Coverage / Applicability
+                              ▼
+                     StateStabilizer
+                              ▼
+       ┌──────────────────────┼──────────────────────┐
+       ▼                      ▼                      ▼
+  Overall State         Primary Issue          Evidence
+  BAD/DEGRADED/GOOD     根因定位               证据链
+       │
+       ▼
+  display_score / legacy 0~4   （仅兼容投影）
+```
+
+**核心转变**：不再有公式把 RTT、RSSI、丢包、DNS 加权混成一个总分——那样一个维度的好会掩盖另一个维度的严重故障。状态与证据是内部真值。
+
+## 三�
+=========== docs/蓝牙监控优化实现方案.md ===========
+1226 docs/蓝牙监控优化实现方案.md
+# 蓝牙监控优化 — 最终实施方案与实施计划
+
+> **文档版本**：v2.1  
+> **编制日期**：2026-07-24  
+> **文档状态**：✅ 已实施（2026-08-05 核对代码确认，5 个模块均已落地）  
+> **适用项目**：AI-powered-Network-Diagnostics / WEAK_NET Server  
+> **实施核对**：频段冲突检测器（`band_conflict_detector.hpp`）、A2DP 音频融合（`bt_audio_fusion.cpp`）、eBPF 蓝牙流量采集（`a2dp_media.bpf.c` + `bt_audio_analyzer.cpp`）、D-Bus/eBPF 融合层（`bt_monitor.cpp:getAudioFusionResult`）均已实现并接入 `server.cpp` 的蓝牙监控线程。  
+> **构建方式更正（2026-09-24）**：本文 6.2 节 T6 与 6.3 节提到的「Makefile 规则 / 修改 `server/Makefile`」是规划当时的写法；项目自 2026-08 起唯一构建系统为 CMake（`server/Makefile` 已移除），该 eBPF 对象实际由 `server/CMakeLists.txt` 的 `add_custom_command` + `ebpf` target 编译。下文保留原文以如实记录规划过程。
+
+---
+
+## 目录
+
+- [1. 项目背景](#1-项目背景)
+- [2. 目标与范围](#2-目标与范围)
+- [3. 技术路线选型](#3-技术路线选型)
+- [4. 详细技术实现方案](#4-详细技术实现方案)
+  - [4.1 总体架构](#41-总体架构)
+  - [4.2 模块一：频段冲突检测器](#42-模块一频段冲突检测器)
+  - [4.3 模块二：A2DP 音频质量监控](#43-模块二a2dp-音频质量监控)
+  - [4.4 模块三：设备距离估算](#44-模块三设备距离估算)
+  - [4.5 模块四：eBPF 蓝牙流量采集](#45-模块四ebpf-蓝牙流量采集)
+  - [4.6 模块五：D-Bus/eBPF 融合层](#46-模块五d-busebpf-融合层)
+  - [4.7 数据流程设计](#47-数据流程设计)
+  - [4.8 线程调度与集成](#48-线程调度与集成)
+  - [4.9 NetInfo 扩展](#49-netinfo-扩展)
+  - [4.10 事件集成](#410-事件集成)
+- [5. 资源需求](#5-资源需求)
+- [6. 分阶段实施计划](#6-分阶段实施计划)
+- [7. 风险管理策略](#7-风险管理策略)
+- [8. 质量保障措施](#8-质量保障措施)
+- [9. 验收标准](#9-验收标准)
+- [10. 项目时间线](#10-项目时间线)
+
+---
+
+## 1. 项目背景
+
+### 1.1 项目概述
+
+本项目为 `WEAK_NET Server`（AI-powered-Network-Diagnostics）的蓝牙监控子系统优化工程。当前蓝牙监控线程已实现对 BlueZ 适配器状态、设备发现、RSSI 信号强度、连接/配对状态的基础监控，但存在以下关键能力缺失：
+
+| 不足项 | 影响 | 优先级 |
+| ------ | ---- | ------ |
+| 不监控蓝牙音频质量 | 无法发现"蓝牙卡顿"问题 | 中 |
+| 无法检测 Wi-Fi/蓝牙频段冲突 | 漏报"2.4GHz 干扰"场景 | 高 |
+| 无法估算设备距离 | 缺乏空间感知能力 | 低 |
+| 无音频编解码器信息 | 无法判断音频带宽限制 | 低 |
+
+### 1.2 现有能力基线
+
+| 能力 | 实现方式 | 代码位置 |
+| ---- | -------- | -------- |
+| 适配器状态监控 | BlueZ D-Bus Adapter1 接口 | `refreshAdapterState()` |
+| 设备发现与管�
+=========== docs/多网关空口空间拓扑融合设计.md ===========
+183 docs/多网关空口空间拓扑融合设计.md
+# 多网关空口空间拓扑融合设计（Phase 5+）
+
+> **状态**：设计文档（**只出设计，不写实现**）
+> **编制**：2026-10-03
+> **前置**：第 3 项（物理拓扑元数据）与第 4 项 M1/M2（身份解耦与现场聚合视图）已落地。
+> **定位依据**：`docs/产品定位-工业无线诊断网关.md` 第五节"三层模型与当前边界"。
+
+---
+
+## 一、这份文档要回答什么
+
+产品长期目标是**多网关组网**（一个车间/仓库不会只有一个采集点）。M1/M2 已经把
+"身份能表达多网关"做出来了，但**空间语义**仍是空白。本文件回答四个问题：
+
+1. 多网关对同一 AP 的观测如何合并（BSSID 空间图）；
+2. 同一设备被多台网关先后观测如何形成轨迹（设备空间轨迹）；
+3. 同一现场多台网关各起一起事故，是否算同一物理事件（区域事故归并）；
+4. 上述推断在什么情况下**必须放弃**（不确定性边界）。
+
+**本文件不预决实现方案**，只定义问题边界、必需的数据模型与判据纪律。
+
+---
+
+## 二、当前边界（实话）
+
+| 能力 | 现状 |
+|---|---|
+| 单网关设备观测（RSSI/断连/基线） | ✅ Phase 1/2 已有 |
+| `site_id` / `gateway_id` 身份分离 | ✅ M1 已有（`incident_id` 含 gateway 段） |
+| 同 site 多网关观测共存与现场视图 | ✅ M2 已有（窗口并入、qualifying 纯净） |
+| **网关物理坐标** | ❌ 完全缺失（`network_assets.location` 是自由文本） |
+| **跨网关时序对齐** | ❌ 缺失（各板晶振独立，只有 NTP 粗对齐） |
+| **多点 RSSI 联合定位** | ❌ 缺失 |
+| **盲区判定** | ❌ 缺失 |
+
+M2 之后，规则引擎已经**看得见**同一现场的其它网关观测，但没有任何空间信息可用——
+这正是本文件要补的部分。
+
+---
+
+## 三、问题一：BSSID 空间图
+
+### 输入
+
+第 3 项已在遥测快照里上行 `ap_bssid` / `ap_ssid` / `link_type`（含精确频段）。
+每台网关各自知道自己关联的是哪个 AP。
+
+### 关键洞察
+
+同一车间里，多台网关**听到同一个 AP 的 BSSID** 是常态（AP 覆盖重叠）。
+BSSID 是 IEEE 分配、全球唯一且**不随机化**的（与设备 MAC 不同），因此它是
+唯一可靠的"固定锚点"。
+
+### 由此可以做什么
+
+- **锚点图**：把 `BSSID → {gateway_id, RSSI, 时间}` 聚合成"哪几台网关能听到哪个 AP"；
+  这给出了**网关之间的相对位置约束**（能同时听到同一 AP 的网关必然地理接近）。
+- **环境证据**：AP 数量与信道分布在 site 内是稳定事实，可作为区域级环境基线。
+
+### 需要的新数据
+
+| 项 | 说明 |
+|---|---|
+| `network_gateway_deployments` | 每个 gateway 的物理坐标 `(x, y, z)`、天线朝向、有效观测半径、标定时间。**当前不存在**，需要现场勘测填入 |
+| AP 锚点聚合视图 | 从 `network_wireless_events` 之外的遥测快照抽取 `ap_bssid` 按 gateway �
+=========== docs/学习路线图.md ===========
+820 docs/学习路线图.md
+# AI 驱动的网络质量诊断平台 — 学习路线与扩展文档
+
+> 版本：v2.0  
+> 适用对象：项目维护者、二次开发者、端侧部署工程师、AI 集成工程师  
+> 文档目的：系统梳理本项目代码结构、学习顺序、端侧部署路线、端侧 AI 集成路线，并从未来扩展、优化方向、应用场景、学习资源等多个维度进行深度扩展。  
+> **更新日期**：2026-10-01。当前代码库已有 10 个 eBPF 程序、17 个监控器插件 + 1 个历史持久化线程、`MonitorManager` 统一生命周期。
+> （原独立 `jitter_monitor` 已裁撤，Jitter 作为 RTT 的衍生指标在 `rtt_monitor` 同一次 ping 采样上计算。）
+
+---
+
+## 目录
+
+- [一、引言](#一引言)
+  - [1.1 项目概述](#11-项目概述)
+  - [1.2 文档目标](#12-文档目标)
+- [二、项目架构与代码结构](#二项目架构与代码结构)
+  - [2.1 顶层目录结构](#21-顶层目录结构)
+  - [2.2 server 模块详细结构](#22-server-模块详细结构)
+  - [2.3 AI 模块详细结构](#23-ai-模块详细结构)
+  - [2.4 模块依赖关系图](#24-模块依赖关系图)
+- [三、推荐学习顺序](#三推荐学习顺序)
+  - [3.1 第一阶段：理解整体架构（1-2 天）](#31-第一阶段理解整体架构1-2-天)
+  - [3.2 第二阶段：数据结构与基础设施（2-3 天）](#32-第二阶段数据结构与基础设施2-3-天)
+  - [3.3 第三阶段：监控采集模块（3-5 天）](#33-第三阶段监控采集模块3-5-天)
+  - [3.4 第四阶段：eBPF 深入（2-3 天）](#34-第四阶段ebpf-深入2-3-天)
+  - [3.5 第五阶段：DBus 通信与事件机制（2-3 天）](#35-第五阶段dbus-通信与事件机制2-3-天)
+  - [3.6 第六阶段：质量评估与蓝牙（2 天）](#36-第六阶段质量评估与蓝牙2-天)
+  - [3.7 第七阶段：AI 智能诊断模块（2-3 天）](#37-第七阶段ai-智能诊断模块2-3-天)
+- [四、端侧部署学习路线](#四端侧部署学习路线)
+  - [4.1 知识体系总览](#41-知识体系总览)
+  - [4.2 P0 必学知识（部署地基）](#42-p0-必学知识部署地基)
+  - [4.3 P1 重要知识（项目相关）](#43-p1-重要知识项目相关)
+  - [4.4 部署全流程（按时间线）](#44-部署全流程按时间线)
+  - [4.5 交叉编译详解](#45-交叉编译详解)
+- [五、端侧 AI 集成学习路线](#五端侧-ai-集成学习路线)
+  - [5.1 P2 端侧 AI 知识](#51-p2-端侧-ai-知识)
+  - [5.2 端侧 AI 部署全流程](#52-端侧-ai-部署全流程)
+  - [5.3 端侧 AI 功能矩阵](#53-端侧-ai-功能矩阵)
+- [六、未来可扩展功能](#六未来可扩展功能)
+  - [6.1 监控能力扩展](#61-监控能力扩展)
+  - [6.2 架构演进](#62-架构演进)
+  - [6.3 AI 能力扩展](#63-ai-能力扩展)
+- [七、潜在优化方向](#七潜在优化方向)
+  - [7.1 性能优化](#71-性能优化)
+  - [7.2 代码质量优化](#72-代码质量优化)
+  - [7.3 工程化优化](#73-工程化优化)
+- [八、结论与展望]
+=========== docs/本地LLM部署方案.md ===========
+705 docs/本地LLM部署方案.md
+# Cubie A7A 本地 LLM 部署方案
+
+> **⚠️ 版本说明（2026-09-24 更新）**：本文档撰写时规划目标为 Qwen2.5-3B，但板端**实测选型为 Qwen2.5-0.5B-Instruct-Q4_K_M**（469MB，解码 ~3.49 tok/s，详见 `架构设计-模块与代码结构.md` §12.4 实测基线）。下文 3B 的容量/性能数字为规划预估值，非实测值。
+>
+> **SoC 拓扑**：Radxa Cubie A7A 搭载 Allwinner A733（`sun60iw2`），为 **2× Cortex-A76 + 6× Cortex-A55** big.LITTLE（§1.1 正确）。注意 `AI_EDGE_DEPLOYMENT_PLAN.md` §3 误写为 "8 核 Cortex-A55"，以本节为准。
+
+## 一、硬件能力分析
+
+### 1.1 关键资源
+
+| 资源 | 规格 | LLM 推理适用性 |
+|------|------|---------------|
+| CPU 大核 | 2× Cortex-A76 @ 2.0GHz | 推理主计算单元，单核 IPC 接近 Intel Skylake 的 70% |
+| CPU 小核 | 6× Cortex-A55 @ 1.8GHz | 辅助计算，token 生成时参与 batch 处理 |
+| RAM | 8GB LPDDR5 (带宽 ~25GB/s) | 足够加载 3-4B 参数的 INT4 量化模型 |
+| GPU | Imagination BXM-4-64 MC1 (Vulkan 1.3 / OpenCL 3.0) | 单核 GPU，Vulkan 后端可卸载部分矩阵运算 |
+| NPU | Vivante VIP9000 (3 TOPS@INT8, FP16/BF16) | Transformer 算子支持有限，不推荐用于 LLM |
+| 存储 | UFS 3.1 128GB (读 ~200MB/s) | 3GB 模型文件 ~15 秒加载完毕 |
+
+### 1.2 内存预算（8GB 总量）
+
+```
+组件                        内存占用      说明
+──────────────────────────────────────────────────
+Linux 系统 + D-Bus          ~400MB        Debian 11 无桌面
+weaknet-dbus-server         ~150MB        C++ 守护进程 + eBPF
+llama.cpp 运行时             ~80MB         推理框架本身
+Qwen2.5-3B Q4_K_M 权重      ~2.0GB        模型参数加载
+KV Cache (2048 ctx)         ~1.5GB        推理上下文缓存
+Python RAG 服务             ~200MB        FAISS + LangChain
+──────────────────────────────────────────────────
+合计                        ~4.33GB
+可用余量                    ~3.67GB       ✅ 充裕
+```
+
+### 1.3 A76 大核纯 CPU 推理的性能预估
+
+基于 llama.cpp ARM NEON 优化，以 Qwen2.5-3B Q4_K_M 为基准：
+
+| 阶段 | 计算量 | 预估耗时 | 说明 |
+|------|--------|---------|------|
+| Prompt 处理 (500 tokens) | O(n²) attention | ~8-15 秒 | 首 token 延迟 (TTFT) |
+| Token 生成 (每 token) | O(n) 自回归 | 55-100ms/tok | 即 10-18 tok/s |
+| 典型诊断回答 (300 tokens) | — | ~17-30 秒 | 生成阶段 |
+| 完整一次 RAG 分析 | — | **25-45 秒** | prompt 处理 + 生成 |
+
+**结论**：一次网络诊断分析的端到端延迟约 30-45 秒，对异步诊断场景完全可用。
+
+---
+
+## 二、总架构设计
+
+### 2.1 系统拓扑
+
+```
+┌─────────────────────────────────────�
+=========== docs/weaknet_cli_usage.md ===========
+592 docs/weaknet_cli_usage.md
+# WeakNet CLI (weaknet-cli) 使用手册
+
+> **版本**：v1.0  
+> **适用平台**：Radxa Cubie A7A (ARM64) / x86_64 开发机  
+> **依赖**：systemd、D-Bus 系统总线、libweaknet.so
+
+---
+
+## 1. 概述
+
+`weaknet-cli` 是 WeakNet 网络诊断平台的**命令行配置管理工具**，用于在开发板上**实时查询、修改监控器参数**，无需重启服务。它是 `libweaknet.so` C API 的薄封装，通过 D-Bus 系统总线与 `weaknet-dbus-server` 通信。
+
+**核心能力**：
+- 🔍 **查询**：实时获取任意监控器的完整参数（JSON 格式）
+- ⚙️ **设置**：实时修改监控器参数（白名单校验、区间校验、原子提交）
+- 📋 **列举**：列出所有可配置的监控器名称
+- 📡 **事件查询**：查询已持久化的无线设备事件（断连等，只读）
+
+> **关键特性**：运行时修改**仅影响内存态**，重启服务后自动回落到 `/etc/weaknet/config.yaml` 的启动配置。这是设计使然——配置文件是“启动快照”，CLI 是“运行时覆盖”。
+
+---
+
+## 2. 安装与前置条件
+
+### 2.1 开发板部署（ARM64）
+
+`weaknet-cli` 随 `tools/ci.sh` 自动打包进 `dist-arm64/client/bin/weaknet-cli`，并由 `tools/ci.sh` 部署到开发板：
+
+```bash
+# 开发板上的路径
+/home/radxa/weaknet/client/bin/weaknet-cli
+```
+
+**依赖**：
+- `libweaknet.so` 必须在系统库路径（`/usr/local/lib/`），由 `tools/ci.sh` 自动部署并 `ldconfig`
+- D-Bus 系统总线（服务端运行在系统总线 `com.example.WeakNet`）
+
+### 2.2 开发机验证（x86_64）
+
+```bash
+# 本地编译（不含 eBPF）
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build-x86 -j$(nproc)
+
+# 二进制位置
+./build-x86/client/bin/weaknet_cli
+```
+
+> 注意：x86 版本需连接开发板的 D-Bus（或本地运行服务端）才能工作。
+
+---
+
+## 3. 命令参考
+
+### 3.1 语法概览
+
+```bash
+weaknet-cli <command> [arguments...]
+
+命令：
+  get <monitor>          查询监控器当前参数（JSON）
+  set <key> <value>      设置参数（白名单校验）
+  list                   列出所有可用监控器名
+  monitor list           列出所有监控器运行状态（JSON）
+  monitor status [name]  查询监控器运行状态
+  monitor enable <name>  启用并启动监控器
+  monitor disable <name> 停止监控器
+  monitor restart <name> 重启监控器
+  monitor save           保存运行时启停状态到 override 文件
+  events [过滤条件]       查询无线设备事件（Canonical Device Event，JSON）
+  incidents [过滤条件]    查询区域级异常事件（SiteIncident，JSON）
+  diagnosis              查询当前网络确定性诊断事实（DiagnosisFacts，JSON）
+  experience             查询当前网络体验权威快照（NetworkExperience Schema v2，JSON）
+  action <action_id> [<key> <val>] 执行白名单安全排查动作（仅限 root）
+  update status          查询 OTA 本地升级状态（只�
+=========== docs/W3参数校准规范.md ===========
+104 docs/W3参数校准规范.md
+# WeakNet W3 参数分类与校准规范（Calibration & Holdout）
+
+本文档按照 Assurance v1 架构规范，将全系统参数划分为三类，并规划 Active 与 Passive 分离的 **Calibration Set（校准集）** 与 **Holdout Set（验证集）**。
+
+---
+
+## 一、三类参数分类冻结
+
+### A. 评价模型阈值（通过实测数据校准，反映用户真实体验分界）
+
+| 模块 / 维度 | 参数项 | 现有工程初值 | 校准依据与目标 | 备注 |
+|---|---|---|---|---|
+| **DNS Service** | `error_ratio_degraded` | 5% (0.05) | 事务失败率达到轻微可感知影响阈值 | 递归/权威偶尔偶发波动 |
+| | `error_ratio_bad` | 20% (0.20) | 事务失败率导致严重无法解析网络 | 主机解析能力大面积受损 |
+| | `median_latency_degraded_ms` | 150.0 ms | 实测跨网递归常在 80~180ms，初值偏紧 | 拟调整至 200.0 ms |
+| | `median_latency_bad_ms` | 500.0 ms | 典型业务严重等待卡顿分界 | 维持 500.0 ms |
+| | `min_terminals_for_evaluation` | 5 事务 | 排除单笔偶发噪点的最小样本数 | 维持 5 |
+| | `critical_timeout_count` | 3 次 | SR-9 突发连续超时单杀门槛 | 维持 3 |
+| | `critical_window` | 15000 ms (15s) | SR-9 突发超时的连续判定时间窗口 | 维持 15s |
+| **IP Reachability** | `consecutive_fails_bad` | 3 次 | 尾部连续 ping 探测失败判定 BAD | 维持 3 |
+| | `consecutive_fails_degraded` | 1 次 | 偶发单次丢包判定 DEGRADED | 维持 1 |
+| | `success_rate_bad` | < 50% | 整体连通成功率底线 | 维持 50% |
+| | `success_rate_degraded` | < 90% | 整体连通成功率警戒线 | 维持 90% |
+| **Responsiveness** | `rtt_median_good` | <= 60.0 ms | 良好交互体验时延上限 | 维持 60ms |
+| | `rtt_median_bad` | > 150.0 ms | 明显卡顿交互时延下限 | 维持 150ms |
+| | `jitter_median_good` | <= 15.0 ms | 抖动良好上限 | 维持 15ms |
+| | `jitter_median_bad` | > 40.0 ms | 严重抖动下限 | 维持 40ms |
+| **Reliability** | `wifi_loss_bad` | >= 3.0% | 空口损伤严重 | 维持 3% |
+| | `tcp_loss_bad` | >= 4.0% | 传输层重传损伤严重 | 维持 4% |
+| **TCP Connect** | `fail_ratio_bad` | >= 20.0% | 建连大面积失败 | 维持 20% |
+| | `median_latency_bad_ms` | >= 1000.0 ms | 握手极其迟缓 | 维持 1000ms |
+| **Cleartext HTTP** | `5xx_ratio_bad` | >= 20.0% | 服务端故障为主 | 维持 20% |
+| | `no_response_ratio_bad` | >= 30.0% | 请求无响应大面积发生 | 维持 30% |
+| **Captive Portal** | `portal_min_domains` | 2 独立故障域 | 达成 Quorum 确诊的最少故障域数 | 维持 2 |
+| **Active Capability**| `min_eligible_targets`| 2 独立目标 | 授予 Capability 判定所需最少目标数 | 维持 2 |
+
+---
+
+### B. 安全不变量（核心架构契约，严禁用数据拟合修改）
+
+1. **Single-Source Capture 原则**：Query 与 Response 各自由单一挂点、单一已定型数据包提取，严禁跨探针时序 Join。
+2. **No Evidence No Progression (HR-6)**：无新 Evide
+=========== docs/云端开发环境与开发板部署.md ===========
+189 docs/云端开发环境与开发板部署.md
+# 云端开发环境与开发板部署
+
+本文档描述把日常开发从本地 x86 电脑迁移到**公网轻量云服务器**后的拓扑与操作方式。
+本地电脑不再需要长期开机；ARM64 交叉编译、部署与真机测试全部在云端完成。
+
+> 前提阅读：`docs/交叉编译与开发板部署.md`（ARM64 容器构建原理与日常循环）。
+> 本文只描述**拓扑变化**：构建机从本地电脑换成云端服务器，以及由此引入的反向隧道。
+
+---
+
+## 一、拓扑
+
+```
+┌──────────────────────────────────────────────┐
+│  云端开发服务器 (Ubuntu 24.04 x86_64, 4C/4G)  │
+│  81.71.76.133                                 │
+│                                              │
+│  ~/个人学习/AI-powered-Network-Diagnostics/            │
+│    ├── build-x86/    x86 快速编译 + 单元测试   │
+│    ├── build-arm64/  ARM64 增量编译（QEMU）    │
+│    ├── dist-arm64/   部署产物                 │
+│    └── weaknet-arm64-dev (常驻 ARM64 容器)    │
+│                                              │
+│  127.0.0.1:2222  ──┐ 反向隧道落点             │
+└────────────────────┼─────────────────────────┘
+                     │ ssh -R 2222:localhost:22
+                     │ （由开发板主动发起）
+┌────────────────────┼─────────────────────────┐
+│  开发板 (Radxa Cubie A7A, ARM64)              │
+│  家庭局域网 wlan0, 无公网地址                  │
+│  /home/radxa/weaknet/                         │
+│  cloud-tunnel.service  ← 维持隧道并自动重连    │
+└──────────────────────────────────────────────┘
+```
+
+**为什么需要反向隧道**：开发板在家庭 NAT 后没有公网地址，云端无法主动连它；
+但开发板有正常出网能力，因此由**板子主动拨号**到云端建立 `-R` 隧道，
+云端便可通过 `127.0.0.1:2222` 访问板子的 22 端口。
+
+隧道只绑定在云端回环地址（sshd `GatewayPorts no`），不对公网暴露。
+
+---
+
+## 二、一次性配置（已完成，此处仅记录）
+
+### 2.1 云端
+
+| 项目 | 内容 |
+|------|------|
+| SSH 免密 | 本地电脑公钥已加入云端 `~/.ssh/authorized_keys`（别名 `cloud-dev`） |
+| 构建依赖 | `build-essential cmake pkg-config ccache libdbus-1-dev libgoogle-glog-dev libsqlite3-dev libgtest-dev libssl-dev libcurl4-openssl-dev libnl-3-dev libnl-genl-3-dev clang llvm libelf-dev libbpf-dev ripgrep` |
+| ARM64 容器 | 镜像 `weaknet-builder:bullseye-arm64` 与 `weaknet-arm64-dev-running:latest` 由本地 `docker save | zstd` 
+=========== docs/ci-测试使用指南.md ===========
+276 docs/ci-测试使用指南.md
+# CI 与测试使用指南
+
+## 快速开始
+
+```bash
+./tools/ci.sh              # 一键编译→部署→测试→生成报告
+```
+
+## 用法
+
+### 完整流程（日常使用）
+
+```bash
+./tools/ci.sh
+```
+
+自动完成 5 步：
+1. ARM64 编译（宿主机原生交叉编译，Clang + Bullseye Sysroot，`-j$(nproc)`）
+2. 打包部署目录（dist-arm64/）
+3. rsync 部署到开发板
+4. 远程运行功能测试（health/get/eBPF/指标/历史）
+5. 生成报告到 `ci-reports/`
+
+> **单元测试不在开发板上跑**。55 个 gtest 套件的归属是 x86：
+> `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
+> 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
+> （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
+
+### 部署阶段会做什么（2026-11-01 加固）
+
+跑 `ci.sh` 时如果发现下面这些行为，都是**设计如此**，不是异常：
+
+| 行为 | 原因 |
+|------|------|
+| 先 `rm -rf .deploy-staging` | 该目录是纯中转区，历史 root 属主日志会让 `rsync --delete` 恒失败（Permission denied / code 23）。每次部署前整体清空。 |
+| 暂停 `weaknet-ota-recover` | 它是常驻轮询，看到 `TRIAL` + 健康就自动 commit，会与 adopt 抢同一 OTA 事务，导致 adopt 的 commit 被判"非法阶段转换"。部署期间由 `ci.sh` 独占事务，结束（含失败/Ctrl-C）自动拉起。 |
+| 反向隧道重启后报 `Connection ... closed by remote host` | 重启隧道必然掐断承载该命令的通道（自指）。**不是失败**。`ci.sh` 随后轮询等待通道真正恢复（判据是完整 SSH 握手，不是端口 listen），实测 5～50s。 |
+| adopt 返回非零但仍继续 | 会先用 `phase=COMMITTED` + `.committed` 存在 + 服务 active 三条客观事实复核；全部满足则判定为成功（避免跳过后续步骤的"假失败"）。 |
+
+### 使用已有 ARM64 构建结果
+
+当前 `ci.sh` 每次执行都会在 `build-arm64-native/` 中进行 CMake 增量配置/构建（原生交叉编译）；未修改的目标会由 CMake/ccache 复用。部署包始终从该目录重新整理到 `dist-arm64/`。
+
+### 跳过部署
+
+```bash
+./tools/ci.sh --skip-deploy
+```
+
+只在本地编译并打包 `dist-arm64/`，不部署到开发板。
+
+> 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
+> `ctest --test-dir build-x86/server`（x86，55 个套件）或容器内
+> `ctest --test-dir build-arm64-native/server`。
+
+### 完整参数列表
+
+`ci.sh` 只接受以下参数（其它参数会以"未知参数"退出）：
+
+| 参数 | 作用 |
+|------|------|
+| `--commit` | 归档后使用：先 git commit + push，再编译部署测试 |
+| `--local-only` | 只编译打包，不部署、不推送、不测试 |
+| `--skip-push` | 配合 `--commit`：只提交不推送 |
+| `--skip-deploy` | 跳过部署步骤 |
+| `--skip-test` | 跳过开发板测试步骤 |
+
+### 手
+=========== docs/harness改进记录.md ===========
+232 docs/harness改进记录.md
+# Harness 工作流改进记录
+
+记录 AutoAI-Harness 工作流在实际使用中发现的问题及修复。
+
+---
+
+## 改进点1：planning_fingerprint 哈希范围过大
+
+### 问题
+
+`planning_fingerprint` 对整个 `design.md` 文件做哈希。修改 `design.md` 的任何字段（如 Implementation Economy 分类配置、Integration Completeness 块），都会导致 `planning_fingerprint` 变化，使所有已记录的 TDD 证据失效（因为证据绑定了 `planning_fingerprint`）。
+
+**实际影响**：改一个分类字段导致 10 个任务的 TDD 证据全部作废，需要重跑全部 RED→GREEN→REGRESSION。
+
+### 修复
+
+修改 `scripts/manifest_policy.js` 的 `planningStateAt` 函数：对 `design.md` 只哈希 TDD Policy 块（`<!-- autoai:tdd-policy:v1 -->` 之间的内容），不哈希整个文件。
+
+修复后：
+- 改 Implementation Economy 分类 → `planning_fingerprint` 不变 → TDD 证据不失效 ✅
+- 改 Integration Completeness → `planning_fingerprint` 不变，`integration_completeness_sha256` 变化 → 只影响集成验收，不影响 TDD 证据 ✅
+- 改 TDD Policy → `planning_fingerprint` 变化 → TDD 证据失效（正确行为）✅
+
+### 修改文件
+
+- `scripts/manifest_policy.js`（`planningStateAt` 函数的 `add` 回调）
+- `.ai-harness/manifest.json`（同步更新 content_sha256）
+
+---
+
+## 改进点3：校验报错信息黑箱
+
+### 问题
+
+`integration_surface_check.sh` 报 `consumer_path_classification:<path>` 错误时，不告知：
+- 当前的 `consumer_kind` 是什么
+- 检测到的分类是什么
+- 允许的分类有哪些
+- 如何修复
+
+用户只能翻源码才能理解错误原因。
+
+### 修复
+
+1. 修改 `scripts/integration_surface_lib.js` 第 542 行，报错信息增加 `consumer_kind`、`detected`（检测到的分类）、`allowed`（允许的分类列表）和修复建议。
+
+2. 修改第 532 行，给 `downstream_build` 的 `allowedConsumerClasses` 增加 `production` 分类。原因：下游构建消费的编译产物（如 `server/bin/weaknet-dbus-server`）在 Implementation Economy 中被正确分类为 `production`，原配置不允许这个组合，导致误报。
+
+### 修改文件
+
+- `scripts/integration_surface_lib.js`（第 532、542 行）
+- `.ai-harness/manifest.json`（同步更新 content_sha256）
+
+---
+
+## 改进点4：审计粒度太细，噪声太大
+
+### 问题
+
+每次命令执行生成一个 JSON 证据文件（`project-command-evidence/<hash>.json`），一个变更可能产生近百个文件。这些文件对项目本身无价值，只是 harness 自证负担。
+
+### 修复
+
+1. 新建 `scripts/audit_summary.sh`：读取 `verification.json`，生成人类可读的 `harness/audit-summary.md`，汇总每个任务的 TDD 闭环状态（RED/GREEN/REGRESSION 数量、是否闭环）。
+
+2. 已通过 `.gitignore` 忽略 `project-command-evidence/`，不提交到远程。
+
+### 用法
+
+```bash
+bash scripts/audit_summary.sh <change-name>
+```
+
+### 修改文件
+
+-
+=========== docs/skills-and-openspec-guide.md ===========
+636 docs/skills-and-openspec-guide.md
+# Skills 与 OpenSpec 工作流使用指南
+
+本项目由"tanqf"开发。
+
+## 概述
+
+本文档详细说明如何使用本项目集成的 **Superpowers Skills** 和 **OpenSpec 工作流**，包括具体命令和使用场景。
+
+---
+
+## 一、分层模型
+
+```
+┌─────────────────────────────────────────────────┐
+│  工作流 (OpenSpec)                              │
+│  定义：做什么流程，谁来做                        │
+│  Planner → Generator → Evaluator 生命周期       │
+├─────────────────────────────────────────────────┤
+│  技能 (superpowers)                            │
+│  定义：怎么把具体事情做好                        │
+│  技术、模式、检查清单、反模式                    │
+├─────────────────────────────────────────────────┤
+│  项目规则 (AGENTS.md, CLAUDE.md)                 │
+│  定义：项目特定约束和命令                        │
+│  证据包装器、OpenSpec CLI、工具路径              │
+└─────────────────────────────────────────────────┘
+```
+
+- **工作流** = 流程引擎（OpenSpec change 生命周期、角色职责）
+- **技能** = 技术指南，Agent 在工作流中执行具体任务时调用
+- **项目规则** = 本项目特定的约束和命令
+
+**工作流规则和项目约束始终优先于技能指导。技能补充工作流，永不替代。**
+
+---
+
+## 二、OpenSpec 工作流
+
+### 2.1 工作流概述
+
+OpenSpec 是本项目唯一的变更管理流程，用于规划、实现和验证代码变更。
+
+**核心原则**：
+- 先规划、后实现、再记录证据
+- 严格的步骤顺序，不可跳步
+- 所有变更必须通过 change 管理
+
+### 2.2 操作顺序（必须严格遵守）
+
+```
+# 规划阶段
+1.  change_new.sh <name> --switch
+2.  写 proposal.md / design.md / specs/ / tasks.md
+3.  openspec_cli.sh validate <name> --strict
+4.  evaluator_check.sh --plan
+5.  snapshot_update.sh --freeze-planning-baseline
+
+# 实现阶段
+6.  snapshot_update.sh --freeze-implementation-base   # 先冻结！代码还没改
+7.  修改代码                                          # 现在改代码
+8.  change_footprint.sh <name> --json
+9.  task_verify.sh <id> --phase regression ...        # 记录证据
+    - within_expected → 不加 --drift-reason
+    - drift_warning 等 → 必须加 --drift-reason
+10. task_verify.sh --complete <id>
+
+# 评估阶段
+11. integration_surface_check.sh <name> --refresh
+12. sync_hashes.sh <name>
+13. evaluator_check.sh --begin
+14. evaluator_check.sh --run ...
+15. evaluation_template.sh <name>
+16. evaluation_fix.sh <name
+=========== docs/OTA固件更新与安全发布指南.md ===========
+643 docs/OTA固件更新与安全发布指南.md
+# WeakNet OTA 固件更新与安全发布指南
+
+> **版本**：v1.4 (涵盖 Phase 1 本地闭环 + Phase 2 ECDSA 签名链 + Phase 3 远程拉包与空间 GC + P0-A 升级事务状态机 + P0-B 开机恢复 + P0-C1 启动门禁)  
+> **适用平台**：Radxa Cubie A7A (ARM64) / x86_64 宿主机交叉编译环境  
+> **核心特性**：A/B 软链接原子翻转、ECDSA NIST P-256 强制验签、180s 健康看门狗、故障自动回滚、状态与配置隔离保护、过旧版本自动 GC、**升级事务持久化状态机（崩溃点可判定）、fail-closed 启动门禁**
+
+---
+
+## 1. 架构总览
+
+WeakNet 的 OTA 升级采用轻量级软件双槽位（Slot）设计，避免在嵌入式系统上对 Flash 重新分区的巨大风险。
+
+```text
+开发板 /home/radxa/weaknet/
+├── releases/                     # 多版本隔离目录
+│   ├── legacy-flat/              # 首次部署自动归档的旧扁平布局
+│   ├── 1.0.0/                    # 历史稳定版（保留供回滚）
+│   └── 1.1.0/                    # 当前激活版本
+│       ├── server/               # 服务端二进制与 eBPF 对象 (*.bpf.o)
+│       ├── client/               # 客户端工具 (weaknet-cli 等)
+│       ├── lib/                  # 运行时动态库 (libbpf.so 等)
+│       ├── VERSION               # 本版本号 (1.1.0)
+│       ├── manifest.sha256       # 全量文件 SHA256 校验清单
+│       └── .committed            # 健康窗口通过后的“转正标记”
+├── current -> releases/1.1.0     # 【原子翻转点】基于 Linux rename 原语切换
+├── server -> current/server      # 兼容软链，历史命令与路径 100% 保持有效
+├── client -> current/client
+├── lib -> current/lib
+├── weaknet-local-update.sh       # 本地升级执行体（随包下发并自动自更新）
+├── data/                         # 【绝对只读隔离】5 个核心状态文件（history.db、epoch 等）升级永不触碰
+└── config/                       # 【绝对只读隔离】release_pub.pem 与 config.yaml
+
+系统路径（不随 OTA 制品变化）：
+├── /usr/local/lib/weaknet/weaknet-ota-ctl   # 升级事务控制器（P0-A，唯一的指针/状态写入口）
+└── /var/lib/weaknet-ota/transaction.json    # 事务状态（schema v1，root 独占 0600）
+```
+
+### 1.1 为什么需要事务控制器（P0-A）
+
+**升级机制的可靠性不能完全依赖被升级的 weaknet-server 本身。**
+
+原实现里 `current` 指针、`.previous` 回滚指针、`.committed` 转正标记由
+`cmd_apply` / `cmd_rollback` / `cmd_adopt` / legacy 迁移 / `--commit` 多条
+执行路径各自读写。一旦升级进程在关键窗口被掉电或杀死，**没有任何一方知道
+这次升级做到哪一步**：指针翻了但没转正，还是转正了但投影没写？无从判断。
+
+P0-A 把三件事收口到一处：
+
+| 收口项 | 权威位置 |
+=========== docs/网关动作目录版本契约.md ===========
+166 docs/网关动作目录版本契约.md
+# 网关动作目录版本契约（跨端执行前置条件）
+
+> 状态：2026-10-08 实施中
+> 关联：路线图 ⑤（Action Policy）的 fail-closed 防线；⑥ 的真机排练复核
+
+## 一、问题（为什么需要这份契约）
+
+路线图 ⑤ 的 Policy 有一条 fail-closed 防线：
+
+```text
+云端审阅目录 != 目标网关宣称目录 → allowed=False（catalog_version_mismatch）
+```
+
+`action_policy.py:202` 实现正确、单测覆盖充分（`test_action_policy.py:118` 等
+`gateway_catalog_version="cat-old"`）。**但真实运行中这条防线永不触发**：
+
+- `build_request_from_tables()` 从不设置 `gateway_catalog_version`，恒取默认值
+  `TOP_LEVEL_CATALOG_VERSION`（`network_council_service.py:150`）；
+- 板端从不上报任何目录版本（上行报文只有 `schema_version`）；
+- 全仓所有非默认值 **100% 出现在 `tests/` 里**。
+
+结论：这不是"缺陷"，是**未接线**——云端与网关各自持有目录，但**没有任何一侧
+对比过**。本契约把这条比较接上，让 ⑤ 已有的防线真正具备输入源。
+
+## 二、契约
+
+### 2.1 指纹算法（两端必须逐位一致，否则真机全量误判漂移）
+
+指纹 = SHA-256（12 位十六进制前缀），输入是**规范 JSON**：
+
+```json
+{"actions":{"<action_id>":{"params":[{"allowed":[...],"name":..,"required":..,"type":..}]}},
+ "config_keys":["<key>",...]}
+```
+
+规范化要求（与云端 `_canonical_payload()` 完全一致）：
+- 顶层键顺序固定：`actions` 在前、`config_keys` 在后；
+- `actions` 的键**按 action_id 升序**；
+- 每个 action 只有一个 `params` 键；param 字段顺序固定为
+  `allowed, name, required, type`；
+- `config_keys` **按字典序升序**；
+- 无空白（separators `("," ":")`）。
+
+`allowed` 为空时须序列化为空数组——两端必须**同样输出** `"allowed":[]`。
+
+金标向量（两端必须都得到此值）：
+
+```text
+bdb093ac5310
+```
+
+### 2.2 传输
+
+| 项 | 决定 |
+|---|---|
+| 通道 | 复用既有 `/api/v1/network/edge/wireless-events`（**不新增端点**） |
+| 字段 | 顶层 `catalog_version: str \| None`，可选，1–64 字符 |
+| 语义 | 设备**自述**其 L5 可执行目录指纹；服务端只做事实记录与对比，不据此授权 |
+
+### 2.3 缺失语义（关键：决定会不会把现有真机全线阻断）
+
+| 情形 | 行为 | 理由 |
+|---|---|---|
+| 设备上报版本 == 云端 | 记录；Policy 放行 | 正常 |
+| 设备上报版本 != 云端 | 记录为漂移事实；Policy 依 ⑤ 原语义 fail-closed | 本契约要接通的正是这条 |
+| 设备**未上报**（`None`） | **不阻断**：回落既有"无漂移事实"语义 | 缺数据不等于漂移。若把缺失当漂移，所有旧固件与排练环境会被全线 403，而它们并没有被证明跑在漂移目录上 |
+
+「缺失 = 不阻断」是**刻意的保守选择**：本契约的目标是让"已声称的漂移"可被发现并
+拒绝，而不是把未�

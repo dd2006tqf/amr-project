@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>amr_dispatcher_proto</name>
+  <version>0.1.0</version>
+  <description>
+    Protobuf-backed ROS 2 message typesupport for amr_dispatcher.
+
+    Provides a zero-fork bridge that lets protobuf messages be used directly as
+    ROS 2 topic types (create_publisher&lt;ProtoT&gt; / create_subscription&lt;ProtoT&gt;)
+    without patching rclcpp, rcl, rmw, or rosidl.
+
+    Scope: ROS topics only. Services and actions are explicitly out of scope --
+    their typesupport is a request/response/event triple that this approach does
+    not cover.
+  </description>
+  <maintainer email="tanqf@example.com">tanqf</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclcpp</depend>
+
+  <!-- rosidl 运行时：typesupport handle 结构、type hash、type description -->
+  <depend>rosidl_runtime_c</depend>
+  <depend>rosidl_runtime_cpp</depend>
+  <depend>rosidl_typesupport_cpp</depend>
+  <depend>rosidl_typesupport_fastrtps_cpp</depend>
+  <depend>rosidl_typesupport_introspection_cpp</depend>
+
+  <!-- CDR 编解码 -->
+  <depend>fastcdr</depend>
+
+  <!-- sha256（type hash 用） -->
+  <depend>rcutils</depend>
+
+  <!--
+    protobuf 的 rosdep key 是 libprotobuf-dev，不是 "protobuf"。
+    原 ROS2-Protobuf 仓库的 package.xml 里写的是 <build_depend>protobuf</build_depend>，
+    那是个无效 key，rosdep install 会直接跳过、静默降级。
+  -->
+  <depend>libprotobuf-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

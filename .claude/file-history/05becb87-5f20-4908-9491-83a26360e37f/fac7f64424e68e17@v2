@@ -1,0 +1,54 @@
+# Proposal: fix-bt-events-pointer-lifecycle
+
+## Why
+
+2026-10-17 全库评审（/full-code-review）在边缘 C++ 服务端定位到一个 **Critical 级数据竞争与 UAF 缺陷**，以及两处同根的生命周期缺口（评审编号 C1 / C5 / C6）：
+
+**C1：`bt_events` 的三个跨插件指针游离于既有锁纪律之外。**
+`ServerContext` 有 12 个受管监控器指针遵循完整纪律：写侧（插件 start/stop）持 `monitor_pointers_mutex` 的 `unique_lock`，读侧（server.cpp 上行回调、bt_hci worker 等）持 `shared_lock`。但 `BtEventsPlugin` 发布的三个指针——`wireless_event_store` / `bt_link_quality_tracker` / `site_incident_correlator`——**写侧完全不加锁**（`monitor_ebpf_plugins.cpp:501,505,532` 发布；`:576-584` 置空），**部分读者也不加锁**：
+
+| 端 | 位置 | 现状 |
+|---|---|---|
+| 写 | `monitor_ebpf_plugins.cpp:501,505,532` | start 发布无锁 |
+| 写 | `monitor_ebpf_plugins.cpp:576-584` + `correlator_/tracker_/store_.reset()` | stop 置空与析构无锁 |
+| 读 | `monitor_ebpf_plugins.cpp:703-715` | `bt_hci_traffic` worker 每 2s 无锁读 `wireless_event_store` 并 `recordEvent` |
+| 读 | `dbus_service.cpp:1594,1732` | `QueryDeviceEvents` / `QuerySiteIncidents` 无锁读 |
+| 读 | `bt_monitor.cpp:1413` | 蓝牙监测线程启动时**一次性拷贝**两个裸指针，此后 3s 循环（`:799,951,1048`）经拷贝使用 |
+| 读 | `bt_monitor.cpp:1524` | 基线持久化路径无锁直读 ctx |
+
+可确定性触发的后果：
+
+1. **UAF**：`weaknet-cli monitor disable bt_events`（D-Bus → MonitorManager → stop）执行期间，`bt_hci_traffic` worker 正在 `recordEvent`——stop 无锁地把 `store_` 析构掉，worker 下一周期读到已析构对象。
+2. **悬垂拷贝**：`restart bt_events` 后 `BtMonitor` 构造期拷贝的旧指针永久悬垂（其 `setQualityTracker` 只在线程启动时调用一次，`bt_monitor.cpp:1413`）。
+3. **启动顺序竞态**：两个插件同为 `order 10`，`instantiateAllPlugins` 仅按 `order()` 稳定排序（`monitor_manager.cpp:63`），`BtHciTrafficPlugin` 未声明对 `bt_events` 的 `dependencies()`——若 `bt_hci` 先启动，其 worker 首周期读到 nullptr，异常事件注入静默失效。
+
+`server/test/` 中**没有任何用例**引用这 三个指针的锁纪律，51/51 全绿掩盖了该缺口。
+
+**C5：`dbus_service.cpp:21-25` 头注释与运行期行为相悖**——仍声称 monitor 指针「仅在启动阶段赋值，之后只读」，而 enable/disable/restart 已使其运行期可变，会诱导后续修改弱化锁纪律（与 C1 同根）。
+
+**C6：`UsingInterfaceManager` 无显式停机路径**——`server.cpp:1398` 单例 `start()` 启动 netlink 事件线程，关机序列（`:1548-1596`）对它无 stop 调用，线程一直运行到静态析构（晚于 glog `ShutdownGoogleLogging()`），期间可能经已关闭的日志设施打日志。
+
+## What
+
+1. **发布/退役进入锁纪律（C1 写侧）**：
+   - `BtEventsPlugin::start` 三处发布各自在 `monitor_pointers_mutex` 的 `unique_lock` 内完成；
+   - `BtEventsPlugin::stop` 在**同一个 `unique_lock` 临界区**内完成：置空三个 ctx 指针 → `store_->setIncidentCorrelator(nullptr)` 解绑 → `correlator_/tracker_/store_` 析构（析构必须在锁内，否则读者可能在置空后、析构前的窗口再次取得指针并撞上析构）；`monitor_->stop()`（join 自有线程）保持在取锁之前。
+2. **读者进入锁纪律（C1 读侧 + C2 同根改造）**：
+   - `BtHciTrafficPlugin` worker 的 `recordEvent` 块整体纳入 `shared_lock`；
+   - `dbus_service.cpp` 两个查询处理器把「判空 + 调用」整体纳入 `shared_lock`；
+   - `BtMonitor` **废除构造期裸指针拷贝**：`setQualityTracker(BtLinkQualityTracker*, WirelessEventStore*)` 改为 `setServerContext(ServerContext*)`，三处使用点（`:799,951,1048`）与基线持久化（`:1524`）改为**每周期在 `shared_lock` 内现取现用**（临界区内完成 feed/record/save），消除悬垂拷贝并使启动顺序不再敏感；
+   - `BtHciTrafficPlugin` 显式声明 `dependencies() == {"bt_events"}`，把隐式的注册顺序依赖变成被 MonitorManager 校验的显式拓扑。
+3. **注释与现实对齐（C5）**：改写 `dbus_service.cpp` 头注释的线程安全部分，准确描述「运行期可变 + `monitor_pointers_mutex` 纪律」。
+4. **显式停机（C6）**：`UsingInterfaceManager` 新增幂等 `stop()`（置停 + join，不销毁 Impl，可重启），`server.cpp` 关机序列在 `stopAll()` 之后调用它，不再依赖静态析构兜底。
+
+## Non-goals
+
+- 不改 `MonitorManager` 的排序算法（仍按 `order()` 稳定排序；依赖声明用于既有依赖校验与停止次序，不引入新排序策略）。
+- 不触碰另外 12 个已合规受管指针的既有锁纪律。
+- 不改 `BtEventMonitor`、`WirelessEventStore`、`SiteIncidentCorrelator` 各自的内部实现与 DB schema。
+- 不新增配置键、D-Bus 方法或任何对外表面；`setQualityTracker` 属内部 API 且全仓唯一调用点在 `bt_monitor.cpp:1413`，其改名/换参为 compatible 内部演进。
+- 不处理评审其余条目（上行水位 C2、下行签名 S1 等）——各自独立立项。
+
+## 验收边界
+
+三个行为面（发布须待锁、退役须待锁、读写互斥）由新增的 focused gtest `test_bt_events_lifecycle_gtest` 以确定性断言覆盖（该测试在未加锁的现状下必然失败，构成 RED）；全量回归用已审阅的 Project Profile `test-all` / `build-server` 包装器探针；真机侧 `disable/restart bt_events` 的并发压测由人工执行并记录在交付说明中，不作为 harness 证据（Profile 无板端命令）。

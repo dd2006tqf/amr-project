@@ -1,0 +1,13 @@
+# 恢复（解除隔离）受管车辆，使其重新参与自动调度
+#
+# 前置：该车曾被 ForceClearVda5050Link 隔离。
+# 条件：车辆在线 + 操作员已核实车辆物理位置（position_verified）。
+#       位置未核实的车可能仍占着通道，放回调度池会撞车。
+string vehicle_id          # 目标车辆 id
+string confirm_vehicle_id  # 必须与 vehicle_id 完全一致（防打错车）
+string operator_id         # 操作员标识（必填，写入审计）
+string reason              # 恢复原因（必填，写入审计）
+bool position_verified    # 操作员是否已核实车辆物理位置与通道占用
+---
+bool success              # false = 准入校验失败（message 给出原因）
+string message            # 拒绝原因或操作摘要

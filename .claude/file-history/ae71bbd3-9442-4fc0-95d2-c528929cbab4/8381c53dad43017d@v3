@@ -1,0 +1,77 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <optional>
+#include <atomic>
+
+namespace xgrids {
+
+// 多生产者单消费者环形缓冲
+// 背压策略：缓冲满时
+//   - kLow 优先级：直接丢弃，返回 false（预览帧/缩略图）
+//   - kHigh 优先级：阻塞等待（原始帧不可丢），带超时保护
+template <typename T>
+class RingBuffer {
+public:
+    enum class Priority { kLow, kHigh };
+
+    explicit RingBuffer(size_t capacity)
+        : buf_(capacity), head_(0), tail_(0), size_(0) {}
+
+    bool push(const T& item, Priority prio) { return push_impl(item, prio); }
+    bool push(T&& item, Priority prio)      { return push_impl(std::move(item), prio); }
+
+    std::optional<T> pop() {
+        std::unique_lock<std::mutex> lk(mu_);
+        if (size_.load() == 0) return std::nullopt;
+        T item = std::move(buf_[head_.load() % buf_.size()]);
+        head_.fetch_add(1);
+        size_.fetch_sub(1);
+        lk.unlock();
+        not_full_.notify_one();
+        return item;
+    }
+
+    // 带超时 pop，消费端用来判断队列是否长时间空
+    std::optional<T> pop_for(int64_t timeout_us);
+
+    size_t size() const { return size_.load(); }
+    size_t capacity() const { return buf_.size(); }
+    uint64_t dropped_count() const { return dropped_.load(); }
+
+    // 供质量反馈观察背压水位
+    double fill_ratio() const { return (double)size_.load() / buf_.size(); }
+
+private:
+    template <typename U>
+    bool push_impl(U&& item, Priority prio) {
+        std::unique_lock<std::mutex> lk(mu_);
+        if (size_.load() >= buf_.size()) {
+            if (prio == Priority::kLow) { dropped_.fetch_add(1); return false; }
+            // 高优先级：最多等 200ms，还满则丢最老的低优项腾位置
+            bool ok = not_full_.wait_for(lk, std::chrono::microseconds(200'000),
+                                         [&] { return size_.load() < buf_.size(); });
+            if (!ok) { dropped_.fetch_add(1); return false; }
+        }
+        buf_[tail_.load() % buf_.size()] = std::forward<U>(item);
+        tail_.fetch_add(1);
+        size_.fetch_add(1);
+        lk.unlock();
+        not_empty_.notify_one();
+        return true;
+    }
+
+    std::vector<T> buf_;
+    std::atomic<size_t> head_;
+    std::atomic<size_t> tail_;
+    std::atomic<size_t> size_;
+    std::atomic<uint64_t> dropped_{0};
+
+    std::mutex mu_;
+    std::condition_variable not_full_, not_empty_;
+};
+
+}  // namespace xgrids

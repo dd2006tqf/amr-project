@@ -1,0 +1,17 @@
+---
+name: arm64-build-environment
+description: ARM64 构建容器弱网工程：哪个镜像是 canonical、glibc 约束、以及不能改 base 的原因
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 9f6f73c9-45d6-45d3-ada8-bae10cd4eed4
+  modified: 2026-09-13T13:56:12.062Z
+---
+
+WeakNet 的 ARM64 构建环境事实（2026-09-13 实测复核）：
+
+- `weaknet-arm64-dev` 运行的就是 `weaknet-builder:bullseye-arm64`（image ID `sha256:55c00d07…`），`/src` 绑定到仓库存根。它**不是** Bookworm 容器：`/etc/debian_version` = 11.11，GLIBC 2.31-13+deb11u14，gcc 10.2.1。方案里"当前容器误用了 Bookworm"这一前提与事实不符，不要据此重建容器。
+- **必须保持 Bullseye**：开发板是 Debian 11.11 / GLIBC 2.31-13+deb11u13。Bookworm base 是 GLIBC 2.36，产物在板子上跑不起来。`weaknet-builder:bookworm-arm64` 只用于另一些工具链场景，不能当本工程 dev 容器。
+- 镜像里**没有** `libssl-dev` 头文件（bullseye-security 索引里 libssl-dev 1.1.1w-0+deb11u8 的 deb 在 pool 中缺失，APT 恒 404；snapshot 的 bullseye/main 只有 deb11u1，而镜像已有的 libssl1.1 是 deb11u8 → 版本冲突）。这解释了为什么不能走 APT。
+
+相关：[[openssl-sysroot-facts]]

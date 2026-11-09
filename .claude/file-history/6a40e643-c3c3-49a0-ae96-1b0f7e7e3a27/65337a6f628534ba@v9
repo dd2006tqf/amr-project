@@ -1,0 +1,584 @@
+# AMR Dispatcher 企业级演进计划 v1
+
+> 上一份计划（多车车队化 v2：P0 → A → C → B）已全部落地并收口，见
+> `git log origin/main..HEAD` 的 25 条提交与 `docs/EXTENSION_ROADMAP.md`。
+> **本文件重写为企业级演进的下一阶段计划。**
+
+## Context
+
+多车并发、VDA 5050 接入、时空窗预约、Web 强清隔离都已经能跑，并且有 3 套自洽的
+e2e（VDA 9 阶段 / 地图导入 / Web 控制台 5 phase）与 710 例核心单测兜底。但把它当作
+**对外交付的工业系统**来看，短板全部集中在"外壳"：
+
+1. **网关是稳定性的单点**：一个畸形请求（`Content-Length: abc`）就能让 REST 网关
+   进程 `std::terminate`；一个静默连接就能把整个网关卡死（单线程同步 accept）。
+   两者均已在本机实测复现。
+2. **调度状态全在内存**：队列、在途任务、幂等键、强清审计，进程重启即失。
+   强清的 `operator_id` / `reason` 只写进 `RCLCPP_WARN`，事后无法追溯。
+3. **调度决策不可单测**：`dispatcher_node.cpp` 3416 行 / 51 个回调 / 88 个成员，
+   派发主链内联在单个 426 行的 `ScheduleTick()` 里，决策与副作用逐段交织。
+   现在每改一处派发逻辑，只能靠起全套 ROS + 跑 e2e 来验。
+4. **已有能力没接通**：`FindShortestPathAvoiding`（绕行）在 core 里实现完整、
+   有单测，但**零生产调用方**；README 却声称有 "Global Dynamic Re-routing"。
+5. **回归防线只在开发者机器上**：CI 只跑 core + BT 单测 + colcon 编译，
+   三套 e2e 全靠人工触发；`test/l2_launch_contracts/` 里的断言是 `assertTrue(True)`。
+6. **没有可观测面**：零 metrics / 零 tracing，运维只能 grep 日志。
+
+目标：把"能跑的原型"变成"能交给客户跑的调度器"——**先消除会打死进程的缺陷，
+再让状态可恢复，再把决策拆到可单测，最后补齐 CI 与可观测性**。
+
+---
+
+## 总体原则与约束
+
+| 原则 | 具体含义 |
+|---|---|
+| **兼容红线不动** | legacy 单车模式（`vehicle_ids` 与 `vda5050_vehicles` 都为空）话题名、派发节奏、日志文案逐字不变；现有 3 套 e2e 必须保持 PASS |
+| **零新运行时依赖优先** | 持久化用 yaml-cpp（core 已有依赖）+ tmp+rename；不引 SQLite |
+| **纯函数下沉 core** | 决策下沉 `amr_dispatcher_core`（宿主 `ctest` 可跑，CI 必覆盖）；ROS 侧只留 IO/时序/句柄 |
+| **默认关闭** | 新增能力（鉴权、持久化、metrics）默认关闭或空值，开了才生效 |
+| **诚实文档** | README / roadmap 的每一条声称都要能在源码里找到调用方；做不到就写明"未接线" |
+| **每步可回退** | 每步 = `add`（惰性代码+测试，生产零调用）+ `switch`（改调用点）；回退只 revert switch |
+| **不改 e2e 断言** | 为了让 e2e 过而改断言或改日志文案 = 把回归藏起来，一律禁止 |
+
+---
+
+## 批次总览
+
+| 批次 | 内容 | 风险 | 前置 |
+|---|---|---|---|
+| 0 | 基线冻结：打 tag、存基线日志 | 无 | — |
+| 1 | **网关安全加固 + tools 单测基建**（P0，已复现缺陷） | 低 | 0 |
+| 2 | **状态持久化与审计落盘**（YAML 快照，零新依赖） | 中 | 1 |
+| 3 | **dispatcher_node 分层重构**（决策下沉、可单测） | 高 | 2 |
+| 4 | **拓扑级绕行接通**（不做 A*、不做动态障碍） | 中 | 3 |
+| 5 | **CI 门禁 + L2 契约测试 + /metrics** | 低-中 | 1,3 |
+| 6 | 功能补齐（选车策略 / 充电编排 / 拼单 / 上游契约） | 中 | 3 |
+| 下一阶段 | A* + 绕行（满足三个前置条件后）；CBS 留待后续 | — | 4,6 |
+
+执行顺序固定：**0 → 1 → 2 → 3 → 4 → 5 → 6**。批次 5 的 CI 部分建议在批次 1 完成后
+就插入（让后续批次自动被门禁覆盖），L2 与 metrics 部分随批次 5 收尾。
+
+---
+
+## 批次 0：基线冻结
+
+- 从 `feat/multi-vehicle-concurrency` 建 `refactor/enterprise-hardening` 分支。
+- 跑一遍并保存基线：`scripts/build.sh`、`check_map_ingest_e2e.sh`、
+  `check_vda5050_e2e.sh`、`check_web_console_e2e.sh`、`check_all.sh`。
+- 打 tag `baseline-enterprise-v0`。后续每个批次验收通过后打 `batch-N-green`。
+
+**验收**：5 个脚本全 PASS，基线日志归档到 `log/baseline/`。
+
+---
+
+## 批次 1：网关安全加固 + tools 单测基建（P0）
+
+### 1.1 已复现的缺陷（本机实测，不是推测）
+
+| 缺陷 | 复现 | 位置 |
+|---|---|---|
+| 畸形 `Content-Length` 打死进程 | 发 `Content-Length: abc` → `terminate called after throwing an instance of 'std::invalid_argument'` → 网关 abort | `rest_gateway.cpp:158` |
+| 非数字 `prio` 打死进程 | `POST /api/v1/orders?...&prio=notanumber` → 同上 | `rest_gateway.cpp:307` |
+| 慢连接卡死全网关 | 建连后不发数据 → 后续所有请求 `timed out` | `rest_gateway.cpp:149`（`read` 无超时） |
+| 负数 `Content-Length` | 转 `size_t` 后变成极大值 → 无限阻塞读 | `rest_gateway.cpp:162` |
+| 无请求体上限 | 声明多大读多大 | `rest_gateway.cpp:148-170` |
+| 子串路由匹配 | `/api/v1/ordersXYZ` 也会命中订单路由 | `rest_gateway.cpp:299,342` |
+| 全通配 CORS | `Access-Control-Allow-Origin: *` | `rest_gateway.cpp:563` |
+| 零鉴权 | 全部端点裸奔，`/api/operator/estop` 无条件触发 | 全局 |
+
+### 1.2 新增可单测的纯逻辑（`src/amr_dispatcher_tools/include/amr_dispatcher_tools/`）
+
+延续 ROS 侧 header-only 范式（`#pragma once` / inline 自由函数 / 不抛异常 /
+默认值取"信息不足时不动作"）：
+
+| 文件 | 接口 | 职责 |
+|---|---|---|
+| `http_limits.hpp` | `constexpr std::size_t kMaxRequestBytes = 1MiB`, `kMaxHeaderBytes = 8KiB`；`bool ParseContentLength(const std::string&, std::size_t* out)`；`std::string RequestPathOnly(const std::string& target)`；`bool PathMatches(const std::string& path, const std::string& expected)` | 安全解析 + 精确路由 |
+| `bearer_auth.hpp` | `bool IsAuthorized(const std::string& authorization_header, const std::string& expected_token)`（常量时间比较；`expected_token` 为空 = 鉴权关闭） | 静态 Bearer Token |
+| `idempotency_store.hpp` | `class IdempotencyStore`：`Reserve(key)` → `{kInserted,kDuplicate,kFull}`、`Commit(key)`、`Abort(key)`、`PruneExpired(now)`、`size()`、`Snapshot()/Restore()` | LRU + TTL + 容量上限；**先 commit 后消费**，修掉"失败也吃掉 key"的 bug |
+| `json_escape.hpp` | `std::string JsonEscape(const std::string&)` | 响应字段转义（现全部裸拼） |
+
+### 1.3 `rest_gateway.cpp` 改造
+
+- `HandleClient` 整体包 `try/catch(...)` → `400 {"error":"bad_request"}`（**不再 terminate**）
+- `setsockopt` 加 `SO_RCVTIMEO` / `SO_SNDTIMEO`（5s）
+- 读循环累计上限 `kMaxRequestBytes`（超限 → `413`）；header 段上限 `kMaxHeaderBytes`
+- `Content-Length` 一律走 `ParseContentLength`（非数字/负数/超限 → `400`）
+- 路由从 `path.find(...)` 改为 `PathMatches(RequestPathOnly(target), ...)`
+- **鉴权中间件**：新增 ROS 参数 `auth_token`（默认空 = 关闭，保证现网与 e2e 不受影响）；
+  非空时除 `GET /`、`GET /index.html` 外全部要求 `Authorization: Bearer <token>`，否则 `401`。
+  `/api/operator/estop` 可另配 `estop_token`（空则回退 `auth_token`）
+- 幂等：`Reserve` → 服务调用成功后再 `Commit`；失败/超时 `Abort`（重试可用）
+- 响应体所有字段走 `JsonEscape`
+- **连接处理**：bounded worker pool（4 线程 + 队列上限 32），主线程只 `accept`；
+  连接队列满则 `503` 并快速关闭（避免无界积压）
+
+### 1.4 tools 包测试基建
+
+`src/amr_dispatcher_tools/CMakeLists.txt` 增加 `BUILD_TESTING` 分支（照
+`src/amr_dispatcher_ros/CMakeLists.txt:250-281` 的 `ROS_UNIT_TESTS` 模式），
+新增 `include/` 作为 INTERFACE 头库 + 3 个测试：
+
+- `test_http_limits.cpp`：非法/负数/超限 `Content-Length`、精确路由、query 剥离
+- `test_bearer_auth.cpp`：无头/错误 scheme/错误 token/正确 token/空 token 关闭
+- `test_idempotency_store.cpp`：插入/重复/失败后 Abort 可重试/容量淘汰/TTL 过期/快照往返
+
+### 1.5 验收
+
+新增 `scripts/check_rest_gateway_hardening.sh`（沿用现有 e2e 风格：独立域 83 /
+REST 18093、`post()` 返回 `(code, body)`、哨兵字符串 + `grep -q`）：
+
+| 断言 | 期望 |
+|---|---|
+| `Content-Length: abc` | `400`，**进程存活** |
+| `prio=notanumber` | `400`，进程存活 |
+| 静默连接 10s | 期间另一连接正常响应（不阻塞） |
+| 2 MiB body | `413` |
+| `/api/v1/ordersXYZ` | `404` |
+| 无 `Authorization`（token 已配） | `401` |
+| 错误 token | `401` |
+| 正确 token | `200` |
+| 同一 `idempotency_key` 连发两次 | 第一次 `accepted:true`，第二次 `ignored:duplicate` |
+| 首次因服务不可用失败后重试同 key | 第二次**仍被受理**（不再永久吃掉） |
+
+**兼容验收**：`check_vda5050_e2e.sh` 9 阶段、`check_web_console_e2e.sh` 5 phase 全 PASS
+（token 默认空 = 关闭，行为不变）。
+
+**提交**：`fix(tools): REST 网关健壮化（异常/超时/大小上限/精确路由）`、
+`feat(tools): 静态 Bearer Token 鉴权（默认关闭）`、`fix(tools): 幂等键改为提交成功后消费`、
+`test(tools): 建立 tools 包单测基建与网关加固验收`。
+
+---
+
+## 批次 2：状态持久化与审计落盘
+
+**介质决策：YAML 文本快照（yaml-cpp 已是 core 依赖，零新依赖）**。
+不引 SQLite——避免改 core/CMakeLists、package.xml、Dockerfile 与 CI 依赖链。
+
+### 2.1 core 新增
+
+`src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/dispatch_state_snapshot.hpp`
+
+```cpp
+struct DispatchStateSnapshot {
+  std::uint32_t format_version = 1;
+  std::string map_hash;                        // 与拓扑版本对齐，不匹配则拒绝恢复
+  std::uint64_t next_sequence = 1;
+  std::vector<Mission> queued_missions;        // 含 priority/sequence/deadline/expected/assigned_vehicle_id
+  std::vector<std::string> paused_order_ids;
+  std::vector<Mission> active_missions;
+  std::vector<std::string> quarantined_vehicle_ids;
+};
+
+std::string SerializeDispatchState(const DispatchStateSnapshot&);
+std::optional<DispatchStateSnapshot> DeserializeDispatchState(const std::string&, std::string* message);
+bool WriteDispatchStateAtomic(const std::filesystem::path&, const DispatchStateSnapshot&, std::string* message);
+std::optional<DispatchStateSnapshot> LoadDispatchState(const std::filesystem::path&, std::string* message);
+```
+
+**原子写沿用 `map_ingest_node.cpp:274-323` 的四步范式**：tmp → `flush` 校验 →
+回读 `Deserialize` 校验 → `rename(ec)`；任一步失败删 tmp、保留旧文件。
+
+同时新增 `MissionQueue::Restore(std::vector<Mission>, const std::vector<std::string>& paused_orders)`
+与 `MissionQueue::SnapshotForPersistence()`——**注意**：现有 `Snapshot()` 会把
+`state` 重算为 `kPaused/kPending`（`mission_queue.cpp:203-206`），不能直接用于落盘往返。
+
+`src/amr_dispatcher_core/include/amr_dispatcher_core/dispatcher/audit_log.hpp`
+
+```cpp
+struct AuditRecord {
+  std::string stamp_iso8601;      // 由调用方注入（core 不读系统时钟）
+  std::string operator_id;
+  std::string action;             // force_clear / restore / block_route / estop / unblock
+  std::string vehicle_id;
+  std::string mission_id;
+  std::string reason;
+  std::vector<std::string> released_resources;
+};
+std::string SerializeAuditRecordJsonl(const AuditRecord&);
+bool AppendAuditRecord(const std::filesystem::path&, const AuditRecord&, std::string* message);  // O_APPEND 单行
+```
+
+### 2.2 ROS 侧接线（`dispatcher_node`）
+
+| 参数 | 默认 | 语义 |
+|---|---|---|
+| `state_snapshot_file` | `""` | 空 = 关闭持久化（**默认关闭，兼容红线**） |
+| `state_snapshot_debounce_sec` | `2.0` | 变更后合并写入的防抖窗口 |
+| `audit_log_file` | `""` | 空 = 不落审计（仅走现有事件日志） |
+
+- `on_configure`：若配置了快照文件且存在 → 加载 → **`map_hash` 与当前目录不匹配则拒绝恢复并告警**
+  （防止拿旧拓扑的队列去派发）
+- 变更点后触发 debounce 写：派发 / 完成 / 取消 / 暂停 / 恢复 / 强清 / 恢复隔离
+- `on_deactivate` / `on_shutdown`：强制 flush
+- 强清 / 恢复 / 封路 / 急停 → `AppendAuditRecord`（operator_id、reason、released_resources 已在服务里）
+
+### 2.3 tools 侧
+
+`IdempotencyStore` 落盘到 `runtime/idempotency.yaml`（tmp+rename + TTL + 容量上限），
+参数 `idempotency_store_file`（默认空 = 仅内存）。
+
+新增 `.gitignore` 条目：`runtime/`。
+
+### 2.4 验收
+
+- `test/unit/test_dispatch_state_snapshot.cpp`：序列化往返、字段完整性、非法输入、
+  原子写回读校验、`map_hash` 不匹配拒绝、`next_sequence` 不回退
+- `test/unit/test_audit_log.cpp`：JSONL 单行、转义、追加不覆盖
+- `test/unit/test_mission_queue.cpp` 增补：`Restore` 之后 `PeekN`/`PopById` 顺序与暂停标记一致
+- 新增 `scripts/check_state_persistence_e2e.sh`：提 3 单 → `kill -9` dispatcher →
+  重启 → 断言队列仍在、`next_sequence` 未回退、幂等键仍去重、审计文件含强清记录
+
+**提交**：`feat(core): 调度状态快照序列化与原子落盘`、`feat(core): 审计记录 JSONL 追加`、
+`feat(ros): 调度状态快照与审计落盘接线（默认关闭）`、`feat(tools): 幂等键持久化（TTL+容量上限）`、
+`test(e2e): 重启恢复验收`。
+
+---
+
+## 批次 3：dispatcher_node 分层重构
+
+目标：把"每 tick 的派发决策"抽成纯函数，ROS 侧退化为"采集 → 调纯函数 → 按有序 step 落地"。
+
+### 3.1 拆分边界
+
+| 判据 | 去向 |
+|---|---|
+| 只依赖 core 类型，无时钟/日志/`rclcpp` | **下沉 core**（宿主 ctest 覆盖） |
+| 需要 ROS 消息、`now()`、pub/sub、action handle、参数 | **留在 ROS** |
+| 决策与副作用交织 | 决策产出**有序 step 列表**，ROS 按序落地 |
+
+### 3.2 四组新纯函数（全部进 core）
+
+**a) `workflow/dispatch_tick_planning.hpp`** —— 派发主链决策
+
+```cpp
+struct DispatchCandidate { dispatcher::Mission mission; fleet::VehicleAssignmentDecision assignment; };
+struct DispatchTickRequest { /* 门禁字段 + candidates + 目录指针 + 持锁表 + 时空占用表 + now */ };
+struct DispatchIntent { Mission mission; std::string vehicle_id; bool legacy_single_vehicle;
+                        bool vda5050_backend; std::vector<std::string> route_locks;
+                        std::optional<TimeSpacePlan> time_space_plan; };
+struct DispatchStep { enum class Kind{kRejectCandidate,kRecordWait,kEmitReservationDenied,kDispatch};
+                      Kind kind; std::string mission_id; std::string reason;
+                      std::vector<std::string> route_locks; std::optional<DispatchIntent> intent; };
+struct DispatchTickDecision { std::vector<DispatchStep> steps; bool map_version_valid;
+                              bool consume_queue_start_request; bool auto_assignment_paused;
+                              std::string pause_reason; std::string deferred_reason;
+                              bool rearm_queue_start_request; std::string branch; };
+DispatchTickDecision PlanDispatchTick(const DispatchTickRequest&);
+```
+
+**关键：必须产出有序 `steps`，不能产出聚合 map**——原代码是"逐候选串行内联"，
+分组会丢序（`pending_wait_` 写入 / `reservation_denied` 事件 / `Cancel` / `ReArm` 的相对顺序）。
+
+**b) `dispatcher/deadlock_snapshot_assembly.hpp`** —— 快照纯化
+
+```cpp
+DeadlockSnapshotAssembly AssembleDeadlockSnapshot(const DeadlockSnapshotSources&);
+// Assembly = { DeadlockSnapshot snapshot; std::vector<std::string> stale_wait_mission_ids; }
+```
+把现在 `BuildDeadlockSnapshot` 自带的副作用（就地清洗 `pending_wait_`）拆成
+"纯组包 + 返回待清扫 id"，由 ROS 显式 erase。**顺带统一锁约定**：`DeadlockTick`
+与 `DetectTrafficDeadlockCb` 两处都加 `active_missions_mutex_`（单线程下无语义变化）。
+
+**c) `workflow/fleet_link_guard.hpp`** —— 链路守卫聚合
+
+```cpp
+FleetLinkGuardDecision EvaluateFleetLinkGuard(const FleetLinkGuardRequest&);
+// 三条策略显式化：隔离车跳过 / 任一在线车离线即 block / stale 只告警不阻断
+```
+
+**d) `fleet/` 三个小件**：`assignment_dispatch_action.hpp`（把现 ROS 侧
+`assignment_dispatch_decision.hpp` 迁到 core，ROS 头改三行 `using` 别名，测试零改动）、
+`vehicle_assignment_request_builder.hpp`（`BuildAssignmentRequest` 下沉，含按 id 排序的
+tie-break 规则）、`vda5050_vehicle_binding.hpp`（订单绑车与 round-robin 游标）。
+
+另：`Vda5050Link` 结构里"订阅句柄 + 纯数据"混在一起 → 拆成
+`vda5050_link_subs_`（ROS 句柄表）与 `vda5050_link_states_`
+（`fleet::Vda5050LinkState` 纯数据表，可直接喂 core 纯函数）。
+
+### 3.3 迁移顺序（风险从低到高）
+
+| 步 | 内容 | 验收 |
+|---|---|---|
+| 3A-1 | 删死成员 `topology_graph_`（全仓 0 引用） | 编译 + 单测 + e2e Stage 2/4 冒烟 |
+| 3A-2 | `deadlock_snapshot_assembly` | 新 suite 全绿；`check_deadlock_resolution.sh` PASS |
+| 3A-3 | `Vda5050Link` 句柄/数据拆表 + `ApplyStateReportToLink` | `Vda5050LinkStateTest`；e2e Stage 3/6.2/6.5 |
+| 3A-4 | `fleet_link_guard` | `FleetLinkGuardTest`；**e2e Stage 6.4 必须 PASS**（`Dispatch suspended` + m3 不派发） |
+| 3B-5 | 选车请求构建 + VDA 绑车 | e2e Stage 7（双车并发/身份不匹配）、Stage 8 |
+| 3B-6 | `assignment_dispatch_action` 迁 core + ROS 别名 | ROS 侧原有 5 例不改一行仍绿 |
+| 3C-7 | `ScheduleTick` **机械切分**为三个函数（不改语义） | diff 只允许"函数边界 + 局部变量提升"；e2e Stage 4/6.7/8 |
+| 3D-8 | 门禁段（2-5）下沉 `PlanDispatchGates` | `DispatchGatePlanningTest`；e2e Stage 2.3/4.2/6.4 |
+| 3D-9 | 端点解析 + 段 8 切五方法 | `DispatchEndpointResolutionTest`；e2e Stage 4 全阶段 |
+| 3D-10 | **`PlanDispatchTick` 下沉，node 变解释器** | `DispatchTickPlanningTest`；**三套 e2e 全量 + check_all.sh** |
+
+每步 = `add`（惰性代码 + 测试，生产零调用）+ `switch`（改调用点）+ tag `refactor-Sn-green`。
+
+### 3.4 兼容红线（逐字保持）
+
+1. legacy 单车模式**不进选车流程**（`strategy="legacy_single_vehicle"`，槽位键空串）——
+   曾因误调 `PlanVehicleAssignment` 把单车任务永久判负（`b1cce70`）
+2. `queue_start_requested_` 只在"实际派发或 BT 已批准启动"时消费；门禁提前 return 不消费
+3. `candidates.empty()` 分支：原代码**消费启动请求但不 rearm**——按现状保留并用
+   `CandidateListEmpty_ConsumesStartRequestWithoutRearm` 锁定，**另开 issue**，不在重构里改行为
+4. 一 tick 只派一个；`PeekN` 的队首阻塞规避顺序不变
+5. time_space 模式：派发后 `route_locks` 清空，但预约被拒时 `pending_wait_` 记的是**静态锁**
+6. **日志文案与 throttle 窗口逐字不变**（e2e 直接 grep）：`Dispatch suspended:`、
+   `VDA 5050 vehicle %s link broken:`、`Dispatched mission:`、`VDA 5050 order published:`、
+   `Mission completed: %s (arrived at goal)`、`Dynamic unlock (Spec 5.3):`、
+   `all eligible vehicles are quarantined`、`Path planner: SkeletonPlanner`
+7. 不得新增任何释放路径；`EvaluateFleetLinkGuard` 的 `retain_all_locks` 恒真
+8. `/fleet/{vid}/online` 的 `KeepLast(1)+transient_local`、legacy `/plan` 逐字不变
+9. 新增的 `vda5050_link_states_` / `vda5050_link_subs_` 在 `on_cleanup` 与
+   `SetupVda5050Links` 开头都 `clear()`（reconfigure 残留教训）
+
+### 3.5 可测性收益（新增 ~90 个用例）
+
+| 新 suite | 覆盖现在测不到的路径 |
+|---|---|
+| `DispatchGatePlanningTest`（12） | 空队列/超容量/无空闲槽/链路守卫/地图哈希三态/启动请求消费 |
+| `DispatchTickPlanningTest`（19） | 队首阻塞规避、三态处置、静态锁冲突 vs 时空窗冲突、一 tick 一派 |
+| `DeadlockSnapshotAssemblyTest`（8） | 幽灵等待者清扫、不改输入 |
+| `FleetLinkGuardTest`（10） | 隔离车不阻断、首台阻断车、stale 边界 |
+| `Vda5050LinkStateTest`（5） | 离线期间 state 不回置 online、陈旧边界 |
+| `Vda5050VehicleBindingTest`（5） | 显式/回退/游标环绕 |
+| `DispatchEndpointResolutionTest`（6） | `unknown dropoff station` 文案 |
+| `VehicleAssignmentRequestBuilderTest`（4） | 按 id 排序的 tie-break 确定性 |
+
+### 3.6 风险与回退
+
+**最大风险**：`PlanDispatchTick` 的语义漂移（顺序 / 启动请求消费点 / 时空窗双记账 / 日志 throttle）。
+
+**机械防线**：在 `switch` 提交里加 debug 参数 `dispatch_trace_file`（默认空），
+把每 tick 的 `DispatchTickRequest` 摘要与 `Decision.branch/steps.kind` 写成 JSONL；
+先用旧路径跑 e2e 存基线，切换后跑同一脚本 `diff` 两份 trace，要求完全一致。
+
+**回退**：每步 revert 最近的 `switch` 提交（惰性核心代码保留，不影响运行）；
+若仍挂则回退到上一个 `refactor-Sn-green` tag。`PlanDispatchTick` 的 `switch`
+允许临时保留 `ScheduleTickLegacy()`（编译期宏切换），验收通过后单独提交删除，
+**不允许长期双路径**。
+
+---
+
+## 批次 4：拓扑级绕行接通
+
+**范围锁定（用户已确认）**：本轮**只做静态拓扑绕行**，**不引入 A*、不引入 CBS、
+不引入新的路径资源模型**；**动态障碍绕行不做**（需要感知输入，另开批次）。
+
+### 4.1 现状与偏差说明
+
+- `StationTopologyGraph::FindShortestPathAvoiding`（`station_topology.cpp:98`）实现完整、
+  有单测，但**零生产调用方**；README 第 29 行声称的 "Global Dynamic Re-routing (Dijkstra Bypass)"
+  与实现不符。
+- **但**：该类本身在生产链路里是死代码（`dispatcher_node` 只声明了 `topology_graph_`
+  且从未使用）；生产实际用的是 `catalog::FindRoutePath`（`station_catalog.cpp:447`，
+  支持站点 + 路网节点的混合图）。
+- 因此绕行能力要**落在 `FindRoutePath` 同源的位置**，才能与派发/预约用同一张图：
+
+```cpp
+// station_catalog.hpp 新增
+std::optional<std::vector<std::string>> FindRoutePathAvoiding(
+    const StationCatalog& catalog, const std::string& from, const std::string& to,
+    const std::unordered_set<std::string>& blocked_edge_keys);  // key = route_edge:A__B
+```
+实现方式：把现有 `FindRoutePath` 的 Dijkstra 抽成接受 `blocked` 集合的内部函数，
+两个公开入口共用（**不复制第二份寻路**）。`StationTopologyGraph` 保持现状不动。
+
+### 4.2 决策纯函数
+
+`src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/deadlock_reroute.hpp`
+
+```cpp
+struct RerouteRequest {
+  std::string mission_id;
+  std::vector<std::string> current_path;                 // 行驶序节点
+  std::unordered_set<std::string> blocked_edge_keys;     // 来自死锁环的 route_edge:*
+  const catalog::StationCatalog* catalog = nullptr;
+  std::string pickup_station, dropoff_station;
+  std::size_t attempt = 0;
+  std::size_t max_attempts = 1;                          // 默认只试一次
+};
+struct RerouteDecision {
+  enum class Kind { kNoReroute, kRerouteReady, kNoAlternative, kExhausted };
+  Kind kind = Kind::kNoReroute;
+  std::vector<std::string> new_path;
+  std::vector<std::string> new_route_locks;
+  std::string reason;
+};
+RerouteDecision PlanDeadlockReroute(const RerouteRequest&);
+```
+
+**触发条件（显式写死，可单测）**：
+- 只对 `DeadlockKind::kMutualBlock`（WFG 环）触发；`kIdleActive` / `kLongReservationHold`
+  仍走现有 retry/pause 路径；`kOverCapacity` 维持 `kNone`
+- 受阻边集合 = finding 的 `cycle_path` 中奇数位资源里 `route_edge:*` 的项
+  （`route_node:*` 不解成边——节点冲突不代表整条边不可用）
+- `new_path != current_path` 才算"真的绕行"；否则 `kNoAlternative`
+
+### 4.3 接线与原子性（关键）
+
+`DeadlockTick` 中新增分支：`RecoveryPolicy` 之外先调 `PlanDeadlockReroute`；
+`kRerouteReady` 时按**固定顺序**落地：
+
+1. 用 `new_route_locks` 尝试预留（static 模式 `Reserve` / time_space 模式
+   `ReserveTimeSpaceBatch`）
+2. **只有预留成功**才释放旧路线的锁与时空占用
+3. 重新发布路径（local_sim 发 `/plan/{vid}`，VDA 5050 发新 order 并递增 `orderUpdateId`）
+4. 更新 `mission_route_paths_`、`pending_wait_`、事件日志（`event = "rerouted"`）
+
+**禁止**"先释放旧资源再发现新路线约不上"——这是用户明确指出的风险点。
+
+预留失败 → `kNoAlternative` 语义：**不动旧资源、不下发新路线**，回退到现有
+retry/pause 处置。
+
+### 4.4 验收（用户指定的场景表）
+
+| 场景 | 预期 | 落点 |
+|---|---|---|
+| 存在两条可达路线，其中一条边被禁用 | 选不经过该边的替代路线 | `FindRoutePathAvoidingTest` + `DeadlockRerouteTest` |
+| 所有路线均不可达 | 返回明确失败原因，**不伪造直线路径** | `DeadlockRerouteTest, NoAlternativeReportsReason` |
+| 替代路线的资源预约失败 | **不下发新路线、不释放原有资源** | `DeadlockRerouteTest, ReservationFailureKeepsOriginalLocks` |
+| 死锁恢复触发重规划 | 触发条件 / 替代路线 / 任务状态转换 | `DeadlockRerouteTest` 6 例 + e2e |
+| 单车原有场景 | 现有测试与 e2e 行为不变 | 全量回归 |
+
+新增 e2e：扩展 `scripts/check_vda5050_e2e.sh` 的 Stage 6 之后加 **Stage 6.9 绕行验收**
+（独立域 84）：封一条边 → 触发 WFG 环 → 断言任务改走替代路线、旧锁已释放、
+新锁由新路径持有、任务最终完成。
+
+**文档**：README 第 29 行改为准确表述——"静态拓扑绕行（graph-level reroute）"，
+并显式标注"动态障碍绕行未实现"。
+
+**提交**：`feat(core): FindRoutePathAvoiding 与派发同源绕行入口`、
+`feat(core): 死锁绕行决策纯函数`、`feat(ros): 死锁恢复接入绕行（新路预约成功才释放旧锁）`、
+`test(e2e): 绕行验收阶段`、`docs: 修正 README 的绕行表述`。
+
+---
+
+## 批次 5：CI 门禁 + L2 契约测试 + 可观测性
+
+### 5.1 三套 e2e 进 CI
+
+现有脚本都带 `AMR_E2E_INNER=1` 内层执行守卫（`check_vda5050_e2e.sh:36`、
+`check_map_ingest_e2e.sh:33`），CI 里可直接以 `AMR_E2E_INNER=1` 在
+`ros:jazzy-ros-base` 容器 job 内跑，不需要 DinD。
+
+| e2e | CI 可行性 | 方案 |
+|---|---|---|
+| `check_map_ingest_e2e.sh` | ✅ | 装 `ros-jazzy-nav2-map-server` 后 `AMR_E2E_INNER=1` 直接跑 |
+| `check_vda5050_e2e.sh` | ✅ | 加装 `mosquitto` + `python3-paho-mqtt`，`AMR_E2E_INNER=1` |
+| `check_web_console_e2e.sh` | ❌（需宿主机 Chrome + Docker） | 不进常规 CI；放入 `workflow_dispatch` 手动/nightly job，**并在 README 里如实说明** |
+
+新增 CI job `e2e-fleet`：`needs: build-ros2-jazzy`，超时 20 分钟，
+失败时上传容器内 `/tmp/amr_*` 现场日志为 artifact。
+
+### 5.2 L2 契约测试从空壳变真断言
+
+`test/l2_launch_contracts/test_lifecycle_contracts.py` 现在只有 `assertTrue(True)`。
+改为 launch_testing 真断言：
+
+- `lifecycle_coordinator_node` 启动后 `/system/ready`、`/system/healthy` 服务可调用且返回 `ready=true`
+- `dispatcher_node` 在 `active` 前 `/system/ready` 返回 not-ready（生命周期门禁语义）
+- 10 个核心服务与 2 个 action server 在拓扑中出现
+- 话题契约：`/dispatcher/state` 2Hz、`/dispatcher/topology_state` 存在
+
+注册到 `src/amr_dispatcher_ros/CMakeLists.txt`（`add_launch_test`）。
+
+### 5.3 `/metrics`（Prometheus 文本格式）
+
+`rest_gateway` 新增 `GET /metrics`（纯文本，无鉴权——或复用 `metrics_token`）：
+
+| 指标 | 来源 |
+|---|---|
+| `amr_queue_size` / `amr_queue_capacity` | 已有 `/dispatcher/state` |
+| `amr_active_missions` | 同上 |
+| `amr_deadlock_active` | 同上 |
+| `amr_vehicle_online{vehicle_id}` / `amr_vehicle_busy{}` / `amr_vehicle_quarantined{}` | `VehicleLinkState[]` |
+| `amr_dispatch_total` / `amr_dispatch_rejected_total` / `amr_dispatch_deferred_total` | **新增计数器**（core 里加 `DispatchCounters` struct，派发决策产出后 ROS 侧自增） |
+| `amr_lock_contention_total` | 预约失败次数 |
+| `amr_gateway_requests_total{code}` | 网关自增 |
+| `amr_event_total` | `MissionEventLog::total_appended()`（已存在） |
+
+**验收**：`curl /metrics` 返回合法 Prometheus 文本；`promtool check metrics`（或简易格式断言）
+在 e2e 里跑。
+
+**提交**：`ci: 三套 e2e 接入 CI（web 控制台为手动 job）`、
+`test(ros): L2 生命周期契约改为真断言`、`feat(tools): /metrics 端点与调度计数器`。
+
+---
+
+## 批次 6：功能补齐（后续批次）
+
+按"先易后难、先内后外"，每条都可独立验收：
+
+| # | 功能 | 现状 | 落点 |
+|---|---|---|---|
+| 6.1 | **选车策略可插拔** | 只有 `nearest` | 仿 `MissionComparator` 做 `IVehicleSelectionStrategy`：`nearest` / `battery_preferred` / `auction`（按加权出价） |
+| 6.2 | **充电任务自动编排** | `PlanOpportunityCharging` 已有纯决策，**未接入 dispatcher 自动插入** | 低电量 tick 检查 → 自动入队 charge 单（复用已有 `critical_battery` / `preempt_current` 语义） |
+| 6.3 | **订单批处理/拼单** | 无 | 同取送站点的多单合并为一个多站点任务（复用 `station_sequence_workflow` 的 legs） |
+| 6.4 | **上游契约补齐** | REST 不透传 `order_id` / `deadline_unix_ms` / `mission_type`；`cancel` 不支持整单 | 网关补字段透传 + `CancelOrder.order_id` 路径 |
+| 6.5 | **PLC/电梯真实对接** | facility 只有 door/elevator 类型判定 | 抽象 `IFacilityAdapter`，先做 Mock，OPC-UA 留接口 |
+| 6.6 | **订单载荷 schema 化** | `OrderPayload` 是字符串 KV，无校验 | 引入结构化 schema（可用 yaml-cpp 的 JSON 子集或自写校验器），保底给 `ValidateSiteConfig` 复用 |
+
+---
+
+## 下一阶段（不在本计划执行）
+
+### A* + 绕行
+
+**前置条件（三条全部满足才启动）**：
+1. 地图坐标与占据栅格能稳定提供给规划器，且具备机器人 footprint、未知区域、
+   对角穿越的碰撞校验
+2. 自由空间路径能映射为**可预约的资源**（网格区域 / 路径段 / 统一冲突区域模型）
+3. 多车重规划能协调旧路线与新路线的预约，避免"先释放旧资源、再发现新路线约不上"
+
+**不满足前置条件就做 A* 的后果**：A* 找到的路穿过现有路网图之外的自由空间，
+这些路段没有对应的 `RouteEdgeId`，`ResourceTable` 无法预约 → 规划器认为可行，
+但多车调度器没有保护那条路线上的冲突区域。
+
+### CBS（多车联合规划）
+
+留待后续研究。需要时间维度、等待动作、避让点、交通约束与执行偏差处理，
+不是"加一个规划器"就能实现车辆主动退让。
+
+---
+
+## 显式裁剪（本计划不做）
+
+- **动态障碍绕行**（需感知输入与障碍栅格更新）—— 批次 4 只做静态拓扑绕行
+- **SQLite / 数据库** —— 持久化用 YAML 快照
+- **RBAC / 多用户权限体系** —— 只做静态 Bearer Token
+- **SROS2 / DDS 加密** —— 本轮不引入
+- **leader election / 多副本 HA** —— 单副本
+- **真机多车物理并发** —— 沿用 PTY 模拟底盘
+- **Web 控制台实时推送（WebSocket/SSE）** —— 维持 1s 轮询
+
+---
+
+## 验证总表
+
+| 项 | 命令 | 期望 |
+|---|---|---|
+| 核心单测 | `ctest --test-dir build/core` | 710 + 新增全绿 |
+| ROS 单测 | 容器内 `ctest --test-dir build/amr_dispatcher_ros` | 25 + 新增全绿 |
+| BT 单测 | 容器内 `ctest --test-dir build/amr_dispatcher_bt` | 36 全绿 |
+| tools 单测（新） | 容器内 `ctest --test-dir build/amr_dispatcher_tools` | 全绿 |
+| 编译 | `colcon build` 5 包 | 无错 |
+| 混沌流水线 | `./scripts/check_all.sh` | EXIT=0 |
+| 地图 e2e | `./scripts/check_map_ingest_e2e.sh` | EXIT=0 |
+| VDA 5050 e2e | `./scripts/check_vda5050_e2e.sh` | 9 阶段 + 新增 Stage 6.9 全 PASS |
+| Web 控制台 e2e | `./scripts/check_web_console_e2e.sh` | 5 phase 全 PASS |
+| 网关加固 e2e（新） | `./scripts/check_rest_gateway_hardening.sh` | 10 条断言全 PASS |
+| 状态持久化 e2e（新） | `./scripts/check_state_persistence_e2e.sh` | EXIT=0 |
+| L2 契约（新） | 容器内 `ctest -R lifecycle` | 全绿 |
+| CI | GitHub Actions `e2e-fleet` job | 绿 |
+
+---
+
+## 提交切分约定
+
+- 每个 batch 的提交以 `docs:` / `fix:` / `feat:` / `test:` / `ci:` 前缀起始，
+  末尾附 `Co-Authored-By: Claude Code <noreply@anthropic.com>`
+- **每个 `add` 提交必须是"生产零调用"的惰性代码**，可以单独 revert 而不影响运行
+- 每个批次验收通过后打 `batch-N-green` tag；回退以 tag 为锚
+- 每批次完成后同步 `docs/API.md`（新端点/参数）、`README.md`（新能力 + 诚实标注未实现项）、
+  `docs/EXTENSION_ROADMAP.md`（现状）

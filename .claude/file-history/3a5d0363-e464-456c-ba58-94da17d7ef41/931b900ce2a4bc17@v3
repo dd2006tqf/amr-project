@@ -1,0 +1,245 @@
+// 双发发布器（普通节点版）：一次调用同时发布 rosidl 与 protobuf 两路话题。
+//
+// ============================================================================
+// 为什么需要这个封装，而不是在每个节点里写两个 publish
+// ============================================================================
+// 双发不是「多写一行 publish」那么简单，它有三个每次都必须处理对的细节：
+//
+//   1. 话题名派生。既有代码用 ResolveVehicleTopic 做 per-vehicle 派生，
+//      proto 话题必须走同一套规则，否则多车场景下 __proto 只发全局名，
+//      订阅方按车拿不到。这里统一交给调用方传「已解析好的 rosidl 话题名」，
+//      内部只追加后缀，保证派生只做一次。
+//
+//   2. lifecycle 发布器的激活态。dispatcher_node 用的是
+//      rclcpp_lifecycle::LifecyclePublisher，未激活时 publish 是静默空操作。
+//      rosidl 侧靠 on_activate/on_deactivate 管理，proto 侧若不同步处理，
+//      就会出现「节点 active 了但 proto 话题没数据」这种只在运行时可见的偏差。
+//      ——这一半不在本文件里，见 proto_lifecycle_dual_publisher.hpp。
+//
+//   3. 总开关。过渡期必须能一键关掉 proto 侧（回滚、压测、排查），
+//      而不必改代码或重新构建。开关做成构造参数，由节点参数注入。
+//
+// ============================================================================
+// 为什么拆成两个头文件 / 两个类
+// ============================================================================
+// rclcpp 的 Publisher 有两种类型（普通 / lifecycle），且 lifecycle 版在
+// rclcpp_lifecycle 包里。若在同一个类里用模板参数二选一，头文件就必然
+// include <rclcpp_lifecycle/lifecycle_node.hpp>，让 chassis_driver /
+// path_tracker / safety_gate / link_health 这四个**根本不是 lifecycle 节点**
+// 的可执行目标凭空多一条 rclcpp_lifecycle 依赖——多一个包要在
+// ament_target_dependencies 里声明，还得保证运行时能加载。
+//
+// 拆开之后：本文件只依赖 rclcpp，普通节点零成本；lifecycle 变体单独一份，
+// 只有 dispatcher_node 引入。两者共用 ProtoTopicName 与 ProjectRosidlToProto，
+// 所以两路投影逻辑仍只有一份实现。
+#ifndef AMR_DISPATCHER_ROS__PROTO_DUAL_PUBLISHER_HPP_
+#define AMR_DISPATCHER_ROS__PROTO_DUAL_PUBLISHER_HPP_
+
+#include <memory>
+#include <string>
+#include <type_traits>
+
+#include <rclcpp/rclcpp.hpp>
+
+#include "amr_dispatcher_ros/proto_projection.hpp"
+
+// 让 create_publisher<ProtoT> 能通过 rclcpp 的消息类型检查。
+#include "amr_dispatcher_proto/register_all_types.hpp"
+
+namespace amr_dispatcher_ros
+{
+
+/// proto 话题名的后缀。
+///
+/// 选 `_proto` 而不是 `/proto/` 子命名空间：ROS 话题名里 `/proto/xxx` 会变成
+/// 另一个层级，按前缀做 ros2 topic list 通配时会与既有话题分散；后缀形式
+/// 让 `/chassis/link_health` 与 `/chassis/link_health_proto` 在列表里相邻，
+/// 运维一眼能看出配对关系。
+inline constexpr const char * kProtoTopicSuffix = "_proto";
+
+/// 由 rosidl 话题名派生 proto 话题名。
+///
+/// 入参必须已经是**解析后的最终话题名**（即 ResolveVehicleTopic 的输出），
+/// 这样 per-vehicle 派生只发生一次，不会出现 `/plan/amr_01_proto` 与
+/// `/plan_proto/amr_01` 两种不一致的结果。
+inline std::string ProtoTopicName(const std::string & rosidl_topic)
+{
+  return rosidl_topic + kProtoTopicSuffix;
+}
+
+/// 把 rosidl 消息投影成 proto 消息。
+///
+/// 用 if constexpr 做类型分发而不是要求 ProtoT 提供静态 Project 方法：
+/// protobuf 生成的类不接受注入，而投影函数是自由函数，只能在此做分派。
+/// 分支写错会在编译期落到 else 的 static_assert，不会静默走错路径。
+///
+/// 本函数被普通版与 lifecycle 版两个双发器共用，所以投影只此一份。
+template<typename RosidlMsgT, typename ProtoT>
+void ProjectRosidlToProto(const RosidlMsgT & in, ProtoT * out)
+{
+  using amr_dispatcher_interfaces::msg::ChassisLinkHealth;
+  using amr_dispatcher_interfaces::msg::DispatcherState;
+  using amr_dispatcher_interfaces::msg::MissionEvent;
+  using amr_dispatcher_interfaces::msg::SafetyState;
+  using amr_dispatcher_interfaces::msg::TopologyState;
+  using amr_dispatcher_interfaces::msg::TrackingError;
+
+  if constexpr (std::is_same_v<RosidlMsgT, ChassisLinkHealth> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::ChassisLinkHealth>)
+  {
+    proto_projection::ProjectChassisLinkHealth(in, out);
+  } else if constexpr (std::is_same_v<RosidlMsgT, TrackingError> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::TrackingError>)
+  {
+    proto_projection::ProjectTrackingError(in, out);
+  } else if constexpr (std::is_same_v<RosidlMsgT, DispatcherState> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::DispatcherState>)
+  {
+    proto_projection::ProjectDispatcherState(in, out);
+  } else if constexpr (std::is_same_v<RosidlMsgT, SafetyState> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::SafetyState>)
+  {
+    proto_projection::ProjectSafetyState(in, out);
+  } else if constexpr (std::is_same_v<RosidlMsgT, TopologyState> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::TopologyState>)
+  {
+    proto_projection::ProjectTopologyState(in, out);
+  } else if constexpr (std::is_same_v<RosidlMsgT, MissionEvent> &&
+    std::is_same_v<ProtoT, amr_dispatcher::proto::MissionEvent>)
+  {
+    proto_projection::ProjectMissionEvent(in, out);
+  } else {
+    static_assert(
+      !std::is_same_v<RosidlMsgT, RosidlMsgT>,
+      "no proto projection registered for this message pair; "
+      "add it to proto_projection.{hpp,cpp} and to this dispatch chain");
+  }
+}
+
+/// 双发器：持有 proto 发布器，提供从 rosidl 消息投影并发布的单一入口。
+///
+/// 模板参数 ProtoT 必须是已在 register_all_types.hpp 注册过的类型。
+/// 普通 rclcpp::Node 用本类；lifecycle 节点用 ProtoLifecycleDualPublisher。
+template<typename RosidlMsgT, typename ProtoT>
+class ProtoDualPublisher
+{
+public:
+  /// 构造即创建发布器，也立即可发——普通发布器没有激活态。
+  ///
+  /// \param node        宿主节点（用于 create_publisher 与日志）
+  /// \param rosidl_name 已解析的 rosidl 话题名（proto 名由它派生）
+  /// \param qos_depth   QoS 深度。两侧必须一致：若 proto 侧深度更小，
+  ///                    突发时会先丢 proto 帧，一致性检查器会报「proto 缺帧」
+  ///                    而不是「消息不一致」，掩盖真正的问题。
+  /// \param enabled     proto 侧总开关。false 时完全不创建 proto 发布器，
+  ///                    因此也不会在 DDS 里留下一个空话题。
+  /// \param rosidl_enabled rosidl 侧开关（阶段 4b）。
+  ///                    **默认 true**，所以既有调用点的行为逐位不变。
+  ///                    设为 false 时连 rosidl 发布器都不创建——这是「只留 proto」
+  ///                    的唯一实现方式：DDS 里不会存在一个没人订阅的 rosidl 话题。
+  ProtoDualPublisher(
+    rclcpp::Node * node, const std::string & rosidl_name, std::size_t qos_depth, bool enabled,
+    bool rosidl_enabled = true)
+  : rosidl_topic_(rosidl_name),
+    proto_topic_(ProtoTopicName(rosidl_name)),
+    enabled_(enabled),
+    rosidl_enabled_(rosidl_enabled)
+  {
+    // rosidl 侧：阶段 4b 之前由各节点自己 create_publisher，现在收进来，
+    // 让「发不发 rosidl」成为一个参数而不是散落在 7 个节点里的 if。
+    if (rosidl_enabled_) {
+      rosidl_pub_ = node->create_publisher<RosidlMsgT>(rosidl_topic_, rclcpp::QoS(qos_depth));
+    }
+    if (!enabled_) {
+      return;
+    }
+    pub_ = node->create_publisher<ProtoT>(proto_topic_, rclcpp::QoS(qos_depth));
+  }
+
+  /// 是否真正启用了 proto 侧。调用方用它决定是否值得构造 proto 消息。
+  bool enabled() const {return static_cast<bool>(pub_);}
+
+  /// rosidl 侧是否在发布（阶段 4b）。false 表示「只留 proto」。
+  bool rosidl_enabled() const {return static_cast<bool>(rosidl_pub_);}
+
+  /// 打一行启动状态。四类组合各有明确说法，**不能**只判断 rosidl 一侧：
+  /// 两个开关都关时沿用「仅发布 proto」的文案，会让运维以为还有数据流，
+  /// 而实际这个节点一条消息都不发——这类误导性日志比沉默更难排查。
+  ///
+  /// 放在双发器里而不是各节点各写一份，是因为文案会随开关语义变化，
+  /// 分散在 4 个节点里必然漂移（本项目已有过同类先例）。
+  void LogStatus(const rclcpp::Logger & logger) const
+  {
+    if (pub_ && rosidl_pub_) {
+      RCLCPP_INFO(logger, "双发已启用：%s + %s",
+        rosidl_topic_.c_str(), proto_topic_.c_str());
+      return;
+    }
+    if (!pub_ && !rosidl_pub_) {
+      RCLCPP_ERROR(logger,
+        "两侧都已关闭：本节点既不发布 %s 也不发布 %s。"
+        "此组合仅用于测试，请检查 proto_dual_publish / proto_rosidl_publish",
+        rosidl_topic_.c_str(), proto_topic_.c_str());
+      return;
+    }
+    if (rosidl_pub_) {
+      RCLCPP_INFO(logger, "proto 侧已关闭，仅发布 rosidl 话题 %s",
+        rosidl_topic_.c_str());
+      return;
+    }
+    // 只剩 proto：切流后的正常态。第三方若还订阅着 rosidl 话题就是静默失联，
+    // DDS 不报错、订阅端也不超时退出，因此这条 WARN 是唯一的归因线索。
+    RCLCPP_WARN(logger,
+      "rosidl 侧已关闭，仅发布 proto 话题 %s；请确认没有订阅方仍依赖 %s",
+      proto_topic_.c_str(), rosidl_topic_.c_str());
+  }
+
+  const std::string & proto_topic() const {return proto_topic_;}
+  const std::string & rosidl_topic() const {return rosidl_topic_;}
+
+  /// 同时发布两侧。这是过渡期结束后各节点应当使用的**唯一**入口。
+  ///
+  /// 与旧的两行写法（先 `rosidl_pub_->publish(msg)` 再 `Publish(msg)`）相比，
+  /// 这里的好处是「发不发 rosidl」由构造参数统一决定，节点侧不再出现
+  /// `if (rosidl_enabled_) rosidl_pub_->publish(...)` 这类重复判断。
+  bool PublishAll(const RosidlMsgT & msg)
+  {
+    bool published = false;
+    if (rosidl_pub_) {
+      rosidl_pub_->publish(msg);
+      published = true;
+    }
+    // Publish() 自身会判空，这里不重复判断，避免出现「两处判断不一致」。
+    if (Publish(msg)) {
+      published = true;
+    }
+    return published;
+  }
+
+  /// 从 rosidl 消息投影并发布。未启用时为空操作。
+  ///
+  /// 返回是否真的投递到底层发布器，便于调用方在测试中断言。
+  bool Publish(const RosidlMsgT & msg)
+  {
+    if (!pub_) {
+      return false;
+    }
+    ProtoT proto_msg;
+    ProjectRosidlToProto(msg, &proto_msg);
+    pub_->publish(proto_msg);
+    return true;
+  }
+
+private:
+  std::string rosidl_topic_;
+  std::string proto_topic_;
+  bool enabled_{false};
+  bool rosidl_enabled_{true};
+  typename rclcpp::Publisher<ProtoT>::SharedPtr pub_;
+  /// rosidl 侧发布器。仅在 rosidl_enabled 为 true 时创建。
+  typename rclcpp::Publisher<RosidlMsgT>::SharedPtr rosidl_pub_;
+};
+
+}  // namespace amr_dispatcher_ros
+
+#endif  // AMR_DISPATCHER_ROS__PROTO_DUAL_PUBLISHER_HPP_

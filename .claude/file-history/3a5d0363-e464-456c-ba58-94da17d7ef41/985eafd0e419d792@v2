@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# 在独立 ROS_DOMAIN_ID 上验证 lifecycle 切流，避免与容器里常驻的
+# dispatcher_node（同为 /dispatcher/state_proto 的 writer）混淆。
+#
+# 这一点是上一版探针的教训：话题上随时可能有别的进程在发，
+# 「能收到帧」不能证明是**被测实例**发的，必须先用 domain 隔离。
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+export ROS_DOMAIN_ID=77
+
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+DISP="$PKG/lib/amr_dispatcher_ros/dispatcher_node"
+TYPE=amr_dispatcher.proto.DispatcherState
+
+echo "=== ROS_DOMAIN_ID=$ROS_DOMAIN_ID（应与常驻系统隔离）==="
+echo "域内节点（启动前）: $(ros2 node list 2>/dev/null | tr '\n' ' ')"
+
+"$DISP" --ros-args -r __node:=disp_iso -p proto_rosidl_publish:=false \
+  > /tmp/disp_iso.log 2>&1 &
+PID=$!
+sleep 4
+
+echo
+echo "=== 启动后域内节点 ==="
+ros2 node list 2>/dev/null
+
+ros2 lifecycle set /disp_iso configure > /dev/null 2>&1
+sleep 2
+ros2 lifecycle set /disp_iso activate > /dev/null 2>&1
+sleep 2
+
+echo
+echo "=== active 状态 ==="
+ros2 lifecycle get /disp_iso 2>/dev/null
+
+echo
+echo "=== active 时 /dispatcher/state_proto 的 writer（应只有 disp_iso）==="
+ros2 topic info /dispatcher/state_proto -v 2>/dev/null | grep -E 'Publisher count|Node name' || echo "(无)"
+
+echo
+echo "=== active 时应能收到帧 ==="
+timeout 12 ros2 amr echo /dispatcher/state_proto "$TYPE" --once 2>&1 | head -4
+
+echo
+echo "=== 执行 deactivate ==="
+ros2 lifecycle set /disp_iso deactivate 2>&1 | tail -1
+sleep 2
+
+echo
+echo "=== deactivate 后 5s 内是否还有帧（应该没有）==="
+out=$(timeout 8 ros2 amr echo /dispatcher/state_proto "$TYPE" --once 2>&1)
+rc=$?
+echo "  rc=$rc"
+printf '%s\n' "$out" | head -5 | sed 's/^/  /'
+
+echo
+echo "=== 判定 ==="
+if printf '%s' "$out" | grep -q 'header'; then
+  echo "  失败：deactivate 后 proto 侧仍在发布 —— Deactivate() 没生效"
+else
+  echo "  通过：deactivate 后 proto 侧静默，与 rosidl 侧行为一致"
+fi
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true

@@ -1,0 +1,1712 @@
+Internal ctest changing into directory: /home/ubuntu/个人学习/amr_dispatcher/build/core
+Test project /home/ubuntu/个人学习/amr_dispatcher/build/core
+        Start   1: ChassisPacketTest.EncodeCommandFixedPrecision
+  1/853 Test   #1: ChassisPacketTest.EncodeCommandFixedPrecision .......................................................   Passed    0.01 sec
+        Start   2: ChassisPacketTest.ParseCommandLineThreeArgs
+  2/853 Test   #2: ChassisPacketTest.ParseCommandLineThreeArgs .........................................................   Passed    0.00 sec
+        Start   3: ChassisPacketTest.ParseCommandLineTwoArgsFallsToAngular
+  3/853 Test   #3: ChassisPacketTest.ParseCommandLineTwoArgsFallsToAngular .............................................   Passed    0.00 sec
+        Start   4: ChassisPacketTest.ParseCommandLineRejectsTrailingGarbage
+  4/853 Test   #4: ChassisPacketTest.ParseCommandLineRejectsTrailingGarbage ............................................   Passed    0.00 sec
+        Start   5: ChassisPacketTest.ParsePacketLineOdometryWithBattery
+  5/853 Test   #5: ChassisPacketTest.ParsePacketLineOdometryWithBattery ................................................   Passed    0.00 sec
+        Start   6: ChassisPacketTest.ParsePacketLineState
+  6/853 Test   #6: ChassisPacketTest.ParsePacketLineState ..............................................................   Passed    0.00 sec
+        Start   7: ChassisPacketTest.ParsePacketLineRejectsBad
+  7/853 Test   #7: ChassisPacketTest.ParsePacketLineRejectsBad .........................................................   Passed    0.00 sec
+        Start   8: ChassisPacketTest.MickFrameRoundTripSpeedCommand
+  8/853 Test   #8: ChassisPacketTest.MickFrameRoundTripSpeedCommand ....................................................   Passed    0.00 sec
+        Start   9: ChassisPacketTest.DecodeMickOdometryPacket
+  9/853 Test   #9: ChassisPacketTest.DecodeMickOdometryPacket ..........................................................   Passed    0.00 sec
+        Start  10: ChassisPacketTest.DecodeMickStatePacket
+ 10/853 Test  #10: ChassisPacketTest.DecodeMickStatePacket .............................................................   Passed    0.00 sec
+        Start  11: ChassisPacketStreamTest.DrainsCompleteLines
+ 11/853 Test  #11: ChassisPacketStreamTest.DrainsCompleteLines .........................................................   Passed    0.01 sec
+        Start  12: ChassisPacketStreamTest.HandlesSplitPacketAcrossAppends
+ 12/853 Test  #12: ChassisPacketStreamTest.HandlesSplitPacketAcrossAppends .............................................   Passed    0.00 sec
+        Start  13: ChassisPacketStreamTest.CountsInvalidLines
+ 13/853 Test  #13: ChassisPacketStreamTest.CountsInvalidLines ..........................................................   Passed    0.00 sec
+        Start  14: ChassisPacketStreamTest.OverflowClearsBuffer
+ 14/853 Test  #14: ChassisPacketStreamTest.OverflowClearsBuffer ........................................................   Passed    0.00 sec
+        Start  15: ChassisPacketStreamTest.TrailingPartialLineIsKept
+ 15/853 Test  #15: ChassisPacketStreamTest.TrailingPartialLineIsKept ...................................................   Passed    0.00 sec
+        Start  16: ChassisPacketStreamTest.OverflowRecoversAndFlagStaysUntilCleared
+ 16/853 Test  #16: ChassisPacketStreamTest.OverflowRecoversAndFlagStaysUntilCleared ....................................   Passed    0.00 sec
+        Start  17: MickBinaryPacketStreamTest.OverflowRecoversAndParsesNextFrame
+ 17/853 Test  #17: MickBinaryPacketStreamTest.OverflowRecoversAndParsesNextFrame .......................................   Passed    0.00 sec
+        Start  18: ChassisKinematicsTest.NormalizeModel
+ 18/853 Test  #18: ChassisKinematicsTest.NormalizeModel ................................................................   Passed    0.01 sec
+        Start  19: ChassisKinematicsTest.IntegratePlanarMotion
+ 19/853 Test  #19: ChassisKinematicsTest.IntegratePlanarMotion .........................................................   Passed    0.00 sec
+        Start  20: ChassisKinematicsTest.IntegratePlanarMotionRotates
+ 20/853 Test  #20: ChassisKinematicsTest.IntegratePlanarMotionRotates ..................................................   Passed    0.00 sec
+        Start  21: ChassisKinematicsTest.DiffDriveWheelSpeeds
+ 21/853 Test  #21: ChassisKinematicsTest.DiffDriveWheelSpeeds ..........................................................   Passed    0.00 sec
+        Start  22: ChassisKinematicsTest.InverseDiffDriveCommand
+ 22/853 Test  #22: ChassisKinematicsTest.InverseDiffDriveCommand .......................................................   Passed    0.00 sec
+        Start  23: ChassisKinematicsTest.MecanumWheelSpeedsYawComponent
+ 23/853 Test  #23: ChassisKinematicsTest.MecanumWheelSpeedsYawComponent ................................................   Passed    0.00 sec
+        Start  24: PurePursuitTest.DrivesStraightToGoal
+ 24/853 Test  #24: PurePursuitTest.DrivesStraightToGoal ................................................................   Passed    0.01 sec
+        Start  25: PurePursuitTest.StopsAtGoal
+ 25/853 Test  #25: PurePursuitTest.StopsAtGoal .........................................................................   Passed    0.00 sec
+        Start  26: PurePursuitTest.EmptyPathProducesZeroOutput
+ 26/853 Test  #26: PurePursuitTest.EmptyPathProducesZeroOutput .........................................................   Passed    0.00 sec
+        Start  27: PurePursuitTest.CurvatureClampedToMaxAngularSpeed
+ 27/853 Test  #27: PurePursuitTest.CurvatureClampedToMaxAngularSpeed ...................................................   Passed    0.00 sec
+        Start  28: StanleyTest.DrivesStraightToGoal
+ 28/853 Test  #28: StanleyTest.DrivesStraightToGoal ....................................................................   Passed    0.01 sec
+        Start  29: StanleyTest.StopsAtGoal
+ 29/853 Test  #29: StanleyTest.StopsAtGoal .............................................................................   Passed    0.00 sec
+        Start  30: StanleyTest.EmptyPathProducesZeroOutput
+ 30/853 Test  #30: StanleyTest.EmptyPathProducesZeroOutput .............................................................   Passed    0.00 sec
+        Start  31: MissionQueueTest.PushAndPopHighPriorityFirst
+ 31/853 Test  #31: MissionQueueTest.PushAndPopHighPriorityFirst ........................................................   Passed    0.01 sec
+        Start  32: MissionQueueTest.RejectsDuplicateAndFull
+ 32/853 Test  #32: MissionQueueTest.RejectsDuplicateAndFull ............................................................   Passed    0.00 sec
+        Start  33: MissionQueueTest.RejectEmptyId
+ 33/853 Test  #33: MissionQueueTest.RejectEmptyId ......................................................................   Passed    0.00 sec
+        Start  34: MissionQueueTest.DeadlineComparator
+ 34/853 Test  #34: MissionQueueTest.DeadlineComparator .................................................................   Passed    0.00 sec
+        Start  35: MissionQueueTest.PauseAndResumeOrder
+ 35/853 Test  #35: MissionQueueTest.PauseAndResumeOrder ................................................................   Passed    0.00 sec
+        Start  36: MissionQueueTest.CancelOrderAndMission
+ 36/853 Test  #36: MissionQueueTest.CancelOrderAndMission ..............................................................   Passed    0.00 sec
+        Start  37: MissionQueueTest.Reprioritize
+ 37/853 Test  #37: MissionQueueTest.Reprioritize .......................................................................   Passed    0.00 sec
+        Start  38: MissionQueueTest.RejectUnknownComparatorFallsBack
+ 38/853 Test  #38: MissionQueueTest.RejectUnknownComparatorFallsBack ...................................................   Passed    0.00 sec
+        Start  39: MissionQueueTest.PeekN_ReturnsFirstNInDispatchOrder
+ 39/853 Test  #39: MissionQueueTest.PeekN_ReturnsFirstNInDispatchOrder .................................................   Passed    0.00 sec
+        Start  40: MissionQueueTest.PeekN_SkipsPausedOrders
+ 40/853 Test  #40: MissionQueueTest.PeekN_SkipsPausedOrders ............................................................   Passed    0.00 sec
+        Start  41: MissionQueueTest.PeekN_ZeroOrEmptyReturnsNothing
+ 41/853 Test  #41: MissionQueueTest.PeekN_ZeroOrEmptyReturnsNothing ....................................................   Passed    0.00 sec
+        Start  42: MissionQueueTest.PopById_DispatchesNonHeadMission
+ 42/853 Test  #42: MissionQueueTest.PopById_DispatchesNonHeadMission ...................................................   Passed    0.00 sec
+        Start  43: MissionQueueTest.PopById_UnknownMissionFailsWithoutChangingQueue
+ 43/853 Test  #43: MissionQueueTest.PopById_UnknownMissionFailsWithoutChangingQueue ....................................   Passed    0.00 sec
+        Start  44: MissionQueueTest.PopById_PausedOrderFailsWithoutChangingQueue
+ 44/853 Test  #44: MissionQueueTest.PopById_PausedOrderFailsWithoutChangingQueue .......................................   Passed    0.00 sec
+        Start  45: MissionQueueTest.PeekNThenPopById_SkipsUndispatchableHead
+ 45/853 Test  #45: MissionQueueTest.PeekNThenPopById_SkipsUndispatchableHead ...........................................   Passed    0.00 sec
+        Start  46: MissionQueueTest.SnapshotForPersistence_KeepsOriginalState
+ 46/853 Test  #46: MissionQueueTest.SnapshotForPersistence_KeepsOriginalState ..........................................   Passed    0.00 sec
+        Start  47: MissionQueueTest.Restore_RebuildsQueueInGivenOrder
+ 47/853 Test  #47: MissionQueueTest.Restore_RebuildsQueueInGivenOrder ..................................................   Passed    0.00 sec
+        Start  48: MissionQueueTest.Restore_ReappliesPausedOrderMarkers
+ 48/853 Test  #48: MissionQueueTest.Restore_ReappliesPausedOrderMarkers ................................................   Passed    0.00 sec
+        Start  49: MissionQueueTest.Restore_SkipsDuplicateAndEmptyIds
+ 49/853 Test  #49: MissionQueueTest.Restore_SkipsDuplicateAndEmptyIds ..................................................   Passed    0.00 sec
+        Start  50: MissionQueueTest.Restore_RespectsCapacity
+ 50/853 Test  #50: MissionQueueTest.Restore_RespectsCapacity ...........................................................   Passed    0.00 sec
+        Start  51: MissionQueueTest.Restore_ReplacesExistingContents
+ 51/853 Test  #51: MissionQueueTest.Restore_ReplacesExistingContents ...................................................   Passed    0.00 sec
+        Start  52: MissionQueueTest.SnapshotRestoreRoundTrip_PreservesDispatchOrder
+ 52/853 Test  #52: MissionQueueTest.SnapshotRestoreRoundTrip_PreservesDispatchOrder ....................................   Passed    0.00 sec
+        Start  53: MissionQueueTest.RestoreAppend_AddsPausedBacklogAfterMarkersRestored
+ 53/853 Test  #53: MissionQueueTest.RestoreAppend_AddsPausedBacklogAfterMarkersRestored ................................   Passed    0.00 sec
+        Start  54: MissionQueueTest.RestoreAppend_SkipsDuplicatesAndRespectsCapacity
+ 54/853 Test  #54: MissionQueueTest.RestoreAppend_SkipsDuplicatesAndRespectsCapacity ...................................   Passed    0.00 sec
+        Start  55: MissionStateMachineTest.AcceptsAllowedTransitions
+ 55/853 Test  #55: MissionStateMachineTest.AcceptsAllowedTransitions ...................................................   Passed    0.01 sec
+        Start  56: MissionStateMachineTest.RejectsIllegalTransitions
+ 56/853 Test  #56: MissionStateMachineTest.RejectsIllegalTransitions ...................................................   Passed    0.00 sec
+        Start  57: MissionStateMachineTest.FinishRequiresExplicitResult
+ 57/853 Test  #57: MissionStateMachineTest.FinishRequiresExplicitResult ................................................   Passed    0.00 sec
+        Start  58: MissionStateMachineTest.TerminalClearsNonTerminalResult
+ 58/853 Test  #58: MissionStateMachineTest.TerminalClearsNonTerminalResult .............................................   Passed    0.00 sec
+        Start  59: MissionStateMachineTest.NoTransitionOutOfFinished
+ 59/853 Test  #59: MissionStateMachineTest.NoTransitionOutOfFinished ...................................................   Passed    0.00 sec
+        Start  60: MissionStateMachineTest.PausedToPendingAllowed
+ 60/853 Test  #60: MissionStateMachineTest.PausedToPendingAllowed ......................................................   Passed    0.00 sec
+        Start  61: MissionStateMachineTest.ParsesStrings
+ 61/853 Test  #61: MissionStateMachineTest.ParsesStrings ...............................................................   Passed    0.00 sec
+        Start  62: MissionIdentityFieldsTest.FleetIdAndAssignedVehicleIdAreIndependent
+ 62/853 Test  #62: MissionIdentityFieldsTest.FleetIdAndAssignedVehicleIdAreIndependent .................................   Passed    0.00 sec
+        Start  63: MissionIdentityFieldsTest.AssignedVehicleIdDefaultsEmpty_MeaningAutoSelection
+ 63/853 Test  #63: MissionIdentityFieldsTest.AssignedVehicleIdDefaultsEmpty_MeaningAutoSelection .......................   Passed    0.00 sec
+        Start  64: MissionIdentityFieldsTest.StateMachineCarriesBothFieldsThroughTransitions
+ 64/853 Test  #64: MissionIdentityFieldsTest.StateMachineCarriesBothFieldsThroughTransitions ...........................   Passed    0.00 sec
+        Start  65: DispatchStateSnapshotTest.SerializeRoundTripPreservesAllFields
+ 65/853 Test  #65: DispatchStateSnapshotTest.SerializeRoundTripPreservesAllFields ......................................   Passed    0.02 sec
+        Start  66: DispatchStateSnapshotTest.EmptySnapshotRoundTrip
+ 66/853 Test  #66: DispatchStateSnapshotTest.EmptySnapshotRoundTrip ....................................................   Passed    0.00 sec
+        Start  67: DispatchStateSnapshotTest.RejectsGarbageText
+ 67/853 Test  #67: DispatchStateSnapshotTest.RejectsGarbageText ........................................................   Passed    0.00 sec
+        Start  68: DispatchStateSnapshotTest.RejectsUnsupportedFormatVersion
+ 68/853 Test  #68: DispatchStateSnapshotTest.RejectsUnsupportedFormatVersion ...........................................   Passed    0.00 sec
+        Start  69: DispatchStateSnapshotTest.RejectsUnknownMissionState
+ 69/853 Test  #69: DispatchStateSnapshotTest.RejectsUnknownMissionState ................................................   Passed    0.00 sec
+        Start  70: DispatchStateSnapshotTest.RejectsMissionWithoutId
+ 70/853 Test  #70: DispatchStateSnapshotTest.RejectsMissionWithoutId ...................................................   Passed    0.00 sec
+        Start  71: DispatchStateSnapshotTest.NextSequenceNeverRegressesBelowSeenSequences
+ 71/853 Test  #71: DispatchStateSnapshotTest.NextSequenceNeverRegressesBelowSeenSequences ..............................   Passed    0.00 sec
+        Start  72: DispatchStateSnapshotTest.AtomicWriteThenLoad
+ 72/853 Test  #72: DispatchStateSnapshotTest.AtomicWriteThenLoad .......................................................   Passed    0.01 sec
+        Start  73: DispatchStateSnapshotTest.LoadMissingFileReportsNotFound
+ 73/853 Test  #73: DispatchStateSnapshotTest.LoadMissingFileReportsNotFound ............................................   Passed    0.00 sec
+        Start  74: DispatchStateSnapshotTest.AtomicWriteReplacesPreviousSnapshot
+ 74/853 Test  #74: DispatchStateSnapshotTest.AtomicWriteReplacesPreviousSnapshot .......................................   Passed    0.00 sec
+        Start  75: DispatchStateSnapshotTest.LoadRejectsCorruptedFile
+ 75/853 Test  #75: DispatchStateSnapshotTest.LoadRejectsCorruptedFile ..................................................   Passed    0.00 sec
+        Start  76: DispatchStateSnapshotTest.WriteCreatesParentDirectories
+ 76/853 Test  #76: DispatchStateSnapshotTest.WriteCreatesParentDirectories .............................................   Passed    0.00 sec
+        Start  77: AuditLogTest.SerializedRecordHasAllFields
+ 77/853 Test  #77: AuditLogTest.SerializedRecordHasAllFields ...........................................................   Passed    0.01 sec
+        Start  78: AuditLogTest.SerializedRecordIsSingleLine
+ 78/853 Test  #78: AuditLogTest.SerializedRecordIsSingleLine ...........................................................   Passed    0.00 sec
+        Start  79: AuditLogTest.AppendWritesOneLinePerRecord
+ 79/853 Test  #79: AuditLogTest.AppendWritesOneLinePerRecord ...........................................................   Passed    0.00 sec
+        Start  80: AuditLogTest.AppendCreatesParentDirectories
+ 80/853 Test  #80: AuditLogTest.AppendCreatesParentDirectories .........................................................   Passed    0.00 sec
+        Start  81: AuditLogTest.EmptyPathFailsWithoutThrowing
+ 81/853 Test  #81: AuditLogTest.EmptyPathFailsWithoutThrowing ..........................................................   Passed    0.00 sec
+        Start  82: AuditLogTest.EmptyReleasedResourcesRendersEmptyArray
+ 82/853 Test  #82: AuditLogTest.EmptyReleasedResourcesRendersEmptyArray ................................................   Passed    0.00 sec
+        Start  83: DeadlockSnapshotAssemblyTest.AssemblesActiveMissionsAndGraph
+ 83/853 Test  #83: DeadlockSnapshotAssemblyTest.AssemblesActiveMissionsAndGraph ........................................   Passed    0.01 sec
+        Start  84: DeadlockSnapshotAssemblyTest.StaleWaiterIsExcludedAndReported
+ 84/853 Test  #84: DeadlockSnapshotAssemblyTest.StaleWaiterIsExcludedAndReported .......................................   Passed    0.00 sec
+        Start  85: DeadlockSnapshotAssemblyTest.DoesNotMutateInputs
+ 85/853 Test  #85: DeadlockSnapshotAssemblyTest.DoesNotMutateInputs ....................................................   Passed    0.00 sec
+        Start  86: DeadlockSnapshotAssemblyTest.StaleIdsAreSortedForDeterministicOutput
+ 86/853 Test  #86: DeadlockSnapshotAssemblyTest.StaleIdsAreSortedForDeterministicOutput ................................   Passed    0.00 sec
+        Start  87: DeadlockSnapshotAssemblyTest.MissingProgressUsesDefaultTimePoint
+ 87/853 Test  #87: DeadlockSnapshotAssemblyTest.MissingProgressUsesDefaultTimePoint ....................................   Passed    0.00 sec
+        Start  88: DeadlockSnapshotAssemblyTest.FilterDisabledKeepsAllWaiters
+ 88/853 Test  #88: DeadlockSnapshotAssemblyTest.FilterDisabledKeepsAllWaiters ..........................................   Passed    0.00 sec
+        Start  89: DeadlockSnapshotAssemblyTest.EmptySourcesProduceEmptySnapshot
+ 89/853 Test  #89: DeadlockSnapshotAssemblyTest.EmptySourcesProduceEmptySnapshot .......................................   Passed    0.00 sec
+        Start  90: DeadlockSnapshotAssemblyTest.DetectorSeesTheCycleEndToEnd
+ 90/853 Test  #90: DeadlockSnapshotAssemblyTest.DetectorSeesTheCycleEndToEnd ...........................................   Passed    0.00 sec
+        Start  91: FleetLinkGuardTest.AllOnlineFreshDoesNotBlock
+ 91/853 Test  #91: FleetLinkGuardTest.AllOnlineFreshDoesNotBlock .......................................................   Passed    0.01 sec
+        Start  92: FleetLinkGuardTest.OfflineVehicleBlocksDispatch
+ 92/853 Test  #92: FleetLinkGuardTest.OfflineVehicleBlocksDispatch .....................................................   Passed    0.00 sec
+        Start  93: FleetLinkGuardTest.QuarantinedOfflineVehicleDoesNotBlock
+ 93/853 Test  #93: FleetLinkGuardTest.QuarantinedOfflineVehicleDoesNotBlock ............................................   Passed    0.00 sec
+        Start  94: FleetLinkGuardTest.StaleStateWarnsButDoesNotBlock
+ 94/853 Test  #94: FleetLinkGuardTest.StaleStateWarnsButDoesNotBlock ...................................................   Passed    0.00 sec
+        Start  95: FleetLinkGuardTest.StaleBoundaryIsExclusive
+ 95/853 Test  #95: FleetLinkGuardTest.StaleBoundaryIsExclusive .........................................................   Passed    0.00 sec
+        Start  96: FleetLinkGuardTest.NeverSeenStateIsNotTreatedAsStale
+ 96/853 Test  #96: FleetLinkGuardTest.NeverSeenStateIsNotTreatedAsStale ................................................   Passed    0.00 sec
+        Start  97: FleetLinkGuardTest.FirstBlockingVehicleIsReportedAlongsideOthers
+ 97/853 Test  #97: FleetLinkGuardTest.FirstBlockingVehicleIsReportedAlongsideOthers ....................................   Passed    0.00 sec
+        Start  98: FleetLinkGuardTest.EmptyFleetDoesNotBlock
+ 98/853 Test  #98: FleetLinkGuardTest.EmptyFleetDoesNotBlock ...........................................................   Passed    0.00 sec
+        Start  99: FleetLinkGuardTest.RetainAllLocksIsAlwaysTrue
+ 99/853 Test  #99: FleetLinkGuardTest.RetainAllLocksIsAlwaysTrue .......................................................   Passed    0.00 sec
+        Start 100: FleetLinkGuardTest.VerdictOrderFollowsInputOrder
+100/853 Test #100: FleetLinkGuardTest.VerdictOrderFollowsInputOrder ....................................................   Passed    0.00 sec
+        Start 101: Vda5050LinkStateTest.DefaultsAreOptimisticOnline
+101/853 Test #101: Vda5050LinkStateTest.DefaultsAreOptimisticOnline ....................................................   Passed    0.01 sec
+        Start 102: Vda5050LinkStateTest.StateObservationUpdatesAllFields
+102/853 Test #102: Vda5050LinkStateTest.StateObservationUpdatesAllFields ...............................................   Passed    0.00 sec
+        Start 103: Vda5050LinkStateTest.PositionUninitializedMarksInvalid
+103/853 Test #103: Vda5050LinkStateTest.PositionUninitializedMarksInvalid ..............................................   Passed    0.00 sec
+        Start 104: Vda5050LinkStateTest.StateWhileOfflineNeverFlipsOnlineBack
+104/853 Test #104: Vda5050LinkStateTest.StateWhileOfflineNeverFlipsOnlineBack ..........................................   Passed    0.00 sec
+        Start 105: Vda5050LinkStateTest.OnlineReportReportsWhetherStateFlipped
+105/853 Test #105: Vda5050LinkStateTest.OnlineReportReportsWhetherStateFlipped .........................................   Passed    0.00 sec
+        Start 106: Vda5050LinkStateTest.StateStaleOnlyWhenOnlineAndSeen
+106/853 Test #106: Vda5050LinkStateTest.StateStaleOnlyWhenOnlineAndSeen ................................................   Passed    0.00 sec
+        Start 107: Vda5050LinkStateTest.OfflineLinkIsNeverReportedStale
+107/853 Test #107: Vda5050LinkStateTest.OfflineLinkIsNeverReportedStale ................................................   Passed    0.00 sec
+        Start 108: Vda5050LinkStateTest.NullPointerIsTolerated
+108/853 Test #108: Vda5050LinkStateTest.NullPointerIsTolerated .........................................................   Passed    0.00 sec
+        Start 109: Vda5050LinkStateTest.QuarantineIsIndependentOfOnline
+109/853 Test #109: Vda5050LinkStateTest.QuarantineIsIndependentOfOnline ................................................   Passed    0.00 sec
+        Start 110: ResourceTableTest.BuildLockIdsRouteEdges
+110/853 Test #110: ResourceTableTest.BuildLockIdsRouteEdges ............................................................   Passed    0.01 sec
+        Start 111: ResourceTableTest.BuildLockIdsWithNodes
+111/853 Test #111: ResourceTableTest.BuildLockIdsWithNodes .............................................................   Passed    0.00 sec
+        Start 112: ResourceTableTest.ReserveSuccess
+112/853 Test #112: ResourceTableTest.ReserveSuccess ....................................................................   Passed    0.00 sec
+        Start 113: ResourceTableTest.ReserveAtomicRollback
+113/853 Test #113: ResourceTableTest.ReserveAtomicRollback .............................................................   Passed    0.00 sec
+        Start 114: ResourceTableTest.TimeSpaceBatchReservation_AllOrNothing
+114/853 Test #114: ResourceTableTest.TimeSpaceBatchReservation_AllOrNothing ............................................   Passed    0.00 sec
+        Start 115: ResourceTableTest.TimeSpaceBatchReservation_SucceedsWhenNoConflict
+115/853 Test #115: ResourceTableTest.TimeSpaceBatchReservation_SucceedsWhenNoConflict ..................................   Passed    0.00 sec
+        Start 116: ResourceTableTest.TimeSpaceBatchReservation_RejectsStaticLock
+116/853 Test #116: ResourceTableTest.TimeSpaceBatchReservation_RejectsStaticLock .......................................   Passed    0.00 sec
+        Start 117: ResourceTableTest.TimeSpaceReleaseResources_OnlyOwnEntries
+117/853 Test #117: ResourceTableTest.TimeSpaceReleaseResources_OnlyOwnEntries ..........................................   Passed    0.00 sec
+        Start 118: ResourceTableTest.TimeSpaceNoConflict
+118/853 Test #118: ResourceTableTest.TimeSpaceNoConflict ...............................................................   Passed    0.00 sec
+        Start 119: ResourceTableTest.TimeSpaceReservationOverlapConflict
+119/853 Test #119: ResourceTableTest.TimeSpaceReservationOverlapConflict ...............................................   Passed    0.00 sec
+        Start 120: ResourceTableTest.BlockAndUnblock
+120/853 Test #120: ResourceTableTest.BlockAndUnblock ...................................................................   Passed    0.00 sec
+        Start 121: ResourceTableTest.BlockFailsIfAlreadyHeld
+121/853 Test #121: ResourceTableTest.BlockFailsIfAlreadyHeld ...........................................................   Passed    0.00 sec
+        Start 122: ResourceTableTest.UnblockFailsOnMissionReservation
+122/853 Test #122: ResourceTableTest.UnblockFailsOnMissionReservation ..................................................   Passed    0.00 sec
+        Start 123: ResourceTableTest.ReleaseRemovesAllLocksForMission
+123/853 Test #123: ResourceTableTest.ReleaseRemovesAllLocksForMission ..................................................   Passed    0.00 sec
+        Start 124: ResourceTableTest.ParseRouteEdgeRoundTrip
+124/853 Test #124: ResourceTableTest.ParseRouteEdgeRoundTrip ...........................................................   Passed    0.00 sec
+        Start 125: ResourceTableTest.SnapshotIsSorted
+125/853 Test #125: ResourceTableTest.SnapshotIsSorted ..................................................................   Passed    0.00 sec
+        Start 126: ResourceTableTest.ReserveOwnExistingLockNotReportedNewlyReserved
+126/853 Test #126: ResourceTableTest.ReserveOwnExistingLockNotReportedNewlyReserved ....................................   Passed    0.00 sec
+        Start 127: ResourceTableTest.ReserveDuplicateIdsCountedOnce
+127/853 Test #127: ResourceTableTest.ReserveDuplicateIdsCountedOnce ....................................................   Passed    0.00 sec
+        Start 128: ResourceTableTest.ExpiredTimeSpacePrunedOnNextReserveOrRelease
+128/853 Test #128: ResourceTableTest.ExpiredTimeSpacePrunedOnNextReserveOrRelease ......................................   Passed    0.00 sec
+        Start 129: ResourceTableTest.ReserveTimeSpacePrunesExpiredAtEntry
+129/853 Test #129: ResourceTableTest.ReserveTimeSpacePrunesExpiredAtEntry ..............................................   Passed    0.00 sec
+        Start 130: ResourceTableTest.ExtendTimeSpaceReservation_ExtendsOwnWindow
+130/853 Test #130: ResourceTableTest.ExtendTimeSpaceReservation_ExtendsOwnWindow .......................................   Passed    0.00 sec
+        Start 131: ResourceTableTest.ExtendTimeSpaceReservation_ShorterEndIsIdempotentNoOp
+131/853 Test #131: ResourceTableTest.ExtendTimeSpaceReservation_ShorterEndIsIdempotentNoOp .............................   Passed    0.00 sec
+        Start 132: ResourceTableTest.ExtendTimeSpaceReservation_ConflictsWithOtherMission
+132/853 Test #132: ResourceTableTest.ExtendTimeSpaceReservation_ConflictsWithOtherMission ..............................   Passed    0.00 sec
+        Start 133: ResourceTableTest.ExtendTimeSpaceReservation_UnknownResourceOrMissionFails
+133/853 Test #133: ResourceTableTest.ExtendTimeSpaceReservation_UnknownResourceOrMissionFails ..........................   Passed    0.00 sec
+        Start 134: ResourceTableTest.TimeSpaceResourcesOf_ListsOnlyOwnResources
+134/853 Test #134: ResourceTableTest.TimeSpaceResourcesOf_ListsOnlyOwnResources ........................................   Passed    0.00 sec
+        Start 135: ResourceTableTest.TimeSpaceResourcesOf_EmptyWhenOnlyStaticLocks
+135/853 Test #135: ResourceTableTest.TimeSpaceResourcesOf_EmptyWhenOnlyStaticLocks .....................................   Passed    0.00 sec
+        Start 136: MissionEventLogTest.AppendAndRecent
+136/853 Test #136: MissionEventLogTest.AppendAndRecent .................................................................   Passed    0.01 sec
+        Start 137: MissionEventLogTest.OverflowEvictsOldest
+137/853 Test #137: MissionEventLogTest.OverflowEvictsOldest ............................................................   Passed    0.00 sec
+        Start 138: MissionEventLogTest.FilterByEvent
+138/853 Test #138: MissionEventLogTest.FilterByEvent ...................................................................   Passed    0.00 sec
+        Start 139: MissionEventLogTest.FilterByMission
+139/853 Test #139: MissionEventLogTest.FilterByMission .................................................................   Passed    0.00 sec
+        Start 140: MissionEventLogTest.NormalizeLimit
+140/853 Test #140: MissionEventLogTest.NormalizeLimit ..................................................................   Passed    0.00 sec
+        Start 141: MissionEventLogTest.Clear
+141/853 Test #141: MissionEventLogTest.Clear ...........................................................................   Passed    0.00 sec
+        Start 142: LinkQualityTest.EmptyIsUnknown
+142/853 Test #142: LinkQualityTest.EmptyIsUnknown ......................................................................   Passed    0.01 sec
+        Start 143: LinkQualityTest.AllSuccessBecomesHealthy
+143/853 Test #143: LinkQualityTest.AllSuccessBecomesHealthy ............................................................   Passed    0.00 sec
+        Start 144: LinkQualityTest.CrcErrorCountsAsLost
+144/853 Test #144: LinkQualityTest.CrcErrorCountsAsLost ................................................................   Passed    0.00 sec
+        Start 145: LinkQualityTest.HighLossTriggersCritical
+145/853 Test #145: LinkQualityTest.HighLossTriggersCritical ............................................................   Passed    0.00 sec
+        Start 146: LinkQualityTest.RecoverySignalFiresAfterThreshold
+146/853 Test #146: LinkQualityTest.RecoverySignalFiresAfterThreshold ...................................................   Passed    0.00 sec
+        Start 147: LinkQualityTest.ResetClearsState
+147/853 Test #147: LinkQualityTest.ResetClearsState ....................................................................   Passed    0.00 sec
+        Start 148: LinkQualityTest.LatencyStatsTrackMax
+148/853 Test #148: LinkQualityTest.LatencyStatsTrackMax ................................................................   Passed    0.00 sec
+        Start 149: LinkQualityTest.WindowedLossDetectsBurstAfterLongHealthy
+149/853 Test #149: LinkQualityTest.WindowedLossDetectsBurstAfterLongHealthy ............................................   Passed    0.00 sec
+        Start 150: LinkQualityTest.SlidingWindowRecoversWithoutReset
+150/853 Test #150: LinkQualityTest.SlidingWindowRecoversWithoutReset ...................................................   Passed    0.00 sec
+        Start 151: LinkQualityTest.ZeroWindowSizeClampsToSingleSample
+151/853 Test #151: LinkQualityTest.ZeroWindowSizeClampsToSingleSample ..................................................   Passed    0.00 sec
+        Start 152: LinkQualityTest.RecoverySignalFiresOnceOverHundredSuccesses
+152/853 Test #152: LinkQualityTest.RecoverySignalFiresOnceOverHundredSuccesses .........................................   Passed    0.00 sec
+        Start 153: LinkQualityTest.NewLossClearsPendingRecoverySignal
+153/853 Test #153: LinkQualityTest.NewLossClearsPendingRecoverySignal ..................................................   Passed    0.00 sec
+        Start 154: LinkQualityTest.RecordCrcErrorRefreshesLastSeen
+154/853 Test #154: LinkQualityTest.RecordCrcErrorRefreshesLastSeen .....................................................   Passed    0.02 sec
+        Start 155: LinkRecoveryTest.IdleToWaitingOnFirstTick
+155/853 Test #155: LinkRecoveryTest.IdleToWaitingOnFirstTick ...........................................................   Passed    0.01 sec
+        Start 156: LinkRecoveryTest.ExponentialBackoffSequence
+156/853 Test #156: LinkRecoveryTest.ExponentialBackoffSequence .........................................................   Passed    0.00 sec
+        Start 157: LinkRecoveryTest.BackoffCappedAtMax
+157/853 Test #157: LinkRecoveryTest.BackoffCappedAtMax .................................................................   Passed    0.00 sec
+        Start 158: LinkRecoveryTest.AttemptSuccessGoesToConnected
+158/853 Test #158: LinkRecoveryTest.AttemptSuccessGoesToConnected ......................................................   Passed    0.00 sec
+        Start 159: LinkRecoveryTest.MaxAttemptsExhausts
+159/853 Test #159: LinkRecoveryTest.MaxAttemptsExhausts ................................................................   Passed    0.00 sec
+        Start 160: LinkRecoveryTest.NotifyFailedAfterConnectedResumes
+160/853 Test #160: LinkRecoveryTest.NotifyFailedAfterConnectedResumes ..................................................   Passed    0.00 sec
+        Start 161: LinkRecoveryTest.DecideBackoffIsPureFunction
+161/853 Test #161: LinkRecoveryTest.DecideBackoffIsPureFunction ........................................................   Passed    0.00 sec
+        Start 162: LinkRecoveryTest.DecideBackoffWithJitterRange
+162/853 Test #162: LinkRecoveryTest.DecideBackoffWithJitterRange .......................................................   Passed    0.00 sec
+        Start 163: BackendDegradationTest.DefaultsToFirstBackend
+163/853 Test #163: BackendDegradationTest.DefaultsToFirstBackend .......................................................   Passed    0.01 sec
+        Start 164: BackendDegradationTest.HighLossRateTriggersDemotion
+164/853 Test #164: BackendDegradationTest.HighLossRateTriggersDemotion .................................................   Passed    0.00 sec
+        Start 165: BackendDegradationTest.CooldownPreventsRapidFlip
+165/853 Test #165: BackendDegradationTest.CooldownPreventsRapidFlip ....................................................   Passed    0.00 sec
+        Start 166: BackendDegradationTest.SwitchToKnownIndexClosesOld
+166/853 Test #166: BackendDegradationTest.SwitchToKnownIndexClosesOld ..................................................   Passed    0.00 sec
+        Start 167: BackendDegradationTest.SwitchToInvalidReturnsFalse
+167/853 Test #167: BackendDegradationTest.SwitchToInvalidReturnsFalse ..................................................   Passed    0.00 sec
+        Start 168: BackendDegradationTest.FailbackToPreferredAfterRecoverySignal
+168/853 Test #168: BackendDegradationTest.FailbackToPreferredAfterRecoverySignal .......................................   Passed    0.00 sec
+        Start 169: BackendDegradationTest.FailbackBlockedDuringCooldown
+169/853 Test #169: BackendDegradationTest.FailbackBlockedDuringCooldown ................................................   Passed    0.15 sec
+        Start 170: BackendDegradationTest.FailbackOpenFailureKeepsCurrentBackend
+170/853 Test #170: BackendDegradationTest.FailbackOpenFailureKeepsCurrentBackend .......................................   Passed    0.00 sec
+        Start 171: BackendDegradationTest.ReconnectsByScanningBackendsWhenConnectionLost
+171/853 Test #171: BackendDegradationTest.ReconnectsByScanningBackendsWhenConnectionLost ...............................   Passed    0.22 sec
+        Start 172: SerialBackendTest.WriteCommandDeliversFullLineToMaster
+172/853 Test #172: SerialBackendTest.WriteCommandDeliversFullLineToMaster ..............................................   Passed    0.01 sec
+        Start 173: SerialBackendTest.WouldBlockReturnsFalse
+173/853 Test #173: SerialBackendTest.WouldBlockReturnsFalse ............................................................   Passed    0.01 sec
+        Start 174: SerialBackendTest.WriteWhenNotOpenReturnsFalse
+174/853 Test #174: SerialBackendTest.WriteWhenNotOpenReturnsFalse ......................................................   Passed    0.00 sec
+        Start 175: UdpBackendTest.WriteCommandDeliversFullDatagram
+175/853 Test #175: UdpBackendTest.WriteCommandDeliversFullDatagram .....................................................   Passed    0.00 sec
+        Start 176: UdpBackendTest.WriteWhenNotOpenReturnsFalse
+176/853 Test #176: UdpBackendTest.WriteWhenNotOpenReturnsFalse .........................................................   Passed    0.00 sec
+        Start 177: DeadlockDetectorTest.EmptySnapshotNoFindings
+177/853 Test #177: DeadlockDetectorTest.EmptySnapshotNoFindings ........................................................   Passed    0.01 sec
+        Start 178: DeadlockDetectorTest.TrueWaitForGraphCycleDetection
+178/853 Test #178: DeadlockDetectorTest.TrueWaitForGraphCycleDetection .................................................   Passed    0.00 sec
+        Start 179: DeadlockDetectorTest.MultiNodeCircularWaitCycle
+179/853 Test #179: DeadlockDetectorTest.MultiNodeCircularWaitCycle .....................................................   Passed    0.00 sec
+        Start 180: DeadlockDetectorTest.MutualBlockFindingPathKeepsResourcesAndMissionsApart
+180/853 Test #180: DeadlockDetectorTest.MutualBlockFindingPathKeepsResourcesAndMissionsApart ...........................   Passed    0.00 sec
+        Start 181: DeadlockDetectorTest.DetectCycles_MultipleResourcesSameHolder_EmitsSingleEdge
+181/853 Test #181: DeadlockDetectorTest.DetectCycles_MultipleResourcesSameHolder_EmitsSingleEdge .......................   Passed    0.00 sec
+        Start 182: DeadlockDetectorTest.NoCycleWhenWaitGraphIsDAG
+182/853 Test #182: DeadlockDetectorTest.NoCycleWhenWaitGraphIsDAG ......................................................   Passed    0.00 sec
+        Start 183: DeadlockDetectorTest.TooManyActiveMissions
+183/853 Test #183: DeadlockDetectorTest.TooManyActiveMissions ..........................................................   Passed    0.00 sec
+        Start 184: DeadlockDetectorTest.IdleActiveDetected
+184/853 Test #184: DeadlockDetectorTest.IdleActiveDetected .............................................................   Passed    0.00 sec
+        Start 185: DeadlockDetectorTest.LongReservationHoldDetected
+185/853 Test #185: DeadlockDetectorTest.LongReservationHoldDetected ....................................................   Passed    0.00 sec
+        Start 186: RecoveryPolicyTest.IdleActiveWithRetriesLeftPicksRetry
+186/853 Test #186: RecoveryPolicyTest.IdleActiveWithRetriesLeftPicksRetry ..............................................   Passed    0.01 sec
+        Start 187: RecoveryPolicyTest.IdleActiveExhaustedCancels
+187/853 Test #187: RecoveryPolicyTest.IdleActiveExhaustedCancels .......................................................   Passed    0.00 sec
+        Start 188: RecoveryPolicyTest.ExhaustedWithoutAutoCancelPauses
+188/853 Test #188: RecoveryPolicyTest.ExhaustedWithoutAutoCancelPauses .................................................   Passed    0.00 sec
+        Start 189: RecoveryPolicyTest.MutualBlockAlwaysPauses
+189/853 Test #189: RecoveryPolicyTest.MutualBlockAlwaysPauses ..........................................................   Passed    0.00 sec
+        Start 190: RecoveryPolicyTest.OverCapacityEmitsNoneInsteadOfPause
+190/853 Test #190: RecoveryPolicyTest.OverCapacityEmitsNoneInsteadOfPause ..............................................   Passed    0.00 sec
+        Start 191: RecoveryPolicyTest.DedupAcrossFindings
+191/853 Test #191: RecoveryPolicyTest.DedupAcrossFindings ..............................................................   Passed    0.00 sec
+        Start 192: RecoveryPolicyTest.LongHoldRetryWhenBudgetLeft
+192/853 Test #192: RecoveryPolicyTest.LongHoldRetryWhenBudgetLeft ......................................................   Passed    0.00 sec
+        Start 193: CmdVelGateTest.AllowsCmdUnderLimits
+193/853 Test #193: CmdVelGateTest.AllowsCmdUnderLimits .................................................................   Passed    0.01 sec
+        Start 194: CmdVelGateTest.ClampsOverSpeed
+194/853 Test #194: CmdVelGateTest.ClampsOverSpeed ......................................................................   Passed    0.00 sec
+        Start 195: CmdVelGateTest.CriticalEventStopsMotion
+195/853 Test #195: CmdVelGateTest.CriticalEventStopsMotion .............................................................   Passed    0.00 sec
+        Start 196: CmdVelGateTest.WarnEventReducesSpeed
+196/853 Test #196: CmdVelGateTest.WarnEventReducesSpeed ................................................................   Passed    0.00 sec
+        Start 197: CmdVelGateTest.CriticalWithoutSourceBlockIgnored
+197/853 Test #197: CmdVelGateTest.CriticalWithoutSourceBlockIgnored ....................................................   Passed    0.00 sec
+        Start 198: CmdVelGateTest.EventHistoryBounded
+198/853 Test #198: CmdVelGateTest.EventHistoryBounded ..................................................................   Passed    0.00 sec
+        Start 199: CmdVelGateTest.ClearEvents
+199/853 Test #199: CmdVelGateTest.ClearEvents ..........................................................................   Passed    0.00 sec
+        Start 200: CmdVelGateTest.CriticalEventExpiresAfterTtl
+200/853 Test #200: CmdVelGateTest.CriticalEventExpiresAfterTtl .........................................................   Passed    0.00 sec
+        Start 201: CmdVelGateTest.WarnEventExpiresAfterTtl
+201/853 Test #201: CmdVelGateTest.WarnEventExpiresAfterTtl .............................................................   Passed    0.00 sec
+        Start 202: CmdVelGateTest.ScaleNanBecomesZero
+202/853 Test #202: CmdVelGateTest.ScaleNanBecomesZero ..................................................................   Passed    0.00 sec
+        Start 203: CmdVelGateTest.ScaleInfClampsToLimit
+203/853 Test #203: CmdVelGateTest.ScaleInfClampsToLimit ................................................................   Passed    0.00 sec
+        Start 204: WatchdogTest.HealthyNodesProduceNoEvents
+204/853 Test #204: WatchdogTest.HealthyNodesProduceNoEvents ............................................................   Passed    0.01 sec
+        Start 205: WatchdogTest.HeartbeatTimeoutEmitsWarn
+205/853 Test #205: WatchdogTest.HeartbeatTimeoutEmitsWarn ..............................................................   Passed    0.08 sec
+        Start 206: WatchdogTest.SoftTimeoutEmitsCritical
+206/853 Test #206: WatchdogTest.SoftTimeoutEmitsCritical ...............................................................   Passed    0.12 sec
+        Start 207: WatchdogTest.UnseenNodeIsCritical
+207/853 Test #207: WatchdogTest.UnseenNodeIsCritical ...................................................................   Passed    0.00 sec
+        Start 208: WatchdogTest.ForgetRemovesTracking
+208/853 Test #208: WatchdogTest.ForgetRemovesTracking ..................................................................   Passed    0.00 sec
+        Start 209: SafetySourcesTest.RegisterListContains
+209/853 Test #209: SafetySourcesTest.RegisterListContains ..............................................................   Passed    0.01 sec
+        Start 210: SafetySourcesTest.UnregisterRemoves
+210/853 Test #210: SafetySourcesTest.UnregisterRemoves .................................................................   Passed    0.00 sec
+        Start 211: SafetySourcesTest.SnapshotCallsSample
+211/853 Test #211: SafetySourcesTest.SnapshotCallsSample ...............................................................   Passed    0.00 sec
+        Start 212: SafetySourcesTest.EmptySourceDefaultsToName
+212/853 Test #212: SafetySourcesTest.EmptySourceDefaultsToName .........................................................   Passed    0.00 sec
+        Start 213: ConfigLoaderTest.LoadFromStringBasic
+213/853 Test #213: ConfigLoaderTest.LoadFromStringBasic ................................................................   Passed    0.01 sec
+        Start 214: ConfigLoaderTest.MissingRequiredThrows
+214/853 Test #214: ConfigLoaderTest.MissingRequiredThrows ..............................................................   Passed    0.00 sec
+        Start 215: ConfigLoaderTest.OptionalMissingOk
+215/853 Test #215: ConfigLoaderTest.OptionalMissingOk ..................................................................   Passed    0.00 sec
+        Start 216: ConfigLoaderTest.TypeMismatchThrows
+216/853 Test #216: ConfigLoaderTest.TypeMismatchThrows .................................................................   Passed    0.00 sec
+        Start 217: ConfigLoaderTest.GetStringReturnsFallbackForMissing
+217/853 Test #217: ConfigLoaderTest.GetStringReturnsFallbackForMissing .................................................   Passed    0.00 sec
+        Start 218: ConfigLoaderTest.GetBoolVariants
+218/853 Test #218: ConfigLoaderTest.GetBoolVariants ....................................................................   Passed    0.00 sec
+        Start 219: ConfigLoaderTest.LoadFromFileNotFoundThrows
+219/853 Test #219: ConfigLoaderTest.LoadFromFileNotFoundThrows .........................................................   Passed    0.00 sec
+        Start 220: ConfigLoaderTest.LoadFromFileHappy
+220/853 Test #220: ConfigLoaderTest.LoadFromFileHappy ..................................................................   Passed    0.00 sec
+        Start 221: ConfigLoaderTest.HotReloadTriggersOnChange
+221/853 Test #221: ConfigLoaderTest.HotReloadTriggersOnChange ..........................................................   Passed    0.02 sec
+        Start 222: ConfigLoaderTest.ObserverNotifiedOnRuntimeConfigChange
+222/853 Test #222: ConfigLoaderTest.ObserverNotifiedOnRuntimeConfigChange ..............................................   Passed    0.00 sec
+        Start 223: SyncLoggerTest.WritesFormattedRecords
+223/853 Test #223: SyncLoggerTest.WritesFormattedRecords ...............................................................   Passed    0.01 sec
+        Start 224: SyncLoggerTest.BelowMinLevelDropped
+224/853 Test #224: SyncLoggerTest.BelowMinLevelDropped .................................................................   Passed    0.00 sec
+        Start 225: AsyncLoggerTest.FlushesOnDestroy
+225/853 Test #225: AsyncLoggerTest.FlushesOnDestroy ....................................................................   Passed    0.00 sec
+        Start 226: AsyncLoggerTest.BelowMinLevelDropped
+226/853 Test #226: AsyncLoggerTest.BelowMinLevelDropped ................................................................   Passed    0.00 sec
+        Start 227: AsyncLoggerTest.ConcurrentProducersLoseNothingWhenCapacitySufficient
+227/853 Test #227: AsyncLoggerTest.ConcurrentProducersLoseNothingWhenCapacitySufficient ................................   Passed    0.08 sec
+        Start 228: AsyncLoggerTest.DroppedCountIsExactUnderOverflow
+228/853 Test #228: AsyncLoggerTest.DroppedCountIsExactUnderOverflow ....................................................   Passed    0.02 sec
+        Start 229: AsyncLoggerTest.FlushGuaranteesRecordsOnDisk
+229/853 Test #229: AsyncLoggerTest.FlushGuaranteesRecordsOnDisk ........................................................   Passed    0.01 sec
+        Start 230: LoggerFormatTest.LevelToStringAllCases
+230/853 Test #230: LoggerFormatTest.LevelToStringAllCases ..............................................................   Passed    0.00 sec
+        Start 231: LoggerFormatTest.FormatLogRecordStructure
+231/853 Test #231: LoggerFormatTest.FormatLogRecordStructure ...........................................................   Passed    0.00 sec
+        Start 232: StationTopologyTest.BasicDijkstraPathSearch
+232/853 Test #232: StationTopologyTest.BasicDijkstraPathSearch .........................................................   Passed    0.01 sec
+        Start 233: StationTopologyTest.ChoosesShorterAlternativeRoute
+233/853 Test #233: StationTopologyTest.ChoosesShorterAlternativeRoute ..................................................   Passed    0.00 sec
+        Start 234: StationTopologyTest.DynamicReroutingBypassesDeadlockEdge
+234/853 Test #234: StationTopologyTest.DynamicReroutingBypassesDeadlockEdge ............................................   Passed    0.00 sec
+        Start 235: StationTopologyTest.DisconnectedGraphReturnsNullopt
+235/853 Test #235: StationTopologyTest.DisconnectedGraphReturnsNullopt .................................................   Passed    0.00 sec
+        Start 236: GeometryUtilsTest.NormalizesAngleWrapAround
+236/853 Test #236: GeometryUtilsTest.NormalizesAngleWrapAround .........................................................   Passed    0.01 sec
+        Start 237: GeometryUtilsTest.Quaternion2DYawRoundTrip
+237/853 Test #237: GeometryUtilsTest.Quaternion2DYawRoundTrip ..........................................................   Passed    0.00 sec
+        Start 238: MissionCostEstimatorTest.CalculatesTravelTimeAndBatteryDrop
+238/853 Test #238: MissionCostEstimatorTest.CalculatesTravelTimeAndBatteryDrop .........................................   Passed    0.00 sec
+        Start 239: DockCatalogTest.ManagesChargingStations
+239/853 Test #239: DockCatalogTest.ManagesChargingStations .............................................................   Passed    0.00 sec
+        Start 240: FaultSupervisorTest.TransitionsThroughGraceAndFault
+240/853 Test #240: FaultSupervisorTest.TransitionsThroughGraceAndFault .................................................   Passed    0.12 sec
+        Start 241: FaultSupervisorTest.MultiSourceArbitrationRecommendations
+241/853 Test #241: FaultSupervisorTest.MultiSourceArbitrationRecommendations ...........................................   Passed    0.06 sec
+        Start 242: FaultSupervisorTest.StaleReportDegradesAfterTimeout
+242/853 Test #242: FaultSupervisorTest.StaleReportDegradesAfterTimeout .................................................   Passed    0.07 sec
+        Start 243: FaultSupervisorTest.FreshReportsKeepNormal
+243/853 Test #243: FaultSupervisorTest.FreshReportsKeepNormal ..........................................................   Passed    0.12 sec
+        Start 244: FaultSupervisorTest.NeverReportedSourcesAreNotJudged
+244/853 Test #244: FaultSupervisorTest.NeverReportedSourcesAreNotJudged ................................................   Passed    0.07 sec
+        Start 245: FaultSupervisorTest.StaleReportKeepsActiveEstopLatched
+245/853 Test #245: FaultSupervisorTest.StaleReportKeepsActiveEstopLatched ..............................................   Passed    0.07 sec
+        Start 246: FaultSupervisorTest.UnfreshSourceGoesStaleDespiteContinuousCalls
+246/853 Test #246: FaultSupervisorTest.UnfreshSourceGoesStaleDespiteContinuousCalls ....................................   Passed    0.09 sec
+        Start 247: MockLinearPlannerTest.SameStartAndGoalReturnsSinglePoint
+247/853 Test #247: MockLinearPlannerTest.SameStartAndGoalReturnsSinglePoint ............................................   Passed    0.01 sec
+        Start 248: MockLinearPlannerTest.LinearInterpolationCheck
+248/853 Test #248: MockLinearPlannerTest.LinearInterpolationCheck ......................................................   Passed    0.00 sec
+        Start 249: MockLinearPlannerTest.DiagonalInterpolationAndHeading
+249/853 Test #249: MockLinearPlannerTest.DiagonalInterpolationAndHeading ...............................................   Passed    0.00 sec
+        Start 250: MapGeometryUtilsTest.ZeroOriginNoRotation_PixelCenterMapsToHalfCellOffset
+250/853 Test #250: MapGeometryUtilsTest.ZeroOriginNoRotation_PixelCenterMapsToHalfCellOffset ...........................   Passed    0.01 sec
+        Start 251: MapGeometryUtilsTest.ZeroOriginNoRotation_WorldToPixelInverts
+251/853 Test #251: MapGeometryUtilsTest.ZeroOriginNoRotation_WorldToPixelInverts .......................................   Passed    0.00 sec
+        Start 252: MapGeometryUtilsTest.ZeroOriginNoRotation_RoundTripConsistency
+252/853 Test #252: MapGeometryUtilsTest.ZeroOriginNoRotation_RoundTripConsistency ......................................   Passed    0.00 sec
+        Start 253: MapGeometryUtilsTest.NonZeroOrigin_TranslationShiftsWorldFrame
+253/853 Test #253: MapGeometryUtilsTest.NonZeroOrigin_TranslationShiftsWorldFrame ......................................   Passed    0.00 sec
+        Start 254: MapGeometryUtilsTest.NonZeroOrigin_RoundTripConsistency
+254/853 Test #254: MapGeometryUtilsTest.NonZeroOrigin_RoundTripConsistency .............................................   Passed    0.00 sec
+        Start 255: MapGeometryUtilsTest.NonZeroRotation_MapsPixelThroughYaw
+255/853 Test #255: MapGeometryUtilsTest.NonZeroRotation_MapsPixelThroughYaw ............................................   Passed    0.00 sec
+        Start 256: MapGeometryUtilsTest.NonZeroRotation_RoundTripConsistency
+256/853 Test #256: MapGeometryUtilsTest.NonZeroRotation_RoundTripConsistency ...........................................   Passed    0.00 sec
+        Start 257: MapGeometryUtilsTest.PixelColRowRound_RoundsHalfUp
+257/853 Test #257: MapGeometryUtilsTest.PixelColRowRound_RoundsHalfUp ..................................................   Passed    0.00 sec
+        Start 258: MapGeometryUtilsTest.IsValidPixel_RejectsOutOfBounds
+258/853 Test #258: MapGeometryUtilsTest.IsValidPixel_RejectsOutOfBounds ................................................   Passed    0.00 sec
+        Start 259: MapGeometryUtilsTest.GetValue_OutOfBoundsReturnsUnknown
+259/853 Test #259: MapGeometryUtilsTest.GetValue_OutOfBoundsReturnsUnknown .............................................   Passed    0.00 sec
+        Start 260: MapGeometryUtilsTest.SetValue_OutOfBoundsIsNoOp
+260/853 Test #260: MapGeometryUtilsTest.SetValue_OutOfBoundsIsNoOp .....................................................   Passed    0.00 sec
+        Start 261: MapGeometryUtilsTest.DistanceMeters_Euclidean
+261/853 Test #261: MapGeometryUtilsTest.DistanceMeters_Euclidean .......................................................   Passed    0.00 sec
+        Start 262: SafetySpaceFilterTest.EmptyMap_AllCellsRemainPassable
+262/853 Test #262: SafetySpaceFilterTest.EmptyMap_AllCellsRemainPassable ...............................................   Passed    0.01 sec
+        Start 263: SafetySpaceFilterTest.SingleObstacle_InflatesCircularRegion
+263/853 Test #263: SafetySpaceFilterTest.SingleObstacle_InflatesCircularRegion .........................................   Passed    0.00 sec
+        Start 264: SafetySpaceFilterTest.NarrowCorridor_BlockedCompletely
+264/853 Test #264: SafetySpaceFilterTest.NarrowCorridor_BlockedCompletely ..............................................   Passed    0.00 sec
+        Start 265: SafetySpaceFilterTest.WideCorridor_CenterRemainsPassable
+265/853 Test #265: SafetySpaceFilterTest.WideCorridor_CenterRemainsPassable ............................................   Passed    0.00 sec
+        Start 266: SafetySpaceFilterTest.UnknownRegion_TreatedAsObstacleAndInflated
+266/853 Test #266: SafetySpaceFilterTest.UnknownRegion_TreatedAsObstacleAndInflated ....................................   Passed    0.00 sec
+        Start 267: SafetySpaceFilterTest.UnknownRegion_PassThroughWhenConfigured
+267/853 Test #267: SafetySpaceFilterTest.UnknownRegion_PassThroughWhenConfigured .......................................   Passed    0.00 sec
+        Start 268: SafetySpaceFilterTest.OccupiedThreshold_BoundaryValues
+268/853 Test #268: SafetySpaceFilterTest.OccupiedThreshold_BoundaryValues ..............................................   Passed    0.00 sec
+        Start 269: SafetySpaceFilterTest.ZeroRadius_NoInflationOnlyBinarization
+269/853 Test #269: SafetySpaceFilterTest.ZeroRadius_NoInflationOnlyBinarization ........................................   Passed    0.00 sec
+        Start 270: SafetySpaceFilterTest.BinaryGrid_AccessorsHandleOutOfBounds
+270/853 Test #270: SafetySpaceFilterTest.BinaryGrid_AccessorsHandleOutOfBounds .........................................   Passed    0.00 sec
+        Start 271: SkeletonExtractorTest.StraightCorridor_ThinsToCenteredOnePixelLine
+271/853 Test #271: SkeletonExtractorTest.StraightCorridor_ThinsToCenteredOnePixelLine ..................................   Passed    0.01 sec
+        Start 272: SkeletonExtractorTest.LCornerCorridor_ContinuousRightAngleCenterline
+272/853 Test #272: SkeletonExtractorTest.LCornerCorridor_ContinuousRightAngleCenterline ................................   Passed    0.00 sec
+        Start 273: SkeletonExtractorTest.CrossJunction_CenterJunctionWithFourBranches
+273/853 Test #273: SkeletonExtractorTest.CrossJunction_CenterJunctionWithFourBranches ..................................   Passed    0.00 sec
+        Start 274: SkeletonExtractorTest.ShortBristleUnprotected_PrunedMainLineIntact
+274/853 Test #274: SkeletonExtractorTest.ShortBristleUnprotected_PrunedMainLineIntact ..................................   Passed    0.00 sec
+        Start 275: SkeletonExtractorTest.ShortBristleWithProtectedPoint_ExemptFromPruning
+275/853 Test #275: SkeletonExtractorTest.ShortBristleWithProtectedPoint_ExemptFromPruning ..............................   Passed    0.00 sec
+        Start 276: SkeletonExtractorTest.LongDeadEndBranch_NotPruned
+276/853 Test #276: SkeletonExtractorTest.LongDeadEndBranch_NotPruned ...................................................   Passed    0.00 sec
+        Start 277: SkeletonExtractorTest.OrthogonalTwoPixelBristle_PrunedNoLateralEscape
+277/853 Test #277: SkeletonExtractorTest.OrthogonalTwoPixelBristle_PrunedNoLateralEscape ...............................   Passed    0.00 sec
+        Start 278: SkeletonExtractorTest.RingWithTwoSymmetricSpurs_BothPrunedRingIntact
+278/853 Test #278: SkeletonExtractorTest.RingWithTwoSymmetricSpurs_BothPrunedRingIntact ................................   Passed    0.00 sec
+        Start 279: SkeletonExtractorTest.DiagonalStaircaseBristle_PrunedMainLineIntact
+279/853 Test #279: SkeletonExtractorTest.DiagonalStaircaseBristle_PrunedMainLineIntact .................................   Passed    0.00 sec
+        Start 280: TopologyGraphBuilderTest.StraightCorridor_EndpointStations_Reachable
+280/853 Test #280: TopologyGraphBuilderTest.StraightCorridor_EndpointStations_Reachable ................................   Passed    0.01 sec
+        Start 281: TopologyGraphBuilderTest.LCornerCorridor_ChargeStationSplitsEdge
+281/853 Test #281: TopologyGraphBuilderTest.LCornerCorridor_ChargeStationSplitsEdge ....................................   Passed    0.00 sec
+        Start 282: TopologyGraphBuilderTest.FarStation_BuildFails
+282/853 Test #282: TopologyGraphBuilderTest.FarStation_BuildFails ......................................................   Passed    0.00 sec
+        Start 283: TopologyGraphBuilderTest.DisconnectedIslands_BuildFails
+283/853 Test #283: TopologyGraphBuilderTest.DisconnectedIslands_BuildFails .............................................   Passed    0.00 sec
+        Start 284: TopologyGraphBuilderTest.PolylineAccumulatedLength_NotStraightLine
+284/853 Test #284: TopologyGraphBuilderTest.PolylineAccumulatedLength_NotStraightLine ..................................   Passed    0.00 sec
+        Start 285: TopologyGraphBuilderTest.ClosedRingSkeleton_GeneratesTopologyAndRoutes
+285/853 Test #285: TopologyGraphBuilderTest.ClosedRingSkeleton_GeneratesTopologyAndRoutes ..............................   Passed    0.00 sec
+        Start 286: TopologyGraphBuilderTest.SingleAnchor_ValidCatalogAndSelfRoute
+286/853 Test #286: TopologyGraphBuilderTest.SingleAnchor_ValidCatalogAndSelfRoute ......................................   Passed    0.00 sec
+        Start 287: TopologyGraphBuilderTest.EmptySkeleton_BuildFails
+287/853 Test #287: TopologyGraphBuilderTest.EmptySkeleton_BuildFails ...................................................   Passed    0.00 sec
+        Start 288: TopologyGraphBuilderTest.CoincidentAnchors_ReportClearDiagnostic
+288/853 Test #288: TopologyGraphBuilderTest.CoincidentAnchors_ReportClearDiagnostic ....................................   Passed    0.00 sec
+        Start 289: SkeletonPlannerTest.LCorridor_StraightLineNeverCutThroughWall
+289/853 Test #289: SkeletonPlannerTest.LCorridor_StraightLineNeverCutThroughWall .......................................   Passed    0.01 sec
+        Start 290: SkeletonPlannerTest.LCorridor_PlanBetweenNodesFollowsPolyline
+290/853 Test #290: SkeletonPlannerTest.LCorridor_PlanBetweenNodesFollowsPolyline .......................................   Passed    0.00 sec
+        Start 291: SkeletonPlannerTest.BentPolyline_PassesThroughCornerVertices
+291/853 Test #291: SkeletonPlannerTest.BentPolyline_PassesThroughCornerVertices ........................................   Passed    0.00 sec
+        Start 292: SkeletonPlannerTest.BidirectionalEdge_ReverseTraversalReversesPolyline
+292/853 Test #292: SkeletonPlannerTest.BidirectionalEdge_ReverseTraversalReversesPolyline ..............................   Passed    0.00 sec
+        Start 293: SkeletonPlannerTest.SameNode_ReturnsSinglePose
+293/853 Test #293: SkeletonPlannerTest.SameNode_ReturnsSinglePose ......................................................   Passed    0.00 sec
+        Start 294: SkeletonPlannerTest.DisconnectedNodes_ReturnEmptyPath
+294/853 Test #294: SkeletonPlannerTest.DisconnectedNodes_ReturnEmptyPath ...............................................   Passed    0.00 sec
+        Start 295: SkeletonPlannerTest.EdgeWithoutPolyline_FallsBackToStraightLine
+295/853 Test #295: SkeletonPlannerTest.EdgeWithoutPolyline_FallsBackToStraightLine .....................................   Passed    0.00 sec
+        Start 296: SkeletonPlannerTest.Plan_OffNodeEndpoints_SpliceAccessSegments
+296/853 Test #296: SkeletonPlannerTest.Plan_OffNodeEndpoints_SpliceAccessSegments ......................................   Passed    0.00 sec
+        Start 297: SkeletonPlannerTest.Resample_StepSizeBoundedAndHeadingConsistent
+297/853 Test #297: SkeletonPlannerTest.Resample_StepSizeBoundedAndHeadingConsistent ....................................   Passed    0.00 sec
+        Start 298: MissionProfileTest.LoadMissionProfile_ValidMission_ReturnsWaypoints
+298/853 Test #298: MissionProfileTest.LoadMissionProfile_ValidMission_ReturnsWaypoints .................................   Passed    0.02 sec
+        Start 299: MissionProfileTest.LoadMissionProfile_MissingMissionId_UsesFileStem
+299/853 Test #299: MissionProfileTest.LoadMissionProfile_MissingMissionId_UsesFileStem .................................   Passed    0.00 sec
+        Start 300: MissionProfileTest.LoadMissionProfile_NoWaypoints_ReturnsNullopt
+300/853 Test #300: MissionProfileTest.LoadMissionProfile_NoWaypoints_ReturnsNullopt ....................................   Passed    0.00 sec
+        Start 301: MissionProfileTest.ValidateStationTransportPreflight_PathOverride_UsesPlannedDistance
+301/853 Test #301: MissionProfileTest.ValidateStationTransportPreflight_PathOverride_UsesPlannedDistance ...............   Passed    0.00 sec
+        Start 302: MissionProfileTest.ValidateMissionPreflight_WaypointInKeepout_ReturnsRejected
+302/853 Test #302: MissionProfileTest.ValidateMissionPreflight_WaypointInKeepout_ReturnsRejected .......................   Passed    0.00 sec
+        Start 303: MissionProfileTest.ValidateMissionPreflight_LowBattery_ReturnsRejected
+303/853 Test #303: MissionProfileTest.ValidateMissionPreflight_LowBattery_ReturnsRejected ..............................   Passed    0.00 sec
+        Start 304: MissionProfileTest.ValidateStationTransportPreflight_MissingRoute_ReturnsRejected
+304/853 Test #304: MissionProfileTest.ValidateStationTransportPreflight_MissingRoute_ReturnsRejected ...................   Passed    0.00 sec
+        Start 305: MissionProfileTest.LoadStationCatalog_ValidCatalog_ReturnsStations
+305/853 Test #305: MissionProfileTest.LoadStationCatalog_ValidCatalog_ReturnsStations ..................................   Passed    0.00 sec
+        Start 306: MissionProfileTest.LoadStationCatalog_DuplicateStation_ReturnsNullopt
+306/853 Test #306: MissionProfileTest.LoadStationCatalog_DuplicateStation_ReturnsNullopt ...............................   Passed    0.00 sec
+        Start 307: MissionProfileTest.LoadStationCatalog_UnknownRouteEndpoint_ReturnsNullopt
+307/853 Test #307: MissionProfileTest.LoadStationCatalog_UnknownRouteEndpoint_ReturnsNullopt ...........................   Passed    0.00 sec
+        Start 308: MissionProfileTest.LoadFacilityCatalog_ValidCatalog_ReturnsResources
+308/853 Test #308: MissionProfileTest.LoadFacilityCatalog_ValidCatalog_ReturnsResources ................................   Passed    0.00 sec
+        Start 309: MissionProfileTest.LoadDockCatalog_ValidCatalog_ReturnsDock
+309/853 Test #309: MissionProfileTest.LoadDockCatalog_ValidCatalog_ReturnsDock .........................................   Passed    0.00 sec
+        Start 310: MissionProfileTest.LoadDockCatalog_DuplicateDock_ReturnsNullopt
+310/853 Test #310: MissionProfileTest.LoadDockCatalog_DuplicateDock_ReturnsNullopt .....................................   Passed    0.00 sec
+        Start 311: MissionProfileTest.LoadFacilityCatalog_DuplicateResource_ReturnsNullopt
+311/853 Test #311: MissionProfileTest.LoadFacilityCatalog_DuplicateResource_ReturnsNullopt .............................   Passed    0.00 sec
+        Start 312: MissionProfileTest.FindFirstAvailableResource_SkipsReservedAndDisabled_ReturnsNext
+312/853 Test #312: MissionProfileTest.FindFirstAvailableResource_SkipsReservedAndDisabled_ReturnsNext ..................   Passed    0.00 sec
+        Start 313: MissionProfileTest.FindFirstAvailableResource_SelectsDoorResource_ReturnsDoor
+313/853 Test #313: MissionProfileTest.FindFirstAvailableResource_SelectsDoorResource_ReturnsDoor .......................   Passed    0.00 sec
+        Start 314: MissionProfileTest.LoadFleetCatalog_ValidCatalog_ReturnsRobots
+314/853 Test #314: MissionProfileTest.LoadFleetCatalog_ValidCatalog_ReturnsRobots ......................................   Passed    0.00 sec
+        Start 315: MissionProfileTest.LoadFleetCatalog_DuplicateRobot_ReturnsNullopt
+315/853 Test #315: MissionProfileTest.LoadFleetCatalog_DuplicateRobot_ReturnsNullopt ...................................   Passed    0.00 sec
+        Start 316: MissionProfileTest.LoadScenarioCatalog_ValidCatalog_ReturnsTasks
+316/853 Test #316: MissionProfileTest.LoadScenarioCatalog_ValidCatalog_ReturnsTasks ....................................   Passed    0.00 sec
+        Start 317: MissionProfileTest.LoadScenarioCatalog_ValidWorkflow_ReturnsWorkflow
+317/853 Test #317: MissionProfileTest.LoadScenarioCatalog_ValidWorkflow_ReturnsWorkflow ................................   Passed    0.00 sec
+        Start 318: MissionProfileTest.LoadScenarioCatalog_DuplicateTask_ReturnsNullopt
+318/853 Test #318: MissionProfileTest.LoadScenarioCatalog_DuplicateTask_ReturnsNullopt .................................   Passed    0.00 sec
+        Start 319: MissionProfileTest.LoadScenarioCatalog_WorkflowUnknownTask_ReturnsNullopt
+319/853 Test #319: MissionProfileTest.LoadScenarioCatalog_WorkflowUnknownTask_ReturnsNullopt ...........................   Passed    0.00 sec
+        Start 320: MissionProfileTest.FindScenarioTask_MissingTask_ReturnsNull
+320/853 Test #320: MissionProfileTest.FindScenarioTask_MissingTask_ReturnsNull .........................................   Passed    0.00 sec
+        Start 321: MissionProfileValidationTest.ValidateMissionProfile_EmptyFrameId_ReturnsFalse
+321/853 Test #321: MissionProfileValidationTest.ValidateMissionProfile_EmptyFrameId_ReturnsFalse .......................   Passed    0.00 sec
+        Start 322: MissionEstimateTest.EstimateMissionCost_TwoSegments_ReturnsDistanceEtaAndBattery
+322/853 Test #322: MissionEstimateTest.EstimateMissionCost_TwoSegments_ReturnsDistanceEtaAndBattery ....................   Passed    0.00 sec
+        Start 323: MissionEstimateTest.EstimateMissionCost_LowProjectedBattery_ReturnsInsufficient
+323/853 Test #323: MissionEstimateTest.EstimateMissionCost_LowProjectedBattery_ReturnsInsufficient .....................   Passed    0.00 sec
+        Start 324: MissionEstimateTest.EstimateMissionPathDistance_TwoSegments_ReturnsPolylineLength
+324/853 Test #324: MissionEstimateTest.EstimateMissionPathDistance_TwoSegments_ReturnsPolylineLength ...................   Passed    0.00 sec
+        Start 325: MissionEstimateTest.EstimateDistanceCost_PlannedPathSource_ReturnsSource
+325/853 Test #325: MissionEstimateTest.EstimateDistanceCost_PlannedPathSource_ReturnsSource ............................   Passed    0.00 sec
+        Start 326: MissionRecoveryPolicyTest.DecideMissionRecovery_RetryAvailable_ReturnsRetry
+326/853 Test #326: MissionRecoveryPolicyTest.DecideMissionRecovery_RetryAvailable_ReturnsRetry .........................   Passed    0.00 sec
+        Start 327: MissionRecoveryPolicyTest.DecideMissionRecovery_RetryLimitReached_ReturnsDock
+327/853 Test #327: MissionRecoveryPolicyTest.DecideMissionRecovery_RetryLimitReached_ReturnsDock .......................   Passed    0.00 sec
+        Start 328: MissionRecoveryPolicyTest.DecideMissionRecovery_DockMissionFailed_ReturnsManual
+328/853 Test #328: MissionRecoveryPolicyTest.DecideMissionRecovery_DockMissionFailed_ReturnsManual .....................   Passed    0.00 sec
+        Start 329: MissionRecoveryPolicyTest.DecideMissionRecovery_Disabled_ReturnsNone
+329/853 Test #329: MissionRecoveryPolicyTest.DecideMissionRecovery_Disabled_ReturnsNone ................................   Passed    0.00 sec
+        Start 330: MissionFleetCatalogTest.SelectFleetRobot_SkipsBusyAndPicksHighestBattery
+330/853 Test #330: MissionFleetCatalogTest.SelectFleetRobot_SkipsBusyAndPicksHighestBattery ............................   Passed    0.00 sec
+        Start 331: MissionFleetCatalogTest.SelectFleetRobotForStationTask_PicksLowestRouteCost
+331/853 Test #331: MissionFleetCatalogTest.SelectFleetRobotForStationTask_PicksLowestRouteCost .........................   Passed    0.00 sec
+        Start 332: MissionFleetCatalogTest.SelectFleetRobotForStationTask_TieBreaksByBattery
+332/853 Test #332: MissionFleetCatalogTest.SelectFleetRobotForStationTask_TieBreaksByBattery ...........................   Passed    0.00 sec
+        Start 333: MissionProfileBuildersTest.BuildTwoWaypointProfile_EmptyFrame_DefaultsToMap
+333/853 Test #333: MissionProfileBuildersTest.BuildTwoWaypointProfile_EmptyFrame_DefaultsToMap .........................   Passed    0.01 sec
+        Start 334: MissionProfileBuildersTest.BuildStationWaypointProfile_EmptyFrame_DefaultsToMap
+334/853 Test #334: MissionProfileBuildersTest.BuildStationWaypointProfile_EmptyFrame_DefaultsToMap .....................   Passed    0.00 sec
+        Start 335: MissionProfileBuildersTest.ResolveStationPair_UnknownPickup_ReturnsMessage
+335/853 Test #335: MissionProfileBuildersTest.ResolveStationPair_UnknownPickup_ReturnsMessage ..........................   Passed    0.00 sec
+        Start 336: MissionProfileBuildersTest.ResolveStationPair_MixedFrames_ReturnsMessage
+336/853 Test #336: MissionProfileBuildersTest.ResolveStationPair_MixedFrames_ReturnsMessage ............................   Passed    0.00 sec
+        Start 337: MissionProfileBuildersTest.BuildStationSequenceProfiles_ValidRoute_BuildsLegs
+337/853 Test #337: MissionProfileBuildersTest.BuildStationSequenceProfiles_ValidRoute_BuildsLegs .......................   Passed    0.00 sec
+        Start 338: MissionProfileBuildersTest.BuildStationSequenceProfiles_MissingRoute_ReturnsMessage
+338/853 Test #338: MissionProfileBuildersTest.BuildStationSequenceProfiles_MissingRoute_ReturnsMessage .................   Passed    0.00 sec
+        Start 339: MissionProfileBuildersTest.BuildStationSequenceEstimateProfile_MixedFrames_ReturnsMessage
+339/853 Test #339: MissionProfileBuildersTest.BuildStationSequenceEstimateProfile_MixedFrames_ReturnsMessage ...........   Passed    0.00 sec
+        Start 340: MissionQueueTest.SortMissionQueue_HigherPriorityFirstAndStableWithinPriority
+340/853 Test #340: MissionQueueTest.SortMissionQueue_HigherPriorityFirstAndStableWithinPriority ........................   Passed    0.01 sec
+        Start 341: MissionQueueTest.MissionIdQueued_ExistingMission_ReturnsTrue
+341/853 Test #341: MissionQueueTest.MissionIdQueued_ExistingMission_ReturnsTrue ........................................   Passed    0.00 sec
+        Start 342: MissionQueueTest.RemoveQueuedMissionById_DuplicateIds_RemovesAllMatches
+342/853 Test #342: MissionQueueTest.RemoveQueuedMissionById_DuplicateIds_RemovesAllMatches .............................   Passed    0.00 sec
+        Start 343: MissionQueueTest.ReprioritizeQueuedMission_ExistingMission_UpdatesPriorityOnly
+343/853 Test #343: MissionQueueTest.ReprioritizeQueuedMission_ExistingMission_UpdatesPriorityOnly ......................   Passed    0.00 sec
+        Start 344: MissionQueueTest.DecideQueuedMissionStart_IdleStartRequested_StartsQueue
+344/853 Test #344: MissionQueueTest.DecideQueuedMissionStart_IdleStartRequested_StartsQueue ............................   Passed    0.00 sec
+        Start 345: MissionQueueTest.DecideQueuedMissionStart_ActivePreemptRequested_StartsAfterCancel
+345/853 Test #345: MissionQueueTest.DecideQueuedMissionStart_ActivePreemptRequested_StartsAfterCancel ..................   Passed    0.00 sec
+        Start 346: MissionQueueTest.DecideQueuedMissionStart_ActiveWithoutPreempt_DoesNotStartQueue
+346/853 Test #346: MissionQueueTest.DecideQueuedMissionStart_ActiveWithoutPreempt_DoesNotStartQueue ....................   Passed    0.00 sec
+        Start 347: MissionQueueTest.DecideQueuedMissionStart_IdlePreemptOnly_DoesNotOverrideStartFlag
+347/853 Test #347: MissionQueueTest.DecideQueuedMissionStart_IdlePreemptOnly_DoesNotOverrideStartFlag ..................   Passed    0.00 sec
+        Start 348: MissionQueueTest.PlanMissionQueueAdmission_IdleRunner_PlansQueuedState
+348/853 Test #348: MissionQueueTest.PlanMissionQueueAdmission_IdleRunner_PlansQueuedState ..............................   Passed    0.00 sec
+        Start 349: MissionQueueTest.PlanMissionQueueAdmission_ActiveRunner_DoesNotPlanStateChange
+349/853 Test #349: MissionQueueTest.PlanMissionQueueAdmission_ActiveRunner_DoesNotPlanStateChange ......................   Passed    0.00 sec
+        Start 350: MissionQueueTest.PlanMissionQueueAdmission_StateDisabled_DoesNotPlanStateChange
+350/853 Test #350: MissionQueueTest.PlanMissionQueueAdmission_StateDisabled_DoesNotPlanStateChange .....................   Passed    0.00 sec
+        Start 351: MissionQueueTest.PlanMissionSubmitGate_DuplicateRejectsBeforePreflight
+351/853 Test #351: MissionQueueTest.PlanMissionSubmitGate_DuplicateRejectsBeforePreflight ..............................   Passed    0.00 sec
+        Start 352: MissionQueueTest.PlanMissionSubmitGate_PreflightRejectsWithPrefix
+352/853 Test #352: MissionQueueTest.PlanMissionSubmitGate_PreflightRejectsWithPrefix ...................................   Passed    0.00 sec
+        Start 353: MissionQueueTest.PlanMissionSubmitGate_AcceptsValidMission
+353/853 Test #353: MissionQueueTest.PlanMissionSubmitGate_AcceptsValidMission ..........................................   Passed    0.00 sec
+        Start 354: MissionQueueTest.PlanQueuedMissionCancel_QueuedMission_RemovesAndPlansResourceRelease
+354/853 Test #354: MissionQueueTest.PlanQueuedMissionCancel_QueuedMission_RemovesAndPlansResourceRelease ...............   Passed    0.00 sec
+        Start 355: MissionQueueTest.PlanQueuedMissionCancel_ActiveMission_RequestsActiveCancelOnly
+355/853 Test #355: MissionQueueTest.PlanQueuedMissionCancel_ActiveMission_RequestsActiveCancelOnly .....................   Passed    0.00 sec
+        Start 356: MissionQueueTest.PlanQueuedMissionCancel_MissingMission_ReturnsNotFoundMessage
+356/853 Test #356: MissionQueueTest.PlanQueuedMissionCancel_MissingMission_ReturnsNotFoundMessage ......................   Passed    0.00 sec
+        Start 357: MissionQueueTest.PlanStationOrderBatchSubmit_BuildsStationOrderItemPlans
+357/853 Test #357: MissionQueueTest.PlanStationOrderBatchSubmit_BuildsStationOrderItemPlans ............................   Passed    0.00 sec
+        Start 358: MissionQueueTest.PlanStationOrderBatchSubmit_EmptyBatchIdRejects
+358/853 Test #358: MissionQueueTest.PlanStationOrderBatchSubmit_EmptyBatchIdRejects ....................................   Passed    0.00 sec
+        Start 359: MissionQueueTest.PlanStationOrderBatchSubmit_SizeMismatchRejects
+359/853 Test #359: MissionQueueTest.PlanStationOrderBatchSubmit_SizeMismatchRejects ....................................   Passed    0.00 sec
+        Start 360: MissionQueueTest.PlanStationOrderBatchSubmit_EmptyOrderStopsWhenContinueDisabled
+360/853 Test #360: MissionQueueTest.PlanStationOrderBatchSubmit_EmptyOrderStopsWhenContinueDisabled ....................   Passed    0.00 sec
+        Start 361: MissionQueueTest.PlanStationOrderBatchSubmitSummary_ContinueOnErrorAllowsPartialSuccess
+361/853 Test #361: MissionQueueTest.PlanStationOrderBatchSubmitSummary_ContinueOnErrorAllowsPartialSuccess .............   Passed    0.00 sec
+        Start 362: MissionQueueTest.PlanStationOrderBatchCancel_QueuedBatch_RemovesAndPlansRelease
+362/853 Test #362: MissionQueueTest.PlanStationOrderBatchCancel_QueuedBatch_RemovesAndPlansRelease .....................   Passed    0.00 sec
+        Start 363: MissionQueueTest.PlanStationOrderBatchCancel_ActiveBatchMission_RequestsActiveCancelOnly
+363/853 Test #363: MissionQueueTest.PlanStationOrderBatchCancel_ActiveBatchMission_RequestsActiveCancelOnly ............   Passed    0.00 sec
+        Start 364: MissionQueueTest.PlanStationOrderBatchCancel_MissingBatch_ReturnsNotFound
+364/853 Test #364: MissionQueueTest.PlanStationOrderBatchCancel_MissingBatch_ReturnsNotFound ...........................   Passed    0.00 sec
+        Start 365: MissionQueueTest.PlanQueuedMissionReprioritize_MatchingMission_SortsAndPlansState
+365/853 Test #365: MissionQueueTest.PlanQueuedMissionReprioritize_MatchingMission_SortsAndPlansState ...................   Passed    0.00 sec
+        Start 366: MissionQueueTest.PlanQueuedMissionReprioritize_MissingMission_DoesNotMutateQueue
+366/853 Test #366: MissionQueueTest.PlanQueuedMissionReprioritize_MissingMission_DoesNotMutateQueue ....................   Passed    0.00 sec
+        Start 367: MissionQueueTest.PlanQueuedMissionBatchReprioritize_Mismatch_RejectsWithoutSorting
+367/853 Test #367: MissionQueueTest.PlanQueuedMissionBatchReprioritize_Mismatch_RejectsWithoutSorting ..................   Passed    0.00 sec
+        Start 368: MissionQueueTest.PlanQueuedMissionBatchReprioritize_PartialUpdate_ReturnsFailureAndSortedQueue
+368/853 Test #368: MissionQueueTest.PlanQueuedMissionBatchReprioritize_PartialUpdate_ReturnsFailureAndSortedQueue ......   Passed    0.00 sec
+        Start 369: MissionQueueTest.MissionBelongsToWorkflowOrder_KnownPrefixes_MatchesOrderId
+369/853 Test #369: MissionQueueTest.MissionBelongsToWorkflowOrder_KnownPrefixes_MatchesOrderId .........................   Passed    0.00 sec
+        Start 370: MissionQueueTest.MissionBelongsToStationOrderBatch_BatchPrefix_MatchesBatchId
+370/853 Test #370: MissionQueueTest.MissionBelongsToStationOrderBatch_BatchPrefix_MatchesBatchId .......................   Passed    0.00 sec
+        Start 371: MissionQueueTest.QueuedWorkflowMissionIds_MatchingOrder_ReturnsQueuedIdsInOrder
+371/853 Test #371: MissionQueueTest.QueuedWorkflowMissionIds_MatchingOrder_ReturnsQueuedIdsInOrder .....................   Passed    0.00 sec
+        Start 372: MissionQueueTest.RemoveQueuedWorkflowMissions_MatchingOrder_RemovesAndReturnsIds
+372/853 Test #372: MissionQueueTest.RemoveQueuedWorkflowMissions_MatchingOrder_RemovesAndReturnsIds ....................   Passed    0.00 sec
+        Start 373: MissionQueueTest.RemoveQueuedStationOrderBatchMissions_MatchingBatch_RemovesAndReturnsIds
+373/853 Test #373: MissionQueueTest.RemoveQueuedStationOrderBatchMissions_MatchingBatch_RemovesAndReturnsIds ...........   Passed    0.00 sec
+        Start 374: MissionQueueTest.ReprioritizeQueuedMissionBatch_MatchingIds_UpdatesExistingOnly
+374/853 Test #374: MissionQueueTest.ReprioritizeQueuedMissionBatch_MatchingIds_UpdatesExistingOnly .....................   Passed    0.00 sec
+        Start 375: MissionQueueTest.FindNextRunnableMissionIndex_SkipsPausedWorkflowMissions
+375/853 Test #375: MissionQueueTest.FindNextRunnableMissionIndex_SkipsPausedWorkflowMissions ...........................   Passed    0.00 sec
+        Start 376: MissionQueueTest.FindNextRunnableMissionIndex_AllPaused_ReturnsNullopt
+376/853 Test #376: MissionQueueTest.FindNextRunnableMissionIndex_AllPaused_ReturnsNullopt ..............................   Passed    0.00 sec
+        Start 377: OrderPayloadTest.ParseOrderPayload_FlatJsonObject_ReadsScalarsAndArrays
+377/853 Test #377: OrderPayloadTest.ParseOrderPayload_FlatJsonObject_ReadsScalarsAndArrays .............................   Passed    0.01 sec
+        Start 378: OrderPayloadTest.ParseOrderPayload_KeyValueFormat_ReadsCommaSeparatedLists
+378/853 Test #378: OrderPayloadTest.ParseOrderPayload_KeyValueFormat_ReadsCommaSeparatedLists ..........................   Passed    0.00 sec
+        Start 379: OrderPayloadTest.ParseOrderPayload_EmptyPayload_ReturnsEmptyPayload
+379/853 Test #379: OrderPayloadTest.ParseOrderPayload_EmptyPayload_ReturnsEmptyPayload .................................   Passed    0.00 sec
+        Start 380: OrderPayloadTest.ParseOrderPayload_InvalidJson_ReturnsMessage
+380/853 Test #380: OrderPayloadTest.ParseOrderPayload_InvalidJson_ReturnsMessage .......................................   Passed    0.00 sec
+        Start 381: OrderPayloadTest.ParseOrderPayload_KeyValueWithoutEquals_ReturnsMessage
+381/853 Test #381: OrderPayloadTest.ParseOrderPayload_KeyValueWithoutEquals_ReturnsMessage .............................   Passed    0.00 sec
+        Start 382: FulfillmentWorkflowTest.PlanFulfillmentSubmit_NewOrderAccepted
+382/853 Test #382: FulfillmentWorkflowTest.PlanFulfillmentSubmit_NewOrderAccepted ......................................   Passed    0.01 sec
+        Start 383: FulfillmentWorkflowTest.PlanFulfillmentSubmit_DuplicateRejectedBeforeQueueing
+383/853 Test #383: FulfillmentWorkflowTest.PlanFulfillmentSubmit_DuplicateRejectedBeforeQueueing .......................   Passed    0.00 sec
+        Start 384: FulfillmentWorkflowTest.PlanFulfillmentSubmit_MilkRunRequiresTwoStations
+384/853 Test #384: FulfillmentWorkflowTest.PlanFulfillmentSubmit_MilkRunRequiresTwoStations ............................   Passed    0.00 sec
+        Start 385: FulfillmentWorkflowTest.PlanFulfillmentSubmit_MissingIdRejected
+385/853 Test #385: FulfillmentWorkflowTest.PlanFulfillmentSubmit_MissingIdRejected .....................................   Passed    0.00 sec
+        Start 386: FulfillmentWorkflowTest.PlanFulfillmentPick_AwaitingPick_ComputesShortPick
+386/853 Test #386: FulfillmentWorkflowTest.PlanFulfillmentPick_AwaitingPick_ComputesShortPick ..........................   Passed    0.00 sec
+        Start 387: FulfillmentWorkflowTest.PlanFulfillmentPick_DropoffReadyState_RejectsReplay
+387/853 Test #387: FulfillmentWorkflowTest.PlanFulfillmentPick_DropoffReadyState_RejectsReplay .........................   Passed    0.00 sec
+        Start 388: FulfillmentWorkflowTest.PlanFulfillmentPick_MilkRunRejected
+388/853 Test #388: FulfillmentWorkflowTest.PlanFulfillmentPick_MilkRunRejected .........................................   Passed    0.00 sec
+        Start 389: FulfillmentWorkflowTest.PlanFulfillmentDropoff_PickConfirmed_Fulfilled
+389/853 Test #389: FulfillmentWorkflowTest.PlanFulfillmentDropoff_PickConfirmed_Fulfilled ..............................   Passed    0.00 sec
+        Start 390: FulfillmentWorkflowTest.PlanFulfillmentDropoff_ShortPick_FulfilledWithShortPick
+390/853 Test #390: FulfillmentWorkflowTest.PlanFulfillmentDropoff_ShortPick_FulfilledWithShortPick .....................   Passed    0.00 sec
+        Start 391: FulfillmentWorkflowTest.PlanFulfillmentDropoff_AwaitingPickRejected
+391/853 Test #391: FulfillmentWorkflowTest.PlanFulfillmentDropoff_AwaitingPickRejected .................................   Passed    0.00 sec
+        Start 392: FulfillmentWorkflowTest.PlanFulfillmentShortPick_AwaitingPick_ComputesPickedQuantity
+392/853 Test #392: FulfillmentWorkflowTest.PlanFulfillmentShortPick_AwaitingPick_ComputesPickedQuantity ................   Passed    0.00 sec
+        Start 393: FulfillmentWorkflowTest.PlanFulfillmentShortPick_AfterPickRejected
+393/853 Test #393: FulfillmentWorkflowTest.PlanFulfillmentShortPick_AfterPickRejected ..................................   Passed    0.00 sec
+        Start 394: FulfillmentWorkflowTest.BuildFulfillmentStatusProjection_CopiesRuntimeState
+394/853 Test #394: FulfillmentWorkflowTest.BuildFulfillmentStatusProjection_CopiesRuntimeState .........................   Passed    0.00 sec
+        Start 395: PayloadWorkflowTest.ConfirmLoad_EmptyPayload_LoadsAndPlansEvent
+395/853 Test #395: PayloadWorkflowTest.ConfirmLoad_EmptyPayload_LoadsAndPlansEvent .....................................   Passed    0.01 sec
+        Start 396: PayloadWorkflowTest.ConfirmLoad_WhenAlreadyLoaded_RejectsWithoutMutation
+396/853 Test #396: PayloadWorkflowTest.ConfirmLoad_WhenAlreadyLoaded_RejectsWithoutMutation ............................   Passed    0.00 sec
+        Start 397: PayloadWorkflowTest.ConfirmLoad_Overweight_RejectsWithoutMutation
+397/853 Test #397: PayloadWorkflowTest.ConfirmLoad_Overweight_RejectsWithoutMutation ...................................   Passed    0.00 sec
+        Start 398: PayloadWorkflowTest.ConfirmUnload_Mismatch_RejectsCurrentPayload
+398/853 Test #398: PayloadWorkflowTest.ConfirmUnload_Mismatch_RejectsCurrentPayload ....................................   Passed    0.00 sec
+        Start 399: PayloadWorkflowTest.ConfirmUnload_LoadedPayload_EmptiesAndPlansEvent
+399/853 Test #399: PayloadWorkflowTest.ConfirmUnload_LoadedPayload_EmptiesAndPlansEvent ................................   Passed    0.00 sec
+        Start 400: PayloadWorkflowTest.SetPayloadLoaded_Overweight_RejectsWithoutMutation
+400/853 Test #400: PayloadWorkflowTest.SetPayloadLoaded_Overweight_RejectsWithoutMutation ..............................   Passed    0.00 sec
+        Start 401: PayloadWorkflowTest.TopModuleAction_Unsupported_RejectsWithoutMutation
+401/853 Test #401: PayloadWorkflowTest.TopModuleAction_Unsupported_RejectsWithoutMutation ..............................   Passed    0.00 sec
+        Start 402: PayloadWorkflowTest.TopModuleAction_Supported_UpdatesActionState
+402/853 Test #402: PayloadWorkflowTest.TopModuleAction_Supported_UpdatesActionState ....................................   Passed    0.00 sec
+        Start 403: MissionRuntimeWorkflowTest.AutostartIdle_StartsDefaultMission
+403/853 Test #403: MissionRuntimeWorkflowTest.AutostartIdle_StartsDefaultMission .......................................   Passed    0.01 sec
+        Start 404: MissionRuntimeWorkflowTest.QueueStartIdle_StartsQueuedMissionAndClearsRequest
+404/853 Test #404: MissionRuntimeWorkflowTest.QueueStartIdle_StartsQueuedMissionAndClearsRequest .......................   Passed    0.00 sec
+        Start 405: MissionRuntimeWorkflowTest.AutostartAndQueueRequested_StagesBothRequests
+405/853 Test #405: MissionRuntimeWorkflowTest.AutostartAndQueueRequested_StagesBothRequests ............................   Passed    0.00 sec
+        Start 406: MissionRuntimeWorkflowTest.MissionActive_DoesNotStartNewMission
+406/853 Test #406: MissionRuntimeWorkflowTest.MissionActive_DoesNotStartNewMission .....................................   Passed    0.00 sec
+        Start 407: MissionRuntimeWorkflowTest.AutostartAlreadySent_DoesNotRestartDefaultMission
+407/853 Test #407: MissionRuntimeWorkflowTest.AutostartAlreadySent_DoesNotRestartDefaultMission ........................   Passed    0.00 sec
+        Start 408: MissionResultWorkflowTest.PlanMissionResultWorkflow_Canceled_ClearsCancelAndReleasesResources
+408/853 Test #408: MissionResultWorkflowTest.PlanMissionResultWorkflow_Canceled_ClearsCancelAndReleasesResources .......   Passed    0.01 sec
+        Start 409: MissionResultWorkflowTest.PlanMissionResultWorkflow_CanceledCode_UsesFallbackMessage
+409/853 Test #409: MissionResultWorkflowTest.PlanMissionResultWorkflow_CanceledCode_UsesFallbackMessage ................   Passed    0.00 sec
+        Start 410: MissionResultWorkflowTest.PlanMissionResultWorkflow_Succeeded_StagesSuccessSideEffects
+410/853 Test #410: MissionResultWorkflowTest.PlanMissionResultWorkflow_Succeeded_StagesSuccessSideEffects ..............   Passed    0.00 sec
+        Start 411: MissionResultWorkflowTest.PlanMissionResultWorkflow_SucceededDock_KeepsDockResourceForCharging
+411/853 Test #411: MissionResultWorkflowTest.PlanMissionResultWorkflow_SucceededDock_KeepsDockResourceForCharging ......   Passed    0.00 sec
+        Start 412: MissionResultWorkflowTest.PlanMissionResultWorkflow_SucceededActionWithFailedPayload_FailsMission
+412/853 Test #412: MissionResultWorkflowTest.PlanMissionResultWorkflow_SucceededActionWithFailedPayload_FailsMission ...   Passed    0.00 sec
+        Start 413: MissionResultWorkflowTest.PlanMissionResultWorkflow_Failed_StagesRecoverySideEffects
+413/853 Test #413: MissionResultWorkflowTest.PlanMissionResultWorkflow_Failed_StagesRecoverySideEffects ................   Passed    0.00 sec
+        Start 414: MissionResultWorkflowTest.ShouldQueueDockAfterResult_SuccessfulNonDockEmptyQueue_ReturnsTrue
+414/853 Test #414: MissionResultWorkflowTest.ShouldQueueDockAfterResult_SuccessfulNonDockEmptyQueue_ReturnsTrue ........   Passed    0.00 sec
+        Start 415: MissionResultWorkflowTest.ShouldQueueDockAfterResult_DockAlreadyCompleted_ReturnsFalse
+415/853 Test #415: MissionResultWorkflowTest.ShouldQueueDockAfterResult_DockAlreadyCompleted_ReturnsFalse ..............   Passed    0.00 sec
+        Start 416: MissionResultWorkflowTest.ShouldQueueDockAfterResult_DockProfileUnavailable_ReturnsFalse
+416/853 Test #416: MissionResultWorkflowTest.ShouldQueueDockAfterResult_DockProfileUnavailable_ReturnsFalse ............   Passed    0.00 sec
+        Start 417: MissionResultWorkflowTest.PlanMissionPostResultQueue_AutoStartRunningQueue_RequestsStart
+417/853 Test #417: MissionResultWorkflowTest.PlanMissionPostResultQueue_AutoStartRunningQueue_RequestsStart ............   Passed    0.00 sec
+        Start 418: MissionResultWorkflowTest.PlanMissionPostResultQueue_EmptyQueueDropsStaleStartRequest
+418/853 Test #418: MissionResultWorkflowTest.PlanMissionPostResultQueue_EmptyQueueDropsStaleStartRequest ...............   Passed    0.00 sec
+        Start 419: MissionResultWorkflowTest.PlanMissionPostResultQueue_ExistingStartRequestWithQueue_IsPreserved
+419/853 Test #419: MissionResultWorkflowTest.PlanMissionPostResultQueue_ExistingStartRequestWithQueue_IsPreserved ......   Passed    0.00 sec
+        Start 420: MissionResultWorkflowTest.PlanMissionPostResultQueue_AutoStartDisabled_DoesNotStartQueue
+420/853 Test #420: MissionResultWorkflowTest.PlanMissionPostResultQueue_AutoStartDisabled_DoesNotStartQueue ............   Passed    0.00 sec
+        Start 421: MissionResultWorkflowTest.PlanMissionPostResultQueue_EmptyQueueWithoutStart_StopsQueue
+421/853 Test #421: MissionResultWorkflowTest.PlanMissionPostResultQueue_EmptyQueueWithoutStart_StopsQueue ..............   Passed    0.00 sec
+        Start 422: MissionResultWorkflowTest.PlanMissionResultPostActions_ReturnDockStartsQueuedDock
+422/853 Test #422: MissionResultWorkflowTest.PlanMissionResultPostActions_ReturnDockStartsQueuedDock ...................   Passed    0.00 sec
+        Start 423: MissionResultWorkflowTest.PlanMissionResultPostActions_ExistingQueueKeepsAutoStart
+423/853 Test #423: MissionResultWorkflowTest.PlanMissionResultPostActions_ExistingQueueKeepsAutoStart ..................   Passed    0.00 sec
+        Start 424: MissionResultWorkflowTest.PlanMissionResultPostActions_EmptyQueueStopsRunningQueue
+424/853 Test #424: MissionResultWorkflowTest.PlanMissionResultPostActions_EmptyQueueStopsRunningQueue ..................   Passed    0.00 sec
+        Start 425: MissionSafetyWorkflowTest.DynamicSpeedLimitRejectsNegativeWithoutMutation
+425/853 Test #425: MissionSafetyWorkflowTest.DynamicSpeedLimitRejectsNegativeWithoutMutation ...........................   Passed    0.01 sec
+        Start 426: MissionSafetyWorkflowTest.DynamicSpeedLimitSetsAndClearsRuntimeLimit
+426/853 Test #426: MissionSafetyWorkflowTest.DynamicSpeedLimitSetsAndClearsRuntimeLimit ................................   Passed    0.00 sec
+        Start 427: MissionSafetyWorkflowTest.ReportObstaclePausesOnlyWhenRunnerIsNotAlreadyPaused
+427/853 Test #427: MissionSafetyWorkflowTest.ReportObstaclePausesOnlyWhenRunnerIsNotAlreadyPaused ......................   Passed    0.00 sec
+        Start 428: MissionSafetyWorkflowTest.ReportObstacleDoesNotClaimOperatorPausedMission
+428/853 Test #428: MissionSafetyWorkflowTest.ReportObstacleDoesNotClaimOperatorPausedMission ...........................   Passed    0.00 sec
+        Start 429: MissionSafetyWorkflowTest.ReportObstacleRejectsDuplicateActiveBlockage
+429/853 Test #429: MissionSafetyWorkflowTest.ReportObstacleRejectsDuplicateActiveBlockage ..............................   Passed    0.00 sec
+        Start 430: MissionSafetyWorkflowTest.ClearObstacleMismatchRejectsWithoutMutation
+430/853 Test #430: MissionSafetyWorkflowTest.ClearObstacleMismatchRejectsWithoutMutation ...............................   Passed    0.00 sec
+        Start 431: MissionSafetyWorkflowTest.ClearObstacleResumesOnlyIfSafetyPausedMission
+431/853 Test #431: MissionSafetyWorkflowTest.ClearObstacleResumesOnlyIfSafetyPausedMission .............................   Passed    0.00 sec
+        Start 432: MissionSafetyWorkflowTest.ClearObstacleDoesNotResumeOperatorPausedMission
+432/853 Test #432: MissionSafetyWorkflowTest.ClearObstacleDoesNotResumeOperatorPausedMission ...........................   Passed    0.00 sec
+        Start 433: MissionSafetyWorkflowTest.ClearObstacleIdleSafetyBlockedReturnsReady
+433/853 Test #433: MissionSafetyWorkflowTest.ClearObstacleIdleSafetyBlockedReturnsReady ................................   Passed    0.00 sec
+        Start 434: MissionRecoveryPolicyTest.DisabledPolicy_ReturnsNoneAndNotRecoverable
+434/853 Test #434: MissionRecoveryPolicyTest.DisabledPolicy_ReturnsNoneAndNotRecoverable ...............................   Passed    0.01 sec
+        Start 435: MissionRecoveryPolicyTest.RetryThenDock_BeforeLimit_ReturnsRetry
+435/853 Test #435: MissionRecoveryPolicyTest.RetryThenDock_BeforeLimit_ReturnsRetry ....................................   Passed    0.00 sec
+        Start 436: MissionRecoveryPolicyTest.RetryThenDock_AfterLimit_ReturnsDock
+436/853 Test #436: MissionRecoveryPolicyTest.RetryThenDock_AfterLimit_ReturnsDock ......................................   Passed    0.00 sec
+        Start 437: MissionRecoveryPolicyTest.RetryOnly_AfterLimit_ReturnsManual
+437/853 Test #437: MissionRecoveryPolicyTest.RetryOnly_AfterLimit_ReturnsManual ........................................   Passed    0.00 sec
+        Start 438: MissionRecoveryPolicyTest.RetryThenManual_AfterLimit_ReturnsManual
+438/853 Test #438: MissionRecoveryPolicyTest.RetryThenManual_AfterLimit_ReturnsManual ..................................   Passed    0.00 sec
+        Start 439: MissionRecoveryPolicyTest.DockPolicy_ReturnsDockWithoutRetry
+439/853 Test #439: MissionRecoveryPolicyTest.DockPolicy_ReturnsDockWithoutRetry ........................................   Passed    0.00 sec
+        Start 440: MissionRecoveryPolicyTest.DockMissionFailure_ReturnsManual
+440/853 Test #440: MissionRecoveryPolicyTest.DockMissionFailure_ReturnsManual ..........................................   Passed    0.00 sec
+        Start 441: MissionRecoveryPolicyTest.NegativeRetryLimit_ClampsToZeroAndUsesFallback
+441/853 Test #441: MissionRecoveryPolicyTest.NegativeRetryLimit_ClampsToZeroAndUsesFallback ............................   Passed    0.00 sec
+        Start 442: MissionRecoveryPolicyTest.PolicyName_IsCaseInsensitive
+442/853 Test #442: MissionRecoveryPolicyTest.PolicyName_IsCaseInsensitive ..............................................   Passed    0.00 sec
+        Start 443: MissionRecoveryPolicyTest.UnknownPolicy_ReturnsManual
+443/853 Test #443: MissionRecoveryPolicyTest.UnknownPolicy_ReturnsManual ...............................................   Passed    0.00 sec
+        Start 444: MissionEventLogTest.NormalizeEventLimit_DefaultsAndCaps
+444/853 Test #444: MissionEventLogTest.NormalizeEventLimit_DefaultsAndCaps .............................................   Passed    0.01 sec
+        Start 445: MissionEventLogTest.TrimMissionEvents_RemovesOldestEvents
+445/853 Test #445: MissionEventLogTest.TrimMissionEvents_RemovesOldestEvents ...........................................   Passed    0.00 sec
+        Start 446: MissionEventLogTest.TrimMissionEvents_WithinLimit_RemovesNothing
+446/853 Test #446: MissionEventLogTest.TrimMissionEvents_WithinLimit_RemovesNothing ....................................   Passed    0.00 sec
+        Start 447: MissionEventLogTest.AppendMissionEvent_AddsEventAndTrimsOldest
+447/853 Test #447: MissionEventLogTest.AppendMissionEvent_AddsEventAndTrimsOldest ......................................   Passed    0.00 sec
+        Start 448: MissionEventLogTest.SelectRecentMissionEvents_ReturnsNewestFirst
+448/853 Test #448: MissionEventLogTest.SelectRecentMissionEvents_ReturnsNewestFirst ....................................   Passed    0.00 sec
+        Start 449: MissionEventLogTest.SelectRecentMissionEvents_FiltersByStateAndMissionId
+449/853 Test #449: MissionEventLogTest.SelectRecentMissionEvents_FiltersByStateAndMissionId ............................   Passed    0.00 sec
+        Start 450: TrafficReservationTest.RouteLockId_SortsEndpointsForSharedEdge
+450/853 Test #450: TrafficReservationTest.RouteLockId_SortsEndpointsForSharedEdge ......................................   Passed    0.01 sec
+        Start 451: TrafficReservationTest.ParseRouteLock_ValidEdge_ReturnsEndpoints
+451/853 Test #451: TrafficReservationTest.ParseRouteLock_ValidEdge_ReturnsEndpoints ....................................   Passed    0.00 sec
+        Start 452: TrafficReservationTest.ParseRouteLock_InvalidResource_ReturnsNullopt
+452/853 Test #452: TrafficReservationTest.ParseRouteLock_InvalidResource_ReturnsNullopt ................................   Passed    0.00 sec
+        Start 453: TrafficReservationTest.BuildRouteLockIds_WithIntersectionLocks_AddsNodesAndEdges
+453/853 Test #453: TrafficReservationTest.BuildRouteLockIds_WithIntersectionLocks_AddsNodesAndEdges ....................   Passed    0.00 sec
+        Start 454: TrafficReservationTest.BuildRouteLockIds_WithoutIntersectionLocks_AddsEdgesOnly
+454/853 Test #454: TrafficReservationTest.BuildRouteLockIds_WithoutIntersectionLocks_AddsEdgesOnly .....................   Passed    0.00 sec
+        Start 455: TrafficReservationTest.IsTrafficBlockOwner_RecognizesOnlyTrafficBlocks
+455/853 Test #455: TrafficReservationTest.IsTrafficBlockOwner_RecognizesOnlyTrafficBlocks ..............................   Passed    0.00 sec
+        Start 456: TrafficReservationTest.CrossNamespaceRouteLockRoundTrip
+456/853 Test #456: TrafficReservationTest.CrossNamespaceRouteLockRoundTrip .............................................   Passed    0.00 sec
+        Start 457: TrafficReservationTest.PlanTrafficBlock_UnknownStationRejects
+457/853 Test #457: TrafficReservationTest.PlanTrafficBlock_UnknownStationRejects .......................................   Passed    0.00 sec
+        Start 458: TrafficReservationTest.PlanTrafficBlock_NoRouteRejects
+458/853 Test #458: TrafficReservationTest.PlanTrafficBlock_NoRouteRejects ..............................................   Passed    0.00 sec
+        Start 459: TrafficReservationTest.PlanTrafficBlock_ExistingLockRejects
+459/853 Test #459: TrafficReservationTest.PlanTrafficBlock_ExistingLockRejects .........................................   Passed    0.00 sec
+        Start 460: TrafficReservationTest.PlanTrafficBlock_FreeRouteCreatesTrafficOwner
+460/853 Test #460: TrafficReservationTest.PlanTrafficBlock_FreeRouteCreatesTrafficOwner ................................   Passed    0.00 sec
+        Start 461: TrafficReservationTest.PlanTrafficUnblock_MissingLockRejects
+461/853 Test #461: TrafficReservationTest.PlanTrafficUnblock_MissingLockRejects ........................................   Passed    0.00 sec
+        Start 462: TrafficReservationTest.PlanTrafficUnblock_MissionLockRejects
+462/853 Test #462: TrafficReservationTest.PlanTrafficUnblock_MissionLockRejects ........................................   Passed    0.00 sec
+        Start 463: TrafficReservationTest.PlanTrafficUnblock_TrafficBlockAllowsErase
+463/853 Test #463: TrafficReservationTest.PlanTrafficUnblock_TrafficBlockAllowsErase ...................................   Passed    0.00 sec
+        Start 464: TrafficReservationTest.PlanTrafficReservationClear_MissingRejects
+464/853 Test #464: TrafficReservationTest.PlanTrafficReservationClear_MissingRejects ...................................   Passed    0.00 sec
+        Start 465: TrafficReservationTest.PlanTrafficReservationClear_TrafficBlockErasesResource
+465/853 Test #465: TrafficReservationTest.PlanTrafficReservationClear_TrafficBlockErasesResource .......................   Passed    0.00 sec
+        Start 466: TrafficReservationTest.PlanTrafficReservationClear_MissionLockPlansMissionRelease
+466/853 Test #466: TrafficReservationTest.PlanTrafficReservationClear_MissionLockPlansMissionRelease ...................   Passed    0.00 sec
+        Start 467: TrafficReservationTest.PlanTrafficDeadlockDetection_IgnoresTrafficBlocksAndNodes
+467/853 Test #467: TrafficReservationTest.PlanTrafficDeadlockDetection_IgnoresTrafficBlocksAndNodes ....................   Passed    0.00 sec
+        Start 468: TrafficReservationTest.PlanTrafficDeadlockDetection_SharedStationReportsSortedConflicts
+468/853 Test #468: TrafficReservationTest.PlanTrafficDeadlockDetection_SharedStationReportsSortedConflicts .............   Passed    0.00 sec
+        Start 469: TrafficReservationTest.ReserveRouteLocksForMission_FreeLocks_StoresReservation
+469/853 Test #469: TrafficReservationTest.ReserveRouteLocksForMission_FreeLocks_StoresReservation ......................   Passed    0.00 sec
+        Start 470: TrafficReservationTest.ReserveRouteLocksForMission_SameMission_IsIdempotent
+470/853 Test #470: TrafficReservationTest.ReserveRouteLocksForMission_SameMission_IsIdempotent .........................   Passed    0.00 sec
+        Start 471: TrafficReservationTest.ReserveRouteLocksForMission_ConflictingOwner_RejectsReservation
+471/853 Test #471: TrafficReservationTest.ReserveRouteLocksForMission_ConflictingOwner_RejectsReservation ..............   Passed    0.00 sec
+        Start 472: TrafficReservationTest.ReleaseRouteLocksForMission_ExistingMission_RemovesOnlyOwnedLocks
+472/853 Test #472: TrafficReservationTest.ReleaseRouteLocksForMission_ExistingMission_RemovesOnlyOwnedLocks ............   Passed    0.00 sec
+        Start 473: TrafficReservationTest.ReleaseRouteLocksForMission_MissingMission_ReturnsFalse
+473/853 Test #473: TrafficReservationTest.ReleaseRouteLocksForMission_MissingMission_ReturnsFalse ......................   Passed    0.00 sec
+        Start 474: TrafficReservationTest.ReleaseRouteLocksForMission_OrphanOwnedLocks_AreRemoved
+474/853 Test #474: TrafficReservationTest.ReleaseRouteLocksForMission_OrphanOwnedLocks_AreRemoved ......................   Passed    0.00 sec
+        Start 475: TrafficReservationTest.BuildRouteLockIds_DeduplicatesWhilePreservingOrder
+475/853 Test #475: TrafficReservationTest.BuildRouteLockIds_DeduplicatesWhilePreservingOrder ...........................   Passed    0.00 sec
+        Start 476: TrafficPlanningTest.PlanMissionRouteLocks_LinkedStations_ReturnNodesAndEdge
+476/853 Test #476: TrafficPlanningTest.PlanMissionRouteLocks_LinkedStations_ReturnNodesAndEdge .........................   Passed    0.00 sec
+        Start 477: TrafficPlanningTest.PlanMissionRouteLocks_EmptyFrom_LocksOnlyDestinationNode
+477/853 Test #477: TrafficPlanningTest.PlanMissionRouteLocks_EmptyFrom_LocksOnlyDestinationNode ........................   Passed    0.00 sec
+        Start 478: TrafficPlanningTest.PlanMissionRouteLocks_NoPath_ReturnsEmptyLockSet
+478/853 Test #478: TrafficPlanningTest.PlanMissionRouteLocks_NoPath_ReturnsEmptyLockSet ................................   Passed    0.00 sec
+        Start 479: TrafficPlanningTest.PlanMissionRouteLocks_MixedGraph_GeneratesCompleteDeduplicatedLocks
+479/853 Test #479: TrafficPlanningTest.PlanMissionRouteLocks_MixedGraph_GeneratesCompleteDeduplicatedLocks .............   Passed    0.00 sec
+        Start 480: DynamicUnlockingTest.AtFirstNodePathIndex0_ReleasesNothing_FootprintKeepsWholePath
+480/853 Test #480: DynamicUnlockingTest.AtFirstNodePathIndex0_ReleasesNothing_FootprintKeepsWholePath ..................   Passed    0.01 sec
+        Start 481: DynamicUnlockingTest.AtPathIndex1_ReleasesOnlyDepartedNode0_KeepsTraversedEdgeABLocked
+481/853 Test #481: DynamicUnlockingTest.AtPathIndex1_ReleasesOnlyDepartedNode0_KeepsTraversedEdgeABLocked ..............   Passed    0.00 sec
+        Start 482: DynamicUnlockingTest.AtPathIndex2_ReleasesNode0EdgeABNode1_KeepsEdgeBCLocked
+482/853 Test #482: DynamicUnlockingTest.AtPathIndex2_ReleasesNode0EdgeABNode1_KeepsEdgeBCLocked ........................   Passed    0.00 sec
+        Start 483: DynamicUnlockingTest.AtTerminalPathIndex3_ReleasesThroughNode2_KeepsTerminalNodeAndEdgeCD
+483/853 Test #483: DynamicUnlockingTest.AtTerminalPathIndex3_ReleasesThroughNode2_KeepsTerminalNodeAndEdgeCD ...........   Passed    0.00 sec
+        Start 484: DynamicUnlockingTest.UnknownLastNodeId_ReleasesNothingAndCarriesGuidance
+484/853 Test #484: DynamicUnlockingTest.UnknownLastNodeId_ReleasesNothingAndCarriesGuidance ............................   Passed    0.00 sec
+        Start 485: DynamicUnlockingTest.SequenceIdMismatchWithOrder_ReleasesNothingAndCarriesGuidance
+485/853 Test #485: DynamicUnlockingTest.SequenceIdMismatchWithOrder_ReleasesNothingAndCarriesGuidance ..................   Passed    0.00 sec
+        Start 486: DynamicUnlockingTest.EmptyLastNodeId_ReleasesNothing
+486/853 Test #486: DynamicUnlockingTest.EmptyLastNodeId_ReleasesNothing ................................................   Passed    0.00 sec
+        Start 487: DynamicUnlockingTest.ForeignOwnedTrailingLocks_NeverReturnedForRelease
+487/853 Test #487: DynamicUnlockingTest.ForeignOwnedTrailingLocks_NeverReturnedForRelease ..............................   Passed    0.00 sec
+        Start 488: DynamicUnlockingTest.SingleNodePath_ReleasesNothing
+488/853 Test #488: DynamicUnlockingTest.SingleNodePath_ReleasesNothing .................................................   Passed    0.00 sec
+        Start 489: DynamicUnlockingTest.HeldLocksMissingFromSnapshot_DoesNotAffectOwnedReleaseSet
+489/853 Test #489: DynamicUnlockingTest.HeldLocksMissingFromSnapshot_DoesNotAffectOwnedReleaseSet ......................   Passed    0.00 sec
+        Start 490: DynamicUnlockingTest.Idempotency_RecomputeAfterPartialRelease_YieldsNothingLeft
+490/853 Test #490: DynamicUnlockingTest.Idempotency_RecomputeAfterPartialRelease_YieldsNothingLeft .....................   Passed    0.00 sec
+        Start 491: DynamicUnlockingTest.ReleaseResources_SkipsIdsOwnedByOtherMissions
+491/853 Test #491: DynamicUnlockingTest.ReleaseResources_SkipsIdsOwnedByOtherMissions ..................................   Passed    0.00 sec
+        Start 492: DynamicUnlockingTest.LinkGuard_OfflineVehicle_RetainsAllLocksBlocksDispatchAndWarns
+492/853 Test #492: DynamicUnlockingTest.LinkGuard_OfflineVehicle_RetainsAllLocksBlocksDispatchAndWarns .................   Passed    0.00 sec
+        Start 493: DynamicUnlockingTest.LinkGuard_StaleStateWhileOnline_RetainsLocksWarnsWithoutRelease
+493/853 Test #493: DynamicUnlockingTest.LinkGuard_StaleStateWhileOnline_RetainsLocksWarnsWithoutRelease ................   Passed    0.00 sec
+        Start 494: DynamicUnlockingTest.LinkGuard_OnlineFresh_RetainsLocksByDefault_AllowsDispatch
+494/853 Test #494: DynamicUnlockingTest.LinkGuard_OnlineFresh_RetainsLocksByDefault_AllowsDispatch .....................   Passed    0.00 sec
+        Start 495: TimeSpacePlanningTest.ReleaseTimeSpaceResources_ReleasesOnlyOwnEntries
+495/853 Test #495: TimeSpacePlanningTest.ReleaseTimeSpaceResources_ReleasesOnlyOwnEntries ..............................   Passed    0.01 sec
+        Start 496: TimeSpacePlanningTest.ReleaseTimeSpaceResources_UnknownResource_IsIdempotentNoOp
+496/853 Test #496: TimeSpacePlanningTest.ReleaseTimeSpaceResources_UnknownResource_IsIdempotentNoOp ....................   Passed    0.00 sec
+        Start 497: TimeSpacePlanningTest.ReleaseTimeSpaceResources_NullOccupancy_IsSafe
+497/853 Test #497: TimeSpacePlanningTest.ReleaseTimeSpaceResources_NullOccupancy_IsSafe ................................   Passed    0.00 sec
+        Start 498: TimeSpacePlanningTest.PathWithOneNode_IsRejected
+498/853 Test #498: TimeSpacePlanningTest.PathWithOneNode_IsRejected ....................................................   Passed    0.00 sec
+        Start 499: TimeSpacePlanningTest.SegmentLengthMismatch_IsRejected
+499/853 Test #499: TimeSpacePlanningTest.SegmentLengthMismatch_IsRejected ..............................................   Passed    0.00 sec
+        Start 500: TimeSpacePlanningTest.MissingIdBuilders_IsRejected
+500/853 Test #500: TimeSpacePlanningTest.MissingIdBuilders_IsRejected ..................................................   Passed    0.00 sec
+        Start 501: TimeSpacePlanningTest.EmptyOccupancy_IsFeasible_AndCoversEdgesAndIntersections
+501/853 Test #501: TimeSpacePlanningTest.EmptyOccupancy_IsFeasible_AndCoversEdgesAndIntersections ......................   Passed    0.00 sec
+        Start 502: TimeSpacePlanningTest.OccupancyDuration_IncludesOverheadAndSafetyMargin
+502/853 Test #502: TimeSpacePlanningTest.OccupancyDuration_IncludesOverheadAndSafetyMargin .............................   Passed    0.00 sec
+        Start 503: TimeSpacePlanningTest.OverlappingReservation_IsShiftedToFeasibleWindow
+503/853 Test #503: TimeSpacePlanningTest.OverlappingReservation_IsShiftedToFeasibleWindow ..............................   Passed    0.00 sec
+        Start 504: TimeSpacePlanningTest.HeadwayViolation_IsDetectedAndShifted
+504/853 Test #504: TimeSpacePlanningTest.HeadwayViolation_IsDetectedAndShifted .........................................   Passed    0.00 sec
+        Start 505: TimeSpacePlanningTest.DisjointResource_IsNotBlocked
+505/853 Test #505: TimeSpacePlanningTest.DisjointResource_IsNotBlocked .................................................   Passed    0.00 sec
+        Start 506: TimeSpacePlanningTest.ExtendWindow_SucceedsWhenNoConflict
+506/853 Test #506: TimeSpacePlanningTest.ExtendWindow_SucceedsWhenNoConflict ...........................................   Passed    0.00 sec
+        Start 507: TimeSpacePlanningTest.ExtendWindow_FailsWhenItWouldConflictWithAnotherMission
+507/853 Test #507: TimeSpacePlanningTest.ExtendWindow_FailsWhenItWouldConflictWithAnotherMission .......................   Passed    0.00 sec
+        Start 508: TimeSpacePlanningTest.CommitIsSeparateFromPlan_AllOrNothingByCallerContract
+508/853 Test #508: TimeSpacePlanningTest.CommitIsSeparateFromPlan_AllOrNothingByCallerContract .........................   Passed    0.00 sec
+        Start 509: TimeSpacePlanningTest.ZeroLengthSegment_StillOccupiesOverheadTime
+509/853 Test #509: TimeSpacePlanningTest.ZeroLengthSegment_StillOccupiesOverheadTime ...................................   Passed    0.00 sec
+        Start 510: TimeSpacePlanningTest.ZeroOverheadConfig_ProducesZeroDurationWindow_AndNeverConflicts
+510/853 Test #510: TimeSpacePlanningTest.ZeroOverheadConfig_ProducesZeroDurationWindow_AndNeverConflicts ...............   Passed    0.00 sec
+        Start 511: TimeSpacePlanningTest.ZeroLengthSegment_ConflictsWithOverlappingOccupant
+511/853 Test #511: TimeSpacePlanningTest.ZeroLengthSegment_ConflictsWithOverlappingOccupant ............................   Passed    0.00 sec
+        Start 512: WorkflowControlTest.PlanWorkflowCancel_RemovesQueuedAndRequestsActiveCancel
+512/853 Test #512: WorkflowControlTest.PlanWorkflowCancel_RemovesQueuedAndRequestsActiveCancel .........................   Passed    0.01 sec
+        Start 513: WorkflowControlTest.PlanWorkflowCancel_NoMatches_ReturnsStableFailure
+513/853 Test #513: WorkflowControlTest.PlanWorkflowCancel_NoMatches_ReturnsStableFailure ...............................   Passed    0.00 sec
+        Start 514: WorkflowControlTest.PlanWorkflowPause_QueuesOrderAndActivePause
+514/853 Test #514: WorkflowControlTest.PlanWorkflowPause_QueuesOrderAndActivePause .....................................   Passed    0.00 sec
+        Start 515: WorkflowControlTest.PlanWorkflowResume_RemovesPausedOrderAndStartsIdleQueue
+515/853 Test #515: WorkflowControlTest.PlanWorkflowResume_RemovesPausedOrderAndStartsIdleQueue .........................   Passed    0.00 sec
+        Start 516: WorkflowControlTest.PlanWorkflowResume_ActivePausedWorkflowRequestsResume
+516/853 Test #516: WorkflowControlTest.PlanWorkflowResume_ActivePausedWorkflowRequestsResume ...........................   Passed    0.00 sec
+        Start 517: WorkflowControlTest.BuildWorkflowStatusSnapshot_ReportsPausedBeforeRunning
+517/853 Test #517: WorkflowControlTest.BuildWorkflowStatusSnapshot_ReportsPausedBeforeRunning ..........................   Passed    0.00 sec
+        Start 518: WorkflowControlTest.BuildWorkflowStatusSnapshot_AllFinishedReportsFinished
+518/853 Test #518: WorkflowControlTest.BuildWorkflowStatusSnapshot_AllFinishedReportsFinished ..........................   Passed    0.00 sec
+        Start 519: StationTransportWorkflowTest.PlanSubmitGate_DuplicateMissionRejects
+519/853 Test #519: StationTransportWorkflowTest.PlanSubmitGate_DuplicateMissionRejects .................................   Passed    0.01 sec
+        Start 520: StationTransportWorkflowTest.PlanSubmitGate_MissingCatalogRejects
+520/853 Test #520: StationTransportWorkflowTest.PlanSubmitGate_MissingCatalogRejects ...................................   Passed    0.00 sec
+        Start 521: StationTransportWorkflowTest.PlanSubmitGate_PreflightRejects
+521/853 Test #521: StationTransportWorkflowTest.PlanSubmitGate_PreflightRejects ........................................   Passed    0.00 sec
+        Start 522: StationTransportWorkflowTest.PlanSubmitGate_MissingRouteRejects
+522/853 Test #522: StationTransportWorkflowTest.PlanSubmitGate_MissingRouteRejects .....................................   Passed    0.00 sec
+        Start 523: StationTransportWorkflowTest.PlanSubmitGate_AcceptedBuildsRouteLockIds
+523/853 Test #523: StationTransportWorkflowTest.PlanSubmitGate_AcceptedBuildsRouteLockIds ..............................   Passed    0.00 sec
+        Start 524: StationSequenceWorkflowTest.CheckStationSequenceConflicts_KnownMission_RejectsLeg
+524/853 Test #524: StationSequenceWorkflowTest.CheckStationSequenceConflicts_KnownMission_RejectsLeg ...................   Passed    0.01 sec
+        Start 525: StationSequenceWorkflowTest.CheckStationSequenceConflicts_NoConflict_AcceptsSequence
+525/853 Test #525: StationSequenceWorkflowTest.CheckStationSequenceConflicts_NoConflict_AcceptsSequence ................   Passed    0.00 sec
+        Start 526: StationSequenceWorkflowTest.CheckStationSequenceLegPreflight_RejectedLeg_AddsContext
+526/853 Test #526: StationSequenceWorkflowTest.CheckStationSequenceLegPreflight_RejectedLeg_AddsContext ................   Passed    0.00 sec
+        Start 527: StationSequenceWorkflowTest.StationSequenceMissionIds_MultipleLegs_ReturnsIdsInOrder
+527/853 Test #527: StationSequenceWorkflowTest.StationSequenceMissionIds_MultipleLegs_ReturnsIdsInOrder ................   Passed    0.00 sec
+        Start 528: StationSequenceWorkflowTest.BuildStationSequenceQueuedMissions_PreservesPriorityAndSequence
+528/853 Test #528: StationSequenceWorkflowTest.BuildStationSequenceQueuedMissions_PreservesPriorityAndSequence .........   Passed    0.00 sec
+        Start 529: StationSequenceWorkflowTest.BuildStationSequenceQueuedMessage_AnyCount_FormatsSummary
+529/853 Test #529: StationSequenceWorkflowTest.BuildStationSequenceQueuedMessage_AnyCount_FormatsSummary ...............   Passed    0.00 sec
+        Start 530: DockingWorkflowTest.CompleteDockingSubflow_MappedMission_SetsChargingAndResourceStatus
+530/853 Test #530: DockingWorkflowTest.CompleteDockingSubflow_MappedMission_SetsChargingAndResourceStatus ..............   Passed    0.01 sec
+        Start 531: DockingWorkflowTest.CompleteDockingSubflow_UnknownMission_DoesNotMutateState
+531/853 Test #531: DockingWorkflowTest.CompleteDockingSubflow_UnknownMission_DoesNotMutateState ........................   Passed    0.00 sec
+        Start 532: DockingWorkflowTest.StageDockingContactRetry_FirstSimulatedFailure_StagesRetry
+532/853 Test #532: DockingWorkflowTest.StageDockingContactRetry_FirstSimulatedFailure_StagesRetry ......................   Passed    0.00 sec
+        Start 533: DockingWorkflowTest.StageDockingContactRetry_AlreadyRetried_DoesNotStageAgain
+533/853 Test #533: DockingWorkflowTest.StageDockingContactRetry_AlreadyRetried_DoesNotStageAgain .......................   Passed    0.00 sec
+        Start 534: DockingWorkflowTest.MarkDockingSubflowTerminal_MappedMission_ErasesMissionMapping
+534/853 Test #534: DockingWorkflowTest.MarkDockingSubflowTerminal_MappedMission_ErasesMissionMapping ...................   Passed    0.00 sec
+        Start 535: DockingWorkflowTest.MarkDockingSubflowTerminal_FailedMission_IsNotRecoverable
+535/853 Test #535: DockingWorkflowTest.MarkDockingSubflowTerminal_FailedMission_IsNotRecoverable .......................   Passed    0.00 sec
+        Start 536: DockingWorkflowTest.PlanDockReturn_LoadFailed_SetsErrorResponse
+536/853 Test #536: DockingWorkflowTest.PlanDockReturn_LoadFailed_SetsErrorResponse .....................................   Passed    0.00 sec
+        Start 537: DockingWorkflowTest.PlanDockReturn_AlreadyRequested_OnlyReportsSuccess
+537/853 Test #537: DockingWorkflowTest.PlanDockReturn_AlreadyRequested_OnlyReportsSuccess ..............................   Passed    0.00 sec
+        Start 538: DockingWorkflowTest.PlanDockReturn_ActiveMission_QueuesDockAndCancelsActive
+538/853 Test #538: DockingWorkflowTest.PlanDockReturn_ActiveMission_QueuesDockAndCancelsActive .........................   Passed    0.00 sec
+        Start 539: DockingWorkflowTest.PlanDockReturn_IdleMission_DispatchesImmediately
+539/853 Test #539: DockingWorkflowTest.PlanDockReturn_IdleMission_DispatchesImmediately ................................   Passed    0.00 sec
+        Start 540: DockingWorkflowTest.PlanDockingRequestGate_DisabledDockRejectsWithState
+540/853 Test #540: DockingWorkflowTest.PlanDockingRequestGate_DisabledDockRejectsWithState .............................   Passed    0.00 sec
+        Start 541: DockingWorkflowTest.PlanDockingRequestGate_UnavailableDockRejectsWithState
+541/853 Test #541: DockingWorkflowTest.PlanDockingRequestGate_UnavailableDockRejectsWithState ..........................   Passed    0.00 sec
+        Start 542: DockingWorkflowTest.PlanDockingRequestGate_InvalidReferencesUseReferenceMessage
+542/853 Test #542: DockingWorkflowTest.PlanDockingRequestGate_InvalidReferencesUseReferenceMessage .....................   Passed    0.00 sec
+        Start 543: DockingWorkflowTest.PlanDockingRequestGate_DuplicateMissionRejectsBeforePreflight
+543/853 Test #543: DockingWorkflowTest.PlanDockingRequestGate_DuplicateMissionRejectsBeforePreflight ...................   Passed    0.00 sec
+        Start 544: DockingWorkflowTest.PlanDockingRequestGate_PreflightRejectsWithRejectedState
+544/853 Test #544: DockingWorkflowTest.PlanDockingRequestGate_PreflightRejectsWithRejectedState ........................   Passed    0.00 sec
+        Start 545: DockingWorkflowTest.PlanDockingRequestGate_AcceptsApproach
+545/853 Test #545: DockingWorkflowTest.PlanDockingRequestGate_AcceptsApproach ..........................................   Passed    0.00 sec
+        Start 546: DockingWorkflowTest.PlanUndocking_NoRequestId_UsesCurrentDockMission
+546/853 Test #546: DockingWorkflowTest.PlanUndocking_NoRequestId_UsesCurrentDockMission ................................   Passed    0.00 sec
+        Start 547: DockingWorkflowTest.ApplyUndockingDecision_ReleasesOnlyMatchingMissionResource
+547/853 Test #547: DockingWorkflowTest.ApplyUndockingDecision_ReleasesOnlyMatchingMissionResource ......................   Passed    0.00 sec
+        Start 548: DockingWorkflowTest.ApplyUndockingDecision_RequestIdOverride_ReleasesCurrentDockHolder
+548/853 Test #548: DockingWorkflowTest.ApplyUndockingDecision_RequestIdOverride_ReleasesCurrentDockHolder ..............   Passed    0.00 sec
+        Start 549: MissionChargingWorkflowTest.PlanOpportunityCharging_NoBattery_RejectsRequest
+549/853 Test #549: MissionChargingWorkflowTest.PlanOpportunityCharging_NoBattery_RejectsRequest ........................   Passed    0.01 sec
+        Start 550: MissionChargingWorkflowTest.PlanOpportunityCharging_AboveThreshold_SkipsWithoutQueueing
+550/853 Test #550: MissionChargingWorkflowTest.PlanOpportunityCharging_AboveThreshold_SkipsWithoutQueueing .............   Passed    0.00 sec
+        Start 551: MissionChargingWorkflowTest.PlanOpportunityCharging_BusyNonCriticalWithIdleRequired_Skips
+551/853 Test #551: MissionChargingWorkflowTest.PlanOpportunityCharging_BusyNonCriticalWithIdleRequired_Skips ...........   Passed    0.00 sec
+        Start 552: MissionChargingWorkflowTest.PlanOpportunityCharging_CriticalBusyMission_QueuesAndPreempts
+552/853 Test #552: MissionChargingWorkflowTest.PlanOpportunityCharging_CriticalBusyMission_QueuesAndPreempts ...........   Passed    0.00 sec
+        Start 553: MissionChargingWorkflowTest.PlanOpportunityCharging_RequestedPriorityAndPreempt_ArePreserved
+553/853 Test #553: MissionChargingWorkflowTest.PlanOpportunityCharging_RequestedPriorityAndPreempt_ArePreserved ........   Passed    0.00 sec
+        Start 554: MissionChargingWorkflowTest.PlanLowBatteryDock_Disabled_PreservesPreviousRequestFlag
+554/853 Test #554: MissionChargingWorkflowTest.PlanLowBatteryDock_Disabled_PreservesPreviousRequestFlag ................   Passed    0.00 sec
+        Start 555: MissionChargingWorkflowTest.PlanLowBatteryDock_AboveThreshold_ResetsRequestFlag
+555/853 Test #555: MissionChargingWorkflowTest.PlanLowBatteryDock_AboveThreshold_ResetsRequestFlag .....................   Passed    0.00 sec
+        Start 556: MissionChargingWorkflowTest.PlanLowBatteryDock_BelowThreshold_RequestsDockOnce
+556/853 Test #556: MissionChargingWorkflowTest.PlanLowBatteryDock_BelowThreshold_RequestsDockOnce ......................   Passed    0.00 sec
+        Start 557: MissionChargingWorkflowTest.PlanLowBatteryDock_AlreadyRequested_DoesNotRepeat
+557/853 Test #557: MissionChargingWorkflowTest.PlanLowBatteryDock_AlreadyRequested_DoesNotRepeat .......................   Passed    0.00 sec
+        Start 558: MissionChargingWorkflowTest.PlanChargingRequestGate_MissingCatalogRejects
+558/853 Test #558: MissionChargingWorkflowTest.PlanChargingRequestGate_MissingCatalogRejects ...........................   Passed    0.00 sec
+        Start 559: MissionChargingWorkflowTest.PlanChargingRequestGate_MissingChargerStationRejects
+559/853 Test #559: MissionChargingWorkflowTest.PlanChargingRequestGate_MissingChargerStationRejects ....................   Passed    0.00 sec
+        Start 560: MissionChargingWorkflowTest.PlanChargingRequestGate_DuplicateRejects
+560/853 Test #560: MissionChargingWorkflowTest.PlanChargingRequestGate_DuplicateRejects ................................   Passed    0.00 sec
+        Start 561: MissionChargingWorkflowTest.PlanChargingRequestGate_PreflightRejects
+561/853 Test #561: MissionChargingWorkflowTest.PlanChargingRequestGate_PreflightRejects ................................   Passed    0.00 sec
+        Start 562: MissionChargingWorkflowTest.PlanChargingRequestGate_ValidRequestAccepted
+562/853 Test #562: MissionChargingWorkflowTest.PlanChargingRequestGate_ValidRequestAccepted ............................   Passed    0.00 sec
+        Start 563: MissionResourceCleanupTest.ReleaseMissionResources_ReleasesFacilityAndRouteLocks
+563/853 Test #563: MissionResourceCleanupTest.ReleaseMissionResources_ReleasesFacilityAndRouteLocks ....................   Passed    0.01 sec
+        Start 564: MissionResourceCleanupTest.ReleaseMissionResources_RouteOnlyStillReleasesRouteLocks
+564/853 Test #564: MissionResourceCleanupTest.ReleaseMissionResources_RouteOnlyStillReleasesRouteLocks .................   Passed    0.00 sec
+        Start 565: MissionResourceCleanupTest.ReleaseMissionResources_MissingMissionReportsNoRelease
+565/853 Test #565: MissionResourceCleanupTest.ReleaseMissionResources_MissingMissionReportsNoRelease ...................   Passed    0.00 sec
+        Start 566: OperatorSnapshotTest.BuildOperatorSnapshotProjection_CombinesRuntimeViews
+566/853 Test #566: OperatorSnapshotTest.BuildOperatorSnapshotProjection_CombinesRuntimeViews ...........................   Passed    0.01 sec
+        Start 567: DockCatalogTest.BuildDockStateProjection_UsesReservationWhenNoRuntimeState
+567/853 Test #567: DockCatalogTest.BuildDockStateProjection_UsesReservationWhenNoRuntimeState ..........................   Passed    0.01 sec
+        Start 568: DockCatalogTest.BuildDockStateProjection_RuntimeStateOverridesReservation
+568/853 Test #568: DockCatalogTest.BuildDockStateProjection_RuntimeStateOverridesReservation ...........................   Passed    0.00 sec
+        Start 569: DockCatalogTest.BuildDockListProjection_FiltersDisabledDocks
+569/853 Test #569: DockCatalogTest.BuildDockListProjection_FiltersDisabledDocks ........................................   Passed    0.00 sec
+        Start 570: StationCatalogTest.BuildStationListProjection_PreservesStationFields
+570/853 Test #570: StationCatalogTest.BuildStationListProjection_PreservesStationFields ................................   Passed    0.01 sec
+        Start 571: StationCatalogTest.BuildStationRouteListProjection_PreservesRouteFields
+571/853 Test #571: StationCatalogTest.BuildStationRouteListProjection_PreservesRouteFields .............................   Passed    0.00 sec
+        Start 572: StationCatalogReloaderTest.LoadsInitialCatalog
+572/853 Test #572: StationCatalogReloaderTest.LoadsInitialCatalog ......................................................   Passed    0.00 sec
+        Start 573: StationCatalogReloaderTest.ReloadsOnMtimeChangeAndKeepsOldOnInvalid
+573/853 Test #573: StationCatalogReloaderTest.ReloadsOnMtimeChangeAndKeepsOldOnInvalid .................................   Passed    0.04 sec
+        Start 574: StationCatalogReloaderTest.LoadsCatalogWhenFileAppearsLate
+574/853 Test #574: StationCatalogReloaderTest.LoadsCatalogWhenFileAppearsLate ..........................................   Passed    0.00 sec
+        Start 575: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesVersionRoadNodesAndPolyline
+575/853 Test #575: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesVersionRoadNodesAndPolyline ...................   Passed    0.00 sec
+        Start 576: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsCrossSetDuplicateIds
+576/853 Test #576: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsCrossSetDuplicateIds .........................   Passed    0.00 sec
+        Start 577: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesEdgeFieldsAfterPolylineBlock
+577/853 Test #577: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesEdgeFieldsAfterPolylineBlock ..................   Passed    0.00 sec
+        Start 578: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsBrokenFlowPolylinePoint
+578/853 Test #578: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsBrokenFlowPolylinePoint ......................   Passed    0.00 sec
+        Start 579: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsNestedBlockSequencePolyline
+579/853 Test #579: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsNestedBlockSequencePolyline ..................   Passed    0.00 sec
+        Start 580: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsIncompleteMapPolylinePoint
+580/853 Test #580: StationCatalogMixedGraphTest.LoadStationCatalog_RejectsIncompleteMapPolylinePoint ...................   Passed    0.00 sec
+        Start 581: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesStationType
+581/853 Test #581: StationCatalogMixedGraphTest.LoadStationCatalog_ParsesStationType ...................................   Passed    0.00 sec
+        Start 582: StationCatalogMixedGraphTest.FindRoutePath_SpansStationsAndRoadNodes
+582/853 Test #582: StationCatalogMixedGraphTest.FindRoutePath_SpansStationsAndRoadNodes ................................   Passed    0.00 sec
+        Start 583: StationCatalogMixedGraphTest.ValidateStationCatalog_AcceptsRoadNodeEndpoints
+583/853 Test #583: StationCatalogMixedGraphTest.ValidateStationCatalog_AcceptsRoadNodeEndpoints ........................   Passed    0.00 sec
+        Start 584: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsDuplicateIdsAcrossSets
+584/853 Test #584: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsDuplicateIdsAcrossSets ...................   Passed    0.00 sec
+        Start 585: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsNonFinitePolylinePoint
+585/853 Test #585: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsNonFinitePolylinePoint ...................   Passed    0.00 sec
+        Start 586: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsNonFiniteRoadNodePose
+586/853 Test #586: StationCatalogMixedGraphTest.ValidateStationCatalog_RejectsNonFiniteRoadNodePose ....................   Passed    0.00 sec
+        Start 587: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_ValidBuildsStepPlans
+587/853 Test #587: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_ValidBuildsStepPlans .................................   Passed    0.01 sec
+        Start 588: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_DefaultOrderAndPriority
+588/853 Test #588: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_DefaultOrderAndPriority ..............................   Passed    0.00 sec
+        Start 589: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_MissingCatalogRejects
+589/853 Test #589: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_MissingCatalogRejects ................................   Passed    0.00 sec
+        Start 590: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_UnknownWorkflowRejects
+590/853 Test #590: ScenarioCatalogTest.PlanScenarioWorkflowSubmit_UnknownWorkflowRejects ...............................   Passed    0.01 sec
+        Start 591: ScenarioCatalogTest.PlanScenarioTaskSubmit_FleetStationTaskBuildsDispatchFields
+591/853 Test #591: ScenarioCatalogTest.PlanScenarioTaskSubmit_FleetStationTaskBuildsDispatchFields .....................   Passed    0.00 sec
+        Start 592: ScenarioCatalogTest.PlanScenarioTaskSubmit_FacilityTaskBuildsDispatchFields
+592/853 Test #592: ScenarioCatalogTest.PlanScenarioTaskSubmit_FacilityTaskBuildsDispatchFields .........................   Passed    0.00 sec
+        Start 593: ScenarioCatalogTest.PlanScenarioTaskSubmit_StationSequenceTaskBuildsDispatchFields
+593/853 Test #593: ScenarioCatalogTest.PlanScenarioTaskSubmit_StationSequenceTaskBuildsDispatchFields ..................   Passed    0.00 sec
+        Start 594: ScenarioCatalogTest.PlanScenarioTaskSubmit_MissingCatalogRejects
+594/853 Test #594: ScenarioCatalogTest.PlanScenarioTaskSubmit_MissingCatalogRejects ....................................   Passed    0.00 sec
+        Start 595: ScenarioCatalogTest.PlanScenarioTaskSubmit_UnknownTaskRejects
+595/853 Test #595: ScenarioCatalogTest.PlanScenarioTaskSubmit_UnknownTaskRejects .......................................   Passed    0.00 sec
+        Start 596: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_ValidBuildsWorkflowRoute
+596/853 Test #596: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_ValidBuildsWorkflowRoute ...........................   Passed    0.01 sec
+        Start 597: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_EmptyInputRejectsBeforeCatalog
+597/853 Test #597: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_EmptyInputRejectsBeforeCatalog .....................   Passed    0.00 sec
+        Start 598: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_MissingCatalogRejectsWithLoadMessage
+598/853 Test #598: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_MissingCatalogRejectsWithLoadMessage ...............   Passed    0.00 sec
+        Start 599: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_UnsupportedTypeRejects
+599/853 Test #599: BusinessOrderCatalogTest.PlanBusinessOrderSubmit_UnsupportedTypeRejects .............................   Passed    0.00 sec
+        Start 600: ZoneCatalogTest.LoadMapZones_ValidZones_ReturnsSortedZones
+600/853 Test #600: ZoneCatalogTest.LoadMapZones_ValidZones_ReturnsSortedZones ..........................................   Passed    0.01 sec
+        Start 601: ZoneCatalogTest.ForMap_DisabledExcludedByDefault_ReturnsOnlyEnabledZones
+601/853 Test #601: ZoneCatalogTest.ForMap_DisabledExcludedByDefault_ReturnsOnlyEnabledZones ............................   Passed    0.00 sec
+        Start 602: ZoneCatalogTest.EvaluatePoint_InsideSpeedLimitZone_ReducesSpeed
+602/853 Test #602: ZoneCatalogTest.EvaluatePoint_InsideSpeedLimitZone_ReducesSpeed .....................................   Passed    0.00 sec
+        Start 603: ZoneCatalogTest.EvaluatePoint_InsideKeepoutZone_DisallowsPoint
+603/853 Test #603: ZoneCatalogTest.EvaluatePoint_InsideKeepoutZone_DisallowsPoint ......................................   Passed    0.00 sec
+        Start 604: ZoneCatalogTest.LoadMapZones_InvalidPolygon_Throws
+604/853 Test #604: ZoneCatalogTest.LoadMapZones_InvalidPolygon_Throws ..................................................   Passed    0.00 sec
+        Start 605: FleetCatalogTest.LoadFleetCatalog_ParsesBackendAndFields
+605/853 Test #605: FleetCatalogTest.LoadFleetCatalog_ParsesBackendAndFields ............................................   Passed    0.01 sec
+        Start 606: FleetCatalogTest.LoadFleetCatalog_MissingBackendDefaultsToLocalSim
+606/853 Test #606: FleetCatalogTest.LoadFleetCatalog_MissingBackendDefaultsToLocalSim ..................................   Passed    0.00 sec
+        Start 607: FleetCatalogTest.LoadFleetCatalog_UnknownBackendIsRejected
+607/853 Test #607: FleetCatalogTest.LoadFleetCatalog_UnknownBackendIsRejected ..........................................   Passed    0.00 sec
+        Start 608: FleetCatalogTest.LoadFleetCatalog_DuplicateIdIsRejected
+608/853 Test #608: FleetCatalogTest.LoadFleetCatalog_DuplicateIdIsRejected .............................................   Passed    0.00 sec
+        Start 609: FleetCatalogTest.LoadFleetCatalog_MissingFileReturnsNullopt
+609/853 Test #609: FleetCatalogTest.LoadFleetCatalog_MissingFileReturnsNullopt .........................................   Passed    0.00 sec
+        Start 610: FleetCatalogTest.ValidateFleetCatalog_RejectsInvalidBatteryAndPayload
+610/853 Test #610: FleetCatalogTest.ValidateFleetCatalog_RejectsInvalidBatteryAndPayload ...............................   Passed    0.00 sec
+        Start 611: FleetCatalogTest.ApproachCost_VehicleOnKnownStation_UsesRouteDistance
+611/853 Test #611: FleetCatalogTest.ApproachCost_VehicleOnKnownStation_UsesRouteDistance ...............................   Passed    0.00 sec
+        Start 612: FleetCatalogTest.ApproachCost_VehicleBetweenStations_AddsStraightLineShuttle
+612/853 Test #612: FleetCatalogTest.ApproachCost_VehicleBetweenStations_AddsStraightLineShuttle ........................   Passed    0.00 sec
+        Start 613: FleetCatalogTest.ApproachCost_UnknownTargetReturnsNullopt
+613/853 Test #613: FleetCatalogTest.ApproachCost_UnknownTargetReturnsNullopt ...........................................   Passed    0.00 sec
+        Start 614: FleetCatalogTest.ApproachCost_UnknownVehicleStationReturnsNullopt
+614/853 Test #614: FleetCatalogTest.ApproachCost_UnknownVehicleStationReturnsNullopt ...................................   Passed    0.00 sec
+        Start 615: FleetCatalogTest.ApproachCost_UnreachableTargetReturnsNullopt
+615/853 Test #615: FleetCatalogTest.ApproachCost_UnreachableTargetReturnsNullopt .......................................   Passed    0.00 sec
+        Start 616: FleetRuntimeStateTest.ApplyRuntimeFleetState_OverlaysRequestedFieldsOnly
+616/853 Test #616: FleetRuntimeStateTest.ApplyRuntimeFleetState_OverlaysRequestedFieldsOnly ............................   Passed    0.01 sec
+        Start 617: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_ValidUpdate_ReturnsEffectiveRobot
+617/853 Test #617: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_ValidUpdate_ReturnsEffectiveRobot .................   Passed    0.00 sec
+        Start 618: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_MergesWithExistingRuntimeState
+618/853 Test #618: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_MergesWithExistingRuntimeState ....................   Passed    0.00 sec
+        Start 619: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_UnknownRobotRejectsWithoutMutation
+619/853 Test #619: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_UnknownRobotRejectsWithoutMutation ................   Passed    0.00 sec
+        Start 620: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_EmptyStateRejectsWhenRequested
+620/853 Test #620: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_EmptyStateRejectsWhenRequested ....................   Passed    0.00 sec
+        Start 621: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_InvalidBatteryRejects
+621/853 Test #621: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_InvalidBatteryRejects .............................   Passed    0.00 sec
+        Start 622: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_UnknownStationRejects
+622/853 Test #622: FleetRuntimeStateTest.PlanFleetRuntimeStateUpdate_UnknownStationRejects .............................   Passed    0.00 sec
+        Start 623: FleetRuntimeStateTest.BuildFleetRobotListProjection_FiltersAndFormatsCapabilities
+623/853 Test #623: FleetRuntimeStateTest.BuildFleetRobotListProjection_FiltersAndFormatsCapabilities ...................   Passed    0.00 sec
+        Start 624: FleetRuntimeStateTest.BuildFleetRobotListProjection_SkipsDisabledUnlessRequested
+624/853 Test #624: FleetRuntimeStateTest.BuildFleetRobotListProjection_SkipsDisabledUnlessRequested ....................   Passed    0.00 sec
+        Start 625: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_EmptyTaskOrStateRejects
+625/853 Test #625: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_EmptyTaskOrStateRejects ........................   Passed    0.00 sec
+        Start 626: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_UnknownTaskRejects
+626/853 Test #626: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_UnknownTaskRejects .............................   Passed    0.00 sec
+        Start 627: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_DefaultMessageUpdatesTaskAndEvent
+627/853 Test #627: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_DefaultMessageUpdatesTaskAndEvent ..............   Passed    0.00 sec
+        Start 628: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_ExplicitMessageIsPreserved
+628/853 Test #628: FleetRuntimeStateTest.PlanRemoteFleetTaskStateUpdate_ExplicitMessageIsPreserved .....................   Passed    0.00 sec
+        Start 629: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_LocalRobotUsesStationOrder
+629/853 Test #629: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_LocalRobotUsesStationOrder .......................   Passed    0.00 sec
+        Start 630: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_RemoteRobotCreatesTaskAndEvent
+630/853 Test #630: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_RemoteRobotCreatesTaskAndEvent ...................   Passed    0.00 sec
+        Start 631: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_DuplicateRemoteTaskRejects
+631/853 Test #631: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_DuplicateRemoteTaskRejects .......................   Passed    0.00 sec
+        Start 632: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_EmptyTaskOrRobotRejects
+632/853 Test #632: FleetRuntimeStateTest.PlanFleetStationTaskDispatch_EmptyTaskOrRobotRejects ..........................   Passed    0.00 sec
+        Start 633: VehicleAdapterInterfaceTest.DispatchOrder_UpdatesVehicleOrderIdAndStoresOrder
+633/853 Test #633: VehicleAdapterInterfaceTest.DispatchOrder_UpdatesVehicleOrderIdAndStoresOrder .......................   Passed    0.01 sec
+        Start 634: VehicleAdapterInterfaceTest.GetVehicleState_ReturnsInjectedReport
+634/853 Test #634: VehicleAdapterInterfaceTest.GetVehicleState_ReturnsInjectedReport ...................................   Passed    0.00 sec
+        Start 635: VehicleAdapterInterfaceTest.GetVehicleState_UnknownVehicle_ReturnsNullopt
+635/853 Test #635: VehicleAdapterInterfaceTest.GetVehicleState_UnknownVehicle_ReturnsNullopt ...........................   Passed    0.00 sec
+        Start 636: VehicleAdapterInterfaceTest.CancelOrder_ClearsVehicleOrderIdAndForgetsOrder
+636/853 Test #636: VehicleAdapterInterfaceTest.CancelOrder_ClearsVehicleOrderIdAndForgetsOrder .........................   Passed    0.00 sec
+        Start 637: VehicleAdapterInterfaceTest.CancelOrder_UnknownOrMismatchedOrder_ReturnsFalse
+637/853 Test #637: VehicleAdapterInterfaceTest.CancelOrder_UnknownOrMismatchedOrder_ReturnsFalse .......................   Passed    0.00 sec
+        Start 638: VehicleAdapterInterfaceTest.PauseAndResumeVehicle_UpdatesOperatingMode
+638/853 Test #638: VehicleAdapterInterfaceTest.PauseAndResumeVehicle_UpdatesOperatingMode ..............................   Passed    0.00 sec
+        Start 639: VehicleAdapterInterfaceTest.DispatchOrder_PreservesMultiNodePolylineOrderIntact
+639/853 Test #639: VehicleAdapterInterfaceTest.DispatchOrder_PreservesMultiNodePolylineOrderIntact .....................   Passed    0.00 sec
+        Start 640: VehicleAdapterInterfaceTest.DispatchOrder_UnknownVehicle_StillStoresOrder
+640/853 Test #640: VehicleAdapterInterfaceTest.DispatchOrder_UnknownVehicle_StillStoresOrder ...........................   Passed    0.00 sec
+        Start 641: Vda5050SerializerTest.SerializeOrder_V2_ContainsRequiredFields
+641/853 Test #641: Vda5050SerializerTest.SerializeOrder_V2_ContainsRequiredFields ......................................   Passed    0.01 sec
+        Start 642: Vda5050SerializerTest.HeaderId_MonotonicallyIncreases
+642/853 Test #642: Vda5050SerializerTest.HeaderId_MonotonicallyIncreases ...............................................   Passed    0.00 sec
+        Start 643: Vda5050SerializerTest.DeserializeState_DeeplyNestedJson_GracefullyFailsWithoutOverflow
+643/853 Test #643: Vda5050SerializerTest.DeserializeState_DeeplyNestedJson_GracefullyFailsWithoutOverflow ..............   Passed    0.00 sec
+        Start 644: Vda5050SerializerTest.SerializeOrder_V3_SetsVersion3
+644/853 Test #644: Vda5050SerializerTest.SerializeOrder_V3_SetsVersion3 ................................................   Passed    0.00 sec
+        Start 645: Vda5050SerializerTest.SerializeInstantActions_ContainsActions
+645/853 Test #645: Vda5050SerializerTest.SerializeInstantActions_ContainsActions .......................................   Passed    0.00 sec
+        Start 646: Vda5050SerializerTest.DeserializeState_ValidPayload_ParsesAllFields
+646/853 Test #646: Vda5050SerializerTest.DeserializeState_ValidPayload_ParsesAllFields .................................   Passed    0.00 sec
+        Start 647: Vda5050SerializerTest.DeserializeState_EstopActive_SetsEstop
+647/853 Test #647: Vda5050SerializerTest.DeserializeState_EstopActive_SetsEstop ........................................   Passed    0.00 sec
+        Start 648: Vda5050SerializerTest.DeserializeState_MalformedOrMissingFields_ReturnsNullopt
+648/853 Test #648: Vda5050SerializerTest.DeserializeState_MalformedOrMissingFields_ReturnsNullopt ......................   Passed    0.00 sec
+        Start 649: Vda5050SerializerTest.DeserializeConnection_ValidOnlineAndBroken
+649/853 Test #649: Vda5050SerializerTest.DeserializeConnection_ValidOnlineAndBroken ....................................   Passed    0.00 sec
+        Start 650: Vda5050SerializerTest.DeserializeConnection_MissingOrInvalid_ReturnsNullopt
+650/853 Test #650: Vda5050SerializerTest.DeserializeConnection_MissingOrInvalid_ReturnsNullopt .........................   Passed    0.00 sec
+        Start 651: Vda5050OrderBuilderTest.FullLockedPath_MarksAllReleasedAndAttachesTerminalAction
+651/853 Test #651: Vda5050OrderBuilderTest.FullLockedPath_MarksAllReleasedAndAttachesTerminalAction ....................   Passed    0.01 sec
+        Start 652: Vda5050OrderBuilderTest.PartialLock_MarksBaseThenHorizonSegment
+652/853 Test #652: Vda5050OrderBuilderTest.PartialLock_MarksBaseThenHorizonSegment .....................................   Passed    0.00 sec
+        Start 653: Vda5050OrderBuilderTest.CurvedPolyline_PreservedInOrderAndReversedWhenTraversingBackward
+653/853 Test #653: Vda5050OrderBuilderTest.CurvedPolyline_PreservedInOrderAndReversedWhenTraversingBackward ............   Passed    0.00 sec
+        Start 654: Vda5050OrderBuilderTest.MissingCatalogEdge_FallsBackToStraightLine
+654/853 Test #654: Vda5050OrderBuilderTest.MissingCatalogEdge_FallsBackToStraightLine ..................................   Passed    0.00 sec
+        Start 655: Vda5050OrderBuilderTest.SinglePointPolyline_TreatedAsMissing_FallsBackToStraightLine
+655/853 Test #655: Vda5050OrderBuilderTest.SinglePointPolyline_TreatedAsMissing_FallsBackToStraightLine ................   Passed    0.00 sec
+        Start 656: Vda5050OrderBuilderTest.CustomConfig_OverridesDefaultMaxSpeed
+656/853 Test #656: Vda5050OrderBuilderTest.CustomConfig_OverridesDefaultMaxSpeed .......................................   Passed    0.00 sec
+        Start 657: Vda5050OrderBuilderTest.InvalidInput_EmptyPathOrUnknownNode_ReturnsNullopt
+657/853 Test #657: Vda5050OrderBuilderTest.InvalidInput_EmptyPathOrUnknownNode_ReturnsNullopt ..........................   Passed    0.00 sec
+        Start 658: ForceClearLinkTest.EmptyVehicleId_IsRejected
+658/853 Test #658: ForceClearLinkTest.EmptyVehicleId_IsRejected ........................................................   Passed    0.01 sec
+        Start 659: ForceClearLinkTest.ConfirmVehicleIdMismatch_IsRejected
+659/853 Test #659: ForceClearLinkTest.ConfirmVehicleIdMismatch_IsRejected ..............................................   Passed    0.00 sec
+        Start 660: ForceClearLinkTest.MissingOperatorId_IsRejected
+660/853 Test #660: ForceClearLinkTest.MissingOperatorId_IsRejected .....................................................   Passed    0.00 sec
+        Start 661: ForceClearLinkTest.MissingReason_IsRejected
+661/853 Test #661: ForceClearLinkTest.MissingReason_IsRejected .........................................................   Passed    0.00 sec
+        Start 662: ForceClearLinkTest.VehicleNotInManagedList_IsRejected
+662/853 Test #662: ForceClearLinkTest.VehicleNotInManagedList_IsRejected ...............................................   Passed    0.00 sec
+        Start 663: ForceClearLinkTest.OnlineVehicle_IsRejected_ToAvoidKillingLiveLink
+663/853 Test #663: ForceClearLinkTest.OnlineVehicle_IsRejected_ToAvoidKillingLiveLink ..................................   Passed    0.00 sec
+        Start 664: ForceClearLinkTest.AlreadyQuarantined_IsRejected
+664/853 Test #664: ForceClearLinkTest.AlreadyQuarantined_IsRejected ....................................................   Passed    0.00 sec
+        Start 665: ForceClearLinkTest.OfflineVehicle_CollectsOwnLocksAndMissions
+665/853 Test #665: ForceClearLinkTest.OfflineVehicle_CollectsOwnLocksAndMissions .......................................   Passed    0.00 sec
+        Start 666: ForceClearLinkTest.UnboundOwnerLocks_AreNeverClaimed
+666/853 Test #666: ForceClearLinkTest.UnboundOwnerLocks_AreNeverClaimed ................................................   Passed    0.00 sec
+        Start 667: ForceClearLinkTest.NoBindings_AllowedButReleasesNothing
+667/853 Test #667: ForceClearLinkTest.NoBindings_AllowedButReleasesNothing .............................................   Passed    0.00 sec
+        Start 668: RestoreLinkTest.ValidRestore_IsAllowed
+668/853 Test #668: RestoreLinkTest.ValidRestore_IsAllowed ..............................................................   Passed    0.00 sec
+        Start 669: RestoreLinkTest.NotQuarantined_IsRejected
+669/853 Test #669: RestoreLinkTest.NotQuarantined_IsRejected ...........................................................   Passed    0.00 sec
+        Start 670: RestoreLinkTest.StillOffline_IsRejected
+670/853 Test #670: RestoreLinkTest.StillOffline_IsRejected .............................................................   Passed    0.00 sec
+        Start 671: RestoreLinkTest.PositionNotVerified_IsRejected
+671/853 Test #671: RestoreLinkTest.PositionNotVerified_IsRejected ......................................................   Passed    0.00 sec
+        Start 672: RestoreLinkTest.ConfirmIdMismatch_IsRejected
+672/853 Test #672: RestoreLinkTest.ConfirmIdMismatch_IsRejected ........................................................   Passed    0.00 sec
+        Start 673: VehicleAssignmentTest.ExplicitVehicle_Valid_Assigns
+673/853 Test #673: VehicleAssignmentTest.ExplicitVehicle_Valid_Assigns .................................................   Passed    0.01 sec
+        Start 674: VehicleAssignmentTest.ExplicitVehicle_Unknown_IsRejected_NotReassigned
+674/853 Test #674: VehicleAssignmentTest.ExplicitVehicle_Unknown_IsRejected_NotReassigned ..............................   Passed    0.00 sec
+        Start 675: VehicleAssignmentTest.ExplicitVehicle_Offline_IsDeferred_NotRejected
+675/853 Test #675: VehicleAssignmentTest.ExplicitVehicle_Offline_IsDeferred_NotRejected ................................   Passed    0.00 sec
+        Start 676: VehicleAssignmentTest.ExplicitVehicle_Disabled_IsRejected
+676/853 Test #676: VehicleAssignmentTest.ExplicitVehicle_Disabled_IsRejected ...........................................   Passed    0.00 sec
+        Start 677: VehicleAssignmentTest.ExplicitVehicle_Quarantined_IsDeferred_NotRejected
+677/853 Test #677: VehicleAssignmentTest.ExplicitVehicle_Quarantined_IsDeferred_NotRejected ............................   Passed    0.00 sec
+        Start 678: VehicleAssignmentTest.ExplicitVehicle_MissingCapability_IsRejected
+678/853 Test #678: VehicleAssignmentTest.ExplicitVehicle_MissingCapability_IsRejected ..................................   Passed    0.00 sec
+        Start 679: VehicleAssignmentTest.ExplicitVehicle_BelowBatteryThreshold_IsRejected
+679/853 Test #679: VehicleAssignmentTest.ExplicitVehicle_BelowBatteryThreshold_IsRejected ..............................   Passed    0.00 sec
+        Start 680: VehicleAssignmentTest.ExplicitVehicle_Busy_IsDeferred_NotRejected
+680/853 Test #680: VehicleAssignmentTest.ExplicitVehicle_Busy_IsDeferred_NotRejected ...................................   Passed    0.00 sec
+        Start 681: VehicleAssignmentTest.ExplicitVehicle_IgnoresPositionValidity
+681/853 Test #681: VehicleAssignmentTest.ExplicitVehicle_IgnoresPositionValidity .......................................   Passed    0.00 sec
+        Start 682: VehicleAssignmentTest.ExplicitVehicle_WinsOverNearerAutoCandidate
+682/853 Test #682: VehicleAssignmentTest.ExplicitVehicle_WinsOverNearerAutoCandidate ...................................   Passed    0.00 sec
+        Start 683: VehicleAssignmentTest.AutoSelect_NearestWins
+683/853 Test #683: VehicleAssignmentTest.AutoSelect_NearestWins ........................................................   Passed    0.00 sec
+        Start 684: VehicleAssignmentTest.AutoSelect_TieBreaksByInputOrder
+684/853 Test #684: VehicleAssignmentTest.AutoSelect_TieBreaksByInputOrder ..............................................   Passed    0.00 sec
+        Start 685: VehicleAssignmentTest.AutoSelect_NoDistanceForAnyCandidate_IsRejected_NotBlindDispatch
+685/853 Test #685: VehicleAssignmentTest.AutoSelect_NoDistanceForAnyCandidate_IsRejected_NotBlindDispatch ..............   Passed    0.00 sec
+        Start 686: VehicleAssignmentTest.AutoSelect_CandidateWithoutDistanceRanksAfterThoseWithDistance
+686/853 Test #686: VehicleAssignmentTest.AutoSelect_CandidateWithoutDistanceRanksAfterThoseWithDistance ................   Passed    0.00 sec
+        Start 687: VehicleAssignmentTest.AutoSelect_AllBusy_IsDeferred
+687/853 Test #687: VehicleAssignmentTest.AutoSelect_AllBusy_IsDeferred .................................................   Passed    0.00 sec
+        Start 688: VehicleAssignmentTest.AutoSelect_NeverSeenState_IsIndeterminate
+688/853 Test #688: VehicleAssignmentTest.AutoSelect_NeverSeenState_IsIndeterminate .....................................   Passed    0.00 sec
+        Start 689: VehicleAssignmentTest.AutoSelect_StaleState_IsDeferred
+689/853 Test #689: VehicleAssignmentTest.AutoSelect_StaleState_IsDeferred ..............................................   Passed    0.00 sec
+        Start 690: VehicleAssignmentTest.AutoSelect_InvalidPosition_IsDeferred
+690/853 Test #690: VehicleAssignmentTest.AutoSelect_InvalidPosition_IsDeferred .........................................   Passed    0.00 sec
+        Start 691: VehicleAssignmentTest.AutoSelect_OfflineAndDisabledAndQuarantinedExcluded
+691/853 Test #691: VehicleAssignmentTest.AutoSelect_OfflineAndDisabledAndQuarantinedExcluded ...........................   Passed    0.00 sec
+        Start 692: VehicleAssignmentTest.AutoSelect_CapabilityFilterExcludes
+692/853 Test #692: VehicleAssignmentTest.AutoSelect_CapabilityFilterExcludes ...........................................   Passed    0.00 sec
+        Start 693: VehicleAssignmentTest.AutoSelect_BatteryThresholdExcludes
+693/853 Test #693: VehicleAssignmentTest.AutoSelect_BatteryThresholdExcludes ...........................................   Passed    0.00 sec
+        Start 694: VehicleAssignmentTest.AutoSelect_NoEligible_RejectedWithReason
+694/853 Test #694: VehicleAssignmentTest.AutoSelect_NoEligible_RejectedWithReason ......................................   Passed    0.00 sec
+        Start 695: VehicleAssignmentTest.EmptyVehicleList_Rejected
+695/853 Test #695: VehicleAssignmentTest.EmptyVehicleList_Rejected .....................................................   Passed    0.00 sec
+        Start 696: VehicleAssignmentTest.AutoSelect_AllOffline_IsDeferred_NotRejected
+696/853 Test #696: VehicleAssignmentTest.AutoSelect_AllOffline_IsDeferred_NotRejected ..................................   Passed    0.00 sec
+        Start 697: VehicleAssignmentTest.AutoSelect_AllQuarantined_IsDeferred
+697/853 Test #697: VehicleAssignmentTest.AutoSelect_AllQuarantined_IsDeferred ..........................................   Passed    0.00 sec
+        Start 698: VehicleAssignmentTest.AutoSelect_DisabledOnly_IsRejected_Permanent
+698/853 Test #698: VehicleAssignmentTest.AutoSelect_DisabledOnly_IsRejected_Permanent ..................................   Passed    0.00 sec
+        Start 699: VehicleAssignmentTest.VehicleHasCapability_EmptyListMeansNoRestriction
+699/853 Test #699: VehicleAssignmentTest.VehicleHasCapability_EmptyListMeansNoRestriction ..............................   Passed    0.00 sec
+        Start 700: VehicleAssignmentTest.VehicleHasCapability_NonEmptyListMustContain
+700/853 Test #700: VehicleAssignmentTest.VehicleHasCapability_NonEmptyListMustContain ..................................   Passed    0.00 sec
+        Start 701: VehicleAssignmentTest.VehicleStateIsFresh_NeverSeenIsNotFresh
+701/853 Test #701: VehicleAssignmentTest.VehicleStateIsFresh_NeverSeenIsNotFresh .......................................   Passed    0.00 sec
+        Start 702: VehicleAssignmentTest.BackendLabelRoundTrip
+702/853 Test #702: VehicleAssignmentTest.BackendLabelRoundTrip .........................................................   Passed    0.00 sec
+        Start 703: VehicleAssignmentRequestBuilderTest.CopiesTaskFields
+703/853 Test #703: VehicleAssignmentRequestBuilderTest.CopiesTaskFields ................................................   Passed    0.01 sec
+        Start 704: VehicleAssignmentRequestBuilderTest.VehiclesAreSortedByIdRegardlessOfInputOrder
+704/853 Test #704: VehicleAssignmentRequestBuilderTest.VehiclesAreSortedByIdRegardlessOfInputOrder .....................   Passed    0.00 sec
+        Start 705: VehicleAssignmentRequestBuilderTest.StableOrderIsPermutationOfInput
+705/853 Test #705: VehicleAssignmentRequestBuilderTest.StableOrderIsPermutationOfInput .................................   Passed    0.00 sec
+        Start 706: VehicleAssignmentRequestBuilderTest.NoCatalogMeansNoDistanceEstimates
+706/853 Test #706: VehicleAssignmentRequestBuilderTest.NoCatalogMeansNoDistanceEstimates ...............................   Passed    0.00 sec
+        Start 707: VehicleAssignmentRequestBuilderTest.CatalogNotLoadedMeansNoDistanceEstimates
+707/853 Test #707: VehicleAssignmentRequestBuilderTest.CatalogNotLoadedMeansNoDistanceEstimates ........................   Passed    0.00 sec
+        Start 708: VehicleAssignmentRequestBuilderTest.EmptyPickupStationMeansNoDistanceEstimates
+708/853 Test #708: VehicleAssignmentRequestBuilderTest.EmptyPickupStationMeansNoDistanceEstimates ......................   Passed    0.00 sec
+        Start 709: VehicleAssignmentRequestBuilderTest.DistanceUsesRouteNetworkCost
+709/853 Test #709: VehicleAssignmentRequestBuilderTest.DistanceUsesRouteNetworkCost ....................................   Passed    0.00 sec
+        Start 710: VehicleAssignmentRequestBuilderTest.UnreachableVehicleHasNoDistanceEntry
+710/853 Test #710: VehicleAssignmentRequestBuilderTest.UnreachableVehicleHasNoDistanceEntry ............................   Passed    0.00 sec
+        Start 711: VehicleAssignmentRequestBuilderTest.EmptyFleetProducesEmptyRequest
+711/853 Test #711: VehicleAssignmentRequestBuilderTest.EmptyFleetProducesEmptyRequest ..................................   Passed    0.00 sec
+        Start 712: VehicleAssignmentRequestBuilderTest.PreservesDynamicStateFields
+712/853 Test #712: VehicleAssignmentRequestBuilderTest.PreservesDynamicStateFields .....................................   Passed    0.00 sec
+        Start 713: VehicleSelectionStrategyTest.ParseAndLabelRoundTrip
+713/853 Test #713: VehicleSelectionStrategyTest.ParseAndLabelRoundTrip .................................................   Passed    0.01 sec
+        Start 714: VehicleSelectionStrategyTest.UnknownLabelIsRejected
+714/853 Test #714: VehicleSelectionStrategyTest.UnknownLabelIsRejected .................................................   Passed    0.00 sec
+        Start 715: VehicleSelectionStrategyTest.NearestPicksLowestCost
+715/853 Test #715: VehicleSelectionStrategyTest.NearestPicksLowestCost .................................................   Passed    0.00 sec
+        Start 716: VehicleSelectionStrategyTest.NearestIgnoresBattery
+716/853 Test #716: VehicleSelectionStrategyTest.NearestIgnoresBattery ..................................................   Passed    0.00 sec
+        Start 717: VehicleSelectionStrategyTest.BatteryPreferredFlipsCloseRace
+717/853 Test #717: VehicleSelectionStrategyTest.BatteryPreferredFlipsCloseRace .........................................   Passed    0.00 sec
+        Start 718: VehicleSelectionStrategyTest.BatteryPreferredPenaltyIsBounded
+718/853 Test #718: VehicleSelectionStrategyTest.BatteryPreferredPenaltyIsBounded .......................................   Passed    0.00 sec
+        Start 719: VehicleSelectionStrategyTest.AboveReferenceBatteryGetsNoBonus
+719/853 Test #719: VehicleSelectionStrategyTest.AboveReferenceBatteryGetsNoBonus .......................................   Passed    0.00 sec
+        Start 720: VehicleSelectionStrategyTest.TiesBreakOnVehicleId
+720/853 Test #720: VehicleSelectionStrategyTest.TiesBreakOnVehicleId ...................................................   Passed    0.00 sec
+        Start 721: VehicleSelectionStrategyTest.MissingCostIsDropped
+721/853 Test #721: VehicleSelectionStrategyTest.MissingCostIsDropped ...................................................   Passed    0.00 sec
+        Start 722: VehicleSelectionStrategyTest.EmptyInputYieldsEmptyRanking
+722/853 Test #722: VehicleSelectionStrategyTest.EmptyInputYieldsEmptyRanking ...........................................   Passed    0.00 sec
+        Start 723: VehicleSelectionStrategyTest.AllCostsMissingYieldsEmptyRanking
+723/853 Test #723: VehicleSelectionStrategyTest.AllCostsMissingYieldsEmptyRanking ......................................   Passed    0.00 sec
+        Start 724: AutoChargingPlanningTest.DisabledByDefault
+724/853 Test #724: AutoChargingPlanningTest.DisabledByDefault ..........................................................   Passed    0.01 sec
+        Start 725: AutoChargingPlanningTest.HealthyBatteryDoesNotQueue
+725/853 Test #725: AutoChargingPlanningTest.HealthyBatteryDoesNotQueue .................................................   Passed    0.00 sec
+        Start 726: AutoChargingPlanningTest.LowBatteryQueuesOpportunityCharge
+726/853 Test #726: AutoChargingPlanningTest.LowBatteryQueuesOpportunityCharge ..........................................   Passed    0.00 sec
+        Start 727: AutoChargingPlanningTest.CriticalBatteryUsesHigherPriority
+727/853 Test #727: AutoChargingPlanningTest.CriticalBatteryUsesHigherPriority ..........................................   Passed    0.00 sec
+        Start 728: AutoChargingPlanningTest.ThresholdBoundariesAreInclusive
+728/853 Test #728: AutoChargingPlanningTest.ThresholdBoundariesAreInclusive ............................................   Passed    0.00 sec
+        Start 729: AutoChargingPlanningTest.ExistingChargeMissionIsNotDuplicated
+729/853 Test #729: AutoChargingPlanningTest.ExistingChargeMissionIsNotDuplicated .......................................   Passed    0.00 sec
+        Start 730: AutoChargingPlanningTest.DedupBeatsAvailabilityReason
+730/853 Test #730: AutoChargingPlanningTest.DedupBeatsAvailabilityReason ...............................................   Passed    0.00 sec
+        Start 731: AutoChargingPlanningTest.BusyVehicleIsSkipped
+731/853 Test #731: AutoChargingPlanningTest.BusyVehicleIsSkipped .......................................................   Passed    0.00 sec
+        Start 732: AutoChargingPlanningTest.OfflineAndQuarantinedVehiclesAreSkipped
+732/853 Test #732: AutoChargingPlanningTest.OfflineAndQuarantinedVehiclesAreSkipped ....................................   Passed    0.00 sec
+        Start 733: AutoChargingPlanningTest.UnknownBatteryIsNotTreatedAsEmpty
+733/853 Test #733: AutoChargingPlanningTest.UnknownBatteryIsNotTreatedAsEmpty ..........................................   Passed    0.00 sec
+        Start 734: AutoChargingPlanningTest.MissingChargerStationIsNotGuessed
+734/853 Test #734: AutoChargingPlanningTest.MissingChargerStationIsNotGuessed ..........................................   Passed    0.00 sec
+        Start 735: AutoChargingPlanningTest.CustomThresholdsAndPriorities
+735/853 Test #735: AutoChargingPlanningTest.CustomThresholdsAndPriorities ..............................................   Passed    0.00 sec
+        Start 736: AssignmentDispatchActionTest.AssignedDispatchesAndClearsReason
+736/853 Test #736: AssignmentDispatchActionTest.AssignedDispatchesAndClearsReason ......................................   Passed    0.01 sec
+        Start 737: AssignmentDispatchActionTest.DeferredStaysQueuedWithReason
+737/853 Test #737: AssignmentDispatchActionTest.DeferredStaysQueuedWithReason ..........................................   Passed    0.00 sec
+        Start 738: AssignmentDispatchActionTest.IndeterminatePausesAutoAssignment
+738/853 Test #738: AssignmentDispatchActionTest.IndeterminatePausesAutoAssignment ......................................   Passed    0.00 sec
+        Start 739: AssignmentDispatchActionTest.RejectedFailsWithReason
+739/853 Test #739: AssignmentDispatchActionTest.RejectedFailsWithReason ................................................   Passed    0.00 sec
+        Start 740: AssignmentDispatchActionTest.EveryOutcomeMapsToDistinctAction
+740/853 Test #740: AssignmentDispatchActionTest.EveryOutcomeMapsToDistinctAction .......................................   Passed    0.00 sec
+        Start 741: Vda5050VehicleBindingTest.ExplicitAssignmentWins
+741/853 Test #741: Vda5050VehicleBindingTest.ExplicitAssignmentWins ....................................................   Passed    0.01 sec
+        Start 742: Vda5050VehicleBindingTest.UnknownAssignmentFallsBackToRoundRobin
+742/853 Test #742: Vda5050VehicleBindingTest.UnknownAssignmentFallsBackToRoundRobin ....................................   Passed    0.00 sec
+        Start 743: Vda5050VehicleBindingTest.EmptyAssignmentRoundRobinsInOrder
+743/853 Test #743: Vda5050VehicleBindingTest.EmptyAssignmentRoundRobinsInOrder .........................................   Passed    0.00 sec
+        Start 744: Vda5050VehicleBindingTest.CursorBeyondListLengthWraps
+744/853 Test #744: Vda5050VehicleBindingTest.CursorBeyondListLengthWraps ...............................................   Passed    0.00 sec
+        Start 745: Vda5050VehicleBindingTest.SingleVehicleIsStable
+745/853 Test #745: Vda5050VehicleBindingTest.SingleVehicleIsStable .....................................................   Passed    0.00 sec
+        Start 746: Vda5050VehicleBindingTest.NoManagedVehiclesMeansNoBinding
+746/853 Test #746: Vda5050VehicleBindingTest.NoManagedVehiclesMeansNoBinding ...........................................   Passed    0.00 sec
+        Start 747: Vda5050VehicleBindingTest.NullListMeansNoBinding
+747/853 Test #747: Vda5050VehicleBindingTest.NullListMeansNoBinding ....................................................   Passed    0.00 sec
+        Start 748: Vda5050VehicleBindingTest.NullCursorIsTolerated
+748/853 Test #748: Vda5050VehicleBindingTest.NullCursorIsTolerated .....................................................   Passed    0.00 sec
+        Start 749: Vda5050VehicleBindingTest.IsManagedChecksMembership
+749/853 Test #749: Vda5050VehicleBindingTest.IsManagedChecksMembership .................................................   Passed    0.00 sec
+        Start 750: DispatchGatePlanningTest.AllGatesOpenMeansPass
+750/853 Test #750: DispatchGatePlanningTest.AllGatesOpenMeansPass ......................................................   Passed    0.01 sec
+        Start 751: DispatchGatePlanningTest.EmptyQueueBlocksBeforeAnythingElse
+751/853 Test #751: DispatchGatePlanningTest.EmptyQueueBlocksBeforeAnythingElse .........................................   Passed    0.00 sec
+        Start 752: DispatchGatePlanningTest.CapacityExceededBeatsMapMismatch
+752/853 Test #752: DispatchGatePlanningTest.CapacityExceededBeatsMapMismatch ...........................................   Passed    0.00 sec
+        Start 753: DispatchGatePlanningTest.NoFreeSlotBlocks
+753/853 Test #753: DispatchGatePlanningTest.NoFreeSlotBlocks ...........................................................   Passed    0.00 sec
+        Start 754: DispatchGatePlanningTest.CapacityBoundaryIsInclusive
+754/853 Test #754: DispatchGatePlanningTest.CapacityBoundaryIsInclusive ................................................   Passed    0.00 sec
+        Start 755: DispatchGatePlanningTest.MapHashMismatchPausesDispatch
+755/853 Test #755: DispatchGatePlanningTest.MapHashMismatchPausesDispatch ..............................................   Passed    0.00 sec
+        Start 756: DispatchGatePlanningTest.MissingCatalogHashIsMismatch
+756/853 Test #756: DispatchGatePlanningTest.MissingCatalogHashIsMismatch ...............................................   Passed    0.00 sec
+        Start 757: DispatchGatePlanningTest.EmptyExpectedHashDisablesMapGate
+757/853 Test #757: DispatchGatePlanningTest.EmptyExpectedHashDisablesMapGate ...........................................   Passed    0.00 sec
+        Start 758: DispatchGatePlanningTest.CatalogNotLoadedSkipsMapGate
+758/853 Test #758: DispatchGatePlanningTest.CatalogNotLoadedSkipsMapGate ...............................................   Passed    0.00 sec
+        Start 759: DispatchGatePlanningTest.DefaultRequestDoesNotPass
+759/853 Test #759: DispatchGatePlanningTest.DefaultRequestDoesNotPass ..................................................   Passed    0.00 sec
+        Start 760: DispatchGatePlanningTest.ZeroCapacityBlocksEverything
+760/853 Test #760: DispatchGatePlanningTest.ZeroCapacityBlocksEverything ...............................................   Passed    0.00 sec
+        Start 761: DispatchEndpointResolutionTest.ResolvesBothStationsFromCatalog
+761/853 Test #761: DispatchEndpointResolutionTest.ResolvesBothStationsFromCatalog ......................................   Passed    0.01 sec
+        Start 762: DispatchEndpointResolutionTest.MissingPickupUsesOdomPose
+762/853 Test #762: DispatchEndpointResolutionTest.MissingPickupUsesOdomPose ............................................   Passed    0.00 sec
+        Start 763: DispatchEndpointResolutionTest.MissingPickupWithoutOdomKeepsOrigin
+763/853 Test #763: DispatchEndpointResolutionTest.MissingPickupWithoutOdomKeepsOrigin ..................................   Passed    0.00 sec
+        Start 764: DispatchEndpointResolutionTest.UnknownPickupFallsBackToOdomWhenAvailable
+764/853 Test #764: DispatchEndpointResolutionTest.UnknownPickupFallsBackToOdomWhenAvailable ............................   Passed    0.00 sec
+        Start 765: DispatchEndpointResolutionTest.EmptyDropoffFails
+765/853 Test #765: DispatchEndpointResolutionTest.EmptyDropoffFails ....................................................   Passed    0.00 sec
+        Start 766: DispatchEndpointResolutionTest.UnknownDropoffReportsStationId
+766/853 Test #766: DispatchEndpointResolutionTest.UnknownDropoffReportsStationId .......................................   Passed    0.00 sec
+        Start 767: DispatchEndpointResolutionTest.CatalogNotLoadedFails
+767/853 Test #767: DispatchEndpointResolutionTest.CatalogNotLoadedFails ................................................   Passed    0.00 sec
+        Start 768: DispatchEndpointResolutionTest.NullCatalogTreatedAsNotLoaded
+768/853 Test #768: DispatchEndpointResolutionTest.NullCatalogTreatedAsNotLoaded ........................................   Passed    0.00 sec
+        Start 769: DispatchEndpointResolutionTest.DefaultRequestFails
+769/853 Test #769: DispatchEndpointResolutionTest.DefaultRequestFails ..................................................   Passed    0.00 sec
+        Start 770: DispatchTickPlanningTest.AssignedCandidateIsDispatched
+770/853 Test #770: DispatchTickPlanningTest.AssignedCandidateIsDispatched ..............................................   Passed    0.01 sec
+        Start 771: DispatchTickPlanningTest.DeferredStaysQueuedWithoutStep
+771/853 Test #771: DispatchTickPlanningTest.DeferredStaysQueuedWithoutStep .............................................   Passed    0.00 sec
+        Start 772: DispatchTickPlanningTest.IndeterminatePausesAutoAssignment
+772/853 Test #772: DispatchTickPlanningTest.IndeterminatePausesAutoAssignment ..........................................   Passed    0.00 sec
+        Start 773: DispatchTickPlanningTest.RejectedCandidateProducesRejectStepThenContinues
+773/853 Test #773: DispatchTickPlanningTest.RejectedCandidateProducesRejectStepThenContinues ...........................   Passed    0.00 sec
+        Start 774: DispatchTickPlanningTest.OnlyOneDispatchPerTick
+774/853 Test #774: DispatchTickPlanningTest.OnlyOneDispatchPerTick .....................................................   Passed    0.00 sec
+        Start 775: DispatchTickPlanningTest.StaticDenialRecordsWaitAndTriesNext
+775/853 Test #775: DispatchTickPlanningTest.StaticDenialRecordsWaitAndTriesNext ........................................   Passed    0.00 sec
+        Start 776: DispatchTickPlanningTest.TimeSpaceDenialRecordsWaitWithoutDeniedEvent
+776/853 Test #776: DispatchTickPlanningTest.TimeSpaceDenialRecordsWaitWithoutDeniedEvent ...............................   Passed    0.00 sec
+        Start 777: DispatchTickPlanningTest.AllDeniedLeavesNothingDispatched
+777/853 Test #777: DispatchTickPlanningTest.AllDeniedLeavesNothingDispatched ...........................................   Passed    0.00 sec
+        Start 778: DispatchTickPlanningTest.NoReserveCallbackMeansNoReservationNeeded
+778/853 Test #778: DispatchTickPlanningTest.NoReserveCallbackMeansNoReservationNeeded ..................................   Passed    0.00 sec
+        Start 779: DispatchTickPlanningTest.EmptyCandidateListDispatchesNothing
+779/853 Test #779: DispatchTickPlanningTest.EmptyCandidateListDispatchesNothing ........................................   Passed    0.00 sec
+        Start 780: DispatchTickPlanningTest.DeferredAndIndeterminateBothReported
+780/853 Test #780: DispatchTickPlanningTest.DeferredAndIndeterminateBothReported .......................................   Passed    0.00 sec
+        Start 781: DispatchTickPlanningTest.DispatchClearsWaitRecordViaStep
+781/853 Test #781: DispatchTickPlanningTest.DispatchClearsWaitRecordViaStep ............................................   Passed    0.00 sec
+        Start 782: FindRoutePathAvoidingTest.EmptyBlockedSetMatchesFindRoutePath
+782/853 Test #782: FindRoutePathAvoidingTest.EmptyBlockedSetMatchesFindRoutePath .......................................   Passed    0.01 sec
+        Start 783: FindRoutePathAvoidingTest.BlockedShortestEdgeForcesDetour
+783/853 Test #783: FindRoutePathAvoidingTest.BlockedShortestEdgeForcesDetour ...........................................   Passed    0.00 sec
+        Start 784: FindRoutePathAvoidingTest.NonCanonicalKeyDoesNotMatchEdge
+784/853 Test #784: FindRoutePathAvoidingTest.NonCanonicalKeyDoesNotMatchEdge ...........................................   Passed    0.00 sec
+        Start 785: FindRoutePathAvoidingTest.NoAlternativeReturnsNullopt
+785/853 Test #785: FindRoutePathAvoidingTest.NoAlternativeReturnsNullopt ...............................................   Passed    0.00 sec
+        Start 786: FindRoutePathAvoidingTest.BlockingOneSegmentOfDetourIsEnough
+786/853 Test #786: FindRoutePathAvoidingTest.BlockingOneSegmentOfDetourIsEnough ........................................   Passed    0.00 sec
+        Start 787: FindRoutePathAvoidingTest.UnknownResourceKeysAreIgnored
+787/853 Test #787: FindRoutePathAvoidingTest.UnknownResourceKeysAreIgnored .............................................   Passed    0.00 sec
+        Start 788: FindRoutePathAvoidingTest.NodeKeysDoNotBlockEdges
+788/853 Test #788: FindRoutePathAvoidingTest.NodeKeysDoNotBlockEdges ...................................................   Passed    0.00 sec
+        Start 789: FindRoutePathAvoidingTest.SameFromAndToIsUnaffected
+789/853 Test #789: FindRoutePathAvoidingTest.SameFromAndToIsUnaffected .................................................   Passed    0.00 sec
+        Start 790: FindRoutePathAvoidingTest.UnknownEndpointsRejected
+790/853 Test #790: FindRoutePathAvoidingTest.UnknownEndpointsRejected ..................................................   Passed    0.00 sec
+        Start 791: FindRoutePathAvoidingTest.EdgeKeyFormatMatchesReservationContract
+791/853 Test #791: FindRoutePathAvoidingTest.EdgeKeyFormatMatchesReservationContract ...................................   Passed    0.00 sec
+        Start 792: FacilityCatalogTest.LoadFacilityCatalog_ParsesAllFields
+792/853 Test #792: FacilityCatalogTest.LoadFacilityCatalog_ParsesAllFields .............................................   Passed    0.01 sec
+        Start 793: FacilityCatalogTest.LoadFacilityCatalog_DuplicateIdIsRejected
+793/853 Test #793: FacilityCatalogTest.LoadFacilityCatalog_DuplicateIdIsRejected .......................................   Passed    0.00 sec
+        Start 794: FacilityCatalogTest.LoadFacilityCatalog_MissingTypeIsRejected
+794/853 Test #794: FacilityCatalogTest.LoadFacilityCatalog_MissingTypeIsRejected .......................................   Passed    0.00 sec
+        Start 795: FacilityCatalogTest.LoadFacilityCatalog_MissingFileReturnsNullopt
+795/853 Test #795: FacilityCatalogTest.LoadFacilityCatalog_MissingFileReturnsNullopt ...................................   Passed    0.00 sec
+        Start 796: FacilityCatalogTest.ValidateFacilityCatalog_RejectsEmptyId
+796/853 Test #796: FacilityCatalogTest.ValidateFacilityCatalog_RejectsEmptyId ..........................................   Passed    0.00 sec
+        Start 797: FacilityCatalogTest.FindFirstAvailableResource_SkipsDisabledAndUnavailable
+797/853 Test #797: FacilityCatalogTest.FindFirstAvailableResource_SkipsDisabledAndUnavailable ..........................   Passed    0.00 sec
+        Start 798: FacilityCatalogTest.FindFirstAvailableResource_TypeMismatchReturnsNull
+798/853 Test #798: FacilityCatalogTest.FindFirstAvailableResource_TypeMismatchReturnsNull ..............................   Passed    0.00 sec
+        Start 799: FacilityReservationTest.FacilityResourceAvailable_DisabledResource_ReturnsFalse
+799/853 Test #799: FacilityReservationTest.FacilityResourceAvailable_DisabledResource_ReturnsFalse .....................   Passed    0.01 sec
+        Start 800: FacilityReservationTest.FacilityResourceAvailable_ExclusiveReserved_ReturnsFalse
+800/853 Test #800: FacilityReservationTest.FacilityResourceAvailable_ExclusiveReserved_ReturnsFalse ....................   Passed    0.00 sec
+        Start 801: FacilityReservationTest.FacilityResourceAvailable_NonExclusiveReserved_ReturnsTrue
+801/853 Test #801: FacilityReservationTest.FacilityResourceAvailable_NonExclusiveReserved_ReturnsTrue ..................   Passed    0.00 sec
+        Start 802: FacilityReservationTest.ReserveFacilityResource_FreeExclusiveResource_StoresReservation
+802/853 Test #802: FacilityReservationTest.ReserveFacilityResource_FreeExclusiveResource_StoresReservation .............   Passed    0.00 sec
+        Start 803: FacilityReservationTest.ReserveFacilityResource_DisabledResource_RejectsReservation
+803/853 Test #803: FacilityReservationTest.ReserveFacilityResource_DisabledResource_RejectsReservation .................   Passed    0.00 sec
+        Start 804: FacilityReservationTest.ReserveFacilityResource_ConflictingHolder_RejectsReservation
+804/853 Test #804: FacilityReservationTest.ReserveFacilityResource_ConflictingHolder_RejectsReservation ................   Passed    0.00 sec
+        Start 805: FacilityReservationTest.ReserveFacilityResource_ReleaseExistingForHolder_ClearsOldHold
+805/853 Test #805: FacilityReservationTest.ReserveFacilityResource_ReleaseExistingForHolder_ClearsOldHold ..............   Passed    0.00 sec
+        Start 806: FacilityReservationTest.ReserveFacilityResource_FailedConflictKeepsHolderOwnResources
+806/853 Test #806: FacilityReservationTest.ReserveFacilityResource_FailedConflictKeepsHolderOwnResources ...............   Passed    0.00 sec
+        Start 807: FacilityReservationTest.ReleaseFacilityResource_MatchingHolder_ReleasesReservation
+807/853 Test #807: FacilityReservationTest.ReleaseFacilityResource_MatchingHolder_ReleasesReservation ..................   Passed    0.00 sec
+        Start 808: FacilityReservationTest.ReleaseFacilityResource_WrongHolder_RejectsRelease
+808/853 Test #808: FacilityReservationTest.ReleaseFacilityResource_WrongHolder_RejectsRelease ..........................   Passed    0.00 sec
+        Start 809: FacilityReservationTest.ReleaseResourcesForHolder_MatchingHolder_RemovesOnlyMatches
+809/853 Test #809: FacilityReservationTest.ReleaseResourcesForHolder_MatchingHolder_RemovesOnlyMatches .................   Passed    0.00 sec
+        Start 810: FacilityReservationTest.ReservedResourceIds_ReturnsReservedIds
+810/853 Test #810: FacilityReservationTest.ReservedResourceIds_ReturnsReservedIds ......................................   Passed    0.00 sec
+        Start 811: FacilityReservationTest.BuildFacilityResourceListProjection_FiltersAndAddsRuntimeState
+811/853 Test #811: FacilityReservationTest.BuildFacilityResourceListProjection_FiltersAndAddsRuntimeState ..............   Passed    0.00 sec
+        Start 812: FacilityReservationTest.BuildFacilityResourceListProjection_IncludeDisabledWhenRequested
+812/853 Test #812: FacilityReservationTest.BuildFacilityResourceListProjection_IncludeDisabledWhenRequested ............   Passed    0.00 sec
+        Start 813: FacilityReservationTest.BuildFacilityResourceStateProjection_AddsHolderAndStatus
+813/853 Test #813: FacilityReservationTest.BuildFacilityResourceStateProjection_AddsHolderAndStatus ....................   Passed    0.00 sec
+        Start 814: FacilityReservationTest.MarkResourceOccupiedForMission_HoldAfterCompletion_SetsOccupied
+814/853 Test #814: FacilityReservationTest.MarkResourceOccupiedForMission_HoldAfterCompletion_SetsOccupied .............   Passed    0.00 sec
+        Start 815: FacilityReservationTest.MarkResourceOccupiedForMission_NoHold_ReleasesReservation
+815/853 Test #815: FacilityReservationTest.MarkResourceOccupiedForMission_NoHold_ReleasesReservation ...................   Passed    0.00 sec
+        Start 816: FacilityReservationTest.ReleaseResourceForMission_MatchingMission_RemovesReservationAndMapping
+816/853 Test #816: FacilityReservationTest.ReleaseResourceForMission_MatchingMission_RemovesReservationAndMapping ......   Passed    0.00 sec
+        Start 817: FacilityWorkflowTest.FacilityActionSupported_KnownResourceTypes_UsesExpectedActions
+817/853 Test #817: FacilityWorkflowTest.FacilityActionSupported_KnownResourceTypes_UsesExpectedActions .................   Passed    0.01 sec
+        Start 818: FacilityWorkflowTest.SelectFacilityActionResource_ExplicitAvailableResource_ReturnsResource
+818/853 Test #818: FacilityWorkflowTest.SelectFacilityActionResource_ExplicitAvailableResource_ReturnsResource .........   Passed    0.00 sec
+        Start 819: FacilityWorkflowTest.SelectFacilityActionResource_TypeMismatch_ReturnsMessage
+819/853 Test #819: FacilityWorkflowTest.SelectFacilityActionResource_TypeMismatch_ReturnsMessage .......................   Passed    0.00 sec
+        Start 820: FacilityWorkflowTest.SelectFacilityActionResource_ExplicitUnavailable_ReturnsMessage
+820/853 Test #820: FacilityWorkflowTest.SelectFacilityActionResource_ExplicitUnavailable_ReturnsMessage ................   Passed    0.00 sec
+        Start 821: FacilityWorkflowTest.SelectFacilityActionResource_ByType_SkipsReservedResource
+821/853 Test #821: FacilityWorkflowTest.SelectFacilityActionResource_ByType_SkipsReservedResource ......................   Passed    0.00 sec
+        Start 822: FacilityWorkflowTest.BuildFacilityActionMissionId_EmptyRequestId_UsesResourceAndAction
+822/853 Test #822: FacilityWorkflowTest.BuildFacilityActionMissionId_EmptyRequestId_UsesResourceAndAction ..............   Passed    0.00 sec
+        Start 823: FacilityWorkflowTest.ReserveFacilityActionResource_StoresHoldPolicyAndMissionMapping
+823/853 Test #823: FacilityWorkflowTest.ReserveFacilityActionResource_StoresHoldPolicyAndMissionMapping ................   Passed    0.00 sec
+        Start 824: FacilityWorkflowTest.BuildLiftSessionId_EmptyRequest_UsesLiftId
+824/853 Test #824: FacilityWorkflowTest.BuildLiftSessionId_EmptyRequest_UsesLiftId .....................................   Passed    0.00 sec
+        Start 825: FacilityWorkflowTest.BuildLiftSessionHolderId_EmptyRequester_UsesSessionId
+825/853 Test #825: FacilityWorkflowTest.BuildLiftSessionHolderId_EmptyRequester_UsesSessionId ..........................   Passed    0.00 sec
+        Start 826: FacilityWorkflowTest.ReserveLiftSessionResource_FreeLift_StoresSession
+826/853 Test #826: FacilityWorkflowTest.ReserveLiftSessionResource_FreeLift_StoresSession ..............................   Passed    0.00 sec
+        Start 827: FacilityWorkflowTest.ReserveLiftSessionResource_ConflictingHolder_RejectsSession
+827/853 Test #827: FacilityWorkflowTest.ReserveLiftSessionResource_ConflictingHolder_RejectsSession ....................   Passed    0.00 sec
+        Start 828: FacilityWorkflowTest.ReserveLiftSessionResource_ReleaseExistingForHolder_ClearsOldHold
+828/853 Test #828: FacilityWorkflowTest.ReserveLiftSessionResource_ReleaseExistingForHolder_ClearsOldHold ..............   Passed    0.00 sec
+        Start 829: FacilityWorkflowTest.ReserveLiftSessionResource_FailedConflictKeepsHolderOwnResources
+829/853 Test #829: FacilityWorkflowTest.ReserveLiftSessionResource_FailedConflictKeepsHolderOwnResources ...............   Passed    0.00 sec
+        Start 830: FacilityWorkflowTest.ReleaseLiftSessionResource_MissingLift_ReturnsAvailable
+830/853 Test #830: FacilityWorkflowTest.ReleaseLiftSessionResource_MissingLift_ReturnsAvailable ........................   Passed    0.00 sec
+        Start 831: FacilityWorkflowTest.ReleaseLiftSessionResource_WrongSession_RejectsRelease
+831/853 Test #831: FacilityWorkflowTest.ReleaseLiftSessionResource_WrongSession_RejectsRelease .........................   Passed    0.00 sec
+        Start 832: FacilityWorkflowTest.ReleaseLiftSessionResource_MatchingSession_ReleasesLift
+832/853 Test #832: FacilityWorkflowTest.ReleaseLiftSessionResource_MatchingSession_ReleasesLift ........................   Passed    0.00 sec
+        Start 833: SubmitOrderRouterTest.BuildSubmitOrderRoute_StationTransportCliPayload_RoutesFields
+833/853 Test #833: SubmitOrderRouterTest.BuildSubmitOrderRoute_StationTransportCliPayload_RoutesFields .................   Passed    0.01 sec
+        Start 834: SubmitOrderRouterTest.BuildSubmitOrderRoute_StationBatchJsonPayload_RoutesLists
+834/853 Test #834: SubmitOrderRouterTest.BuildSubmitOrderRoute_StationBatchJsonPayload_RoutesLists .....................   Passed    0.00 sec
+        Start 835: SubmitOrderRouterTest.BuildSubmitOrderRoute_AllSupportedTypes_Accepted
+835/853 Test #835: SubmitOrderRouterTest.BuildSubmitOrderRoute_AllSupportedTypes_Accepted ..............................   Passed    0.00 sec
+        Start 836: SubmitOrderRouterTest.BuildSubmitOrderRoute_InvalidPayload_ReturnsMessage
+836/853 Test #836: SubmitOrderRouterTest.BuildSubmitOrderRoute_InvalidPayload_ReturnsMessage ...........................   Passed    0.00 sec
+        Start 837: SubmitOrderRouterTest.BuildSubmitOrderRoute_UnsupportedType_ReturnsMessage
+837/853 Test #837: SubmitOrderRouterTest.BuildSubmitOrderRoute_UnsupportedType_ReturnsMessage ..........................   Passed    0.00 sec
+        Start 838: SubmitOrderRouterTest.PlanVda5050StationOrder_ValidBuildsStationOrderFields
+838/853 Test #838: SubmitOrderRouterTest.PlanVda5050StationOrder_ValidBuildsStationOrderFields .........................   Passed    0.00 sec
+        Start 839: SubmitOrderRouterTest.PlanVda5050StationOrder_EmptyOrderRejects
+839/853 Test #839: SubmitOrderRouterTest.PlanVda5050StationOrder_EmptyOrderRejects .....................................   Passed    0.00 sec
+        Start 840: SubmitOrderRouterTest.PlanVda5050StationOrder_MissingNodesRejects
+840/853 Test #840: SubmitOrderRouterTest.PlanVda5050StationOrder_MissingNodesRejects ...................................   Passed    0.00 sec
+        Start 841: SubmitOrderRouterTest.PlanVda5050StationOrder_IdenticalNodesRejects
+841/853 Test #841: SubmitOrderRouterTest.PlanVda5050StationOrder_IdenticalNodesRejects .................................   Passed    0.00 sec
+        Start 842: SubmitOrderRouterTest.BuildSubmitOrderRoute_ChargeType_RoutesAsTransport
+842/853 Test #842: SubmitOrderRouterTest.BuildSubmitOrderRoute_ChargeType_RoutesAsTransport ............................   Passed    0.00 sec
+        Start 843: SubmitOrderRouterTest.BuildSubmitOrderRoute_PatrolType_RoutesAsTransport
+843/853 Test #843: SubmitOrderRouterTest.BuildSubmitOrderRoute_PatrolType_RoutesAsTransport ............................   Passed    0.00 sec
+        Start 844: TopologyProjectionTest.EmptyInputs_ProducesEmptyProjection
+844/853 Test #844: TopologyProjectionTest.EmptyInputs_ProducesEmptyProjection ..........................................   Passed    0.01 sec
+        Start 845: TopologyProjectionTest.Snapshot_SeparatesActiveMissionEdgesFromManualBlocks
+845/853 Test #845: TopologyProjectionTest.Snapshot_SeparatesActiveMissionEdgesFromManualBlocks .........................   Passed    0.00 sec
+        Start 846: TopologyProjectionTest.CyclePath_ResolvesStationIdsFromEdgesAndNodes
+846/853 Test #846: TopologyProjectionTest.CyclePath_ResolvesStationIdsFromEdgesAndNodes ................................   Passed    0.00 sec
+        Start 847: TopologyProjectionTest.CyclePathWithMissionIdsOnly_YieldsNoStationNodes
+847/853 Test #847: TopologyProjectionTest.CyclePathWithMissionIdsOnly_YieldsNoStationNodes .............................   Passed    0.00 sec
+        Start 848: IntegrationPipelineTest.EndToEndDispatchToMotionControl
+848/853 Test #848: IntegrationPipelineTest.EndToEndDispatchToMotionControl .............................................   Passed    0.01 sec
+        Start 849: IntegrationPipelineTest.TrafficContentionAndDeadlockRecoveryFlow
+849/853 Test #849: IntegrationPipelineTest.TrafficContentionAndDeadlockRecoveryFlow ....................................   Passed    0.00 sec
+        Start 850: MultiVehicleTimeSpaceTest.SharedEdgeDifferentWindows_BothSucceed
+850/853 Test #850: MultiVehicleTimeSpaceTest.SharedEdgeDifferentWindows_BothSucceed ....................................   Passed    0.01 sec
+        Start 851: MultiVehicleTimeSpaceTest.SharedEdgeSameWindow_OneSucceedsOneFails_NoPartialReservation
+851/853 Test #851: MultiVehicleTimeSpaceTest.SharedEdgeSameWindow_OneSucceedsOneFails_NoPartialReservation .............   Passed    0.00 sec
+        Start 852: MultiVehicleTimeSpaceTest.OppositeDirection_SharesSameEdgeResource
+852/853 Test #852: MultiVehicleTimeSpaceTest.OppositeDirection_SharesSameEdgeResource ..................................   Passed    0.00 sec
+        Start 853: MultiVehicleTimeSpaceTest.PartiallySharedPath_DifferentWindows_BothSucceed
+853/853 Test #853: MultiVehicleTimeSpaceTest.PartiallySharedPath_DifferentWindows_BothSucceed ..........................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 853
+
+Total Test time (real) =   4.68 sec

@@ -1,0 +1,203 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_running.h"
+
+#include "controller/config_manager.h"
+#include "controller/network_controller.h"
+#include "controller/resume_manager.h"
+#include "ins_base/log.h"
+#include "ins_error_code_string.h"
+#include "manager/live_broadcast_manager.h"
+#include "service/live_broadcast_config_constants.h"
+#include "state_machine/live_state_stopping.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStateRunning"
+
+// 重连阈值的无符号视图（计数为uint32_t，避免与int32常量混比产生符号告警）
+constexpr uint32_t kMaxReconnectAttempts =
+    static_cast<uint32_t>(config::kMaxReconnectAttempts);
+}  // namespace
+
+LiveStateRunning::LiveStateRunning()
+    : LiveStateMachine(LiveBroadcastState::kRunning) {}
+
+void LiveStateRunning::OnEntry() {
+  ILOGS_I << "Entering Running state";
+  // 每场直播的重连预算独立计数
+  network_reconnect_attempts_ = 0;
+  if (manager_) {
+    manager_->StartLiveBroadcastDurationTimer();
+    manager_->StartLiveBroadcastMonitor();
+    manager_->SaveConnectedWifiSsid();
+  } else {
+    ILOGS_E << "Manager not set, cannot start duration timer and live monitor";
+  }
+}
+
+void LiveStateRunning::OnExit() {
+  ILOGS_I << "Exiting Running state";
+  if (manager_) {
+    manager_->StopLiveBroadcastDurationTimer();
+    manager_->StopLiveBroadcastMonitor();
+  } else {
+    ILOGS_E << "Manager not set, cannot stop duration timer and live monitor";
+  }
+}
+
+void LiveStateRunning::OnEvent(const EventStopRequest& event) {
+  ILOGS_I << "Received EventStopRequest in Running state, reason="
+          << static_cast<int32_t>(event.reason);
+
+  // 根据停止原因判断是否需要保存续播记录
+  if (ShouldSaveResumeRecord(event.reason)) {
+    if (resume_manager_) {
+      // 时长取自 DurationTimer（仅Running期间累计），停播瞬间读到
+      // 即本场直播的实际时长
+      const uint32_t duration = manager_ ? manager_->GetLiveDuration() : 0;
+      const InsErrorCode ret =
+          resume_manager_->SaveResumeRecord(event.reason, duration);
+      if (ret == kInsErrorCode_Comm_Success) {
+        ILOGS_I << "Resume record saved for reason: "
+                << static_cast<int32_t>(event.reason)
+                << ", duration=" << duration << "s";
+      } else {
+        ILOGS_E << "SaveResumeRecord failed: "
+                << ins::errc::GetInsErrorCodeString(ret);
+      }
+    } else {
+      ILOGS_E << "ResumeManager not set, resume record lost";
+    }
+  }
+
+  // 转换到Stopping状态
+  ChangeState<LiveStateStopping>();
+}
+
+void LiveStateRunning::OnEvent(const EventError& event) {
+  ILOGS_E << "Received EventError in Running state, error_code="
+          << static_cast<int32_t>(event.error_code)
+          << ", message=" << event.message;
+
+  // 根据错误类型决定处理策略
+  if (event.error_code == LiveBroadcastErrorCode::kNetworkError) {
+    // 网络错误，尝试重连
+    ILOGS_W << "Network error detected, attempting reconnect ("
+            << network_reconnect_attempts_ + 1 << "/"
+            << kMaxReconnectAttempts << ")";
+
+    ++network_reconnect_attempts_;
+    if (network_reconnect_attempts_ > kMaxReconnectAttempts) {
+      // 连续重连失败超过阈值：现场保存续播记录后转入Stopping
+      ILOGS_E << "Reconnect attempts exceeded "
+              << kMaxReconnectAttempts << ", give up";
+      if (resume_manager_ &&
+          ShouldSaveResumeRecord(LiveBroadcastStopReason::kNetworkError)) {
+        const uint32_t duration = manager_ ? manager_->GetLiveDuration() : 0;
+        resume_manager_->SaveResumeRecord(
+            LiveBroadcastStopReason::kNetworkError, duration);
+      }
+      ChangeState<LiveStateStopping>();
+      return;
+    }
+
+    // WiFi层：若已脱网，异步重新关联上次的AP；连接结果经netd Topic回投，
+    // 失败不直接驱动状态机（由下一轮RTMP重连结果统一判定）
+    if (network_controller_ && config_manager_) {
+      WifiConnectionStatus wifi_status{};
+      if (network_controller_->GetCurrentWifiStatus(&wifi_status) !=
+              kInsErrorCode_Comm_Success ||
+          wifi_status.state != WifiConnectionState::kConnected) {
+        const std::string saved_ssid = config_manager_->GetLastConnectedSsid();
+        if (!saved_ssid.empty()) {
+          network_controller_->RequestConnectWifi(saved_ssid);
+          ILOGS_W << "WiFi re-association requested for saved AP";
+        }
+      }
+    }
+
+    // RTMP层：复用启动连接线程管线重连（非阻塞），结果经
+    // OnDispatchStartResult的Running分支回投：成功派发EventNetworkRecovered
+    // 复位计数，失败派发EventError继续累计直至阈值
+    if (manager_) {
+      const InsErrorCode ret = manager_->RequestRtmpReconnect();
+      if (ret == kInsErrorCode_Comm_Ealready) {
+        ILOGS_I << "Reconnect already in flight, awaiting its result";
+        return;  // 已有在途重连，由其结果驱动后续判定
+      }
+      if (ret != kInsErrorCode_Comm_Success) {
+        // 提交失败意味着不会有结果回投，无法自愈：立即停播
+        ILOGS_E << "RequestRtmpReconnect failed: "
+                << ins::errc::GetInsErrorCodeString(ret);
+        if (resume_manager_ &&
+            ShouldSaveResumeRecord(LiveBroadcastStopReason::kNetworkError)) {
+          const uint32_t duration = manager_ ? manager_->GetLiveDuration() : 0;
+          resume_manager_->SaveResumeRecord(
+              LiveBroadcastStopReason::kNetworkError, duration);
+        }
+        ChangeState<LiveStateStopping>();
+        return;
+      }
+    } else {
+      ILOGS_E << "Manager not set, cannot reconnect";
+      ChangeState<LiveStateStopping>();
+      return;
+    }
+    return;
+  }
+
+  // 其他错误，保存续播记录并进入Stopping状态
+  if (resume_manager_) {
+    if (ShouldSaveResumeRecord(LiveBroadcastStopReason::kSystemError)) {
+      const uint32_t duration = manager_ ? manager_->GetLiveDuration() : 0;
+      const InsErrorCode ret = resume_manager_->SaveResumeRecord(
+          LiveBroadcastStopReason::kSystemError, duration);
+      if (ret == kInsErrorCode_Comm_Success) {
+        ILOGS_I << "Resume record saved due to error, duration="
+                << duration << "s";
+      } else {
+        ILOGS_E << "SaveResumeRecord failed: "
+                << ins::errc::GetInsErrorCodeString(ret);
+      }
+    }
+  }
+
+  ChangeState<LiveStateStopping>();
+}
+
+void LiveStateRunning::OnEvent(const EventNetworkRecovered& event) {
+  // 重连成功：复位连续失败计数，本轮网络故障闭环，继续正常推流
+  ILOGS_I << "Network recovered, reconnect attempts reset (was "
+          << network_reconnect_attempts_ << ")";
+  network_reconnect_attempts_ = 0;
+  static_cast<void>(event);
+}
+
+bool LiveStateRunning::ShouldSaveResumeRecord(
+    LiveBroadcastStopReason reason) const {
+  // 根据停止原因判断是否需要保存续播记录
+  switch (reason) {
+    case LiveBroadcastStopReason::kUserStop:
+      return false;  // 用户主动停止，不保存
+
+    case LiveBroadcastStopReason::kSystemOverheat:
+    case LiveBroadcastStopReason::kNetworkError:
+    case LiveBroadcastStopReason::kSystemError:
+    case LiveBroadcastStopReason::kBatteryLow:
+    case LiveBroadcastStopReason::kTokenExpired:
+    case LiveBroadcastStopReason::kPowerOff:
+      return true;  // 异常停止，保存续播记录
+
+    default:
+      return false;
+  }
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

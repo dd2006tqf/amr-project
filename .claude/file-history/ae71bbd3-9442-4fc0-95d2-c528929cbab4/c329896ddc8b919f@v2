@@ -1,0 +1,73 @@
+#pragma once
+
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <optional>
+#include <vector>
+#include <cmath>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+// ============================================================
+// 时间插值器：对高频传感器流（IMU / LiDAR 位姿）做精确时刻估计
+//
+// 问题：相机曝光时刻 t 落在两个 IMU 采样之间，直接取最近邻会有
+//       ~5ms 误差（200Hz）——对手持设备的运动模糊校正不可接受。
+//
+// 做法：维护一个滑动窗口，对目标时刻 t 做线性插值（或球面插值）。
+// ============================================================
+
+// IMU 在 t 时刻的状态估计
+struct ImuState {
+    int64_t ts_us;
+    float ax, ay, az;
+    float gx, gy, gz;
+    // 简单线性积分得到的相对位姿增量（相对切片起点）
+    double rx, ry, rz;    // 旋转增量（弧度，欧拉角）
+    double dx, dy, dz;    // 位移增量（米，世界系）
+};
+
+class ImuInterpolator {
+public:
+    // 喂入一个 IMU 采样（应用层收包时调用，O(1)）
+    void push(const ImuPacket& p);
+
+    // 查询 t 时刻的 IMU 状态（线性插值）
+    // 返回 false 表示 t 超出可用窗口（样本不足或太旧）
+    bool estimate(int64_t t_us, ImuState& out) const;
+
+    // 对一段区间 [t0, t1] 做 IMU 预积分，输出相对位姿增量
+    // 真实场景：把一个相机帧周期内的 IMU 数据积分，用于运动去模糊
+    bool integrate(int64_t t0_us, int64_t t1_us, ImuState& out) const;
+
+    size_t size() const { return buf_.size(); }
+    void clear() { buf_.clear(); }
+
+private:
+    mutable std::mutex mu_;
+    std::deque<ImuPacket> buf_;
+    static constexpr size_t kMaxBuf = 512;   // ~2.5s @200Hz
+};
+
+// LiDAR 点云的位姿外推：把扫描周期内 IMU 数据积成相对位姿轨迹，
+// 让点云里每个点能映射回"扫描中心时刻"的参考系
+struct PosePoint {
+    int64_t ts_us;
+    double rx, ry, rz, dx, dy, dz;
+};
+
+class PoseExtrapolator {
+public:
+    void push_imu(const ImuPacket& p);
+    // 查询任意时刻的位姿（IMU 插值 + 简化积分）
+    bool pose_at(int64_t t_us, PosePoint& out) const;
+    // 把一个 LiDAR 扫描周期 [t0,t1] 的 IMU 数据积分成中心时刻位姿
+    bool integrate_scan(int64_t t0, int64_t t1, PosePoint& center) const;
+
+private:
+    ImuInterpolator imu_;
+};
+
+}  // namespace xgrids

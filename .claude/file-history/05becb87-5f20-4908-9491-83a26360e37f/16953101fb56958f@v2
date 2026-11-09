@@ -1,0 +1,40 @@
+# WeakNet Server Spec — Delta for fix-bt-events-pointer-lifecycle
+
+## ADDED Requirements
+
+### Requirement: 跨插件蓝牙事件与关联器指针纳入读写锁纪律
+
+服务端对 `ServerContext` 中 `wireless_event_store`、`bt_link_quality_tracker` 与 `site_incident_correlator` 的发布、置空与析构 MUST 持有 `monitor_pointers_mutex` 的独占锁（`unique_lock`）；所有跨线程消费这些指针的生产路径（含 `bt_hci_traffic` worker、D-Bus 查询分发、蓝牙监控主循环）MUST 在同一互斥量的共享锁（`shared_lock`）保护下按「判空后使用」模式访问，MUST NOT 在锁外持有裸指针副本跨周期解引用。
+
+#### Scenario: 插件停止期间安全撤销指针与销毁
+
+- **WHEN** 运维命令或停机流程请求停止 `bt_events` 监控器
+- **THEN** MUST 在 `monitor_pointers_mutex` 独占锁保护下先将上下文指针置为 `nullptr`，并保证底层存储、跟踪器与关联器的析构在同一临界区内完成，使并发的共享锁读者要么观测到完整有效对象、要么观测到空指针并安全跳过，绝不产生对已析构对象的解引用
+
+#### Scenario: 并发异常事件注入在共享锁下原子消费
+
+- **WHEN** `bt_hci_traffic` 工作线程检测到 L2 数据通道异常并尝试注入 `LinkDegraded` 设备事件
+- **THEN** MUST 在持有 `monitor_pointers_mutex` 共享锁的临界区内检查 `wireless_event_store` 并完成 `recordEvent`，如果插件未启动或已停止则安全跳过本次注入并保持工作线程正常运行
+
+#### Scenario: 蓝牙主监控器跨周期现取最新上下文
+
+- **WHEN** `BtMonitor` 周期性（如每 3 秒刷新或每 18 秒保存基线画像）需要向事件存储或链路质量跟踪器提交数据
+- **THEN** MUST 在持有 `monitor_pointers_mutex` 共享锁的临界区内直接从 `ServerContext` 获取最新指针并完成操作，MUST NOT 使用构造阶段一次性缓存的可能已悬垂的裸指针
+
+### Requirement: 蓝牙 HCI 流量插件显式依赖事件插件
+
+`BtHciTrafficPlugin` MUST 在其 `dependencies()` 清单中显式声明对 `bt_events` 的依赖，使 `MonitorManager` 能够感知拓扑约束，并在停止时严格按依赖拓扑逆序停止，避免上游事件存储先于下游流量分析器析构。
+
+#### Scenario: 插件启动与停止感知依赖拓扑
+
+- **WHEN** `MonitorManager` 启动或停止 `bt_hci_traffic` 插件
+- **THEN** MUST 能从 `BtHciTrafficPlugin::dependencies()` 解析出对 `bt_events` 的依赖约束，并在 `bt_events` 未处于运行状态或启动失败时依既有依赖策略 fail-closed 或拒绝独立启动
+
+### Requirement: 上网网卡监听管理器提供显式停机操作
+
+`UsingInterfaceManager` MUST 提供幂等的显式 `stop()` 接口，用于通知内部 Netlink 事件监听线程退出并完成线程等待（`join`），服务端关机序列 MUST 在清理共享资源与关闭日志系统之前显式调用该接口。
+
+#### Scenario: 服务端关机显式停止上网网卡监听线程
+
+- **WHEN** 服务端主事件循环 `Looper` 退出并执行关机清理
+- **THEN** MUST 在调用 `google::ShutdownGoogleLogging()` 之前显式调用 `UsingInterfaceManager::stop()` 且该调用是幂等的，确保其内部 Netlink 工作线程在日志设施关闭前已完全终止

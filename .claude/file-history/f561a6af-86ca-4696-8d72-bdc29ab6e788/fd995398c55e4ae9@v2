@@ -1,0 +1,57 @@
+/* 一次性探针：直接调用 libweaknet C API，验证板端真实取数
+ * 用完即删，不入库。 */
+#include <stdio.h>
+#include <string.h>
+
+#include "weaknet_client.h"
+
+int main(void) {
+    static char buf[64 * 1024];
+    static char err[512];
+
+    if (!weaknet_init()) {
+        printf("init FAILED\n");
+        return 1;
+    }
+    printf("init OK\n");
+
+    for (int i = 0; i < 5; i++) {
+        memset(buf, 0, sizeof(buf));
+        memset(err, 0, sizeof(err));
+        int ok = 0;
+        const char* name = "";
+
+        switch (i) {
+            case 0:
+                name = "network_experience";
+                ok = weaknet_get_network_experience(buf, sizeof(buf), err, sizeof(err));
+                break;
+            case 1:
+                name = "diagnosis";
+                ok = weaknet_get_diagnosis(buf, sizeof(buf), err, sizeof(err));
+                break;
+            case 2:
+                name = "history(wlan0,5)";
+                ok = weaknet_get_history("wlan0", "", "", 5, buf, sizeof(buf), err, sizeof(err));
+                break;
+            case 3:
+                name = "interfaces";
+                ok = weaknet_get_interfaces(buf, sizeof(buf), err, sizeof(err));
+                break;
+            case 4:
+                name = "health_check";
+                ok = weaknet_health_check(buf, sizeof(buf), err, sizeof(err));
+                break;
+        }
+
+        printf("%-22s ok=%d len=%zu", name, ok, strlen(buf));
+        if (err[0]) printf(" err=%s", err);
+        printf("\n");
+        if (ok && strlen(buf) > 0) {
+            printf("    head: %.200s\n", buf);
+        }
+    }
+
+    weaknet_cleanup();
+    return 0;
+}

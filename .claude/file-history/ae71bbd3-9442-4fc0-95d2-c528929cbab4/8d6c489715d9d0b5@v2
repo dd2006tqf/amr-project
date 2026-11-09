@@ -1,0 +1,89 @@
+#include "backend/uploader.h"
+#include "common/async_logger.h"
+#include "common/monotonic_clock.h"
+#include <thread>
+#include <chrono>
+#include <sys/stat.h>
+
+namespace xgrids {
+
+Uploader::Uploader(std::string endpoint, ProgressCb cb)
+    : endpoint_(std::move(endpoint)), cb_(std::move(cb)) {}
+
+void Uploader::start() {
+    running_.store(true);
+    worker_ = std::thread(&Uploader::loop, this);
+}
+
+void Uploader::stop() {
+    running_.store(false);
+    cv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void Uploader::enqueue(const UploadTask& t) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        q_.push(t);
+    }
+    cv_.notify_one();
+}
+
+void Uploader::inject_disconnect(int ms) {
+    disconnect_until_us_.store(MonotonicClock::now_us() + ms * 1000LL);
+}
+
+size_t Uploader::pending() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return q_.size();
+}
+
+// 模拟上传一个包：按带宽限速分片、断连重试
+bool Uploader::upload_one(UploadTask& t) {
+    uint64_t total = t.info.total_bytes;
+    uint64_t sent = 0;
+    const uint64_t chunk = 1 << 20;  // 1MB 分片
+    double bw_bps = bw_mbps_.load() * 1e6 / 8.0;
+    int64_t chunk_us = bw_bps > 0 ? (int64_t)(chunk / bw_bps * 1e6) : 50'000;
+
+    while (sent < total && running_.load()) {
+        // 模拟断连：期间 sleep
+        int64_t until = disconnect_until_us_.load();
+        int64_t now = MonotonicClock::now_us();
+        if (now < until) {
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(std::min<int64_t>(until - now, 100'000)));
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(chunk_us));
+        sent += std::min(chunk, total - sent);
+        uploaded_bytes_.fetch_add(std::min(chunk, total - sent));
+        if (cb_) cb_(t, 100.0 * sent / total);
+    }
+    return sent >= total;
+}
+
+void Uploader::loop() {
+    while (running_.load()) {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return !q_.empty() || !running_.load(); });
+        if (q_.empty()) continue;
+        UploadTask t = q_.front();
+        lk.unlock();
+
+        t.state = UploadTask::kUploading;
+        bool ok = false;
+        for (t.retry = 0; t.retry < 3 && running_.load(); ++t.retry) {
+            if (upload_one(t)) { ok = true; break; }
+            AsyncLogger::instance().warn("uploader",
+                "retry " + std::to_string(t.retry) + " for " + t.scan_id);
+        }
+        t.state = ok ? UploadTask::kDone : UploadTask::kFailed;
+        AsyncLogger::instance().info("uploader",
+            t.scan_id + (ok ? " done" : " FAILED"));
+        lk.lock();
+        q_.pop();
+    }
+}
+
+}  // namespace xgrids

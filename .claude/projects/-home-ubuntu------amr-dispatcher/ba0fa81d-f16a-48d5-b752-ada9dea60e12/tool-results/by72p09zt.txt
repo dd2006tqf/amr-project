@@ -1,0 +1,215 @@
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/chassis_driver_node.hpp:30:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr health_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:100:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:101:      std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:103:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:104:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:106:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:107:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:111:      const std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:112:      std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:114:      const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:115:      std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:117:      const std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:118:      std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:120:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:121:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:123:      const std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:124:      std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:126:      const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:127:      std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:129:      const std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:130:      std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:132:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:133:      std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:135:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:136:      std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:138:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:139:      std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:141:      const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:142:      std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:144:      const std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:145:      std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:147:  using ExecuteMission = amr_dispatcher_interfaces::action::ExecuteMission;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:149:  using NavigateSequence = amr_dispatcher_interfaces::action::NavigateSequence;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:189:  void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:222:  rclcpp::Service<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:223:  rclcpp::Service<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:224:  rclcpp::Service<amr_dispatcher_interfaces::srv::PauseMission>::SharedPtr pause_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:225:  rclcpp::Service<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:226:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveResource>::SharedPtr reserve_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:227:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReleaseResource>::SharedPtr release_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:253:  rclcpp::Service<amr_dispatcher_interfaces::srv::EnqueueMission>::SharedPtr enqueue_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:254:  rclcpp::Service<amr_dispatcher_interfaces::srv::CancelQueuedMission>::SharedPtr cancel_queued_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:255:  rclcpp::Service<amr_dispatcher_interfaces::srv::PreemptMission>::SharedPtr preempt_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:256:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission>::SharedPtr reprioritize_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:257:  rclcpp::Service<amr_dispatcher_interfaces::srv::EstimateMissionCost>::SharedPtr estimate_cost_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:258:  rclcpp::Service<amr_dispatcher_interfaces::srv::BlockStationRoute>::SharedPtr block_route_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:259:  rclcpp::Service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>::SharedPtr detect_deadlock_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:260:  rclcpp::Service<amr_dispatcher_interfaces::srv::ListStations>::SharedPtr list_stations_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:261:  rclcpp::Service<amr_dispatcher_interfaces::srv::ListTrafficReservations>::SharedPtr list_reservations_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:262:  rclcpp::Service<amr_dispatcher_interfaces::srv::ReserveFacilityResource>::SharedPtr reserve_facility_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:263:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetOperatorSnapshot>::SharedPtr snapshot_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:264:  rclcpp::Service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>::SharedPtr validate_site_srv_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:266:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:267:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:268:  rclcpp_lifecycle::LifecyclePublisher<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:271:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr tracking_error_sub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:91:      const std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:92:      std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:94:      const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:95:      std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:97:      const std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Request> req,
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/dispatcher_node.hpp:98:      std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Response> resp);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:38:  using NavigateSequence = amr_dispatcher_interfaces::action::NavigateSequence;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:51:  void TrackingErrorCb(const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg);
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/navigate_sequence_bridge_node.hpp:82:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/path_tracker_node.hpp:33:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::TrackingError>::SharedPtr error_pub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:41:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_health_sub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:42:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_state_sub_;
+src/amr_dispatcher_ros/include/amr_dispatcher_ros/safety_gate_node.hpp:45:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_state_pub_;
+src/amr_dispatcher_ros/src/chassis_driver_node.cpp:175:  amr_dispatcher_interfaces::msg::ChassisLinkHealth msg;
+src/amr_dispatcher_ros/src/chassis_driver_node.cpp:45:  health_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:100:  enqueue_srv_ = create_service<amr_dispatcher_interfaces::srv::EnqueueMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:103:  cancel_queued_srv_ = create_service<amr_dispatcher_interfaces::srv::CancelQueuedMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:106:  preempt_srv_ = create_service<amr_dispatcher_interfaces::srv::PreemptMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1092:        amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:109:  reprioritize_srv_ = create_service<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:112:  estimate_cost_srv_ = create_service<amr_dispatcher_interfaces::srv::EstimateMissionCost>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1143:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:115:  block_route_srv_ = create_service<amr_dispatcher_interfaces::srv::BlockStationRoute>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:118:  detect_deadlock_srv_ = create_service<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:121:  list_stations_srv_ = create_service<amr_dispatcher_interfaces::srv::ListStations>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1249:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:124:  list_reservations_srv_ = create_service<amr_dispatcher_interfaces::srv::ListTrafficReservations>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:127:  reserve_facility_srv_ = create_service<amr_dispatcher_interfaces::srv::ReserveFacilityResource>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1283:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1304:    const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:130:  snapshot_srv_ = create_service<amr_dispatcher_interfaces::srv::GetOperatorSnapshot>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:133:  validate_site_srv_ = create_service<amr_dispatcher_interfaces::srv::ValidateSiteConfig>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1370:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1440:    amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1511:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1635:          amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1674:  amr_dispatcher_interfaces::msg::DispatcherState msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:1737:    amr_dispatcher_interfaces::msg::TopologyState topology_msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:264:    const std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:265:    std::shared_ptr<amr_dispatcher_interfaces::srv::SubmitOrder::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:320:      amr_dispatcher_interfaces::msg::MissionEvent msg;
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:333:    const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:334:    std::shared_ptr<amr_dispatcher_interfaces::srv::CancelOrder::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:406:    const std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:407:    std::shared_ptr<amr_dispatcher_interfaces::srv::PauseMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:419:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:420:    std::shared_ptr<amr_dispatcher_interfaces::srv::ResumeMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:433:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:434:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveResource::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:447:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:448:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReleaseResource::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:460:    const std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:461:    std::shared_ptr<amr_dispatcher_interfaces::srv::EnqueueMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:494:    const std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:495:    std::shared_ptr<amr_dispatcher_interfaces::srv::CancelQueuedMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:553:    const std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:554:    std::shared_ptr<amr_dispatcher_interfaces::srv::PreemptMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:575:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:576:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReprioritizeQueuedMission::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:589:    const std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:590:    std::shared_ptr<amr_dispatcher_interfaces::srv::EstimateMissionCost::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:603:    const std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:604:    std::shared_ptr<amr_dispatcher_interfaces::srv::BlockStationRoute::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:618:    const std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:619:    std::shared_ptr<amr_dispatcher_interfaces::srv::DetectTrafficDeadlock::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:64:  state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:650:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:651:    std::shared_ptr<amr_dispatcher_interfaces::srv::ListStations::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:662:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:663:    std::shared_ptr<amr_dispatcher_interfaces::srv::ListTrafficReservations::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:66:  event_pub_ = create_publisher<amr_dispatcher_interfaces::msg::MissionEvent>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:680:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:681:    std::shared_ptr<amr_dispatcher_interfaces::srv::ReserveFacilityResource::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:696:    const std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Request> /*req*/,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:697:    std::shared_ptr<amr_dispatcher_interfaces::srv::GetOperatorSnapshot::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:70:  topology_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:711:    const std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Request> req,
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:712:    std::shared_ptr<amr_dispatcher_interfaces::srv::ValidateSiteConfig::Response> resp) {
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:76:  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:80:  submit_srv_ = create_service<amr_dispatcher_interfaces::srv::SubmitOrder>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:83:  cancel_srv_ = create_service<amr_dispatcher_interfaces::srv::CancelOrder>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:86:  pause_srv_ = create_service<amr_dispatcher_interfaces::srv::PauseMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:89:  resume_srv_ = create_service<amr_dispatcher_interfaces::srv::ResumeMission>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:92:  reserve_srv_ = create_service<amr_dispatcher_interfaces::srv::ReserveResource>(
+src/amr_dispatcher_ros/src/dispatcher_node.cpp:95:  release_srv_ = create_service<amr_dispatcher_interfaces::srv::ReleaseResource>(
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:239:  amr_dispatcher_interfaces::msg::TopologyState latest_topology_;
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:242:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::TopologyState>::SharedPtr topology_sub_;
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:48:    topology_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/dispatcher_visualizer_node.cpp:50:        [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:123:  void EvaluateReadiness(std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:151:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:153:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_srv_;
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:154:  rclcpp::Service<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr healthy_srv_;
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:41:    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:43:        [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:48:    readiness_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:50:        [this](const std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request> /*req*/,
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:51:               std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:55:    healthy_srv_ = create_service<amr_dispatcher_interfaces::srv::GetSystemReadiness>(
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:57:        [this](const std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request> /*req*/,
+src/amr_dispatcher_ros/src/lifecycle_coordinator_node.cpp:58:               std::shared_ptr<amr_dispatcher_interfaces::srv::GetSystemReadiness::Response> resp) {
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:24:      auto sub = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:26:          [this, t](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:32:    aggregated_pub_ = create_publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:47:    amr_dispatcher_interfaces::msg::ChassisLinkHealth agg;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:86:  std::vector<rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr> subs_;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:87:  rclcpp::Publisher<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr aggregated_pub_;
+src/amr_dispatcher_ros/src/link_health_publisher.cpp:89:  std::unordered_map<std::string, amr_dispatcher_interfaces::msg::ChassisLinkHealth> latest_health_;
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:149:    const amr_dispatcher_interfaces::msg::TrackingError::SharedPtr msg) {
+src/amr_dispatcher_ros/src/navigate_sequence_bridge_node.cpp:44:  tracking_error_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/path_tracker_node.cpp:41:  error_pub_ = create_publisher<amr_dispatcher_interfaces::msg::TrackingError>(
+src/amr_dispatcher_ros/src/path_tracker_node.cpp:86:  amr_dispatcher_interfaces::msg::TrackingError err_msg;
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:210:  amr_dispatcher_interfaces::msg::SafetyState state_msg;
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:77:  link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:79:      [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:84:  topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:86:      [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+src/amr_dispatcher_ros/src/safety_gate_node.cpp:91:  safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:113:  rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:114:  rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:115:  rclcpp::Client<amr_dispatcher_interfaces::srv::PauseMission>::SharedPtr pause_cli_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:116:  rclcpp::Client<amr_dispatcher_interfaces::srv::ResumeMission>::SharedPtr resume_cli_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:117:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:118:  amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:22:    submit_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:23:    cancel_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:24:    pause_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::PauseMission>("/dispatcher/pause_mission");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:25:    resume_cli_ = node_->create_client<amr_dispatcher_interfaces::srv::ResumeMission>("/dispatcher/resume_mission");
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:27:    state_sub_ = node_->create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:29:        [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:39:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::SubmitOrder::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:59:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::CancelOrder::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:76:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::PauseMission::Request>();
+src/amr_dispatcher_tools/src/dispatcher_cli.cpp:89:    auto req = std::make_shared<amr_dispatcher_interfaces::srv::ResumeMission::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:181:        auto req = std::make_shared<amr_dispatcher_interfaces::srv::GetSystemReadiness::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:212:          auto req = std::make_shared<amr_dispatcher_interfaces::srv::SubmitOrder::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:243:      auto req = std::make_shared<amr_dispatcher_interfaces::srv::CancelOrder::Request>();
+src/amr_dispatcher_tools/src/rest_gateway.cpp:366:  rclcpp::Client<amr_dispatcher_interfaces::srv::SubmitOrder>::SharedPtr submit_cli_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:367:  rclcpp::Client<amr_dispatcher_interfaces::srv::CancelOrder>::SharedPtr cancel_cli_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:368:  rclcpp::Client<amr_dispatcher_interfaces::srv::GetSystemReadiness>::SharedPtr readiness_cli_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:371:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::DispatcherState>::SharedPtr state_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:372:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::SafetyState>::SharedPtr safety_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:373:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>::SharedPtr link_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:374:  rclcpp::Subscription<amr_dispatcher_interfaces::msg::MissionEvent>::SharedPtr event_sub_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:376:  amr_dispatcher_interfaces::msg::DispatcherState latest_state_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:377:  amr_dispatcher_interfaces::msg::SafetyState latest_safety_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:378:  amr_dispatcher_interfaces::msg::ChassisLinkHealth latest_link_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:379:  std::vector<amr_dispatcher_interfaces::msg::MissionEvent> recent_events_;
+src/amr_dispatcher_tools/src/rest_gateway.cpp:42:    submit_cli_ = create_client<amr_dispatcher_interfaces::srv::SubmitOrder>("/dispatcher/submit_order");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:43:    cancel_cli_ = create_client<amr_dispatcher_interfaces::srv::CancelOrder>("/dispatcher/cancel_order");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:44:    readiness_cli_ = create_client<amr_dispatcher_interfaces::srv::GetSystemReadiness>("/system/ready");
+src/amr_dispatcher_tools/src/rest_gateway.cpp:48:    state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::DispatcherState>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:50:        [this](const amr_dispatcher_interfaces::msg::DispatcherState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:55:    safety_sub_ = create_subscription<amr_dispatcher_interfaces::msg::SafetyState>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:57:        [this](const amr_dispatcher_interfaces::msg::SafetyState::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:63:    link_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:65:        [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+src/amr_dispatcher_tools/src/rest_gateway.cpp:70:    event_sub_ = create_subscription<amr_dispatcher_interfaces::msg::MissionEvent>(
+src/amr_dispatcher_tools/src/rest_gateway.cpp:72:        [this](const amr_dispatcher_interfaces::msg::MissionEvent::SharedPtr msg) {

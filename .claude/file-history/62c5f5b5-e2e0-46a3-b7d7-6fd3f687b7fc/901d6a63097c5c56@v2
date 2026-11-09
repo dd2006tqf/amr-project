@@ -1,0 +1,106 @@
+# 云服务器部署配置（AMR Dispatcher 完整系统）
+#
+# 这是本仓库唯一的 compose 配置。旧的 docker/docker-compose.yml 与
+# docker/Dockerfile 已删除（它们依赖未随仓库分发的 robot-amr:latest 基础镜像）。
+#
+# 关键设计
+# -------------------------------------------------
+# 1. 用 bridge 网络 + "127.0.0.1:8080:8080"，替代 network_mode: host。
+#    原因：rest_gateway.cpp:106 硬编码绑定 INADDR_ANY(0.0.0.0) 且没有 bind 地址
+#    参数，且该应用无任何认证机制。host 网络下无法用 ports 限制绑定地址，端口会
+#    直接暴露到公网；bridge + 回环绑定后，即使云安全组配错，8080 也只在服务器
+#    本机可达，配合 SSH 隧道使用。
+#    所有节点都跑在这一个容器内，DDS 通信不跨容器，bridge 网络完全够用。
+#
+# 2. 去掉 privileged: true 与 - /dev:/dev。容器内自带 PTY 模拟器提供底盘数据，
+#    不需要访问宿主设备树，也不需要有特权。
+#
+# 3. working_dir 固定为 /workspace。rest_gateway 与 dispatcher_visualizer_node 用
+#    相对路径加载 tools/operator_console.html 和 config/stations.yaml，工作目录
+#    不对会导致 Web 控制台 404、可视化回退到硬编码站点。
+#
+# 4. 不含 build: 段。服务器可用内存仅 1.4GiB，在此编译 ROS 2 C++ 有 OOM 风险。
+#    镜像应在开发机构建后传输加载（见 docs/DEPLOYMENT.md）。
+#
+# 用法（在 docker/ 目录下）：
+#   docker compose -f docker-compose.server.yml up -d
+#   docker compose -f docker-compose.server.yml logs -f
+#   docker compose -f docker-compose.server.yml down
+
+# 显式指定项目名，隔离本栈与同目录下的其他 compose 项目。
+#
+# compose 默认用目录名当项目名，本文件所在目录是 docker/，项目名因此为 "docker"。
+# 若服务器上恰好也有其他 compose 栈使用同名项目（实测存在 tc_fcgi_app /
+# tc_fcgi_nginx_fastdfs / tc_fcgi_mysql 三个容器同属 "docker" 项目），则
+# `docker compose ... up -d --remove-orphans` 或 `down --remove-orphans`
+# 会把这些无关容器一并删除。显式命名后本栈完全独立。
+name: amr-dispatcher
+
+services:
+  amr_dispatcher:
+    image: amr-dispatcher:jazzy
+    container_name: amr_dispatcher
+    restart: unless-stopped
+
+    working_dir: /workspace
+    volumes:
+      # 仓库根目录（compose 文件的上一级）挂载为 /workspace。
+      # 首次启动会在此生成 build/ install/ log/。
+      - ../:/workspace
+
+    ports:
+      # 仅绑定回环。必须配合 SSH 隧道访问，公网不可达。
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      - ROS_DOMAIN_ID=42
+      # 无物理串口时自动启动 PTY 底盘模拟器（入口脚本负责解析 /dev/pts/N）
+      - AMR_USE_MOCK_CHASSIS=1
+      # 心跳周期 200ms，显著小于 safety_gate_node 的 heartbeat_timeout_ms=500ms，
+      # 避免"心跳间隔 == 超时阈值"导致的看门狗误触发
+      - AMR_HEALTH_RATE_HZ=5.0
+      # 服务器 4 核 / 3.7 GB。**不要**在这里写死并发数：入口脚本已按内存
+      # 自动推导（本机 → 1，16 GB CI → 4）。写死成 2 会绕过推导，而 3.7 GB
+      # 上的 -j2 已经贴着 swap 颠簸边界（单个 cc1plus 峰值 1.5–2 GB），
+      # 2026-11-05 的 SSH 卡死就是这条路径造成的。需要临时覆盖时用
+      # `docker compose run -e AMR_COLCON_WORKERS=N`，不要改这里。
+
+    # Fast DDS 走共享内存，默认 64MB 偏小
+    shm_size: 512m
+
+    # 内存硬上限（宿主机 3.7 GB 的 ~70%）。
+    #
+    # 为什么必须设：不设时（HostConfig.Memory=0）容器内的 cc1plus 峰值直接
+    # 吃宿主机内存，构建一起并发就把**整台机器**拖进 swap 颠簸——连 sshd
+    # 都抢不到 CPU，表现为 SSH 会话卡死，而 dmesg 里一条 oom-kill 都没有
+    # （2026-11-05 三次事故即此）。设了上限之后，超限只会让内核 kill 掉
+    # 容器内的编译进程（OOM-killed，可见、可重试），宿主机与 SSH 保持可用。
+    #
+    # 4g 的 memory-swap 是「内存 + swap」总上限，即最多再借 1.5 GB swap。
+    # 留出这个余量是刻意的：正常增量构建峰值约 1.5–2 GB，不该被误杀。
+    mem_limit: 2560m
+    memswap_limit: 4g
+
+    # 健康检查：只提供可见性与 `up --wait` 判定，**不触发自动重启**。
+    #
+    # 判据是 /readyz（不是 /healthz）：/healthz 只证明网关的 HTTP 线程还在，
+    # 而 DDS 卡死时它照样应答——那正是我们要检测的失效模式。
+    #
+    # 严禁加 autoheal 之类的"unhealthy 就重启容器"守护：安全门锁存 CRITICAL 时
+    # /readyz 恒 503，重启会拆掉一个"健康但安全锁存"的栈，并丢掉内存里的调度状态
+    # （队列/路权/时空窗）。自愈靠 launch 里每个节点的 respawn（见 full_system.launch.py）。
+    #
+    # start_period 给 180s：首次启动要 colcon 构建，构建期间 8080 还没人听。
+    healthcheck:
+      test: ["CMD", "python3", "/workspace/docker/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+    # 限制容器日志增长，避免占满 17GB 可用磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,21 @@
+# manager 模块
+file(GLOB_RECURSE MANAGER_SRCS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
+)
+
+add_library(live_broadcast_manager STATIC ${MANAGER_SRCS})
+
+target_link_libraries(live_broadcast_manager PUBLIC
+    ins_defaults
+    ins_base
+    ins_error_code
+    ins_ibus
+    ins_share_state
+    live_broadcast_state_machine
+)
+
+# 模块头文件目录，对上游可见以支持应用内跨模块引用
+target_include_directories(live_broadcast_manager PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+

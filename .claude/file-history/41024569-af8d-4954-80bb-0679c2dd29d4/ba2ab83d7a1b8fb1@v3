@@ -1,0 +1,124 @@
+# Qt 本地看板（实验性）
+
+> **状态**：代码骨架，数据层已验证，UI 层未编译验证
+> **创建日期**：2026-11-05
+> **依据**：根目录 `内核模块技术栈引入讨论.md` 方向一（路径 A1）
+
+## 这是什么
+
+设备接 HDMI 显示器时，在开发板本地打开一个 Qt 看板，查看 WeakNet 的实时诊断情况。
+
+## 关键设计决定
+
+### 数据层：复用现有 C API，不重写 D-Bus
+
+`client/weaknet_client.h` 已经提供完整封装（29 KB，50+ 函数），全部是
+
+```c
+bool weaknet_get_xxx(char* buffer, size_t buffer_size,
+                     char* error_buffer, size_t error_size);
+```
+
+返回 JSON 字符串。**看板直接链接 `libweaknet.so` 调用这些函数，不自己实现 D-Bus。**
+
+### JSON：手写轻量解析，不引第三方库
+
+项目全仓不使用 nlohmann/json，`server/src/net_info.cpp:15` 明确写了这一点。
+看板沿用同样策略：只解析自己需要的字段，未知字段忽略。
+
+### 图表：QPainter 自绘，不用 Qt Charts
+
+理由（见讨论文档 4.7）：
+
+1. 板端**没有** `libqt5charts5`
+2. `QChart` 在 Mesa 软件渲染下性能差
+3. 自绘组件可以渲染到 `QImage` 做**像素级单元测试**，无需显示器
+
+### Qt 版本：跟随系统，不锁死
+
+CMake 写 `find_package(QT NAMES Qt6 Qt5 ...)`，代码里用 `QT_VERSION_MAJOR`，
+不硬编码 `Qt5::`。
+
+## 目录结构
+
+```
+qt_dashboard/
+├── README.md                  ← 本文件
+├── CMakeLists.txt             ← 独立 project，不接入根构建
+├── data/                      ← 数据层（不依赖 Qt，可独立单测）
+│   ├── dashboard_data.hpp     ← POD 结构体
+│   ├── dashboard_data.cpp     ← JSON → POD 解析
+│   ├── json_reader.hpp        ← 轻量 JSON 读取
+│   └── json_reader.cpp
+├── ui/                        ← UI 层（依赖 Qt）
+│   ├── line_chart_widget.hpp  ← QPainter 自绘折线图
+│   └── line_chart_widget.cpp
+└── tests/
+    └── test_json_reader.cpp   ← 数据层单测（30 个用例）
+```
+
+## 构建
+
+独立 project，**不接入根 `CMakeLists.txt`**。原因：
+
+- 根构建面向开发板部署产物（server/client/bpf），看板是可选的人机界面
+- 不是所有部署都装显示器
+- 板端目前只有 Qt 运行时，没有 Qt 开发包
+
+### 只构建数据层（无需 Qt）
+
+```bash
+cmake -S qt_dashboard -B build-qt-dashboard -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-qt-dashboard -j$(nproc)
+ctest --test-dir build-qt-dashboard --output-on-failure
+```
+
+### 连带 UI 层（需要 Qt 开发包）
+
+```bash
+cmake -S qt_dashboard -B build-qt-dashboard -DWEAKN_DASHBOARD_WITH_UI=ON
+cmake --build build-qt-dashboard -j$(nproc)
+```
+
+## 验证状态（2026-11-05）
+
+| 部分 | 状态 | 证据 |
+|------|------|------|
+| 数据层编译 | ✅ 通过 | `g++ -std=c++17 -Wall -Wextra` 零警告 |
+| 数据层单测 | ✅ 30/30 通过 | `ctest` 0.03s |
+| CMake 配置 | ✅ 通过 | 配置 + 构建 + ctest 全流程跑通 |
+| **UI 层编译** | ⚠️ **未验证** | 本机无 Qt 开发包，见下 |
+| **上板运行** | ❌ **未做** | 无 HDMI 显示器 |
+
+### UI 层为什么没编译验证
+
+本机 `/usr/include/x86_64-linux-gnu/qt5/QtWidgets/` 不存在。安装
+`qtbase5-dev` 会连带卸载 `libqt5gui5-gles` 并级联移除 200+ 个 KDE Plasma 包
+（`apt-get -s install qtbase5-dev` 干跑已确认），因此未安装。
+
+**这意味着 `ui/line_chart_widget.cpp` 从未被编译器检查过**，可能存在语法或
+API 使用错误。接入真实构建前必须先在有 Qt 开发包的机器上编译一次。
+
+### 上板运行还缺什么
+
+除显示器外，板端还缺：
+
+1. Qt 开发包（板端只有 40 个运行时包，无 `qtbase5-dev`）
+2. 交叉编译用的 Qt sysroot（当前 `/opt/sysroot-bullseye-arm64` 未含 Qt）
+
+可选路径：直接在板端 `apt install qtbase5-dev qtbase5-dev-tools`（板端是
+Bullseye，源里有），本地编译本地运行，无需交叉编译 Qt。
+
+## 与现有代码的边界
+
+- 不修改 `client/` 下任何现有文件
+- 不修改根 `CMakeLists.txt`
+- 不修改 `scripts/`
+- 不新增 D-Bus 方法（全部使用现有只读方法）
+
+## 下一步
+
+1. 在有 Qt 开发包的机器上编译 UI 层，修掉可能的错误
+2. 写 `MainWindow`，把 D-Bus 调用 → 解析 → 控件串起来
+3. 板端装 `qtbase5-dev`，本地编译运行
+4. 接上显示器后做 EGLFS / X11 实机验证

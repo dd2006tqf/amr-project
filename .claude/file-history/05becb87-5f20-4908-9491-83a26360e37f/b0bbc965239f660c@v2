@@ -1,0 +1,29 @@
+# Tasks: fix-bt-events-pointer-lifecycle
+
+## 锁纪律与生命周期修复
+
+- [ ] 1 将 `BtEventsPlugin` 发布的三个指针（`wireless_event_store` / `bt_link_quality_tracker` / `site_incident_correlator`）的启动发布与停止析构纳入 `ServerContext::monitor_pointers_mutex` 独占锁（`unique_lock`）；`stop()` 内部在锁内解绑关联器、置空上下文指针、析构三成员，消除与并发读者的 UAF 窗口；为 `BtHciTrafficPlugin` 增加 `dependencies() == {"bt_events"}`；改造 `BtHciTrafficPlugin` worker 线程在 `shared_lock` 内安全消费 `wireless_event_store`
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `插件停止期间安全撤销指针与销毁`
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `并发异常事件注入在共享锁下原子消费`
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `蓝牙 HCI 流量插件显式依赖事件插件` | `插件启动与停止感知依赖拓扑`
+  - Verify: `build` `test`
+
+## 蓝牙主监控器现取改造与查询锁化
+
+- [ ] 2 改造 `BtMonitor` 废除构造期一次性缓存的 `tracker_` / `eventStore_` 裸指针，改为持有 `ServerContext*` 并在周期循环（`refreshDeviceStates` 中的射频新鲜观测/轮询快照）与每 6 轮基线持久化路径上持 `monitor_pointers_mutex` 共享锁现取现用；D-Bus `QueryDeviceEvents` 与 `QuerySiteIncidents` 处理函数同样在共享锁内判空与调用；改写 `dbus_service.cpp` 头注释纠正指针为运行期可变的现实
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `蓝牙主监控器跨周期现取最新上下文`
+  - Verify: `build` `test`
+
+## 上网网卡管理器显式停机
+
+- [ ] 3 为 `UsingInterfaceManager` 声明并实现显式且幂等的 `stop()` 成员函数，通知 Netlink 事件线程退出并执行 `join()`；在 `server.cpp` 关机清理流程中、`google::ShutdownGoogleLogging()` 之前显式调用该接口；新增单元测试覆盖其 start/stop/restart 幂等性
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `上网网卡监听管理器提供显式停机操作` | `服务端关机显式停止上网网卡监听线程`
+  - Verify: `build` `test`
+
+## 生命周期并发回归套件
+
+- [ ] 4 新增单元测试 `test_bt_events_lifecycle_gtest.cpp`，并发调度 `BtEventsPlugin` 的 start/stop 循环与多读线程（模拟 `bt_hci_traffic` worker 注入、`BtMonitor` 射频推进、D-Bus 查询），断言读写互斥下不出现 UAF、空指针安全降级、插件重启后新对象被读者自动识别，现有 51 套件保持 100% 通过
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `插件停止期间安全撤销指针与销毁`
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `并发异常事件注入在共享锁下原子消费`
+  - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `跨插件蓝牙事件与关联器指针纳入读写锁纪律` | `蓝牙主监控器跨周期现取最新上下文`
+  - Verify: `build` `test`

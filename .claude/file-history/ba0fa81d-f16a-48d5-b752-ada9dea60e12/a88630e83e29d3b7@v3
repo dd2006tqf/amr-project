@@ -1,0 +1,22 @@
+# 2026-10-19 审查修复 Ledger
+
+计划：docs/superpowers/plans/2026-10-19-review-fixes.md
+
+## 状态
+
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| Workstream A（core） | 完成 | A1–A10，ctest 500/500（470+30），commit 902190f（仅 core+test 路径隔离）；TTL/NaN/滑窗/竞态/先查后放/kOverCapacity/锁ID收敛均落地 |
+| Workstream B（ROS） | 进行中 | 已派发；用 A 新 API；只碰 ros/launch/三 config yaml + API.md 心跳行 + USAGE 节点行 |
+| Workstream B（ROS） | 完成 | B1–B8，commit e99d80a；colcon 5 包绿，core 500 + BT 36 + ROS 新增 13 用例全过；full_system/core_only 冒烟、4 个 /v2 服务实调、参数热更正反用例均通过 |
+| Workstream C（工程化） | 完成（待提交） | C1–C6 + 主线程补充：check_all BT 阶段加"容器产物宿主机不可执行→SKIPPED"守卫（本地 build/amr_dispatcher_bt 是 /workspace 容器路径）、README/USAGE 计数 470→500（USAGE 套件数 58→实测 52 文件） |
+| 最终验证 + 终审 | 进行中 | check_all exit 0（PASSED_WITH_SKIPPED_STAGES，core 500 实测）；C 已分 3 commit（b39eb8b/3192aad/e09f3dc），工作区干净；终审 agent 审 b139e46..e09f3dc，重点：estop 事件是否被 TTL 误过期、话题改名 breaking 引用方、热更并发 |
+
+## Rulings
+
+- 不用 worktree：仓库惯例直接在 main 工作（用户历史提交均在 main）。
+- 提交策略：按工作流分批提交，消息风格对齐仓库历史，结尾 Co-Authored-By。
+- 孤儿接口删除决策全部推迟到修复完成后讨论（用户明确指示）。
+- L2 launch 契约测试：本轮只做诚实化报告（SKIPPED），不建 launch_testing 包（避免范围膨胀）；留待孤儿/后续讨论。
+- 三个桩服务（estimate_mission_cost / list_stations / validate_site_config / get_operator_snapshot 半桩）做真实现，不做删除（属"重新规划接入"方向）。
+- A5 Ruling：UDP 按数据报原子语义单次 sendto、不做分片循环（短计数/EAGAIN 视为丢失返回 false）；serial 部分写循环重试。PTY 测试经 would-block 阈值实测构造。ctest 491/491（A5 完成时点）。

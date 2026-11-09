@@ -1,0 +1,261 @@
+# AI-powered Network Diagnostics (WeakNet)
+
+本项目由“tanqf”开发。
+
+**WeakNet 是面向工业现场的无线信号检测与诊断网关**：持续观测现场 Wi-Fi、Bluetooth 等无线链路及周边设备状态，识别单设备异常和区域性无线环境异常，并通过历史数据、链路事件和跨设备关联帮助运维人员判断"哪里出了问题、什么时候开始、影响了哪些设备、可能是什么原因"。产品只做**观测、检测、诊断、追溯**，不做设备控制与网络管理（产品定位与领域模型详见 [`docs/产品定位-工业无线诊断网关.md`](docs/产品定位-工业无线诊断网关.md)）。
+
+技术上，系统以 eBPF（CO-RE）为底层无侵入探针，结合系统总线 D-Bus IPC、多源指标注册中心、分层服务水平评价体系（SLE），以及与大模型智能排障平台（Large-Model-Application）的边缘遥测导出闭环，运行于 Linux 嵌入式设备（Radxa Cubie A7A ARM64）与通用服务器。
+
+---
+
+## 🌟 核心特性与架构亮点
+
+### 1. 内核级单源可观测底座（eBPF CO-RE）
+- **TCP 连接状态机跟踪** (`tcp_connect`, `tcp_conn`): 挂载 `sock:inet_sock_set_state` 等跟踪点，微秒级捕获握手耗时、三次握手丢包与连接生命周期。
+- **TCP 协议栈异常诊断** (`tcp_retrans`, `skb_drop`): 精准监控内核快速重传、超时重传（RTO），并在 `kfree_skb` 处捕获丢包 drop reason 代码。
+- **应用层协议延迟分析** (`http_latency`, `dns_monitor`): HTTP 走 `tcp_sendmsg`/`tcp_recvmsg_locked` 套接字探针无侵入测请求首字节时延（TTFB），DNS 由单源 `ip_finish_output2`（query）/ `udp_queue_rcv_skb`（response）配对计算解析耗时。
+- **单一事实源与跨探针安全**：严格遵循单源捕获原则，严禁跨探针 join 与脆弱内存跨域推断；支持针对本地自采样流量的智能回环抑制与协议过滤。
+
+### 2. 丰富的主被动多源指标监控（Metrics Registry）
+- **网络质量与链路监控**：
+  - **RTT & Jitter**: 集成 ICMP 探测线程，单次采样下基于滑动窗口实时推导抖动（Jitter），杜绝双倍 ICMP 探测开销。
+  - **Wi-Fi 射频态势**: 优先通过 Netlink `nl80211` 查询真实 RSSI，在无射频接口时回落至启发式评估，并支持 `wifi_loss` 帧级监测。
+  - **网络流量吞吐**: 实时统计网卡吞吐率（bps）、包速率（pps）及活动流数量。
+  - **蓝牙设备监控**: 基于 BlueZ D-Bus 接口异步监测蓝牙适配器、设备配对、连接状态与 RSSI 变化。
+- **配置化与热调参（weaknet-cli）**:
+  - 全局参数支持 YAML 持久化配置与运行时 D-Bus 动态调参，改动实时生效无需重启服务。
+  - 安全鉴权保护：调参及监控器启停接口强校验调用方权限（仅 UID 0 / root 授权修改）。
+
+### 3. 分层网络体验评价体系（Assurance v2 / SLE）
+- **Profile 驱动**：根据业务场景（`NETWORK_ONLY` 纯局域网 / `INTERNET_ACCESS` 互联网接入）动态调整评估标准。
+- **Evidence-First 证据判决**：多维度置信度门禁，防止弱网误报；区分链路物理质量（Link Quality）与端到端网络体验（Overall Quality）。
+- **历史数据持久化**：SQLite 高效持久化网卡健康、RTT、Jitter、丢包率等全维度数据，并配备专用查询 CLI。
+
+### 4. 边缘遥测与 AI 智能诊断平台闭环
+- **边缘安全上报**：板端内置轻量签名与导出管道，通过 Ed25519/HMAC 签名与 TLS 双向加密，向云端安全上送不可变评估快照。
+- **无线事实上行**（Phase 4a）：设备断连事件、区域级 `SiteIncident`、链路基线画像经独立端点
+  `POST /api/v1/network/edge/wireless-events` 签名上报（按 `event_id`/`incident_id` 分域幂等），
+  云端落四张租户事实表，供因果诊断装配证据包。
+- **云端因果诊断**（Phase 4b）：确定性规则引擎先给出 Canonical 结论（物理模式 + 受约束假说），
+  大模型仅做解释润色，W1~W6 因果护栏强制事实断言绑定证据 ID；结果独立落 `site_incident_diagnoses`，绝不回写事实表。
+- **平台联动**：网关经资产桥进入平台资产域（S6）；新开的区域事故自动建一张**工单草稿**进运营队列（S7），
+  正式 incident/工单仍由人补证据并确认——平台证据门禁不可绕过。
+- **云端大模型工作台**（`Large-Model-Application`）：基于 Next.js + FastAPI + 大语言模型，接收边缘上报数据，提供暗黑风态势大屏、拓扑下钻以及一键式 AI 根因诊断。
+
+---
+
+## 📁 目录结构
+
+```
+AI-powered-Network-Diagnostics/
+├── server/                     # C++ 服务端与 eBPF 探针源码
+│   ├── src/                    # 服务端实现（WeakNetMgr, D-Bus Adapter, Registry 等）
+│   ├── include/                # 服务端内部头文件
+│   ├── bpf/                    # eBPF 内核态源码（*.bpf.c 及 vmlinux.h）
+│   ├── test/                   # 单元测试与组件测试（Google Test）
+│   └── CMakeLists.txt          # 服务端构建规则
+├── client/                     # 客户端库与 CLI 工具
+│   ├── client.cpp              # 客户端核心实现与 D-Bus 通信
+│   ├── weaknet_cli.cpp         # 运维调参命令行工具（weaknet-cli）
+│   ├── weaknet_client.h        # 纯 C 兼容 API 头文件
+│   └── CMakeLists.txt          # 客户端编译规则
+├── Large-Model-Application/    # 智能诊断云端平台（Next.js + FastAPI + LLM Agent）
+├── tools/                      # 部署、测试与运维工具
+│   ├── ci.sh                   # 一键 CI 脚本：增量编译 + 打包 + 部署 + 真机测试（唯一入口）
+│   ├── weaknet-server.service  # systemd 服务单元
+│   ├── com.example.WeakNet.conf# D-Bus 系统总线安全策略
+│   └── weaknet-test-full.sh    # 开发板真机全量冒烟测试脚本
+├── docs/                       # 项目全景技术文档
+│   ├── ai/                     # OpenSpec 工作流、铁律与规范
+│   ├── 架构设计-模块与代码结构.md             # 系统全局架构与模块设计
+│   ├── 网络体验评价体系.md      # 分层 SLE 评估体系模型
+│   ├── 交叉编译与开发板部署.md  # ARM64 开发板环境与编译规范
+│   └── weaknet_cli_usage.md    # 调参 CLI 使用手册
+├── config.yaml                 # 运行时监控器与边缘上报配置文件
+├── CMakeLists.txt              # 根 CMake 配置
+└── README.md                   # 项目介绍文档
+```
+
+---
+
+## 🚀 快速上手
+
+### 环境依赖
+
+- **开发宿主机（x86_64）**：Linux 环境，支持 Docker、QEMU binfmt（用于 ARM64 模拟构建）、CMake 3.16+、Clang/LLVM、D-Bus、Glog、SQLite3、GTest。
+- **目标设备（ARM64）**：Radxa Cubie A7A（内核 5.15+ 支持 BTF 与 eBPF，开启 mDNS / Avahi，预装 libdbus、libbpf、glibc 2.31+）。
+
+### 1. 本地快速构建与测试（x86 验证）
+
+仅需本地开发机快速跑单元测试或校验服务端逻辑时：
+
+```bash
+# 生成 x86 构建目录（跳过需要内核环境的 eBPF 探针）
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+
+# 编译全部组件
+cmake --build build-x86 -j$(nproc)
+
+# 运行本地全量单元测试（56 个套件，实测 56/56 通过，约 6.5 秒）
+ctest --test-dir build-x86/server --output-on-failure
+```
+
+### 2. ARM64 原生交叉编译与一键部署到开发板
+
+本项目目标运行平台为 ARM64（Radxa Cubie A7A，Debian 11 Bullseye）。构建系统采用**宿主机裸机原生 Clang 交叉编译体系**，完全脱离 Docker 容器与 QEMU 模拟，支持 `-j$(nproc)` 多核满血并发，全量构建在 ~40 秒内完成。
+
+#### （1）环境准备（如需全新初始化）
+宿主机需具备 Clang 18 以及 Bullseye ARM64 Sysroot：
+```bash
+# 若在新机器上首次运行，执行自动化 Sysroot 安装脚本（仅需执行一次）：
+sudo ./scripts/setup_arm64_sysroot.sh
+```
+
+#### （2）一键流水线（编译 + 打包 + 部署 + 真机测试）
+```bash
+# 宿主机极速原生交叉编译 + 部署到开发板并执行冒烟测试：
+BOARD=board ./tools/ci.sh --skip-push
+
+# 仅在宿主机完成编译与打包（耗时 ~40 秒，不连板端）：
+./tools/ci.sh --local-only
+```
+
+流水线会自动完成：
+- 宿主机多核原生交叉编译 C++ 核心组件与 12 个 eBPF 探针字节码
+- 打包输出 `dist-arm64/`
+- rsync 增量同步产物至板端 `/home/radxa/weaknet/`（自动保留板端持久化数据库与配置）
+- 自动注入 edge token 并热重启 systemd 托管服务（`weaknet-server`）
+- 远程执行板端真机冒烟套件（`health`, `get`, `test-basic`, `test-network`, `test-ping`）
+
+---
+
+## 💻 运维与管理（weaknet-cli）
+
+开发板服务端部署成功后，系统通过 D-Bus System Bus 监听请求。
+
+### 查看配置
+```bash
+# 列出所有可用监控器
+weaknet-cli list
+
+# 查询指定监控器当前参数（JSON 输出）
+weaknet-cli get rtt
+# 输出示例: {"rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":5000,"timeout_ms":800,"window_size":30}}
+
+# 查看全部运行中配置
+weaknet-cli get all
+```
+
+### 实时调参（需 root 权限）
+为保证网络服务安全，修改系统状态的方法已收紧至仅 root 允许：
+```bash
+# 实时修改 RTT 采样周期为 5 秒
+sudo weaknet-cli set rtt.interval 5s
+
+# 修改 RTT 探测目标地址
+sudo weaknet-cli set rtt.target 8.8.8.8
+
+# 动态启停指定监控器
+sudo weaknet-cli monitor disable bluetooth
+sudo weaknet-cli monitor enable bluetooth
+
+# 保存当前运行时参数到持久化覆盖配置
+sudo weaknet-cli monitor save
+```
+
+### 工业蓝牙数据通道观测与 L2 异常诊断（Phase 1 / 1b / 2）
+`bt_hci_traffic` 插件基于 `kprobe/hci_send_frame` 与 `kprobe/hci_recv_frame` 对称采集 HCI ACL 净荷流量，经 `ioctl(HCIGETCONNLIST)` 绑定连接句柄与设备 MAC（含三元组代次隔离与死句柄清理），落库到 `bt_data_path_metrics`（7 天保留期），并由规则驱动 L2 检测器评估三类确定性异常（`BT_DATAPATH_STALL_SUSPECTED` / `BT_DATAPATH_THROUGHPUT_DEGRADED` / `BT_DATAPATH_ATTRIBUTION_LOST`）。旧 A2DP 音频探针默认停用（`bluetooth.a2dp_fusion_enabled=false`）。
+```bash
+# 查询工业蓝牙 HCI ACL 数据通道历史指标（支持 --device / --start / --end / --limit）
+weaknet-cli bt-traffic
+weaknet-cli bt-traffic --device D0:96:EA:52:30:AC --limit 20
+
+# 查询 L2 异常派生的 LINK_DEGRADED 设备事件（含完整 L1 窗口证据）
+weaknet-cli events --type LINK_DEGRADED
+
+# 实时调整 L2 异常检测规则阈值（需 root）
+sudo weaknet-cli set bluetooth.stall_timeout_ms 5000
+sudo weaknet-cli set bluetooth.min_expected_bps 10000
+```
+
+### 历史数据查询工具
+```bash
+# 查询数据库整体统计信息
+sudo /home/radxa/weaknet/server/bin/history_query_tool --info
+
+# 按网卡及时间窗口导出历史记录
+sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h
+```
+
+---
+
+## 🌐 云端协同：Large-Model-Application 大模型排障
+
+系统解耦了边缘实时监测与云端海量智能分析：
+- **开发板（边缘设备）**：充当高可靠不可变事实源，按指定周期采样与评估，生成签名遥测帧推送到后端；
+- **云端排障工作台**：启动位于 `Large-Model-Application/` 的全功能诊断套件：
+
+```bash
+# 方式一：使用仓库根目录的一键启动脚本（推荐，任意位置可调用）
+./start_platform.sh               # 仅拉起并检查中心云全套服务
+./start_platform.sh --deploy-edge # 拉起中心云 + 编译部署开发板
+
+# 方式二：手动分步启动（在 Large-Model-Application/ 内执行）
+cd Large-Model-Application
+
+# 1. 启动微服务底座（PostgreSQL / Redis / MinIO / Keycloak / OPA / FastAPI）
+./scripts/dev_lite.sh init
+./scripts/dev_lite.sh up -d
+
+# 2. 启动前端 SPA 工作台
+web/node_modules/.bin/pnpm --dir web dev
+# 打开浏览器访问: http://localhost:3000
+```
+
+---
+
+## 🔌 C / C++ 客户端二次集成
+
+动态链接库 `libweaknet.so` 与头文件 `weaknet_client.h` 为第三方应用提供了极简的接入方式（完整集成流程见 `client/example_usage.cpp`）：
+
+```cpp
+#include <iostream>
+#include "client/weaknet_client.h"
+
+int main() {
+    // 1. 初始化客户端总线连接
+    if (!weaknet_init()) {
+        std::cerr << "WeakNet 客户端初始化失败" << std::endl;
+        return -1;
+    }
+
+    // 2. 发起健康评估调用（出参带错误缓冲区，与 weaknet_client.h 一致）
+    char result_buf[2048] = {0};
+    char error_buf[256] = {0};
+    if (weaknet_health_check(result_buf, sizeof(result_buf), error_buf, sizeof(error_buf))) {
+        std::cout << "当前健康状态快照:\n" << result_buf << std::endl;
+    } else {
+        std::cerr << "健康检查失败: " << error_buf << std::endl;
+    }
+
+    // 3. 释放资源
+    weaknet_cleanup();
+    return 0;
+}
+```
+
+---
+
+## 🛠️ 工程规范与 Harness 纪律
+
+本项目遵循严格的 **OpenSpec 规范驱动开发** 与 **Superpowers Skills** 流程：
+1. **单一事实源**：以 OpenSpec 变更（`openspec/changes/`）为需求、设计与任务拆解的唯一标准。
+2. **严禁在未冻结基线下修改代码**：遵循 `Planner → Generator → Evaluator` 三权分立角色体系，确保行为变更拥有完整的 RED-GREEN 证据链。
+3. **真实真机闭环**：代码改动必须经过 x86 单元测试、ARM64 容器增量构建、Radxa 开发板真机部署测试全绿后方可合并。
+
+---
+
+## 📄 许可证与权利声明
+
+- 本项目开发与核心维护者：“tanqf”。
+- 开源协议：本项目遵循 [MIT 许可证](LICENSE)。

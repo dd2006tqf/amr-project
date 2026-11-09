@@ -1,0 +1,96 @@
+/* 一次性验证程序：用看板自己的解析层解析板端真实 JSON。
+ * 不在仓库内，用完即删。 */
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+#include "data/dashboard_data.hpp"
+
+using namespace weaknet::dashboard;
+
+static std::string slurp(const char* path) {
+    std::ifstream f(path);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+int main() {
+    // --- experience ---
+    {
+        const std::string js = slurp("/tmp/board_json/board_experience.json");
+        const ExperienceSnapshot s = parse_experience(js);
+        printf("=== ExperienceSnapshot ===\n");
+        printf("  schema_version   = %d\n", s.schema_version);
+        printf("  interface        = %s\n", s.interface_name.c_str());
+        printf("  profile          = %s\n", s.assessment_profile.c_str());
+        printf("  overall_state    = %s\n", s.overall_state.c_str());
+        printf("  overall_coverage = %s\n", s.overall_coverage.c_str());
+        printf("  display_score    = %.1f\n", s.display_score);
+        printf("  unavailable      = %s\n", s.unavailable_reason.c_str());
+        printf("  -- network_health --\n");
+        printf("    ip_reachability = %s / %s / %s | %s\n",
+               s.ip_reachability.state.c_str(),
+               s.ip_reachability.coverage.c_str(),
+               s.ip_reachability.applicability.c_str(),
+               s.ip_reachability.reason.c_str());
+        printf("    responsiveness  = %s / %s\n",
+               s.responsiveness.state.c_str(), s.responsiveness.coverage.c_str());
+        printf("    reliability     = %s / %s\n",
+               s.reliability.state.c_str(), s.reliability.coverage.c_str());
+        printf("    rf_health       = %s / %s\n",
+               s.rf_health.state.c_str(), s.rf_health.coverage.c_str());
+        printf("  -- service_health --\n");
+        printf("    dns             = %s / %s\n",
+               s.dns_service.state.c_str(), s.dns_service.coverage.c_str());
+        printf("    tcp_connect     = %s / %s\n",
+               s.tcp_connect.state.c_str(), s.tcp_connect.coverage.c_str());
+        printf("    tcp_rtt         = %s / %s\n",
+               s.tcp_rtt.state.c_str(), s.tcp_rtt.coverage.c_str());
+        printf("    http_access     = %s / %s\n",
+               s.http_access.state.c_str(), s.http_access.coverage.c_str());
+        printf("    captive_portal  = %s / %s\n",
+               s.captive_portal.state.c_str(), s.captive_portal.coverage.c_str());
+        printf("    active_dns      = %s\n", s.active_dns.state.c_str());
+        printf("    active_tcp      = %s\n", s.active_tcp.state.c_str());
+        printf("    active_https    = %s\n", s.active_https.state.c_str());
+        printf("    active_portal   = %s\n", s.active_portal.state.c_str());
+    }
+
+    // --- diagnosis ---
+    {
+        const std::string js = slurp("/tmp/board_json/board_diagnosis.json");
+        const DiagnosisSnapshot d = parse_diagnosis(js);
+        printf("\n=== DiagnosisSnapshot ===\n");
+        printf("  fault_domain   = %s\n", d.fault_domain.c_str());
+        printf("  primary_issue  = %s\n", d.primary_issue.c_str());
+        printf("  confidence     = %s\n", d.confidence.c_str());
+        printf("  summary        = %s\n", d.summary_template.c_str());
+        printf("  secondary      = %zu\n", d.secondary_issues.size());
+        printf("  excluded       = %zu\n", d.excluded_causes.size());
+        printf("  actions        = %zu\n", d.actions.size());
+    }
+
+    // --- history ---
+    {
+        const std::string js = slurp("/tmp/board_json/board_history.json");
+        const HistorySeries h = parse_history(js);
+        printf("\n=== HistorySeries ===\n");
+        printf("  points = %zu\n", h.points.size());
+        if (!h.points.empty()) {
+            printf("  first  ts=%s iface=%s score=%.1f quality=%s legacy=%d\n",
+                   h.points.front().ts.c_str(), h.points.front().iface.c_str(),
+                   h.points.front().score, h.points.front().overall_quality.c_str(),
+                   (int)h.points.front().legacy);
+            printf("  last   ts=%s iface=%s score=%.1f quality=%s legacy=%d\n",
+                   h.points.back().ts.c_str(), h.points.back().iface.c_str(),
+                   h.points.back().score, h.points.back().overall_quality.c_str(),
+                   (int)h.points.back().legacy);
+            // 验证正序：第一个应早于最后一个
+            printf("  正序检查: first.ts <= last.ts -> %s\n",
+                   (h.points.front().ts <= h.points.back().ts) ? "OK" : "FAIL");
+        }
+    }
+    return 0;
+}

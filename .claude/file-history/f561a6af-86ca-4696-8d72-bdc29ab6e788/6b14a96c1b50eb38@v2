@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""精确追踪折线：逐列求 #2E7D32 像素的 y 位置。用完即删。"""
+import sys
+from collections import Counter
+
+sys.path.insert(0, "/tmp")
+from inspect_png import read_png  # noqa: E402
+
+TARGET = (0x2E, 0x7D, 0x32)
+
+
+def main(path):
+    w, h, ch, px = read_png(path)
+
+    def rgb(x, y):
+        o = (y * w + x) * ch
+        return px[o], px[o + 1], px[o + 2]
+
+    def is_line(c, tol=35):
+        return all(abs(c[i] - TARGET[i]) <= tol for i in range(3))
+
+    # 图表区：先找出所有绿色像素的 x 范围与 y 范围（排除左侧状态文字）
+    cols = {}
+    for x in range(w):
+        ys = [y for y in range(h) if is_line(rgb(x, y))]
+        if ys:
+            cols[x] = ys
+
+    xs = sorted(cols)
+    print(f"绿色像素 x 范围: {xs[0]}..{xs[-1]}  列数 {len(xs)}")
+
+    # 图表区应在右侧：以连续列块判断（左侧状态文字列会有间隔）
+    # 直接看 x>=300 的部分
+    right = [x for x in xs if x >= 300]
+    if not right:
+        print("右半区无绿色像素")
+        return
+    print(f"图表区绿色 x: {right[0]}..{right[-1]}  列数 {len(right)}")
+    ys_all = [y for x in right for y in cols[x]]
+    print(f"图表区绿色 y: {min(ys_all)}..{max(ys_all)}")
+
+    # 逐列 y 的分布摘要（每 25 列取样）
+    print("\n列   x    y_min y_max  绿色像素数  说明")
+    step = max(1, (right[-1] - right[0]) // 40)
+    for x in range(right[0], right[-1] + 1, step):
+        if x not in cols:
+            print(f"     {x:4d}   -")
+            continue
+        ys = cols[x]
+        print(f"     {x:4d}  {min(ys):4d}  {max(ys):4d}   {len(ys):3d}")
+
+    # 找出水平段（某 y 上连续绿色很长的行）
+    print("\n=== 长水平段（行内绿色总像素 >= 100）===")
+    rows = Counter()
+    for x in right:
+        for y in cols[x]:
+            rows[y] += 1
+    for y, n in rows.most_common(12):
+        if n >= 30:
+            rowxs = sorted(x for x in right if y in cols[x])
+            # 连续段
+            segs, s = [], rowxs[0]
+            for i in range(1, len(rowxs)):
+                if rowxs[i] != rowxs[i - 1] + 1:
+                    segs.append((s, rowxs[i - 1]))
+                    s = rowxs[i]
+            segs.append((s, rowxs[-1]))
+            segs = [g for g in segs if g[1] - g[0] >= 5]
+            print(f"y={y:4d}  像素 {n:4d}  段 {segs}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "/tmp/verify.png")

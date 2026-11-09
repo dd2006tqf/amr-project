@@ -1,0 +1,61 @@
+// 端到端测试：起一次扫描，注入故障，验证 manifest 捕获到所有异常
+#include "capture_session.h"
+#include <thread>
+#include <chrono>
+#include <cstdio>
+#include <cassert>
+
+using namespace xgrids;
+
+int main() {
+    AsyncLogger::instance().init("/tmp/test_scan.log");
+
+    CaptureSession::Config cfg;
+    cfg.data_root = "/tmp/xgrids_test";
+    cfg.cam_fps = 20;
+
+    CaptureSession sess(cfg,
+        [](const QualityReport&){},
+        [](const SessionReport&){});
+
+    assert(sess.start("test_scan"));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    // 注入故障：ch0 丢2帧、ch3 丢1帧、RTK 失锁 800ms、过热
+    sess.inject_camera_drop(0, 2);
+    sess.inject_camera_drop(3, 1);
+    sess.inject_rtk_loss(800);
+    sess.inject_cpu_heat(780);
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    sess.inject_cpu_heat(300);
+
+    auto rep = sess.stop();
+
+    // 验证
+    const auto& m = rep.manifest;
+    std::printf("clean=%d\n", m.clean);
+    for (int i = 0; i < 5; ++i) {
+        auto& c = m.channels[i];
+        std::printf("ch%d frames=%llu lost=%llu gaps=%zu\n",
+                    i, (unsigned long long)c.frames,
+                    (unsigned long long)c.lost, c.gaps.size());
+    }
+    std::printf("rtk_windows=%zu rescan=%zu imu=%llu\n",
+                m.rtk_loss_windows.size(), m.rescan_windows.size(),
+                (unsigned long long)m.total_imu_samples);
+
+    // 应该有丢帧、有RTK失锁窗、有重扫建议、IMU 有样本
+    // 注入故障后必然不干净（ch0/ch3 各丢过帧）
+    assert(!m.clean);
+    // 丢帧会在 manifest 中留下缺口记录（seq 跳变或显式 gap）
+    assert(m.channels[0].lost > 0 || !m.channels[0].gaps.empty());
+    assert(m.channels[3].lost > 0 || !m.channels[3].gaps.empty());
+    assert(!m.rescan_windows.empty());
+    assert(m.total_imu_samples > 0);
+    // RTK 失锁窗口（注入 800ms，1Hz GNSS 至少能抓到一次非固定解）
+    // 不做硬断言，因为时序不保证命中——改为打印验证
+
+    std::puts("pipeline test passed");
+    return 0;
+}

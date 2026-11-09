@@ -1,0 +1,142 @@
+# Phase 8 — 工业物理设施适配器集成与协议网关 (Industrial Facility Integration & Protocol Adapters)
+
+> 本阶段为演进路线图中的 **Phase 8 (方案 B)**。
+> Phase 0～7 已全部完成合并入 `main` 分支（提交 `3e7c3f9` / `d9eafb6` / `5790d58`），全仓 1012/1012 测试通过。
+> 本阶段完成后将进入方案 A (CBS 高层多车协同规划)。
+
+## Context
+
+在仓储物流与工厂自动化中，AMR 车队不仅需要在路网中自主行驶，还必须与现场物理设施（自动快速卷帘门、跨楼层提升机/电梯、自动化充电机、风淋门等）进行可靠的联锁控制（Interlocking Control）。
+
+### 现状分析与架构断层
+1. **接口虽有但生产未接线**：
+   - Phase 6 已经抽象了 `IFacilityAdapter` 和 `MockFacilityAdapter`（`facility_adapter_interface.hpp`），并实现了设施目录（`FacilityCatalog`）与预约管理（`FacilityReservation`）；
+   - 但在 ROS 调度主节点 `dispatcher_node.cpp` 中，**该套能力完全未接线**：节点从未加载设施文件，`/v2/reserve_facility_resource` 错误地路由到了路网交通锁表（`reservation_table_`）而非设施预约表；
+   - `scenarios.yaml` 中虽预定义了 `facility_action` 任务类型，但缺乏任何真实执行与状态反馈闭环。
+2. **缺乏工业标准协议通信实现**：
+   - 现仅有内存级的 `MockFacilityAdapter`，缺乏向下通过工业标准协议（Modbus-TCP / 工业网络协议接口）控制现场硬件真实 I/O 寄存器或状态字的客户端实现。
+3. **缺乏设施控制超时与故障降级语义**：
+   - 自动门开门未到位（Limit switch 故障）、电梯长时间无响应等现场异常，调度系统缺乏租约超时（Lease / Timeout）、重试与安全旁路（Facility Failure Degradation）策略。
+
+### 核心设计原则
+1. **零外部重量级依赖，保持纯 C++ 领域模型**：
+   - 参考底盘驱动层（`serial_backend.cpp`、`udp_backend.cpp`）的成功范式，使用纯 C++17 POSIX 标准 Socket 实现工业通用的 **Modbus-TCP 适配器**，无缝对接标准工业 PLC，保持 core 包零 ROS/零外部重型库依赖；
+   - 提供标准可插拔接口与工厂机制，为未来进一步接入 OPC-UA 插件预留平滑扩展点。
+2. **真实安全互锁与租约超时保底**：
+   - 设施预约必须引入超时租约（Lease TTL）机制，杜绝因为单车异常断线导致门/电梯被永久死锁；
+   - 动作执行采用状态机驱动的轮询与超时判定（`Trigger -> Polling State -> Confirmed Ready -> Release`）。
+3. **严格兼容与平滑降级**：
+   - 参数 `facility_catalog_file` 默认为空（不启用设施控制时维持既有纯路网行为不变）；
+   - 现有 1012 个单元测试与全部 5 套 E2E 脚本保持 100% PASS。
+
+---
+
+## 阶段规划 (P0 → P1 → P2 → P3)
+
+### P0：工业通信协议适配器实现与租约管理 (Core Protocol & Lease)
+
+#### 目标
+实现基于纯 C++ Socket 的通用工业通信客户端（Modbus-TCP）、设施适配器注册中心，以及带租约超时的设施预留管理器。
+
+#### 核心改动 (Core: `src/amr_dispatcher_core/`)
+1. **`facility/modbus_tcp_client.hpp` & `.cpp`**：
+   - 实现标准 Modbus-TCP 应用层报文封装与 POSIX TCP Socket 通信（纯 C++，不引第三方库）：
+     - MBAP 报文头处理（Transaction ID, Protocol ID, Length, Unit ID）；
+     - 支持 Function Code 0x01/0x02（读线圈/离散输入：如检测门已开、电梯到位到位开关）；
+     - 支持 Function Code 0x05/0x06（写单个线圈/保持寄存器：如发送开门、关门、呼叫楼层指令）；
+     - 支持收发超时 `SO_RCVTIMEO` / `SO_SNDTIMEO` 防挂死。
+2. **`facility/modbus_facility_adapter.hpp` & `.cpp`**：
+   - 继承 `IFacilityAdapter`，实现基于 Modbus-TCP 的自动门与电梯适配器：
+     - `QueryState()`：读取 PLC 状态寄存器映射为 `FacilityStateReport`（门开闭状态、当前楼层、故障字）；
+     - `ExecuteAction(action, params)`：写入 PLC 控制线圈/寄存器（如写入开门线圈 = 1，写入电梯目标楼层寄存器）；
+     - 支持断线自动重连与健康度监测。
+3. **`facility/facility_adapter_factory.hpp` & `.cpp`**：
+   - 工业适配器工厂模式：支持根据配置创建 `mock`、`modbus_tcp`（或将来的 `opc_ua`）适配器实例。
+4. **`facility/facility_reservation.hpp` 增强**：
+   - 为 `ResourceReservation` 增加 `lease_expires_at` 时间戳；
+   - 增加纯函数 `PruneExpiredFacilityReservations`，自动回收超期未释放的僵尸租约，防止现场设施卡死。
+
+#### 单元测试
+- `test/unit/test_modbus_tcp_client.cpp`：MBAP 编解码、CRC/协议校验、异常响应解析；
+- `test/unit/test_modbus_facility_adapter.cpp`：门动作写入映射、电梯楼层指令映射；
+- `test/unit/test_facility_lease.cpp`：超时租约自动回收与先查后放原子性。
+
+---
+
+### P1：调度器主链设施编排接线与状态大盘 (Dispatcher Wiring)
+
+#### 目标
+在 `dispatcher_node` 中正式挂接设施目录热加载、适配器实例生命周期管理、修复 `/v2/reserve_facility_resource`，并把设施真实状态暴露到系统大盘。
+
+#### 核心改动 (ROS: `src/amr_dispatcher_ros/`)
+1. **节点参数与组件持有 (`dispatcher_node.hpp` & `.cpp`)**：
+   - 新增参数 `facility_catalog_file`（默认空串 = 关闭）；
+   - 持有 `std::unique_ptr<FacilityCatalogReloader>` 与 `std::unordered_map<std::string, std::shared_ptr<IFacilityAdapter>> facility_adapters_`；
+   - 在 `on_configure` 时加载设施目录，根据目录中的地址与协议实例化适配器；在 `on_cleanup` 中优雅断开连接。
+2. **修复 `/v2/reserve_facility_resource` 服务回调**：
+   - 从原先错误的交通锁表代理，改为由 core 层的 `facility_reservation` 真实管理（校验 `FacilityResource` 是否启用、是否独占、当前是否有人持有）；
+   - 返回标准业务状态码与占用者。
+3. **操作台与大盘暴露 (`GetOperatorSnapshotCb` & `rest_gateway.cpp`)**：
+   - `GetOperatorSnapshot` 填充 `BuildFacilityResourceListProjection`，向 REST 网关输出真实设施列表（各门开闭、各电梯所在楼层与锁持有者）；
+   - 在 `/dispatcher/state` 中发布当前互斥设施占用情况。
+
+---
+
+### P2：在途任务设施联锁工作流与超时降级 (Interlocking Workflow)
+
+#### 目标
+实现车辆到达设施关联站点时的自动联锁交互纯逻辑（例如小车驶近自动门前自动开门、穿越后关门并释放锁）。
+
+#### 核心改动 (Core & ROS)
+1. **`workflow/facility_interlocking_planning.hpp` & `.cpp` (纯函数)**：
+   - `PlanFacilityApproach`：当车辆到达目标站或途经关联设施的站点时，判定是否需要申请设施锁并触发动作；
+   - `PlanFacilityDeparture`：当车辆已离开设施关联站点时，判定触发关门或释放设施锁；
+   - `PlanFacilityDegradation`：当设施在规定时限（如 15 秒）内未达到安全就绪状态（门未完全打开）时，下发停车等待或触发告警挂起，防止撞门。
+2. **调度主循环执行与反馈**：
+   - 当在途车辆位姿或 `lastNodeId` 接近关联站点时，异步触发对应适配器的 `ExecuteAction`；
+   - 配合 Phase 7 交通协调器：如果门尚未处于 `open` 状态，将车辆标为 `kWaitingForResource` 并在道口安全驻车，门确认开启后自动放行并恢复 `kRunning`。
+
+#### 单元测试
+- `test/unit/test_facility_interlocking_planning.cpp`：到达前开门申请、离开后释放关门、超时未开门告警阻断。
+
+---
+
+### P3：全流程端到端仿真与集成验收 (E2E & Verification)
+
+#### 目标
+搭建端到端集成测试，验证调度系统通过真实网络通信与模拟 PLC 交互，控制自动门与电梯，保证高可靠性。
+
+#### 交付物
+1. **Python 模拟 Modbus-TCP PLC 设施服务 (`scripts/mock_plc_facility.py`)**：
+   - 监听标准端口（如 15020），模拟现场 PLC 寄存器，支持线圈读写响应；
+   - 模拟卷帘门机械开闭延时（收到开门指令后 2 秒将到位线圈置 1）；
+   - 模拟电梯在各楼层之间的升降移动。
+2. **E2E 自动化测试脚本 (`scripts/check_facility_integration_e2e.sh`)**：
+   - 独立运行域（Domain 85 / REST 18095 / PLC 15020）；
+   - 场景 1：小车执行任务穿越自动门，断言调度器成功发包开门、确认到位、车辆通过后关门并释放锁；
+   - 场景 2：模拟 PLC 离线或卷帘门机械卡死，断言车辆在门前道口安全停止，任务转入 `kWaitingForResource` 并输出降级警告，绝不冲撞。
+3. **CI 接入**：将 `check_facility_integration_e2e.sh` 接入 GitHub Actions CI 流水线。
+
+---
+
+## 验证与验收准则
+
+| 检验项 | 命令 | 预期 |
+|---|---|---|
+| Core 单测 | `ctest --test-dir build/core` | 全绿（原 876 + 新增 ~20 个全 PASS） |
+| ROS 单测 | `colcon test --packages-select amr_dispatcher_ros` | 全绿 |
+| 现有全部 E2E | 运行现存 5 套 e2e 脚本 | 全部 PASS |
+| 新增设施 E2E | `./scripts/check_facility_integration_e2e.sh` | 退出码 0，断言门开闭闭环与故障降级 |
+| 文档同步 | 更新 `docs/API.md` 与 `README.md` | 如实记录 Modbus-TCP 设施控制参数与服务接口 |
+| 标签归档 | `git tag phase-8-green` | 正式归档 Phase 8 |
+
+---
+
+## 提交批次规划
+
+1. `feat(core): 纯C++ Modbus-TCP客户端与工业设施适配器` (P0)
+2. `feat(core): 设施租约超时自动回收与两阶段先查后放` (P0-lease)
+3. `feat(ros): dispatcher_node接入设施目录热重载与真实预留服务` (P1)
+4. `feat(core+ros): 设施联锁控制工作流与超时降级保护` (P2)
+5. `test(e2e): 新增模拟PLC与工业设施联锁E2E集成测试` (P3)
+6. `docs: 更新 EXTENSION_ROADMAP 与 API 文档`

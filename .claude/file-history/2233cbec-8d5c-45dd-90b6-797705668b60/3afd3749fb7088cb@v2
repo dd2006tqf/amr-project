@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""给 ota_p0b_drill.sh 追加第 9 节：窗口耗尽 -> 持久计数 -> 判定变化（缺陷 C1）。"""
+
+TARGET = "/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/tools/ota_p0b_drill.sh"
+
+OLD_CTL = '''if sub == "bump-boot-attempt":
+    d = load()
+    d["transaction"]["boot_attempts"] = int(d["transaction"].get("boot_attempts", 0)) + 1
+    save(d)
+    print(json.dumps({"ok": True, "boot_attempts": d["transaction"]["boot_attempts"]}))'''
+
+NEW_CTL = '''if sub == "bump-boot-attempt":
+    d = load()
+    d["transaction"]["boot_attempts"] = int(d["transaction"].get("boot_attempts", 0)) + 1
+    save(d)
+    print(json.dumps({"ok": True, "boot_attempts": d["transaction"]["boot_attempts"]}))
+elif sub == "bump-trial-round":
+    # 与真控制器一致：**不按 boot_id 幂等**，并刷新窗口起点。
+    import time as _t
+    d = load()
+    d["transaction"]["boot_attempts"] = int(d["transaction"].get("boot_attempts", 0)) + 1
+    d["transaction"]["updated_at"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+    save(d)
+    print(json.dumps({"ok": True, "boot_attempts": d["transaction"]["boot_attempts"]}))'''
+
+SECTION = r'''
+head_ "9. 窗口耗尽 → 持久计数 +1 → 下一次判定真的变化（缺陷 C1）"
+# 这一节直接驱动 loop()（`--once` 不经过 loop 的耗尽分支），验证四件事：
+#   1. 耗尽时返回 75，且**退出前**已经调过 bump-trial-round；
+#   2. 同一次开机（boot_id 不变）里再跑一轮，计数仍然 +1（不幂等）；
+#   3. 计数推到上限后不再请求重启，而是走回滚——不会无界重启；
+#   4. 控制器不可用时 fail-closed 进救援，绝不以 75 退出。
+expire_window() {
+    python3 - "$STATE/transaction.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["transaction"]["updated_at"] = "2020-01-01T00:00:00Z"
+json.dump(d, open(p, "w"))
+PYEOF
+}
+
+# 小驱动器：跑一轮 loop()，第一次休眠就抛 StopIteration 收尾，避免真睡。
+run_loop_once() {  # $1 = ctl 路径
+    python3 - "$REPO/tools/weaknet-ota-recover" "$ROOT" "$STATE" "$1" <<'PYEOF'
+import importlib.machinery, importlib.util, sys
+path, root, state, ctl = sys.argv[1:5]
+loader = importlib.machinery.SourceFileLoader("wn_rec_drill", path)
+spec = importlib.util.spec_from_loader("wn_rec_drill", loader)
+rec = importlib.util.module_from_spec(spec)
+loader.exec_module(rec)
+r = rec.Recoverer(root, state, ctl, sleeper=lambda _s: (_ for _ in ()).throw(StopIteration()))
+w = rec.Watcher(r, once=False)
+w.read_boot_id = staticmethod(lambda: "drill-boot-fixed")
+try:
+    rc = w.loop()
+except StopIteration:
+    rc = "slept"
+print("RC=%s" % (rc,))
+PYEOF
+}
+
+write_state TRIAL 1.1.0 1.0.0 0
+expire_window
+: > "$WORK/ctl.log"
+export FAKE_SERVICE_STATE=active FAKE_BUS_STATE=down FAKE_INSTALLED=1.1.0
+export FAKE_RESTARTS=0
+
+OUT1="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RC1="$(printf '%s' "$OUT1" | sed -n 's/^RC=//p' | tail -1)"
+check "窗口耗尽且还有次数 → 退出码 75" "75" "$RC1"
+check "退出前已调用 bump-trial-round" "yes" \
+      "$(grep -qx bump-trial-round "$WORK/ctl.log" && echo yes || echo no)"
+check "计数已落盘为 1" "1" "$(attempts)"
+
+OUT2="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RC2="$(printf '%s' "$OUT2" | sed -n 's/^RC=//p' | tail -1)"
+check "同 boot_id 再跑一轮仍请求重启" "75" "$RC2"
+check "同 boot_id 第二次仍然计数（不幂等）" "2" "$(attempts)"
+
+write_state TRIAL 1.1.0 1.0.0 3
+expire_window
+: > "$WORK/ctl.log"
+OUT3="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RC3="$(printf '%s' "$OUT3" | sed -n 's/^RC=//p' | tail -1)"
+check "次数耗尽后不再请求重启（不返回 75）" "slept|0" "$RC3"
+check "次数耗尽后走回滚意图" "yes" \
+      "$(grep -qx rollback-arm "$WORK/ctl.log" && echo yes || echo no)"
+
+write_state TRIAL 1.1.0 1.0.0 0
+expire_window
+rm -f "$STATE/RESCUE.md" "$STATE/rescue.flag"
+OUT4="$(run_loop_once "$WORK/no-such-ctl")"
+RC4="$(printf '%s' "$OUT4" | sed -n 's/^RC=//p' | tail -1)"
+check "控制器不可用时不得以 75 退出（会变成无界重启）" "slept|0" "$RC4"
+check "控制器不可用时留下救援现场" "yes" \
+      "$([ -f "$STATE/RESCUE.md" ] && echo yes || echo no)"
+
+'''
+
+MARKER = "\nprintf '\\n\\033[36m== 结果 ==\\033[0m\\n'"
+
+with open(TARGET, "r", encoding="utf-8") as fh:
+    src = fh.read()
+
+assert OLD_CTL in src, "未找到假控制器 bump-boot-attempt 段"
+src = src.replace(OLD_CTL, NEW_CTL, 1)
+
+assert MARKER in src, "未找到结果输出段"
+src = src.replace(MARKER, SECTION + MARKER, 1)
+
+with open(TARGET, "w", encoding="utf-8") as fh:
+    fh.write(src)
+print("patched drill")

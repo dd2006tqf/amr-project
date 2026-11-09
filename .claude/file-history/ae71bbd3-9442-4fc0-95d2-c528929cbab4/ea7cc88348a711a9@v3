@@ -1,0 +1,47 @@
+# xgrids-embedded-intern
+
+对应简历「嵌入式应用软件实习生」预写项目的**完整闭环代码骨架**：
+四相机 + LiDAR + IMU + GNSS 多传感器手持采集设备的**应用层数据通路**。
+
+## 覆盖了什么
+
+完整的数据链路：
+
+```
+传感器驱动 → 时间对齐 → 同步监控 → 完整性 manifest → 存储 → 上传
+                ↓                                    ↓
+           实时质量反馈（设备端 UI 提示）      维测工具（包回放/对账）
+```
+
+简历预写的每一条都对应一个可运行的模块（见 docs/ARCHITECTURE.md）。
+
+## 核心模块
+
+| 模块 | 文件 | 对应简历内容 |
+|---|---|---|
+| `TimeAligner` | `sync/time_aligner.*` | 四路相机按 5ms 窗口聚 SyncGroup，LiDAR/IMU/GNSS 按 slack 对入切片 |
+| `SyncMonitor` | `sync/sync_monitor.*` | 逐路帧号连续性 + 帧间隔抖动 + 组内 skew，异常即告警 |
+| `ManifestRecorder` | `manifest/manifest_recorder.*` | 逐路帧/丢帧区间/RTK 失锁窗 → 扫描结束生成 manifest.json + rescan_windows |
+| `QualityFeedback` | `quality/quality_feedback.*` | 运动模糊/光照/存储/过热/同步违规 → 设备端实时提示 |
+| `StorageBackend` | `backend/storage_backend.*` | 帧流分通道写盘 + 包目录管理 + manifest 落盘 |
+| `Uploader` | `backend/uploader.*` | 扫描包排队上传、带宽限速、断连重试 |
+| `CaptureSession` | `capture_session.*` | 编排上述模块，管理一次扫描的完整生命周期 |
+| `PacketReader` | `tools/packet_reader.*` | 维测：回放数据包、重建时间线、对账 manifest |
+
+## 构建与运行
+
+```bash
+mkdir build && cd build && cmake .. && make -j4
+
+./capture_app                # 一次扫描端到端（含故障注入演示）
+./packet_replay /tmp/xgrids_data/scan_demo_001   # 回放扫描包，对账完整性
+./tests/test_pipeline        # 端到端测试
+```
+
+## 设计要点（面试可聊）
+
+1. **单一时钟源**：`MonotonicClock` 供全部传感器打戳，同步判定才有意义
+2. **背压分层**：`RingBuffer` 低优丢（预览帧）高优阻塞（原始帧），200ms 超时兜底
+3. **不完整组可见**：`TimeAligner` 输出残组 → `ManifestRecorder::on_sync_incomplete` 显式记缺口
+4. **异步日志**：`AsyncLogger` 队列化，业务线程零阻塞；日志与编码线程分离消除调度抖动
+5. **完整性而非"有没有文件"**：manifest 记录每路帧计数、丢帧 seq 区间、RTK 失锁窗、重扫建议——后端据此回答"这次扫的能不能用"

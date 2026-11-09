@@ -1,0 +1,436 @@
+#include "amr_dispatcher_ros/safety_gate_node.hpp"
+
+#include <chrono>
+
+#include "amr_dispatcher_ros/safety_publish_decision.hpp"
+#include "amr_dispatcher_ros/report_freshness.hpp"
+#include "amr_dispatcher_ros/vehicle_topic_names.hpp"
+
+using namespace std::chrono_literals;
+
+namespace amr_dispatcher_ros {
+
+SafetyGateNode::SafetyGateNode(const rclcpp::NodeOptions& options)
+    : rclcpp::Node("safety_gate_node", options) {
+  declare_parameter("max_linear_x_mps", 1.5);
+  declare_parameter("max_linear_y_mps", 1.0);
+  declare_parameter("max_angular_z_radps", 2.0);
+  declare_parameter("heartbeat_timeout_ms", 500);
+  declare_parameter("soft_timeout_ms", 2000);
+  // M5：降级限速阈值参数化（原为硬编码 ±0.2，与 max_* 参数体系脱节）
+  declare_parameter("degraded_max_linear_x_mps", 0.2);
+  // ---- P0.6 / A4：per-vehicle 话题隔离 ----
+  declare_parameter("vehicle_id", "");
+  declare_parameter("raw_cmd_vel_topic", "");
+  declare_parameter("safe_cmd_vel_topic", "");
+  declare_parameter("chassis_heartbeat_topic", "");
+  declare_parameter("path_tracker_heartbeat_topic", "");
+  declare_parameter("teleop_cmd_vel_topic", "");
+  declare_parameter("estop_topic", "");
+  declare_parameter("bumper_topic", "");
+  declare_parameter("manual_takeover_topic", "");
+  declare_parameter("link_health_topic", "");
+  declare_parameter("safety_state_topic", "");
+
+  // M4：参数在构造期读取并缓存——watchdog/gate 配置本就是启动期固定，
+  // 周期路径（10Hz/50Hz）不再重复 get_parameter。
+  heartbeat_timeout_ =
+      std::chrono::milliseconds(get_parameter("heartbeat_timeout_ms").as_int());
+  degraded_max_linear_x_mps_ = get_parameter("degraded_max_linear_x_mps").as_double();
+
+  // ---- P0.6 / A4：解析最终话题名（显式覆盖 > per-vehicle 派生 > legacy 全局名）----
+  vehicle_id_ = get_parameter("vehicle_id").as_string();
+  if (!vehicle_id_.empty() && !IsValidVehicleId(vehicle_id_)) {
+    RCLCPP_ERROR(get_logger(),
+                 "Invalid vehicle_id '%s' (must match [A-Za-z_][A-Za-z0-9_]*); "
+                 "falling back to legacy global topics",
+                 vehicle_id_.c_str());
+    vehicle_id_.clear();
+  }
+  raw_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("raw_cmd_vel_topic").as_string(),
+                                           "/cmd_vel_raw", vehicle_id_);
+  safe_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("safe_cmd_vel_topic").as_string(),
+                                            "/cmd_vel_safe", vehicle_id_);
+  teleop_cmd_vel_topic_ = ResolveVehicleTopic(get_parameter("teleop_cmd_vel_topic").as_string(),
+                                              "/cmd_vel_teleop", vehicle_id_);
+  estop_topic_ =
+      ResolveVehicleTopic(get_parameter("estop_topic").as_string(), "/safety/estop", vehicle_id_);
+  bumper_topic_ =
+      ResolveVehicleTopic(get_parameter("bumper_topic").as_string(), "/safety/bumper", vehicle_id_);
+  manual_takeover_topic_ = ResolveVehicleTopic(get_parameter("manual_takeover_topic").as_string(),
+                                               "/safety/manual_takeover", vehicle_id_);
+  chassis_heartbeat_topic_ = ResolveVehicleTopic(get_parameter("chassis_heartbeat_topic").as_string(),
+                                                 "/safety/heartbeat/chassis_driver", vehicle_id_);
+  path_tracker_heartbeat_topic_ =
+      ResolveVehicleTopic(get_parameter("path_tracker_heartbeat_topic").as_string(),
+                          "/safety/heartbeat/path_tracker", vehicle_id_);
+  link_health_topic_ = ResolveVehicleTopic(get_parameter("link_health_topic").as_string(),
+                                           "/chassis/link_health", vehicle_id_);
+  safety_state_topic_ =
+      ResolveVehicleTopic(get_parameter("safety_state_topic").as_string(), "/safety/state", vehicle_id_);
+  // P0.6 安全语义：急停/碰撞是**全局安全信号**——任何位置的急停都必须让全部车辆停车。
+  // 因此 per-vehicle 模式下，除本车话题外还必须订阅全局话题（全局始终被尊重）。
+  subscribe_global_estop_ = (estop_topic_ != "/safety/estop");
+  subscribe_global_bumper_ = (bumper_topic_ != "/safety/bumper");
+
+  amr_dispatcher_core::safety::CmdVelGateConfig gate_cfg;
+  gate_cfg.max_linear_x_mps = get_parameter("max_linear_x_mps").as_double();
+  gate_cfg.max_linear_y_mps = get_parameter("max_linear_y_mps").as_double();
+  gate_cfg.max_angular_z_radps = get_parameter("max_angular_z_radps").as_double();
+  gate_cfg.source_blocked = [this](const std::string& src) {
+    if (src == "estop") return estop_active_ || auto_fault_latched_;
+    if (src == "bumper") return bumper_active_;
+    if (src.find("watchdog") != std::string::npos) return true;
+    return false;
+  };
+
+  gate_ = std::make_unique<amr_dispatcher_core::safety::CmdVelGate>(gate_cfg);
+
+  amr_dispatcher_core::safety::WatchdogConfig wd_cfg;
+  wd_cfg.heartbeat_timeout = heartbeat_timeout_;
+  wd_cfg.soft_timeout = std::chrono::milliseconds(get_parameter("soft_timeout_ms").as_int());
+  watchdog_ = std::make_unique<amr_dispatcher_core::safety::SafetyWatchdog>(wd_cfg);
+
+  amr_dispatcher_core::safety::SupervisorConfig sup_cfg;
+  sup_cfg.startup_grace = 2000ms;
+  sup_cfg.command_cooldown = 500ms;
+  sup_cfg.auto_clear = true;
+  fault_supervisor_ = std::make_unique<amr_dispatcher_core::safety::FaultSupervisor>(sup_cfg);
+
+  watched_nodes_ = {"chassis_driver", "path_tracker"};
+  for (const auto& node : watched_nodes_) {
+    watchdog_->FeedHeartbeat(node);
+  }
+
+  raw_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      raw_cmd_vel_topic_, 10,
+      std::bind(&SafetyGateNode::RawCmdVelCallback, this, std::placeholders::_1));
+
+  teleop_cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      teleop_cmd_vel_topic_, 10,
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        if (manual_takeover_active_) {
+          RawCmdVelCallback(msg);
+        }
+      });
+
+  manual_takeover_sub_ = create_subscription<std_msgs::msg::Bool>(
+      manual_takeover_topic_, 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        manual_takeover_active_ = msg->data;
+        RCLCPP_INFO(get_logger(), "Manual takeover changed: %s", manual_takeover_active_ ? "ON" : "OFF");
+      });
+
+  estop_sub_ = create_subscription<std_msgs::msg::Bool>(
+      estop_topic_, 10,
+      std::bind(&SafetyGateNode::EstopCallback, this, std::placeholders::_1));
+
+  bumper_sub_ = create_subscription<std_msgs::msg::Bool>(
+      bumper_topic_, 10,
+      std::bind(&SafetyGateNode::BumperCallback, this, std::placeholders::_1));
+
+  // P0.6：全局急停/碰撞——任何位置的急停都必须让全部车辆停车，故全局话题始终订阅。
+  if (subscribe_global_estop_) {
+    global_estop_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/safety/estop", 10,
+        std::bind(&SafetyGateNode::EstopCallback, this, std::placeholders::_1));
+  }
+  if (subscribe_global_bumper_) {
+    global_bumper_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/safety/bumper", 10,
+        std::bind(&SafetyGateNode::BumperCallback, this, std::placeholders::_1));
+  }
+
+  // B1 心跳分源：每条心跳只 Feed 对应来源，一侧停止不会"替"另一侧续命。
+  // P0.6：per-vehicle 模式下订阅本车的心跳话题，但喂狗的来源标识保持
+  // "chassis_driver"/"path_tracker" 不变（来源标识是看门狗语义，不是话题名）。
+  heartbeat_chassis_sub_ = create_subscription<std_msgs::msg::Bool>(
+      chassis_heartbeat_topic_, 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        WatchdogHeartbeatCallback(msg, "chassis_driver");
+      });
+  heartbeat_path_tracker_sub_ = create_subscription<std_msgs::msg::Bool>(
+      path_tracker_heartbeat_topic_, 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        WatchdogHeartbeatCallback(msg, "path_tracker");
+      });
+
+  link_health_sub_ = create_subscription<amr_dispatcher_interfaces::msg::ChassisLinkHealth>(
+      link_health_topic_, 10,
+      [this](const amr_dispatcher_interfaces::msg::ChassisLinkHealth::SharedPtr msg) {
+        chassis_healthy_ = msg->is_healthy;
+        chassis_loss_rate_ = msg->loss_rate;
+        // I1：链路健康数据到达打点（发布者死亡后该源将按陈旧处理）
+        last_data_arrival_["chassis"] = std::chrono::steady_clock::now();
+      });
+
+  topology_state_sub_ = create_subscription<amr_dispatcher_interfaces::msg::TopologyState>(
+      "/dispatcher/topology_state", 10,
+      [this](const amr_dispatcher_interfaces::msg::TopologyState::SharedPtr msg) {
+        deadlock_active_ = msg->deadlock_detected;
+      });
+
+  safe_cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(safe_cmd_vel_topic_, 10);
+  safety_state_pub_ = create_publisher<amr_dispatcher_interfaces::msg::SafetyState>(
+      safety_state_topic_, 10);
+
+  watchdog_timer_ = create_wall_timer(
+      100ms, std::bind(&SafetyGateNode::WatchdogTick, this));
+
+  // B1 50Hz 周期发布兜底：estop/bumper/上游失联一律零速，
+  // 正常时重放最近一次门控裁决，保证 /cmd_vel_safe 有稳定数据流。
+  publish_timer_ = create_wall_timer(
+      20ms, std::bind(&SafetyGateNode::PeriodicPublishTick, this));
+
+  RCLCPP_INFO(get_logger(), "SafetyGateNode initialized (max_vx=%.2f, max_wz=%.2f)",
+              gate_cfg.max_linear_x_mps, gate_cfg.max_angular_z_radps);
+  // P0.6：打印最终话题名——多车现场核对接线的唯一依据（每个 vehicle 一组）。
+  RCLCPP_INFO(get_logger(),
+              "SafetyGateNode topics (vehicle_id=%s): raw=%s safe=%s teleop=%s "
+              "estop=%s (+global=%s) bumper=%s (+global=%s) manual_takeover=%s "
+              "heartbeat_chassis=%s heartbeat_tracker=%s link_health=%s safety_state=%s",
+              vehicle_id_.empty() ? "<legacy>" : vehicle_id_.c_str(), raw_cmd_vel_topic_.c_str(),
+              safe_cmd_vel_topic_.c_str(), teleop_cmd_vel_topic_.c_str(), estop_topic_.c_str(),
+              subscribe_global_estop_ ? "yes" : "no", bumper_topic_.c_str(),
+              subscribe_global_bumper_ ? "yes" : "no", manual_takeover_topic_.c_str(),
+              chassis_heartbeat_topic_.c_str(), path_tracker_heartbeat_topic_.c_str(),
+              link_health_topic_.c_str(), safety_state_topic_.c_str());
+}
+
+SafetyGateNode::~SafetyGateNode() = default;
+
+void SafetyGateNode::EstopCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+  estop_active_ = msg->data;
+  if (estop_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "estop";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Emergency stop button pressed";
+    gate_->PushEvent(evt);
+    RCLCPP_ERROR(get_logger(), "EMERGENCY STOP ACTIVATED");
+  }
+}
+
+void SafetyGateNode::BumperCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+  bumper_active_ = msg->data;
+  if (bumper_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "bumper";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Front bumper triggered collision";
+    gate_->PushEvent(evt);
+    RCLCPP_ERROR(get_logger(), "BUMPER TRIGGERED");
+  }
+}
+
+void SafetyGateNode::WatchdogHeartbeatCallback(const std_msgs::msg::Bool::SharedPtr msg,
+                                               const std::string& source) {
+  // 必须是有效心跳 (msg->data == true) 才视为有效喂狗信号
+  if (!msg || !msg->data) {
+    return;
+  }
+  // I1：心跳到达即打点（真实数据到达点，而非巡检周期）
+  last_data_arrival_["watchdog"] = std::chrono::steady_clock::now();
+  // B1 分源喂狗：只 Feed 回调登记的来源，watched_nodes_ 里每个源独立计时。
+  if (watchdog_) {
+    watchdog_->FeedHeartbeat(source);
+  }
+}
+
+void SafetyGateNode::WatchdogTick() {
+  if (!watchdog_ || !gate_ || !fault_supervisor_) return;
+
+  auto events = watchdog_->Inspect(watched_nodes_);
+  // T9：把"丢拍"与"真失联"分开。Inspect 对每个源最多产出一条事件：
+  //   kWarn     = 超过 heartbeat_timeout 但未到 soft_timeout（丢拍）
+  //   kCritical = 超过 soft_timeout，或该源从未喂过心跳（真失联）
+  // 此前用 events.empty() 一刀切，丢 1 拍就等同失联 → FaultSupervisor 直接
+  // kEmergencyStop 锁存，而名义上的 soft_timeout_ms=2000 永远轮不到执行。
+  // 现在 warn 只限速（30%），critical 才急停，语义与配置名一致。
+  bool watchdog_critical = false;
+  bool watchdog_degraded = false;
+  for (const auto& ev : events) {
+    if (ev.severity == amr_dispatcher_core::safety::SafetySeverity::kCritical) {
+      watchdog_critical = true;
+    } else if (ev.severity == amr_dispatcher_core::safety::SafetySeverity::kWarn) {
+      watchdog_degraded = true;
+    }
+  }
+  // watchdog_ok_ 保留"无 critical"语义：它同时被空闲状态播报与门控 allowed 使用，
+  // 那里的语义是"能不能动"，只有真失联才该判不可动。
+  watchdog_ok_ = !watchdog_critical;
+  watchdog_degraded_ = watchdog_degraded;
+  for (auto& ev : events) {
+    gate_->PushEvent(ev);
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                         "Watchdog event: source=%s msg=%s", ev.source.c_str(), ev.message.c_str());
+  }
+
+  // C1(b)：锁存中的 estop/bumper 每 tick 重推事件以刷新 stamp。
+  // 锁存状态可能无限期为 true，而门控事件带 TTL —— 不重推则事件先于锁存"消失"，
+  // 事件历史与真实安全状态脱节（发布路径已由 ApplyLatchedBlocks 兜底，此处保持语义自洽）。
+  if (estop_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "estop";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Emergency stop button pressed";
+    gate_->PushEvent(evt);
+  }
+  if (bumper_active_) {
+    amr_dispatcher_core::safety::SafetyEvent evt;
+    evt.source = "bumper";
+    evt.severity = amr_dispatcher_core::safety::SafetySeverity::kCritical;
+    evt.message = "Front bumper triggered collision";
+    gate_->PushEvent(evt);
+  }
+
+  // 聚合四大防御源至 Fault Supervisor Engine
+  amr_dispatcher_core::safety::MultiSourceHealthReport report;
+  report.chassis_healthy = chassis_healthy_;
+  report.chassis_loss_rate = chassis_loss_rate_;
+  report.watchdog_healthy = watchdog_ok_;
+  // T9：丢拍单独上报，由 FaultSupervisor 走降级限速而不是急停。
+  report.watchdog_degraded = watchdog_degraded_;
+  report.deadlock_detected = deadlock_active_;
+  report.manual_estop = estop_active_ || bumper_active_;
+  report.detail_message = watchdog_critical
+                              ? "watchdog timeout"
+                              : (watchdog_degraded ? "heartbeat degraded"
+                                                   : (chassis_healthy_ ? "healthy" : "chassis degraded"));
+
+  // I1：时效戳只在真实数据到达时刷新（订阅回调打点），巡检周期不续命——
+  // 上游 link_health / 心跳发布者死亡后，对应源会按陈旧降级限速。
+  const auto fresh = MakeReportFreshness(last_data_arrival_, std::chrono::steady_clock::now(),
+                                         heartbeat_timeout_);
+  fault_supervisor_->UpdateMultiSourceHealth(report, fresh.chassis, fresh.watchdog);
+  fault_supervisor_->Tick();
+
+  // 根据 Fault Supervisor 综合裁决建议执行动作
+  auto rec = fault_supervisor_->recommendation();
+  if (rec == amr_dispatcher_core::safety::SystemActionRecommendation::kEmergencyStop) {
+    auto_fault_latched_ = true;
+  } else if (rec == amr_dispatcher_core::safety::SystemActionRecommendation::kNone && auto_fault_latched_) {
+    // 故障恢复且自动清除模式下解除自动急停锁存（若非人工急停按钮触发）
+    auto_fault_latched_ = false;
+  }
+
+  // 空闲周期播报安全状态：无 cmd_vel 上游时也要让 /safety/state 持续可见，
+  // 否则 lifecycle_coordinator 的 safety_seen_ 永为 false，/system/ready 卡 INITIALIZING。
+  PublishIdleSafetyState();
+}
+
+void SafetyGateNode::RawCmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
+  if (!gate_ || !fault_supervisor_) return;
+
+  amr_dispatcher_core::safety::CmdVelCommand cmd;
+  cmd.linear_x_mps = msg->linear.x;
+  cmd.linear_y_mps = msg->linear.y;
+  cmd.angular_z_radps = msg->angular.z;
+
+  // 联动 Fault Supervisor 降级限速规则（M5：阈值取自 degraded_max_linear_x_mps 参数）
+  if (fault_supervisor_->recommendation() == amr_dispatcher_core::safety::SystemActionRecommendation::kClampSpeed) {
+    const double limit = degraded_max_linear_x_mps_;
+    cmd.linear_x_mps = std::clamp(cmd.linear_x_mps, -limit, limit);
+  }
+
+  auto decision = gate_->Evaluate(cmd);
+  // 锁存型安全源（estop/自动故障/bumper）不依赖门控事件 TTL：事件过期 ≠ 故障解除。
+  // 不做这层覆写，raw 路径会在事件过期后重新放行非零速度，与 50Hz 周期帧的
+  // 零速交替发布——E-stop 按住期间底盘仍可能蠕动。
+  ApplyLatchedBlocks(estop_active_ || auto_fault_latched_, bumper_active_, decision);
+  last_decision_ = decision;
+  // B1：记录 raw 到达时刻与裁决结果，供 50Hz 周期兜底判定 stale / 重放。
+  last_raw_cmd_stamp_ = std::chrono::steady_clock::now();
+  has_raw_cmd_stamp_ = true;
+  has_decision_ = true;
+
+  geometry_msgs::msg::Twist safe_cmd;
+  safe_cmd.linear.x = decision.linear_x_mps;
+  safe_cmd.linear.y = decision.linear_y_mps;
+  safe_cmd.angular.z = decision.angular_z_radps;
+  safe_cmd_vel_pub_->publish(safe_cmd);
+
+  PublishSafetyState(decision);
+}
+
+void SafetyGateNode::PeriodicPublishTick() {
+  if (!safe_cmd_vel_pub_) return;
+
+  PeriodicPublishInput in;
+  in.estop_or_fault = estop_active_ || auto_fault_latched_;
+  in.bumper = bumper_active_;
+  in.decision_critical =
+      last_decision_.severity == amr_dispatcher_core::safety::SafetySeverity::kCritical;
+  in.has_decision = has_decision_;
+  in.has_last_raw_stamp = has_raw_cmd_stamp_;
+  in.last_raw_stamp = last_raw_cmd_stamp_;
+  in.now = std::chrono::steady_clock::now();
+  in.heartbeat_timeout = heartbeat_timeout_;
+  in.last_linear_x_mps = last_decision_.linear_x_mps;
+  in.last_linear_y_mps = last_decision_.linear_y_mps;
+  in.last_angular_z_radps = last_decision_.angular_z_radps;
+
+  const auto out = ComputePeriodicPublish(in);
+  if (out.kind == PeriodicPublishKind::kSkip) return;
+
+  geometry_msgs::msg::Twist safe_cmd;
+  safe_cmd.linear.x = out.linear_x_mps;
+  safe_cmd.linear.y = out.linear_y_mps;
+  safe_cmd.angular.z = out.angular_z_radps;
+  safe_cmd_vel_pub_->publish(safe_cmd);
+}
+
+void SafetyGateNode::PublishIdleSafetyState() {
+  // 无任何运动指令时构造零速裁决：allowed 由多源健康聚合决定，
+  // reason 标注 idle 以便运维区分"门控放行"与"门控阻断"。
+  amr_dispatcher_core::safety::CmdVelGateDecision idle;
+  const bool effective_estop = estop_active_ || auto_fault_latched_;
+  // T9：空闲态的可信度必须与运动路径一致——心跳丢拍时正在限速，
+  // 空闲播报却报 INFO/speed_scale=1.0，会让运维以为系统完全健康。
+  const bool heartbeat_degraded = watchdog_degraded_ && watchdog_ok_;
+  idle.allowed = watchdog_ok_ && !effective_estop && !bumper_active_ && !manual_takeover_active_;
+  idle.reason = !idle.allowed ? "idle_blocked" : (heartbeat_degraded ? "idle_degraded" : "idle");
+  idle.severity = effective_estop || bumper_active_
+                      ? amr_dispatcher_core::safety::SafetySeverity::kCritical
+                      : ((watchdog_ok_ && !heartbeat_degraded)
+                             ? amr_dispatcher_core::safety::SafetySeverity::kInfo
+                             : amr_dispatcher_core::safety::SafetySeverity::kWarn);
+  PublishSafetyState(idle);
+}
+
+void SafetyGateNode::PublishSafetyState(const amr_dispatcher_core::safety::CmdVelGateDecision& decision) {
+  amr_dispatcher_interfaces::msg::SafetyState state_msg;
+  state_msg.header.stamp = now();
+  state_msg.motion_allowed = decision.allowed;
+  state_msg.reason = decision.reason;
+
+  if (decision.severity == amr_dispatcher_core::safety::SafetySeverity::kCritical) {
+    state_msg.severity = "CRITICAL";
+    state_msg.speed_scale = 0.0;
+  } else if (decision.severity == amr_dispatcher_core::safety::SafetySeverity::kWarn) {
+    state_msg.severity = "WARN";
+    state_msg.speed_scale = 0.3;
+  } else {
+    state_msg.severity = "INFO";
+    state_msg.speed_scale = 1.0;
+  }
+
+  if (estop_active_ || auto_fault_latched_) state_msg.active_sources.push_back("estop");
+  if (bumper_active_) state_msg.active_sources.push_back("bumper");
+  if (manual_takeover_active_) state_msg.active_sources.push_back("manual_takeover");
+  if (!state_msg.active_sources.empty()) {
+    state_msg.active_stop_source = state_msg.active_sources.front();
+  }
+
+  safety_state_pub_->publish(state_msg);
+}
+
+}  // namespace amr_dispatcher_ros
+
+int main(int argc, char* argv[]) {
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<amr_dispatcher_ros::SafetyGateNode>();
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}

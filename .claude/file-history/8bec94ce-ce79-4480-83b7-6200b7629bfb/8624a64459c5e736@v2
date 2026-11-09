@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.16)
+project(spike)
+
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(Protobuf REQUIRED)
+
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/telemetry.proto)
+
+include_directories(include ${CMAKE_CURRENT_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+
+# ---- talker ---------------------------------------------------------------
+add_executable(proto_talker src/proto_talker.cpp ${PROTO_SRCS})
+target_include_directories(proto_talker PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(proto_talker ${Protobuf_LIBRARIES})
+ament_target_dependencies(proto_talker rclcpp)
+target_compile_definitions(proto_talker PRIVATE SPIKE_PROTO_DEFINITIONS)
+install(TARGETS proto_talker DESTINATION lib/${PROJECT_NAME})
+
+# ---- listener -------------------------------------------------------------
+add_executable(proto_listener src/proto_listener.cpp ${PROTO_SRCS})
+target_include_directories(proto_listener PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(proto_listener ${Protobuf_LIBRARIES})
+ament_target_dependencies(proto_listener rclcpp)
+install(TARGETS proto_listener DESTINATION lib/${PROJECT_NAME})
+
+ament_package()

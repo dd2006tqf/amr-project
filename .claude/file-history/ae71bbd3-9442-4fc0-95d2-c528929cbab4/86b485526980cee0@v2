@@ -1,0 +1,46 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <array>
+#include "sync/frame_timestamp.h"
+
+namespace xgrids {
+
+// 对应简历“设备端日志回放与多路帧间隔可视化工具”：
+// PC 端导入设备日志，回放四路传感器时间线，把丢帧定位从“半天”压到“小时级”。
+//
+// 设备日志里会落形如：
+//   [ts_us] ch=0 seq=1024 FRAME
+//   [ts_us] ch=3 seq=998  DROP reason=backpressure
+// 本工具解析这些行，重建四路时间线，并标出：
+//  - 帧间隔突变点
+//  - 丢帧区间（与 manifest 对账）
+//  - 各路时间戳对齐情况
+class LogReplay {
+public:
+    struct ParsedFrame {
+        int channel;
+        int64_t ts_us;
+        uint32_t seq;
+        bool dropped;
+        std::string reason;
+    };
+
+    // 解析整份日志，返回按时间排序的帧事件
+    static std::vector<ParsedFrame> parse(const std::string& log_path);
+
+    // 按通道分桶
+    static std::array<std::vector<ParsedFrame>, 4> split_by_channel(
+        const std::vector<ParsedFrame>& frames);
+
+    // 输出某通道的帧间隔序列（供画图/统计）
+    static std::vector<int64_t> intervals_us(
+        const std::vector<ParsedFrame>& ch_frames);
+
+    // 文本时间线：把四路对齐打印，供人工定位丢帧窗口
+    static void print_timeline(const std::vector<ParsedFrame>& frames,
+                               int64_t step_us = 50000);
+};
+
+}  // namespace xgrids

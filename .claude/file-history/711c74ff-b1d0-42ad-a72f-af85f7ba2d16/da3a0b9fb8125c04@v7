@@ -1,0 +1,1662 @@
+# 驱动面能力引入与业务融合方案
+
+> **文档状态**：v2 定稿（2026-11-07）。v1 方案稿写于 2026-11-06，
+> v2 依据 thermal 的真实落地结果与显示/触摸的板端实测做了三处结构性订正：
+> ① 归因类新增一律走 `NetworkExperience`，不再新增 `MetricId` / 插件 / D-Bus 域；
+> ② 摄像头硬件阻塞项全部消除（正品 8M 219 + 官方规格转接线）；
+> ③ 显示路线从「买 DSI 屏补图形栈」改为「HDMI 优先（¥0），DSI 可选，触摸等定位」。
+> **当前结论**：§15「当前方案一页纸」是最权威的摘要，其余章节为论证过程。
+> **目标平台**：Radxa Cubie A7A（Allwinner A733 / sun60iw2p1，ARM64，内核 `5.15.147-99btf1-a733`）
+> **项目归属**：本项目由 tanqf 开发，详见 `PROJECT_ATTRIBUTION.md`。
+> **权威关系**：本文只负责「驱动面 → 业务面」的映射与实现方案。产品边界以
+> `docs/产品定位-工业无线诊断网关.md` 为唯一权威，分层权责以
+> `docs/架构设计-五层权责契约.md` 为唯一权威，模块与代码结构以
+> `docs/架构设计-模块与代码结构.md` 为唯一权威，评估模型以
+> `docs/网络体验评价体系.md` 为唯一权威。本文与上述文档冲突时以上述文档为准。
+> **证据基线**：文中所有标注「实测」的结论均来自 2026-11-06 / 2026-11-07 对在线开发板的
+> 直接命令回读（经 `board` 隧道），不是推断，也不是文档转述。
+
+---
+
+## 0. 一句话结论
+
+引入驱动面**不是为了凑外设数量**，而是为了补上现有证据链的一处结构性缺口：
+
+> 当前全部证据都来自「本机协议栈看到了什么」，
+> 缺少「端侧业务真实体验到了什么」和「端侧硬件当前处于什么状态」这两个维度。
+
+因此本文只保留五类驱动面，其余一律不进：
+
+| 类别 | 驱动面 | 补的是哪个缺口 | 是否需要买硬件 |
+| --- | --- | --- | --- |
+| A. 观测者自身状态 | Thermal + PWM 风扇 | 区分「网络坏了」与「采集端自己坏了」 | 否 |
+| B. 观测者自身状态 | 自制字符设备（kmod） | 同上，提供内核态直接证据 | 否 |
+| C. 业务侧体验 | MIPI CSI 摄像头 + V4L2 帧 | 端到端体验；协议栈看不到的路径丢包 | 是 |
+| D. 呈现与人机 | HDMI 输出 + USB 触控面板（可选） | 离线现场可见性（无 PC 时可用） | HDMI 否 / 触控 是 |
+| E. 硬件健康度 | I2C / SPI / GPIO 外设 | 环境与设备状态，提供排除性证据 | 是（部分否） |
+
+**CAN 总线不引入**。本板 `# CONFIG_CAN is not set`（实测：`/proc/config.gz` 无
+`CONFIG_CAN` 项，`/lib/modules/$(uname -r)/kernel/net/can` 目录不存在），且项目
+没有任何车载/总线业务，强行重编内核只为凑一个无消费者的总线，直接违反
+`CLAUDE.md` 的「无真实消费者的接口即孤儿」铁律。
+
+---
+
+## 1. 先钉死三条边界
+
+在写任何实现方案之前必须先钉死边界，否则方案一定会跑偏。
+
+### 1.1 产品边界：不控制、不管理
+
+`docs/产品定位-工业无线诊断网关.md:39` 原文：
+
+> **一句话**：不控制、不管理，只做观测与诊断。
+
+推论——下面这些「想当然的融合」全部违规：
+
+| 常见设想 | 判定 | 原因 |
+| --- | --- | --- |
+| 摄像头码率低 → 回控推流端降分辨率/降帧率 | ❌ 违规 | 这是控制，且绕过了 L5 |
+| 温度高 → 自动改风扇转速「优化散热」 | ❌ 违规 | 风扇归内核 thermal 管；我们只能读，不能调 |
+| 丢包升高 → 自动修改 RTT 探测周期 | ⚠️ 需审查 | 改自身采集参数属 L5 动作，必须有动作目录条目 |
+| 丢包升高 → 记录、归因、关联其他证据 | ✅ 合规 | 纯观测 + 诊断 |
+| 读 thermal 状态 → 作为排除性证据 | ✅ 合规 | 纯观测 |
+
+> **因此本方案里不存在任何「回控」设计。** 之前方向 2 提到的「DBus 输出评估结果
+> 回控 V4L2 推流端动态调整帧率、分辨率」必须改写为**只读归因**：诊断结论说明
+> 「体验劣化是否由链路导致」，人看到后自行决定推流端怎么办。若将来确实要做
+> 闭环控制，那是 L5 动作目录的一次版本升级（`catalog_version` 变更 + 审批流），
+> 不是驱动面的事。
+
+### 1.2 证据边界：驱动读到的数不是结论
+
+现有代码里已有正确范本：`server/include/assurance/observer_attribution.hpp`
+（提交 `c992cc3`）。它在注释里写清了两条语义禁令：
+
+- CPU 忙 **不能**推出网络好；
+- CPU 闲 **不能**推出网络坏。
+
+任何新增驱动面指标都必须遵守同一纪律：**驱动面产出的是状态，不是判决**。
+所以本文所有方案都不把驱动指标接进 `OverallPolicy` 的评分或否决，只接进
+`evidence` / `excluded_causes` 这类**归因侧**字段。
+
+### 1.3 接口边界：每个表面必须有真实消费者
+
+`CLAUDE.md` 铁律：没有已批准需求、真实消费者和可观测命令的生产接口是孤儿。
+
+所以本文每一项都同时给四件事，缺一不可：
+
+1. 它产出的 **L1 事实**是什么；
+2. 谁 **消费**这个事实（具体文件/函数）；
+3. 用什么 **可观测命令**验证它真的在工作；
+4. 它**不进入**哪些链路（避免悄悄污染生产）。
+
+---
+
+## 2. 平台事实基线（2026-11-06 实测）
+
+本节是后续所有方案的地基，每一条都是命令回读结果。
+
+### 2.1 已可用、无需任何硬件
+
+| 项 | 实测证据 |
+| --- | --- |
+| 热区 | 8 个 `thermal_zone`：`cpul/cpub/gpu/npu/ddr/skin_zone` + 两个 `*_idle_zone`，策略均 `power_allocator` |
+| 温度读数 | `thermal_zone0=37200`（37.2℃）、`skin_zone=31254`（31.25℃） |
+| 温度注入 | `/sys/class/thermal/thermal_zone0/emul_temp` 存在且可写（权限 `--w-------`） |
+| 冷却设备 | 4 个：`cpufreq-cpu0`(max 8)、`cpufreq-cpu6`(max 11)、`pwm-fan`(cur 4 / max 4)、`devfreq-3600000.npu`(max 2) |
+| PWM | `pwmchip0/10/20` 各 `npwm=10`；devlink `platform:7023000.pwm → platform:pwm-fan` |
+| 风扇出口 | `/sys/class/hwmon/hwmon*/pwm1`（hwmon name = `pwmfan`） |
+| 风扇挡位 | DT `cooling-levels = [0, 18, 102, 170, 255]`，当前 `cur_state=4`（满载） |
+| 自制字符设备 | `kmod/weaknet_cpu_stat.c`、`kmod/weaknet_softirq.c` 已实现（seqlock + 只读 mmap） |
+| 板载 EEPROM | `0-0050`，驱动 `at24`，`/sys/bus/i2c/devices/0-0050/eeprom`（2048 B），**内容已被厂商写入**（首 4 字节 `RADX`） |
+| LED | `radxa:blue:user`、`radxa:green:power`；trigger 仅 `none / rc-feedback / rfkill-any / rfkill-none` |
+| GPIO | `gpiochip0 [2000000.pinctrl]` 352 lines、`gpiochip1 [7025000.pinctrl]` 64 lines |
+| GPADC | `iio:device0` = `2521000.gpadc`，可读 4 通道（实测 1797 / 608 / 1567 / 1311） |
+| 驱动子系统 tracepoint | `drm 5`、`thermal 9`、`v4l2 8`、`i2c 6`、`spi 11`、`pwm 4`、`gpio 4`（sudo 下统计） |
+| 板端自编译 | `/usr/bin/gcc`、`/usr/bin/make`、`/lib/modules/$(uname -r)/build` 均存在 |
+
+### 2.2 需要 overlay 启用（**不需要重编内核**）
+
+| 项 | 现状 | 启用方式 |
+| --- | --- | --- |
+| MIPI DSI 屏 | 基线 DTB 中 `dsi0@5506000`、`tcon0@5501000` 为 disabled；`de@5000000` 已 okay；`sunxi-dsi`、`sunxi-dsi-combo-phy`、`panel-dsi`、`virtual-panel` 驱动均已注册 | 启用 `/boot/dtbo/cubie-a7a-radxa-display-8hd.dtbo`（800×1280）或 `-10fhd`（1200×1920） |
+| MIPI CSI 摄像头 | `vind@5800800`、`csi@5820000/1/2`、`mipi@5810100/200/300`、`isp@5900000` 全 disabled；`vin_v4l2`/`vin_io` 可 `modprobe` 成功；`imx219`/`imx214`/`imx415_mipi`/`dw9714_act` 模块存在 | 启用 `cubie-a7a-radxa-camera-8m-219.dtbo` / `-13m-214` / `-4k-415` |
+| SPI | `spi@2540000` 已 okay，`/sys/class/spi_master/spi0` 存在，`spi_sunxi_ng` 已加载；但**当前无 spidev 子节点** | 启用 `sun60iw2p1-spi1-spidev`（PD10-13，pin 19/21/23/24）或 `spi3-spidev`（PK5-K8，pin 29/31/33/37） |
+| I2C 扩展控制器 | `twi2`（PD17/PD16，pin 27/28）、`twi7`（PJ22/PJ23，pin 3/5）控制器处于 disabled | 启用对应 overlay 后才能接外部传感器 |
+
+### 2.3 需要重编内核（本次不采用）
+
+| 项 | 证据 |
+| --- | --- |
+| CAN | `/proc/config.gz` 无 `CONFIG_CAN`；`/lib/modules/$(uname -r)/kernel/net/can` 不存在 |
+
+**除 CAN 外，本文所有方案都不需要重编内核。** 这条很重要：重编内核会让 OTA 的
+A/B 布局、ECDSA 签名链、启动门禁（P0-C1）全部面对一个未经本项目验证的内核，
+风险远大于收益。用户已授权「重编内核可接受」，但**授权不等于必须用**——能在
+overlay 层解决的，就不动内核。
+
+### 2.4 三处必须订正的既有认知
+
+以下三条我之前判断有误，在此显式订正，避免以讹传讹：
+
+| 我此前的判断 | 实际事实 | 性质 |
+| --- | --- | --- |
+| 「MIPI DSI 不可行」 | 驱动全套已注册，overlay 已就位，只是默认 disabled | **误判，订正** |
+| 「V4L2/CSI 不可行」 | `vin_v4l2` 可加载，sensor/actuator 模块齐全，overlay 已就位 | **误判，订正** |
+| 「SPI 不可行」 | spidev overlay 已存在，控制器已 okay，只是没启用子节点 | **误判，订正** |
+
+同时订正方向 2 的两处技术表述：
+
+| 原表述 | 事实 |
+| --- | --- |
+| 「用 UDP/RTP 推流时 eBPF 无法拿到 UDP 丢包」 | 部分错误。`tracepoint/skb/kfree_skb` 能看到**本机协议栈**的丢包及 `drop_reason`；看不到的是**端到端路径丢包**（离开本机之后在中间设备丢的） |
+| 「PID 定向采集需要新建」 | 部分错误。`flow_rate.bpf.c` 已有 `process_stats`（key = tgid，value = `{comm, tx_bytes, tx_packets, retrans_count}`），并已通过 D-Bus `GetProcessProfiling` 暴露。缺的是**按 PID 过滤**（只采某个进程），不是从零搭进程维度 |
+
+---
+
+## 3. 驱动面全景与业务映射
+
+### 3.1 为什么是这五个表面
+
+判断标准只有一条：**它能否让诊断结论多分辨一层**。按这个标准筛完，只剩这些：
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │  现有证据：本机协议栈视角                │
+                    │  RTT / 重传 / DNS / TCP 状态 / 空口丢包   │
+                    └────────────────┬────────────────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+    ┌─────────▼─────────┐  ┌─────────▼─────────┐  ┌─────────▼─────────┐
+    │ A/B 观测者自身状态 │  │  C 业务侧体验      │  │ E 硬件健康度       │
+    │ Thermal/PWM + kmod│  │  MIPI 摄像头帧     │  │ I2C/SPI/GPIO      │
+    │ 「是不是我自己坏了」│  │ 「用户真的受影响吗」│  │ 「环境是否异常」   │
+    └───────────────────┘  └───────────────────┘  └───────────────────┘
+                                     │
+                          ┌──────────▼──────────┐
+                          │ D 呈现层：HDMI 优先  │
+                          │ （DSI / 触摸 可选）  │
+                          │ 离线现场可见性        │
+                          └─────────────────────┘
+```
+
+四个维度**互补而非替代**，且各自产出独立证据域，互不污染（见 §6.2.4 的五象限）。
+
+### 3.2 五个表面的总表
+
+| # | 表面 | L1 事实 | 真实消费者 | 可观测命令 | 需硬件 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Thermal + PWM | 分区温度、节流占比、风扇占空比 | `attributeThermalState` 纯函数在 quality 评估循环内消费 → `thermal_attribution` | `weaknet-cli experience`（实际落地形态；原计划的 `stats thermal` 域未实现，见 §4.3.8） | 否 |
+| 2 | 自制字符设备 | per-CPU 忙碌/软中断分布 | `host_pressure` 插件 → `ObserverAttribution` | `cat /dev/weaknet_cpu_stat \| xxd` | 否 |
+| 3 | MIPI CSI + V4L2 | 帧级丢失、间隔抖动、解码错误 | quality 评估循环 → `NetworkExperience` 的视频归因字段（与 thermal 同构，**不新开插件**，见 §6.2.5） | `weaknet-cli experience` | 是 |
+| 4 | HDMI / DSI 显示与触摸 | 面板在线状态、背光、vblank 时序、触控事件 | `qt_dashboard` 本地看板 | `cat /sys/class/drm/card0-*/status` | HDMI 否 / DSI 是 |
+| 5 | I2C/SPI/GPIO | 传感器读数、总线活动、GPIO 电平 | `env_sensor` 插件 → 环境异常证据 | `iio`/`hwmon`/tracepoint | 部分 |
+
+---
+
+## 4. 表面 1：Thermal + PWM（零硬件，第一优先）
+
+### 4.1 业务作用
+
+**这不是「读个温度」那么简单。** 它解决的是本项目当前一个真实存在的归因盲区：
+
+当 eBPF 采集出现证据缺失（`capture_emit_failure_ratio` 升高）时，有两种完全不同的
+成因，在旧证据上**同形**：
+
+1. 网络真的坏了（真的有问题要报）；
+2. 板子过热降频 → 采集线程抢不到 CPU → 漏采（**误报**）。
+
+`CPU_BUSY_RATIO` 只能看到「忙」，看不到「为什么忙」。热节流是「忙」的一个完全
+不同的根因：CPU 不是被任务占满，而是被**硬件限频**。二者对运维的含义截然相反
+——前者要查业务，后者要查散热/环境。
+
+**第二个业务作用**：工业现场的网关常年装在配电柜、机柜这类散热恶劣的地方。
+`skin_zone`（外壳温度）是设备可靠性的一等指标，且完全独立于网络。
+
+**第三个业务作用**：为诊断提供 `excluded_causes`（排除性证据）。
+`server/include/assurance/diagnosis_engine.hpp` 的 `DiagnosisFacts` 已有
+`excluded_causes` 字段——这是天然的消费者。例如「排除：非热节流导致」和
+「排除：非网络原因，为设备过热」这两种结论，现在根本写不出来。
+
+### 4.2 实测到的一个真实可诊断现象
+
+当前板子 `pwm-fan` 的 `cur_state = 4`（满载），而 `cpul_thermal_zone = 37.2℃`、
+`skin_zone = 31.25℃`——**温度并不高，风扇却满载**。
+
+已查明的机制（不是缺表，不是 bug）：
+
+- `cooling-levels = [0, 18, 102, 170, 255]`（五个挡位，正常）；
+- IPA（`power_allocator`）把 `pwm-fan` 绑定在 **trip 0（70℃ passive）**，
+  `contribution = 1024`（满权重）；
+- 但 `sustainable_power` 只有 756 mW（`cpul`）/ 914 mW（`cpub`），远低于实际功耗，
+  IPA 因此认为「必须全力散热」；另有 5 个 zone 在启动时打印
+  `sustainable_power will be estimated`（估算尚未收敛）。
+
+**这个现象本身就是业务价值**：风扇常年满载 = 噪音 + 功耗 + 轴承寿命损耗，是
+工业现场真实痛点。但结论必须诚实——**这是 IPA 参数未校准导致的过度冷却，
+不是故障**。方案里要能把它识别出来并报为「风扇策略异常」，而不是「温度异常」。
+
+> **纪律**：我们不修改 thermal 策略（那是控制）。只做三件事：采集、识别、报告。
+
+### 4.3 技术实现方案
+
+#### 4.3.1 数据来源（三条并行，互为校验）
+
+| 来源 | 路径 | 粒度 | 用途 |
+| --- | --- | --- | --- |
+| sysfs | `/sys/class/thermal/thermal_zone*/{type,temp,policy}` | 轮询 | 主数据源，稳定 |
+| sysfs | `/sys/class/thermal/cooling_device*/{type,cur_state,max_state}` | 轮询 | 冷却动作状态 |
+| hwmon | `/sys/class/hwmon/hwmon*/{name,pwm1}` | 轮询 | 风扇实际占空比 |
+| eBPF tracepoint | `thermal/thermal_temperature` | 事件 | **变化即采**，比轮询更准 |
+| eBPF tracepoint | `thermal/cdev_update` | 事件 | 捕获每一次冷却挡位变更 |
+| eBPF tracepoint | `thermal/thermal_zone_trip` | 事件 | 捕获 trip 触发 |
+
+`thermal_temperature` 的格式已实测确认：
+
+```
+field:__data_loc char[] thermal_zone;   offset:8
+field:int id;                            offset:12
+field:int temp_prev;                     offset:16
+field:int temp;                          offset:20
+```
+
+#### 4.3.2 为什么用「轮询 + tracepoint」双源而不是只用一个
+
+- 只用轮询：采样间隔内的瞬时 trip 触发会被漏掉（风扇挡位跳变是毫秒级事件）；
+- 只用 tracepoint：`thermal_temperature` 只在温度**变化**时触发，稳定态无事件，
+  下游会误判为 STALE。
+
+双源合并规则：轮询保证「至少有一个新鲜值」，tracepoint 保证「事件不丢」。
+合并时以 tracepoint 的事件为权威、轮询为兜底（同一时刻冲突时取 tracepoint）。
+
+#### 4.3.3 新增指标（`MetricId` 扩展）—— **⚠️ 已被否决，仅存档**
+
+> **本节方案未采用。** 2026-11-07 落地时走的是 §4.3.4 末尾的「最小可行路径」，
+> 没有新增任何 `MetricId`。否决理由与最终形态见 §4.3.8。以下内容保留作为
+> 「为什么封闭枚举不该轻易扩」的反面论证，**不要照着做**。
+
+`MetricId` 与 `MetricScope` 都是**封闭枚举**
+（`server/include/metrics/metric_types.hpp`），新增指标必须同时改枚举、
+`metricIdToString()`、`getMetricDescriptor()` 三处。
+
+> **重要（已实测核实）**：持久化**不是**按指标名索引，而是 `network_history` 表里
+> 一组**硬编码列**，由 `database_manager.cpp` 用固定序号 `sqlite3_bind_*` 绑定
+> （例如 `tcp_retrans_loss_pct` 绑在 32、`tcp_conn_active` 绑在 33、
+> `tcp_conn_accepts` 绑在 34）。**新增指标不会自动进历史库**，要落库必须：
+> ① 在 `ensureSchema()` 的 `CREATE TABLE` 里加列（老库需 `ALTER TABLE` 迁移）；
+> ② 在 `insertSnapshot()` 里加取值 + `sqlite3_bind_*`（注意序号顺延，现有 32/33/34
+> 之后继续）；③ 在 `queryHistory()` 的 `SELECT` 列表里加列。
+> 三处漏一处就会静默丢数据。
+>
+> 因此**建议第一批新增指标先只进内存 registry + D-Bus 查询，不进 `network_history`**，
+> 等指标语义稳定后再统一做一次表结构迁移。这样改动面最小，也不会让老库 schema
+> 反复变动。
+
+这是本方案里唯一需要碰封闭枚举的地方，必须一次规划到位，不能边写边加。
+
+建议新增（**全部挂在已有的 `MetricScope::HOST` 下，用 `publishScoped` 的 address
+做命名空间，不新增 scope**，这是改动面最小的做法）：
+
+| 新 `MetricId` | 单位 | `SourceSemantics` | address key 示例 | 语义 |
+| --- | --- | --- | --- | --- |
+| `THERMAL_TEMP_C` | 摄氏度 | GAUGE | `zone:cpul_thermal_zone` | 分区温度 |
+| `THERMAL_THROTTLE_RATIO` | 百分比 | INTERVAL_DELTA_RATE | `global` | 处于节流（频率被压）的时间占比 |
+| `FAN_DUTY_RATIO` | 百分比 | GAUGE | `hwmon:pwmfan` | 风扇占空比（`pwm1/255`） |
+| `FAN_STATE_ANOMALY` | 布尔 | GAUGE | `global` | 高温未转 / 低温满载 |
+
+> **`FAN_STATE_ANOMALY` 的判定必须是纯函数**，与 `attributeObserverDegradation`
+> 同构：输入（温度、占空比、sustainable_power），输出（是否异常 + 理由），
+> 不依赖任何全局状态，可单测。阈值定为「温度 < 45℃ 且占空比 > 90% 持续 3 个
+> 采样周期」→ 报 `LOW_TEMP_FULL_SPEED`；「温度 > 85℃ 且占空比 < 10%」→
+> 报 `HIGH_TEMP_NO_FAN`。
+
+#### 4.3.4 消费者：`thermal_monitor` 插件 —— **⚠️ 已被否决，仅存档**
+
+> **本节方案未采用。** 没有做第 21 个插件、没有 `monitors.thermal` 配置项、
+> 没有 `weaknet-cli stats thermal` 域。实际走的是本节末尾自己推荐的
+> 「最小可行路径」：归因结果进 `NetworkExperience`，由 `weaknet-cli experience`
+> 走出进程。详见 §4.3.8。
+
+按现有插件契约实现（参考 `server/src/host_pressure_monitor.cpp` 的完整范式）：
+
+```
+server/include/thermal_monitor.hpp       // IMonitorPlugin 实现
+server/src/thermal_monitor.cpp           // 线程循环 + sysfs 读取 + 双发布
+server/src/monitor_plugins.cpp           // registerPlugin("thermal", ...)  ← 第 21 个插件
+config.yaml                              // monitors.thermal.{enabled,interval_ms}
+```
+
+要点（全部来自 `host_pressure_monitor.cpp` 已验证的做法）：
+
+1. **线程模型**：`*worker = std::thread([ctx]{ ... })`，100ms 切片 sleep，
+   便于 `stop()` 快速退出，不用 `condition_variable` 也能及时响应；
+2. **失败不伪造 0**：`MetricSample::unavailable()`，注释里明确写「UNAVAILABLE，
+   不发布 0」（`host_pressure_monitor.cpp:266` 已有先例）；
+3. **双发布**：`ctx->metrics_registry` 供本轮评估，`MetricsRegistry::global()`
+   供持久化——持久化只读 global，漏了这条会导致历史库里没有数据；
+4. **文件句柄缓存**：`open` 成功后保持 fd，避免每轮 open/close 开销。
+
+> **可观测出口的实际情况（已核实，避免踩坑）**：`weaknet-cli get <monitor>`
+> 返回的是**配置 JSON**（`serializeMonitorJson()`，且 monitor 名是硬编码白名单，
+> 见 `server/src/weaknet_config.cpp:1317`），**不是指标值**。指标值的现有出口是
+> `weaknet-cli stats <domain>`（`client/weaknet_cli.cpp` 的 `stats` 分支，域也是
+> 硬编码 if-else 白名单）。所以要观测新指标，必须**新增一个 stats 域**：
+>
+> | 改动点 | 位置 | 内容 |
+> | --- | --- | --- |
+> | 1 | `client/weaknet_cli.cpp` 的 `stats` 分支 | 加 `strcmp(domain, "thermal")` 与 usage 文案 |
+> | 2 | `client/weaknet_client.h` + `client/client.cpp` | 新增 `weaknet_get_thermal_stats()`，封装 D-Bus 调用 |
+> | 3 | `server/src/dbus_service.cpp` | 新增 `kMethodGetThermalStats` 常量 + `handleGetThermalStats()` + 分派分支 |
+> | 4 | `server/src/weaknet_config.cpp:1317` 白名单 | 若同时要给 `get` 暴露配置，需把 `"thermal"` 加进 valid 集合 |
+>
+> 若嫌麻烦，**最小可行路径**是复用 `experience`：把 thermal 归因结果放进
+> `NetworkExperience`（与 `observer_attribution` 同位置），则 `weaknet-cli experience`
+> 立刻可见，零新增 D-Bus 方法。建议第一批走这条。
+
+#### 4.3.5 消费者：诊断归因
+
+在 `server/src/server.cpp` 的归因段（现有 `ObserverAttribution` 消费点
+`server.cpp:560-620` 附近）追加一段**独立的** thermal 归因，不改动现有逻辑：
+
+```cpp
+// 伪代码：与 attributeObserverDegradation 同构，纯函数，不改判决
+ThermalAttribution ta = attributeThermalState(
+    max_zone_temp, fan_duty, throttle_ratio);
+if (ta.evaluated) {
+    exp.dns_service.evidence.insert(exp.dns_service.evidence.end(),
+                                    ta.evidence.begin(), ta.evidence.end());
+}
+```
+
+若 `throttle_ratio > 阈值`，则向 `DiagnosisFacts::excluded_causes` 追加
+「排除：非网络原因，采集端热节流」。**注意仍不改 `OverallPolicy` 判决**。
+
+#### 4.3.6 可观测验证命令
+
+```bash
+# 1. 归因是否真的流出来了（实际出口：experience，不是 stats）
+weaknet-cli experience | python3 -c \
+  'import sys,json;d=json.load(sys.stdin);print({k:v for k,v in d.items() if "thermal" in k})'
+
+# 2. sysfs 原始值（对照）
+for z in /sys/class/thermal/thermal_zone*; do
+  echo "$(cat $z/type) $(cat $z/temp)"; done
+
+# 3. 风扇实际占空比
+cat /sys/class/hwmon/hwmon*/pwm1
+
+# 4. tracepoint 是否在触发（手工挂 5 秒）
+sudo timeout 5 cat /sys/kernel/debug/tracing/trace_pipe | grep -c thermal_temperature
+
+# 5. 温度注入验证归因（不改任何策略，只改 emul_temp 让上层看到高温）
+echo 95000 | sudo tee /sys/class/thermal/thermal_zone0/emul_temp
+weaknet-cli experience           # 应看到 thermal_attribution 变化
+echo 0 | sudo tee /sys/class/thermal/thermal_zone0/emul_temp   # 恢复
+```
+
+> `emul_temp` 是本方案最有价值的测试杠杆：**不需要真的加热板子**，就能验证
+> 整条归因链路。它写 `0` 即关闭注入。
+
+#### 4.3.7 明确不进入的链路
+
+- ❌ 不写任何 thermal sysfs（除 `emul_temp` 用于自测，且用完立即恢复）；
+- ❌ 不注册 cooling device，不参与 IPA；
+- ❌ 不改 `OverallPolicy` 阈值；
+- ❌ 不进 OTA 关键路径。
+
+#### 4.3.8 实际实施与本节原计划的偏离（2026-11-07 落地后补记）
+
+本节前面写的是「插件 + 4 个新指标 + `weaknet-cli stats thermal`」。**实际没有
+按那个方案做**，走的是本节 §4.3.4 末尾自己推荐的「最小可行路径」。三条理由：
+
+1. **`MetricId` 是封闭枚举，新增指标的代价被低估了。** 要同时改枚举、
+   `metricIdToString()`、`getMetricDescriptor()` 三处；而落库还要再改
+   `ensureSchema()` 建列、`insertSnapshot()` 绑序号、`queryHistory()` 的
+   SELECT 三处。为了四个「只在当轮评估用一次」的值付出这个代价不划算。
+2. **这四项数据的消费者只有「本轮评估」一个。** 热数据采一次用一次，不进窗口、
+   不做趋势、不参与诊断谓词。给它开插件线程 + 指标 + 配置项 + D-Bus 方法
+   四套机制，等于造四个没有真实消费者的孤儿表面（违反 §1.3 与 `CLAUDE.md` 铁律）。
+3. **`experience` 已经是这类「评估附加结论」的现成出口。** `observer_attribution`
+   就是这么出去的，thermal 与之同构，并列追加即可，零新增接口。
+
+实际形态：`ThermalStateReader`（sysfs I/O）+ `attributeThermalState`（纯函数）
+两个类，在 quality 评估循环内同步采样（每 15 秒三次 sysfs 读取，百微秒量级），
+结果直写 `NetworkExperience`，经 `toExperienceJsonV2` 走出进程。
+
+代价（诚实记录）：**没有 `weaknet-cli stats thermal` 这个独立查询入口**，只能从
+`experience` 里读。若将来热数据要进历史库或做趋势，仍需回到新增 `MetricId` 的
+路线——那时是真实需求驱动的，不是提前投资。
+
+
+---
+
+## 5. 表面 2：自制字符设备（零硬件）
+
+### 5.1 现状：一条已接通但**在实际部署中永远断开**的链路
+
+这是本次核查发现的**最重要的一条**，必须先说清楚。
+
+提交 `c992cc3`（feat(assurance): 接通采集端 CPU 压力到观测者降级归因）已经完成了
+整条代码链路：
+
+```
+kmod/weaknet_cpu_stat.c  →  /dev/weaknet_cpu_stat
+        ↓ (host_pressure_monitor.cpp 打开并 mmap)
+MetricId::CPU_BUSY_RATIO
+        ↓
+attributeObserverDegradation()  →  ObserverAttribution
+        ↓
+server.cpp:610       →  exp.dns_service.evidence
+```
+
+**但是实测发现**：
+
+```
+$ ssh board 'ls -l /dev/weaknet_cpu_stat'
+ls: cannot access '/dev/weaknet_cpu_stat': No such file or directory
+
+$ ssh board 'sudo /sbin/modprobe weaknet_cpu_stat'
+modprobe: FATAL: Module weaknet_cpu_stat not found in
+  directory /lib/modules/5.15.147-99btf1-a733
+```
+
+原因在 `kmod/README.md` 里其实写明了：
+
+> **定位：实验代码，不进生产链路。**
+> 不进 `tools/ci.sh`、不进 OTA manifest、不注册 `IMonitorPlugin`……
+
+所以现状是：**`ObserverAttribution` 永远返回 `NONE`，`CPU_BUSY_RATIO` 永远
+`UNAVAILABLE`。** 代码全对，数据源不存在。
+
+> 这是一个**诚实的、必须暴露的缺口**。它不是 bug（README 里声明过），但它让
+> 一个已经写好的业务能力在真机上从未生效。要让它生效，缺的不是代码，是部署链路。
+
+### 5.2 业务作用（为什么值得补上这条链路）
+
+`ObserverAttribution` 回答的问题很具体：
+
+> eBPF 掉证据，是**网络真坏了**，还是**采集端自己抢不到 CPU**？
+
+这个区分直接决定告警的可信度。没有它，采集端过载会持续产生**假网络故障**，
+这是诊断类产品最致命的失效模式——错误的告警比没有告警更糟。
+
+### 5.3 技术实现方案
+
+分三小步，全部零硬件。
+
+#### 5.3.1 让模块真正可部署（补链路，不写新代码）
+
+**状态：2026-11-07 已全部落地并在真机验证。**
+
+| 改动 | 落地方式 | 状态 |
+| --- | --- | --- |
+| 构建集成 | 新增 `tools/kmod_cross_build.sh`：宿主机原生交叉编译（Clang/gcc + 板端 headers 缓存），全量约 5 秒、增量约 2.5 秒，逐 `.ko` 校验 vermagic | ✅ |
+| 打包 | `tools/ci.sh` Step 2 调用上述脚本 → `dist-arm64/kmod/*.ko` → OTA `releases/<ver>/kmod/` → 自动进 `manifest.sha256` | ✅ |
+| 安装 | 新增 `tools/weaknet-kmod.service`（oneshot），`Wants=`/`After=` 服务端而**不**反向依赖；`insmod` 失败仅记日志 | ✅ |
+| ABI 校验 | `kmod/weaknet_kmod_abi.h` 版本宏 + 消费端 `abi_mismatch` 分支，不匹配报 `unavailable` 而非错值 | ✅ |
+| 权限门禁 | `capable(CAP_PERFMON) \|\| capable(CAP_SYS_ADMIN)`，与服务端 capability 集对齐，**无需给服务加特权** | ✅ |
+| 错误分类 | `openErrnoToReason()` 纯函数区分 `device_absent`（未装模块）与 `open_failed`（EPERM 等），`detail` 带 errno 文本 | ✅ |
+
+**关键设计**：模块加载失败必须**不阻塞服务启动**。`host_pressure` 插件已经做到
+了这一点（打开失败 → `unavailable()` → 业务链路行为不变）。这条不变量必须保持，
+否则一个实验性模块的加载失败会拖垮整个采集服务。
+
+**真机验证结果（2026-11-07，`radxa-cubie-a7a`，`5.15.147-99btf1-a733`）：**
+
+| 验证项 | 观测 |
+| --- | --- |
+| 交叉编译产物可加载 | 宿主产出 `.ko` 的 vermagic 与板端就地编译逐字一致，`insmod` 成功 |
+| 服务端无需特权即可读取 | 服务 capability 集仅含 `cap_perfmon`（无 `cap_sys_admin`），`cpu_busy_ratio` 正常输出 |
+| 数据链路（满载） | 8 核 busy loop 30 秒：`0.0086` → `0.3547` → `0.999857` → `0.779363`，8/8 核参与 |
+| 缺数据不伪造 | 模块未加载时日志 `device_absent (open: No such file or directory)`，不输出 0 |
+| 加载失败不阻塞 | 单元用 `Wants=` 而非 `Requires=`，服务端不反向依赖 |
+
+**一个诚实记录的验证缺口**：`observer_attribution` 在满载期间仍是 `NONE`。
+这是**正确行为**——归因的前提是「观测确实降级」，而该次满载期间 eBPF 的
+`capture_emit_failure_ratio` 与 `perf_delivery_loss_ratio` 均为 0，没有证据丢失，
+自然无可归因。`SELF_INFLICTED` 分支目前只在单元测试中验证过，真机触发需要
+「CPU 满载 + eBPF 真丢证据 + 持续 DNS 流量」三条件同时成立，留作现场观察项。
+
+#### 5.3.2 可观测验证命令
+
+```bash
+# 模块与设备节点
+lsmod | grep weaknet_cpu_stat
+ls -l /dev/weaknet_cpu_stat
+xxd -l 64 /dev/weaknet_cpu_stat        # 只读 mmap，前 8 字节为 ABI 版本
+
+# 指标是否真的在发布（不再恒 UNAVAILABLE）
+weaknet-cli experience                 # observer_attribution 只经此出口（见下）
+
+# 归因是否真的被触发（制造 CPU 压力，观察 attribution 变化）
+stress-ng --cpu 8 --timeout 30s &
+weaknet-cli experience                 # 应看到 observer_attribution != NONE
+```
+
+> **注意**：`observer_attribution` **不在** `network_history` 表里（该表无此列），
+> 也不经 `stats history` 输出。它唯一的出口是
+> `weaknet-cli experience` → `GetNetworkExperience` →
+> `LegacyAdapter::toExperienceJsonV2(snap->experience)`。这一条有单测守护：
+> `server/test/unit/test_w4_snapshot_lifecycle_gtest.cpp:118` 断言 JSON 里必须出现
+> `"observer_attribution":"SELF_INFLICTED"`。
+
+#### 5.3.3 是否新增第三个字符设备？
+
+用户清单里的第 7 项是「自制字符设备 `/dev/vision_ctrl`」。**这个名字本身就是
+越界的**——`ctrl` 意味着控制，与「不控制」冲突。
+
+是否要做第三个设备，取决于能否先证明现有两个不够用。诚实结论：
+
+- `weaknet_cpu_stat`（per-CPU 累计时间）已能算 `CPU_BUSY_RATIO`；
+- `weaknet_softirq`（per-CPU 十类软中断计数）已能算软中断分布；
+- 二者**合起来仍不能区分**「CPU 被业务占满」与「我们的采集线程被调度延迟」。
+
+所以真正有需求的第三个设备是 **调度延迟（runnable delay）**，而不是
+「vision 控制」。它需要 sched tracepoint 才能精确测量，而
+`schedule/sched_wakeup` + `sched_switch` 已经够用——**用 eBPF 就够，
+不需要再写内核模块**。
+
+> **结论**：暂不新增字符设备。理由是「一个已经写好但从未生效的链路」比
+> 「再写一个新的、同样可能从未生效的模块」优先级高得多。等 §5.3.1 上线并
+> 在真机上证明 `CPU_BUSY_RATIO` 的归因能力之后，再评估是否需要 runnable delay。
+> 这符合「先补真实缺口，再谈技术深度」的原则。
+
+---
+
+## 6. 表面 3：MIPI CSI 摄像头 + V4L2（方向 2 的正式落地）
+
+### 6.1 业务作用（这是整套方案里业务价值最高的一个）
+
+现有全部证据都是**协议栈视角**。协议栈能看到什么、看不到什么，边界很清楚：
+
+| 现象 | 协议栈（eBPF）能看到吗 | 说明 |
+| --- | --- | --- |
+| 本机网卡发出去了多少包 | ✅ | `tracepoint/net/net_dev_queue` |
+| 本机协议栈丢了哪些包 | ✅ | `tracepoint/skb/kfree_skb` + `drop_reason` |
+| 对端确认收到多少 | ✅（TCP）/ ❌（UDP） | TCP 有 ACK，UDP 没有 |
+| 路径中间丢了 | ❌ | 离开本机之后的事 |
+| **用户实际看到画面卡了几帧** | ❌ | 这是体验，不是协议栈状态 |
+
+**最后一行就是本表面的全部价值**：把「网络指标正常但画面在卡」这件事变成
+可观测、可归因的。这在工业场景尤其重要——视频巡检、远程看表、人员识别，
+用户关心的是画面，不是 RTT。
+
+### 6.2 技术实现方案
+
+#### 6.2.1 分层设计（关键：现在就能做前两层）
+
+这是本方案最重要的架构决策：**把「采集」与「归因」彻底切开**，让归因层今天
+就能做完并测试，不必等摄像头到货。
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  L4 归因层（业务）                                          │
+│  VideoQoeAttribution  ← 纯函数，只吃 FrameStats               │
+│  ✅ 已落地：server/include/video_qoe_attribution.hpp          │
+│     枚举 6 值 + VideoNetworkObservation + 判定纯函数           │
+│     21 项单测全绿（含确定性、不改入参、全枚举有字符串）        │
+│     ⬜ 尚未接进 NetworkExperience（下一步）                     │
+├────────────────────────────────────────────────────────────┤
+│  L3 帧统计层（业务）                                        │
+│  FrameStats{ seq_gap, gap_ms, decode_err, bitrate }        │
+│  ✅ 已落地：server/include/frame_source.hpp                 │
+├────────────────────────────────────────────────────────────┤
+│  L2 帧源（可替换接口） ★ 换实现不改上层                     │
+│  ├─ IFrameSource 接口            ✅ 已落地                   │
+│  ├─ SyntheticFrameSource（测试）  ✅ 已落地 + 22 项单测       │
+│  └─ V4l2FrameSource（真机）       ⬜ 摄像头到货后实现         │
+├────────────────────────────────────────────────────────────┤
+│  L1 内核：vind0 / csi0 / isp00 / imx219（overlay 启用）      │
+│  overlay 已就位（.disabled），待阶段 2 演练后启用            │
+└────────────────────────────────────────────────────────────┘
+```
+
+`IFrameSource` 是唯一的分界线。它的契约是：
+
+```cpp
+struct FrameStats {
+    uint64_t frames_expected = 0;
+    uint64_t frames_received = 0;
+    uint64_t frames_corrupt  = 0;
+    uint32_t seq_gap_count   = 0;      // 序号跳变次数（≈ 丢帧）
+    uint32_t max_gap_ms      = 0;      // 最长帧间隔
+    uint32_t p95_gap_ms      = 0;
+    uint64_t bytes_received  = 0;
+    std::chrono::steady_clock::time_point sampled_at;
+    bool valid() const { return sampled_at != std::chrono::steady_clock::time_point{}; }
+};
+
+class IFrameSource {
+public:
+    virtual ~IFrameSource() = default;
+    virtual bool start() = 0;
+    virtual void stop() = 0;
+    virtual FrameStats snapshotAndReset() = 0;   // 取走并清零本期
+    virtual std::string describe() const = 0;    // 用于 evidence 溯源
+};
+```
+
+> 这个接口只有 5 个方法，`SyntheticFrameSource` 与 `V4l2FrameSource` 各实现一次。
+> **摄像头已于 2026-11-07 采购**，但在启用 overlay 之前（阶段 2 有变砖风险），
+> `SyntheticFrameSource` 仍是唯一可用实现。它按指定模式
+> （正常 / 周期性丢帧 / 突发丢帧 / 乱序）产生 `FrameStats`，用来把 L3/L4 层
+> 测透。这样阶段 3 一到，只需要实现一个类（`V4l2FrameSource`），而不是从零开始。
+
+#### 6.2.2 真机部分：选型、overlay 启用与 V4L2 通路
+
+#### 6.2.2.1 选型：为什么买 Radxa Camera 8M 219
+
+板端三个 camera overlay 全部就位、三套 sensor 驱动模块也都存在（见下表），
+但**官方文档只把 Cubie A7A 列进了 8M 219 的支持板卡清单**。13M 214 与 4K
+的官方支持列表分别是 NIO 12L / ROCK 4D / CM4 IO 与「未列出具体板卡」——
+不是不能试，而是官方没验证过，出问题只能自己啃。
+
+| 模块 | 传感器 | 分辨率 | 模块侧 FPC | 板侧转接排线 | Cubie A7A 官方支持 | 板端 overlay / 驱动 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Camera 8M 219** | Sony IMX219 | 8.08M（3280×2464） | **15pin / 1.0mm** | **31pin / 0.3mm → 15pin / 1.0mm 同面** | ✅ **明确列出** | `...8m-219.dtbo` / `imx219.ko.xz` |
+| Camera 13M 214 | Sony IMX214 | 13.5M（4208×3120） | 31pin / 0.3mm | 31pin / 0.3mm 同面 | ❌ 仅 NIO 12L / ROCK 4D / CM4 IO | `...13m-214.dtbo` / `imx214.ko.xz` |
+| Camera 4K | Sony IMX415 | 8.29M（4K） | 31pin / 0.3mm | 31pin / 0.3mm 同面 | ❌ 未列出具体板卡 | `...4k-415.dtbo` / `imx415_mipi.ko.xz` |
+
+选择 8M 219 的三条理由：
+
+1. **唯一被官方点名支持**——转接线规格都替你写好了
+   （`31-Pin 0.3mm pitch → 15-Pin 1.0mm pitch, same side`）。
+2. **本项目要的是帧统计，不是画质**。8M@30fps 已是 240 Mbps 量级，足够在弱网下
+   制造可观测丢帧；上 4K 反而会让 ISP 通路成为瓶颈，把「网络问题」与「ISP 跟不上」
+   混在一起，污染归因。
+3. **视场角更合适**。8M 的 D=74°/H=62°，4K 是 D=88°/H=75°——机柜内近距离拍摄
+   需要的是边缘不变形，不是广角。
+
+**必须同时买的**：`31pin 0.3mm → 15pin 1.0mm 同面` 转接线（板侧是 31pin，
+不是 15pin；同面/反面也必须对），以及 USB-UART 3.3V 串口线（overlay 启动失败时
+唯一的救砖手段）。**两者均已备齐（2026-11-07）。**
+
+启用步骤（**不需要重编内核**）：
+
+```bash
+# 1. 选型：Radxa Camera 8M 219（Sony IMX219）
+sudo mv /boot/dtbo/cubie-a7a-radxa-camera-8m-219.dtbo.disabled \
+        /boot/dtbo/cubie-a7a-radxa-camera-8m-219.dtbo
+sudo u-boot-update          # 重新生成 /boot/extlinux/extlinux.conf 的 fdtoverlays
+
+# 2. 重启后确认设备树节点已启用
+grep -c "vind@5800800" /proc/device-tree/... # 或 dtc 导出后确认 status = "okay"
+
+# 3. 加载 VIN 通路
+sudo /sbin/modprobe vin_v4l2
+sudo /sbin/modprobe imx219
+
+# 4. 确认 video 节点
+ls -l /dev/video*
+v4l2-ctl --list-devices        # 需先安装 v4l-utils
+v4l2-ctl -d /dev/video0 --list-formats-ext
+```
+
+`v4l2-ctl` 当前板端**不存在**（实测 `which v4l2-ctl` 无输出），需要
+`apt install v4l-utils`。这是调试期工具，不进发布产物。
+
+V4L2 采集要点（`V4l2FrameSource` 实现）：
+
+| 项 | 选择 | 理由 |
+| --- | --- | --- |
+| IO 方式 | `V4L2_MEMORY_MMAP` + `VIDIOC_QBUF/DQBUF` | 零拷贝，最少一次搬移 |
+| buffer 数量 | 4 | vb2 的 `dma-contig` 单次分配不宜过大，4 个足够平滑 |
+| 取帧节奏 | 阻塞 `select()` + 超时 | 超时**必须**计入 `max_gap_ms`，这是检测卡顿的关键 |
+| 时间戳 | 用 `v4l2_buffer.timestamp`（内核单调时钟） | 不能用用户态 `now()`，否则调度延迟会污染帧间隔 |
+| 帧完整性 | 校验 `bytesused` 与 `length` 的比例 | 不完整帧计入 `frames_corrupt` |
+
+#### 6.2.3 eBPF 侧：与帧统计对齐
+
+这部分**不需要新 eBPF 程序**，复用现有能力 + 新增 2 个 tracepoint 挂点：
+
+| 采集目标 | 现有/新增 | 挂点 |
+| --- | --- | --- |
+| 推流进程的发送字节/包数 | **现有** `flow_rate.bpf.c` 的 `process_stats` | `kprobe/ip_queue_xmit`、`kprobe/udp_sendmsg` |
+| 推流进程重传 | **现有** 同上 | `kprobe/tcp_retransmit_skb` |
+| 本机协议栈丢包 | **现有** `skb_drop.bpf.c` | `tracepoint/skb/kfree_skb` |
+| V4L2 帧队列事件 | **新增** | `tracepoint/v4l2/vb2_v4l2_buf_done`、`v4l2_qbuf` |
+| 帧完成时刻 | **新增** | 同上 |
+
+**新增的 v4l2 挂点可选**：帧统计在用户态已经能拿到，tracepoint 的价值在于
+「帧从驱动完成到用户态取走」之间的延迟——这段是用户态测不到的。建议
+**先不做**，等用户态版本跑稳、确认有需要再加，避免一次引入太多变量。
+
+> **PID 定向**：`process_stats` 已按 tgid 聚合，所以「识别推流进程」现在就能做
+> ——用 `comm` 匹配（如 `gst-launch-1.0`）或由配置指定 pid。真正的 PID **过滤**
+> （只采那一个 pid 以减少 map 压力）需要给 BPF 加 `cfg_target_pid` map，
+> 这是**可选优化，不是前置条件**。
+
+#### 6.2.4 VideoQoeAttribution：五象限归因（+ `NONE`，共 6 个枚举值）
+
+> **实现状态（2026-11-07）**：`server/include/video_qoe_attribution.hpp` +
+> `server/src/video_qoe_attribution.cpp` 已落地，**21 项单测全绿**。
+> 枚举 6 值 = 下表 5 个象限 + `NONE`（无法归因）。
+> ⬜ **尚未接进 `NetworkExperience`**——纯函数写完了，但还没有调用方，
+> 这一步是把「实现了」变成「能观测」的关键，见 §6.2.6。
+
+设计上与 `ObserverAttribution` **同构**（同样的结构、同样的纪律、同样的纯函数），
+因为这两个问题的形状完全一样：**用一路证据去校验另一路证据，且绝不互相污染**。
+
+| 象限 | 帧统计 | 网络指标 | 归因 | 业务含义 |
+| --- | --- | --- | --- | --- |
+| `CONSISTENT_HEALTHY` | 好 | 好 | 无 | 一切正常 |
+| `APP_LAYER_SUSPECT` | 差 | 好 | 应用侧/采集侧 | 网络没问题，查编码器/内存/CPU |
+| `NETWORK_TRANSIENT` | 差 | 差 | 链路 | 网络问题已被业务层验证 |
+| `CONFIRMED_LINK_FAULT` | 差 | 差且持续 | 链路（高置信） | 双重确认，可升级为 BAD |
+| `NETWORK_UNVERIFIED` | 好 | 差 | 观测者自身 | 网络指标差但画面正常 → 查是不是我们自己错了（回到 CPU/thermal 归因） |
+
+> **最后一行是这套设计最锋利的地方**：它是「反向校验」——如果协议栈说网络差，
+> 但业务层画面完全正常，那大概率是**我们的观测方法本身有问题**（采样过密、
+> 探针冲突、观测者过载）。这正是 `ObserverAttribution` 的思路，只是换了一路证据。
+
+**纪律**（必须写进代码注释）：
+
+- 帧统计**不能**修改 `OverallPolicy` 的判决——它只产出归因；
+- 帧统计缺失（无摄像头、`unavailable`）时，归因返回 `NONE`，
+  **不伪装成** `CONSISTENT_HEALTHY`；
+- 帧统计与网络指标的时间窗**必须**对齐（同一 `interval_ms`），否则五象限会误判。
+
+#### 6.2.5 数据出口：进 `NetworkExperience`，**不新增 `MetricId`、不新增插件**（2026-11-07 定稿）
+
+> **本节推翻了原稿的两条提议**（原稿曾计划新增 4 个 `MetricId` +
+> 第 21/22 个插件 + `weaknet-cli stats video`）。推翻的依据不是喜好，是
+> **thermal 已经用一次真实落地把这条路证否了**——见 §4.3.8。
+> 视频归因与 thermal 归因在结构上完全同构，没有理由走另一条路。
+
+沿用与 `thermal_attribution` 逐字同构的三字段形态，直接挂在 `NetworkExperience` 上：
+
+```cpp
+// server/include/assurance/video_qoe_attribution.hpp  （新文件，纯数据）
+enum class VideoQoeAttribution {
+    NONE,                 // 本轮没采到帧统计（无摄像头 / start() 失败）
+    CONSISTENT_HEALTHY,   // 帧好 + 网络好
+    APP_LAYER_SUSPECT,    // 帧差 + 网络好   → 查编码器 / ISP / CPU
+    NETWORK_TRANSIENT,    // 帧差 + 网络差   → 链路嫌疑，但未持续
+    CONFIRMED_LINK_FAULT, // 帧差 + 网络差且持续 → 双重确认
+    NETWORK_UNVERIFIED,   // 帧好 + 网络差   → 反向校验：可能我们自己观测错了
+};
+std::string videoQoeAttributionToString(VideoQoeAttribution v);
+```
+
+`NetworkExperience` 追加三个字段（与 `thermal_attribution` 并列）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `video_qoe_attribution` | `VideoQoeAttribution` | 默认 `NONE`，与引入前逐字节等价 |
+| `video_qoe_attribution_detail` | `std::string` | 人类可读解释，`NONE` 时为空 |
+| `video_qoe_issues` | `std::vector<std::string>` | 机器可读问题清单（如 `SEQ_GAP_BURST` / `CORRUPT_FRAMES`） |
+
+**零新增接口清单**（每一条都是刻意不做的）：
+
+| 不做的事 | 理由（与 §4.3.8 三条同源） |
+| --- | --- |
+| 不新增 `MetricId` | 封闭枚举，改三处；落库还要再改三处（建列 / 绑序号 / SELECT）。视频统计只在当轮评估用一次，不进窗口、不做趋势 |
+| 不新增插件线程 | 没有 `enabled` / `interval_ms` 需求，采样在 quality 评估循环内同步完成即可 |
+| 不新增 `stats video` D-Bus 域 | `experience` 已经是「评估附加结论」的现成出口。`observer_attribution` / `thermal_attribution` 都从这里出去 |
+| 不落 `network_history` | 语义未稳定；等真有趋势需求时再做表结构迁移，那时是需求驱动不是提前投资 |
+
+**诚实记录的代价**：没有独立的 `weaknet-cli stats video` 查询入口，只能从
+`experience` 里读；帧统计不进历史库，无法回溯「昨天下午的丢帧率」。
+
+**唯一新增的可观测命令**（复用现有出口）：
+
+```bash
+# 合成帧源：无摄像头即可验证整条 L3/L4 链路
+weaknet-cli experience | python3 -c \
+  'import sys,json;d=json.load(sys.stdin);print({k:v for k,v in d.items() if "video" in k})'
+```
+
+#### 6.2.6 消费者与可观测命令
+
+| 消费者 | 位置 | 状态 |
+| --- | --- | --- |
+| 质量评估循环 | `server/src/server.cpp` 归因段，与 thermal 采样并列追加 | ⬜ **待做**（当前唯一剩余工作） |
+| `GetNetworkExperience` 出口 | `server/include/assurance/legacy_adapter.hpp` 的 `toExperienceJsonV2`，追加三个字段序列化 | ⬜ **待做**（不序列化就是孤儿字段） |
+| 诊断归因 | `DiagnosisFacts::excluded_causes` 追加视频侧结论 | ⬜ 待做 |
+| ~~`video_qoe` 插件~~ | ~~`monitor_plugins.cpp` 注册~~ | ❌ **不做**（见 §6.2.5） |
+| ~~`weaknet-cli stats video`~~ | ~~新增 stats 域~~ | ❌ **不做**（见 §6.2.5） |
+| ~~`network_history` 落库~~ | — | ❌ **不做**（见 §6.2.5） |
+
+```bash
+# 合成帧源（无摄像头时可验证整条链路）
+weaknet-cli experience          # 读 video_qoe_attribution 字段
+
+# 真机（有摄像头时）
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=100 --stream-to=/dev/null
+weaknet-cli experience          # 归因应随帧质量变化
+```
+
+#### 6.2.7 风险与退路（必须提前写清）
+
+| 风险 | 可能性 | 退路 |
+| --- | --- | --- |
+| Allwinner ISP 是闭源库（`libisp.so` + `AWIspApi.h`），V4L2 直出 NV12 依赖 ISP 通路 | 中 | ① 走 BSP 自带 `AWISPdemo` 的路径；② 退化为 raw Bayer + 用户态软 ISP（性能受限，仅验证用）；③ 换用免 ISP 的 YUV 传感器 |
+| `vin_v4l2` 加载成功但 `open("/dev/video0")` 失败 | 中 | 先用 `dmesg` 确认 `vin` 是否真的 probe 成功；overlay 的 pinmux 与实际接线可能不一致 |
+| 摄像头 FPC 与板端接口不匹配（板侧 **31pin 0.3mm** vs 模块侧 **15pin 1.0mm**） | ~~高~~ **已消除** | 官方文档已明确给出 `31-Pin 0.3mm → 15-Pin 1.0mm same side` 排线规格，且 **Cubie A7A 在官方支持板卡清单内**。线已备齐（2026-11-07）。到货后仍要当场核对 pin 数 / 间距 / 同面三项 |
+| 模块侧无 MCLK/XVCLK 引脚（标准 15pin CSI 排线不含该脚） | ~~高~~ **已消除** | 15pin 定义实测无 MCLK，而 Radxa 官方把 A7A 列进支持清单，说明 **8M 219 模块自供时钟**。这是「必须买正品」的核心理由：第三方模块若依赖主板供 MCLK 就会点不亮 |
+| 启用 camera overlay 导致启动失败 | 低 | **已有 USB-UART 3.3V 串口线**（见 §10），可走 rescue 标签恢复 |
+
+---
+
+## 7. 表面 4：显示与触摸（HDMI / MIPI DSI / USB 触控）
+
+### 7.1 业务作用
+
+诚实说：**这个表面的业务价值最低。**
+
+它的真实作用是「离线现场可见性」：工业网关装在机柜里，运维到现场时如果没有
+笔记本、没有网络，一块本地屏能直接看到当前 SLE 状态、最近故障、接口质量。
+这是「不依赖任何外部设备」的场景，有其价值，但不是核心。
+
+> **给用户的诚实建议**：这块优先级排最后，排在 thermal（零硬件）和摄像头之后。
+
+### 7.2 三条路线的实测结论（2026-11-07 全部在板端核实）
+
+先说结论，再给证据。**三条路的代价差了一个数量级，选错了会白花几百块。**
+
+| 路线 | 触摸 | 需要重编内核 | 额外硬件成本 | 技术深度 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| **A. HDMI + 现有显示器** | ❌ 物理上没有触摸通道 | ❌ 不需要 | **¥0**（显示器现成） | 低（图形栈已经在跑） | ✅ **先做这个** |
+| B. 官方 MIPI DSI 屏（8HD / 10FHD） | ✅ 屏自带（GT911 / GT9271） | ❌ **不需要**（`goodix.ko` 已带两个 alias） | ¥250-350 + 专用 FPC | 高（DRM/KMS 全链路） | ⬜ 可选，不买 |
+| C. HDMI + USB 电容触控面板 | ✅ | ❌ **不需要**（外部模块即可，见 §7.5） | ¥30-90 | 中（HID 子系统） | ⬜ 等产品定位改完再说 |
+
+**先订正上一版文档的一处重大错误。** 原 §7.1 写「项目目前完全没有图形栈」——
+这句话在 2026-11-07 已经**不成立**。板端实测：
+
+```
+sddm.service           active (running) 3h 20min
+/usr/bin/X             -nolisten tcp ... -seat seat0 vt7
+/tmp/.X11-unix/X0      存在
+/dev/dri/{card0,card1,renderD128}  存在
+de@5000000             okay
+tcon3@5730000 / tcon4@5731000   okay
+card0-HDMI-A-1         disconnected      ← 唯一缺的是一台显示器
+card0 的 driver        → sunxi-drm
+```
+
+`qt_dashboard/` 也已经在仓库里，完成度远高于原文档假设：
+
+| 已完成的验证 | 结果 |
+| --- | --- |
+| 数据层单测 | 39/39 |
+| UI 像素级测试 | 8/8 |
+| ARM64 交叉编译 | 通过 |
+| 板端运行 | 通过 |
+| 外部 framebuffer 抓帧（VNC） | 1024×700 / 32bpp |
+| 15 分钟长稳 | RSS 平稳在 60300 kB |
+| **HDMI 实机显示** | ⏳ **唯一待做项：显示器未在位** |
+
+所以「图形栈」不是空白，**只差插一台显示器**。原文档把 DSI 屏当成「补图形栈
+空白」的理由已经消失——DSI 现在只是「补 MIPI DSI 这条总线」的技术深度，
+不再是「从零建图形栈」。
+
+### 7.3 路线 A：HDMI（零成本，先做这个）
+
+**只需要一根 HDMI 线 + 一台现成显示器，不需要改任何配置。**
+
+```bash
+# 插上显示器后确认
+cat /sys/class/drm/card0-HDMI-A-1/status   # 应从 disconnected 变 connected
+cat /sys/class/drm/card0-HDMI-A-1/modes    # 应列出显示器支持的分辨率
+```
+
+这一步的价值不只是「看到界面」，它同时关闭 `qt_dashboard` 唯一遗留的
+⏳ 验收项（HDMI 实机显示）。
+
+> **HDMI 没有触摸，这是物理事实，不是配置问题。** HDMI 协议只承载音视频与
+> CEC/DDC，不存在触摸数据通道。想要触摸只能另走 USB（路线 C）或走屏内
+> I2C（路线 B）。
+
+### 7.4 路线 B：官方 MIPI DSI 屏（可选，不买）
+
+#### 7.4.1 两块官方屏的实际差异（实测自板端 dtbo）
+
+| 项 | Radxa Display 8HD | Radxa Display 10FHD |
+| --- | --- | --- |
+| 分辨率 | 800×1280（`hactive=0x320`, `vactive=0x500`） | 1200×1920（`hactive=0x4b0`, `vactive=0x780`） |
+| 触摸控制器 | **GT911**，I2C 地址 **0x14** | **GT9271**，I2C 地址 **0x5d** |
+| 触摸中断 | `<0x03 0x12 0x02>` | `<0x03 0x12 0x04>` |
+| DSI lanes | 4 | 4 |
+| 像素时钟 | `0x42c1d80` | `0x42c1d80` |
+| overlay 片段数 | 33 | 33 |
+| `exclusive` 占用 | `dlcd0` / `dsi0` / `dsi0combophy` / PD18/PD19/PD16/PD17/PD21/PD23 | 同左 |
+| 参考价 | ¥250-350 | 更贵 |
+
+**两块屏都有触摸。** 上一版文档曾误判 8HD 无触摸（因为只 grep 了 `gt9271`），
+实际 8HD 用的是 **GT911**。
+
+接线规格（**与摄像头完全不同，不可混用**）：
+
+| | 板侧 | 屏侧 | 同/反面 |
+| --- | --- | --- | --- |
+| **DSI 屏** | 39pin / 0.3mm | 40pin / 0.5mm | **反面（opposite side）** |
+| 摄像头 | 31pin / 0.3mm | 15pin / 1.0mm | 同面（same side） |
+
+#### 7.4.2 为什么不需要重编内核（已实测核实）
+
+| 必需项 | 板端实际状态 |
+| --- | --- |
+| 触摸驱动 | `goodix.ko.xz` 的 alias **同时包含** `of:N*T*Cgoodix,gt911` 与 `of:N*T*Cgoodix,gt9271` |
+| DRM 主控 | `sunxi-drm` **builtin**（113 个符号），不是模块 |
+| 面板驱动 | `panel_dsi_*` 系列符号已导出 |
+| DSI 控制器 | `sunxi-dsi`、`sunxi-dsi-combo-phy` 驱动已注册 |
+| 背光 | `CONFIG_BACKLIGHT_PWM=y` |
+| DRM 核心 | `CONFIG_DRM=y` / `CONFIG_DRM_MIPI_DSI=y` / `CONFIG_DRM_PANEL=y` |
+
+启用步骤（不改内核）：
+
+```bash
+# 二选一，取决于买的屏
+sudo mv /boot/dtbo/cubie-a7a-radxa-display-8hd.dtbo.disabled \
+        /boot/dtbo/cubie-a7a-radxa-display-8hd.dtbo     # 800×1280, GT911@0x14
+# 或 -10fhd（1200×1920, GT9271@0x5d）
+sudo /usr/sbin/u-boot-update
+sudo reboot
+```
+
+overlay 内已包含 panel init sequence、timing、`dsi,lanes = <4>`、
+pwm-backlight、触摸控制器。**这些不用自己写。**
+
+> `u-boot-update` 会 glob `/boot/dtbo/*.dtbo` 并生成 `fdtoverlays` 行，
+> 配置项在 `/etc/default/u-boot` 的 `U_BOOT_FDT_OVERLAYS_DIR="/boot/dtbo/"`。
+> 这与 §6.2.2 的摄像头 overlay 是同一套机制。
+
+#### 7.4.3 BSP 与 mainline 的差异（真要踩的坑）
+
+- 本板 `sunxi-drm` 是**厂商 BSP 实现**（`OF_COMPATIBLE_0=allwinner,sunxi-drm`），
+  不是 mainline 的 `sun4i-drm`，connector/plane 语义有差异；
+- `card0-Writeback-1` 已注册但 `status=unknown`、`enabled=disabled`、无 mode，
+  **不能**当作「无屏也能测图形栈」的现成手段；
+- `virtual-panel` 驱动已注册，但基线 DTB 里没有对应 display 节点，
+  走「无屏验证」必须自己加 DT overlay。
+
+#### 7.4.4 为什么先不买
+
+三条理由：
+
+1. **¥300 买的是「MIPI DSI 总线经验」，不是新观测能力。** 屏幕只呈现已经算好的
+   数据，不解决任何新的观测问题；
+2. **图形栈不再是空白**（§7.1），原文档「补空白」的理由已消失；
+3. **触摸暂时没有真实消费者**（见 §7.6），买了也接不进业务链路。
+
+### 7.5 路线 C：HDMI + USB 电容触控面板
+
+这是用户提出并选择的路线：**用现成的 HDMI 显示器，另加一块便宜的外贴式
+USB 触控叠层**，成本从 ¥300 降到 ¥30-90。
+
+> **必须先订正一条流传很广的错误说法。** 网上（以及用户转来的那份方案）说
+> USB 触摸屏「免驱、内核自带」。**在本板不成立。** 实测板端内核配置：
+>
+> ```
+> # CONFIG_HID_MULTITOUCH is not set          ← 多点触控 HID 没编
+> # CONFIG_TOUCHSCREEN_USB_COMPOSITE is not set  ← USB 触摸屏复合驱动没编
+> # CONFIG_TOUCHSCREEN_EGALAX is not set
+> # CONFIG_TOUCHSCREEN_ELAN is not set
+> # CONFIG_HID_ELAN is not set
+> ```
+>
+> 且 `modprobe hid_multitouch` / `modprobe usbtouchscreen` 均返回
+> `FATAL: Module ... not found in directory /lib/modules/5.15.147-99btf1-a733`。
+>
+> 也就是说：**插上去只会被识别成最基础的单点 HID 鼠标（`CONFIG_USB_HID=y` 是开的），
+> 得不到多点触控**。想要真多点触控，必须补 `hid-multitouch`。
+
+**但「必须重编内核」这个结论同样是错的。** 实测证明：外部模块完全可行。
+
+```bash
+# 在板端编译一个空模块
+$ make -C /lib/modules/5.15.147-99btf1-a733/build M=/tmp/kmodtest modules
+  CC [M]  /tmp/kmodtest/t.o
+  LD [M]  /tmp/kmodtest/t.ko
+
+$ modinfo t.ko
+vermagic: 5.15.147-99btf1-a733 SMP preempt mod_unload aarch64   ← 与 uname -r 逐字一致
+
+$ sudo insmod t.ko   → rc=0
+$ lsmod | grep "^t "
+t    16384    0
+$ sudo rmmod t       → rc=0
+```
+
+关键前提（都已核实）：
+
+| 前提 | 实测结果 |
+| --- | --- |
+| vermagic 匹配 | 板端有完整 `/lib/modules/$(uname -r)/build`，编译出的模块 vermagic 与运行内核逐字一致 |
+| 无签名强制 | `# CONFIG_MODULE_SIG is not set` |
+| 所需符号全部导出 | `Module.symvers`（911398 B）中导出 37 个 `hid_*` 与 9 个 `input_mt_*`，含 `__hid_register_driver` / `hid_unregister_driver` / `hid_hw_start` / `hid_hw_stop` / `usb_register_driver` / `usb_deregister` / `input_mt_init_slots` / `input_mt_report_slot_state` |
+| 板端编译器 | gcc 10.2.1-6、make 4.3、ld 2.35.2、bc 1.07.1（**不需要 bison/flex**，那是全量内核构建才要） |
+
+> 注：`hid_register_driver` 是 `hid.h:884-885` 里的宏，包的是
+> `__hid_register_driver`，后者已导出。
+
+**因此正确的做法是**：把上游 Linux 5.15 的 `drivers/hid/hid-multitouch.c`
+（GPL-2.0，约 2000 行）作为外部模块编译，放到 `kmod/hid_multitouch/`。
+
+**这一步的风险全部可控**，因为它不替换内核：
+
+| 上一版担心的风险 | 在本方案下 | 原因 |
+| --- | --- | --- |
+| eBPF `vmlinux.h` 失效 | ✅ 不成立 | 内核二进制没变，BTF 没变 |
+| kmod `vermagic` 失配（`weaknet_cpu_stat` 正在加载） | ✅ 不成立 | 内核没变，vermagic 没变 |
+| BSP `sunxi-drm` 兼容性 | ✅ 不成立 | 内核没变 |
+
+三个风险的前提都是「替换内核」，做外部模块不碰这些。
+
+**能力已补全并实测通过（2026-11-07）**：
+
+| 环节 | 实测结果 |
+| --- | --- |
+| 上游源码 | `torvalds/linux` v5.15 的 `hid-multitouch.c`（2201 行）+ `hid-ids.h`（1356 行），原样搬运，零本地修改 |
+| 板端编译 | `make` 退出码 0，产出 `hid-multitouch.ko` 572960 字节 |
+| vermagic | `5.15.147-99btf1-a733 SMP preempt mod_unload aarch64`，与内核**逐字相同** |
+| 符号依赖 | 38 个未定义符号**全部**在内核 `Module.symvers` 中，一个不缺 |
+| `insmod` | rc=0，`/sys/bus/hid/drivers/` 出现 `hid-multitouch`（含 `bind`/`unbind`/`new_id`），与内建 `hid-generic` 并存 |
+| 设备绑定 | 用 `/dev/uhid` 造虚拟 MT 设备 → `driver=hid-multitouch`，dmesg：`input: weaknet-vts ...` |
+| MT 能力位 | `ABS_MT_SLOT` / `ABS_MT_POSITION_X` / `ABS_MT_POSITION_Y` / `ABS_MT_TRACKING_ID` **全部为 YES** |
+| 事件贯通 | 写一帧报告 → 收到 7 个 input 事件，含 `ABS_MT_TRACKING_ID=0` + `BTN_TOUCH=1` + `EV_SYN` |
+| `rmmod` | rc=0，驱动目录干净消失，`hid-generic` 不受影响 |
+
+文件位置：`kmod/hid_multitouch/`（`Makefile`、`hid-multitouch.c`、`hid-ids.h`、
+`tools/probe_virtual_mt.py`、`README.md`）。
+
+```bash
+# 完整流程（全部已验证）
+cd kmod/hid_multitouch
+make                                   # 板端编译，产出 hid-multitouch.ko
+sudo insmod hid-multitouch.ko          # rc=0
+sudo python3 tools/probe_virtual_mt.py # 无实物时自证能力，EXIT 0
+sudo rmmod hid_multitouch              # 注意模块名是下划线
+```
+
+三个已知注意点（前两条上一版是推测，现已实测订正）：
+
+1. **`MODULE_DEVICE_TABLE(hid, ...)` 的固定 VID/PID 表可能不含触控板的 ID**——成立。
+   但驱动另有一条通用兜底条目 `HID_DEVICE(HID_BUS_ANY, HID_GROUP_MULTITOUCH,
+   HID_ANY_ID, HID_ANY_ID)`，只要内核把设备判为 `HID_GROUP_MULTITOUCH` 就自动绑定。
+   落到 `hid-generic` 时的补救方式是 `new_id` 或 `unbind`/`bind`，见 `README.md`。
+2. **「`hid-generic` 是模块化编译的，需要先 `rmmod`」——不成立**。实测
+   `CONFIG_HID_GENERIC=y` 是内建，不在 `lsmod` 里，无法也不需要 `rmmod`；
+   两者同时存在于 `/sys/bus/hid/drivers/`，由 HID 核心按 group 与 id_table 择优绑定。
+   本板 `insmod` 后无冲突。
+3. **`new_id` 只对当前启动有效**，reboot 后丢失；要持久化须写 udev 规则（`README.md` 有模板）。
+   另外 `new_id` 写入 rc=0 **不代表绑定成功**——总线上没有该 VID/PID 设备时，
+   它只是往动态匹配表加一条，不会有任何可见效果，这是预期行为。
+
+**本质 vs 官方屏**：官方屏走 I2C，触摸控制器挂在屏的 FPC 上，整条链路在
+DT 里声明好；USB 触控板走 HID，靠 VID/PID 匹配。前者是「设备树工程」，
+后者是「HID 子系统工程」，练的东西不一样。
+
+### 7.6 触摸的消费者问题（必须先解决，否则就是孤儿）
+
+这是本节最重要的一条，也是用户已经认可的问题。
+
+现状核查（2026-11-07）：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `qt_dashboard` 有无触摸/点击处理 | 只有一个「刷新」按钮（`main_window.cpp:125`，`&QPushButton::clicked`），无 `mousePressEvent` / `touchEvent` / `QGesture` |
+| `MetricId` 有无输入类指标 | **无**。17 项全是网络类 |
+| `assurance/` 有无触摸相关 | 28 个头文件，零引用 |
+| 产品定位 | 「不控制、不管理，只做观测与诊断」；部署形态是无人值守机柜设备 |
+
+**结论：现在买了触摸，技术上能通，但业务上没有位置放它。** 按 `CLAUDE.md`
+的孤儿判定，一个没有真实消费者的生产表面不成立。
+
+**用户的决定（2026-11-07）**：后续会**修改产品定位**，给触摸一个真实的
+消费者。在此之前：
+
+| 动作 | 判定 |
+| --- | --- |
+| 现在买 USB 触控板 | ⬜ **不买**（等定位改完） |
+| `hid-multitouch` 外部模块 | ✅ **能力已补全并实测通过**（2026-11-07）。已建、已编、已验证绑定与 MT 事件贯通；**但默认不加载、不进发布包**，等有消费者时再由人显式 `insmod` |
+| 现在插 HDMI 显示器 | ✅ **做**（零成本，且关闭 `qt_dashboard` 最后一个 ⏳） |
+
+> 注意区分「能力已具备」与「已接入业务」：前者是驱动层的技术事实（可复现、有证据），
+> 后者需要产品定位给出真实消费者。本模块的处置是**能力先备好，接线等定位**——
+> 这样定位一改完就能直接接线，不必回头补驱动。
+
+> 这条纪律与 LRADC 按键驱动的处置完全一致（见 §13）：**能跑通 ≠ 该接入**。
+> 技术可行性与产品必要性是两个独立判断，不能用前者替代后者。
+> 但 LRADC 是「永久判定为练习」，触摸是「**临时搁置，等定位改完再接入**」，
+> 两者性质不同。
+
+### 7.7 用户态与 tracepoint（等真做时用）
+
+| 层 | 技术 | 说明 |
+| --- | --- | --- |
+| 输出 | DRM/KMS（`drmModeSetCrtc` + `drmModePageFlip`） | 直接写 framebuffer，不用 X/Wayland |
+| 渲染 | 纯 CPU 绘制 + `memcpy` 到 dumb buffer | 避免引入 GPU 依赖 |
+| 事件 | `tracepoint/drm/drm_vblank_event` | 帧同步证据（实测存在） |
+| 硬件失败 | `tracepoint/drm/drm_vblank_event_delivered` | 与 queued 配对可发现丢帧 |
+| 背光 | `/sys/class/backlight/*/brightness` | 只在用户操作时写，不做自动调节（控制边界） |
+
+### 7.8 业务接线（关键：让它有真实消费者，不是孤儿）
+
+屏如果只显示「Hello World」就是孤儿。真实消费者应当是**已有业务数据的呈现**：
+
+```
+MetricsRegistry::global()  ─┐
+SleResult                  ─┼→  本地看板渲染器  →  DRM framebuffer
+最近 site_incidents        ─┤       （只读）
+device_events              ─┘
+```
+
+这与 `qt_dashboard/` 共用同一份数据源，只是渲染后端不同（Qt → DRM）。
+可观测验证：`cat /sys/class/drm/card0-DSI-1/status` 应为 `connected`，
+`echo` 到 sysfs 的 vblank 计数应随刷新增长。
+
+---
+
+## 8. 表面 5：I2C / SPI / GPIO（部分零硬件）
+
+### 8.1 业务作用
+
+这三个加起来只有一个作用：**提供排除性证据**。
+
+工业现场的故障排查里，「不是环境问题」和「是环境问题」同等重要：
+
+| 场景 | 驱动面证据 | 诊断价值 |
+| --- | --- | --- |
+| 现场机柜温度异常 | TMP102 读数 | 解释「为什么设备降频」 |
+| 设备被震动/倾倒 | MPU6050 加速度突变 | 解释「为什么链路突然断」 |
+| 看门狗式状态指示 | GPIO LED | 现场人一眼看到状态 |
+| 设备身份识别 | 板载 EEPROM（已存在） | 多机部署时确认是哪台 |
+
+> **纪律**：不堆外设。每加一个传感器，必须能回答「它会写进哪条诊断结论」。
+> 答不出来的就不加。
+
+### 8.2 现在就能做的部分（零硬件）
+
+#### 8.2.1 板载 EEPROM：只读，且**只能读**
+
+实测确认：`0-0050` 是 `atmel,24c16`（2048 B），驱动 `at24`，内容已被厂商写入
+（首 4 字节 `RADX`，明显是 Radxa 的出厂标识区）。
+
+| 项 | 结论 |
+| --- | --- |
+| 读取 | ✅ 可读，零成本 |
+| 写入 | ❌ **禁止**。这是厂商标识区，写坏可能影响板子识别/保修 |
+| 业务用途 | 读 MAC/序列号，作为设备身份来源（多网关部署时区分设备） |
+
+```bash
+sudo dd if=/sys/bus/i2c/devices/0-0050/eeprom bs=1 count=64 2>/dev/null | xxd
+```
+
+> **注意**：`eeprom` 节点权限是 `-rw-------`（root only），所以读取必须 sudo。
+> 若要纳入服务，服务本就以 root 运行，无额外问题。
+
+#### 8.2.2 已有 I2C 设备的可观测性（零硬件）
+
+板上已有多个 I2C 设备（`i2c-0` 的 eeprom、`i2c-13` 的 axp8191 PMIC、
+`i2c-14` 的 hym8563 RTC、`i2c-15` 的 ac101b codec、`i2c-20` 的 HDMI DDC）。
+即使不加新传感器，`tracepoint/i2c/i2c_write`、`i2c_result` 已经能反映
+**PMIC 通信是否异常**——PMIC 通信错误是真实的硬件故障前兆。
+
+#### 8.2.3 GPIO/LED（零硬件）
+
+实测：`radxa:blue:user`、`radxa:green:power` 两个 LED，trigger 只有
+`none / rc-feedback / rfkill-any / rfkill-none`。
+
+**没有 `heartbeat` / `timer` / `default-on` 之外的通用 trigger**，这点很重要：
+不能指望用 LED trigger 做通用指示。但 `rfkill-any` 恰好和业务相关——
+**无线被 rfkill 关掉时 LED 会亮**，这是零成本的硬件级证据。
+
+GPIO 侧：`gpiochip0`（352 lines）、`gpiochip1`（64 lines）可用，
+`gpio_value`、`gpio_direction` tracepoint 存在，可观测「谁在动 GPIO」。
+
+### 8.3 需要买硬件的部分
+
+| 外设 | 接口 | 需要什么 |
+| --- | --- | --- |
+| MPU6050（6 轴 IMU） | I2C | twi2/twi7 overlay + 杜邦线 + 电平确认（3.3V） |
+| TMP102（温度传感器） | I2C | 同上；注意板上已有 8 个 thermal zone，TMP102 的价值是**机柜内环境温度**而非 SoC 温度 |
+| SSD1306（128×64 OLED） | SPI | spidev overlay + 杜邦线；比 DSI 屏便宜得多，可作「本地可见性」的低成本替代 |
+
+> **SSD1306 是 DSI 屏的低价替代方案**：如果目标是「离线现场能看到状态」，
+> 一块 20 元的 SPI OLED 就能显示 SLE 状态和最近故障，技术深度体现在
+> `spidev` + 自绘字模 + 刷新节流，而不是 DRM 整套栈。**建议先做 OLED，
+> DSI 屏作为进阶。**
+
+---
+
+## 9. 现在就做 vs 需要买硬件
+
+### 9.1 现在就能做（零硬件）—— 按优先级
+
+| # | 任务 | 产出 | 预估工作量 |
+| --- | --- | --- | --- |
+| 1 | ~~`thermal_monitor` 插件 + 4 个新指标 + 归因纯函数~~ **✅ 2026-11-07 完成**（`b5b24e7`） | **实际产出与本节原计划不同**：没有做成第 21 个插件、没有新增 `MetricId`、没有 `weaknet-cli stats thermal`；改为 `weaknet-cli experience` 的 `thermal_attribution` / `_detail` / `thermal_issues` 三个字段（即 §4.3.4 推荐的「最小可行路径」）。取舍理由见 §4.3.8 | 中 |
+| 2 | ~~`weaknet_cpu_stat` 真正上线~~ **✅ 2026-11-07 完成**（见 §5.3.1） | `cpu_busy_ratio` 真机生效（实测满载 `0.0086 → 0.999857`）；`ObserverAttribution` 分支就绪，待真实丢证据时触发 | 小（主要改 ci.sh） |
+| 3 | ~~`IFrameSource` 接口 + `SyntheticFrameSource` + `FrameStats`~~ **✅ 2026-11-07 完成**（未提交） | `server/include/frame_source.hpp`（`FrameStats` / `IFrameSource` / `SyntheticPattern` / `SyntheticFrameSource`）+ `server/src/synthetic_frame_source.cpp`；**22 项单测全绿**（3 套件） | 小 |
+| 4 | ~~`VideoQoeAttribution` 五象限纯函数 + 单测~~ **✅ 2026-11-07 完成**（未提交） | `server/include/video_qoe_attribution.hpp` + `server/src/video_qoe_attribution.cpp`；枚举 6 值（含 `NONE`）、`VideoNetworkObservation`、判定纯函数；**21 项单测全绿** | 中 |
+| 4b | **把视频归因接进业务链路** | 三处改动：`NetworkExperience` 加三个字段、`legacy_adapter.hpp` 序列化、`server.cpp` 归因段采样。**当前唯一剩余工作** | 小 |
+| 5 | ~~`video_qoe` 插件骨架~~ **❌ 已取消** | 与 §6.2.5 一致：走 `NetworkExperience` 而非插件线程 | — |
+| 6 | EEPROM 设备身份读取（只读） | 多机区分 | 小 |
+| 7 | 驱动子系统 tracepoint 采集（thermal/i2c 优先） | 事件级证据 | 中 |
+
+> 1、2 是「补真实缺口」（**均已完成**），3 已完成、4 是下一步。
+> **5 已取消**——原计划的 `video_qoe` 插件 + `stats video` 域按 §6.2.5 不再做，
+> 归因结果改挂 `NetworkExperience`，由 `weaknet-cli experience` 走出进程。
+> 这是 thermal 落地后**用事实修正了原计划**，不是缩减范围。
+> 6、7 是「顺手」。
+
+### 9.2 需要买硬件
+
+| # | 任务 | 依赖 | 依赖状态（2026-11-07） |
+| --- | --- | --- | --- |
+| 8 | `V4l2FrameSource` 真机实现 | MIPI 摄像头 + FPC | ✅ 摄像头已购、转接线已备齐；等阶段 2 overlay 演练 |
+| 9 | ~~DRM/KMS 本地看板~~ **降级为可选** | ~~MIPI DSI 屏 + 触摸~~ | ⬜ 未买。**图形栈不再是空白**（`qt_dashboard` + Xorg + sunxi-drm 已在跑），见 §7.1 |
+| 9b | **HDMI 实机显示** | **一根 HDMI 线 + 现成显示器** | ✅ **零成本，随时可做**。开关 `qt_dashboard` 最后一个 ⏳ 项 |
+| 9c | 触摸能力（USB 触控板或 DSI 屏） | USB 触控板 ¥30-90 / DSI 屏 ¥250-350 | ⬜ **等产品定位改完**（触摸暂无真实消费者，见 §7.6） |
+| 10 | SPI OLED 状态显示 | SSD1306 + 杜邦线 | ⬜ 未买（¥20 级，性价比最高） |
+| 11 | I2C 传感器接入 | MPU6050/TMP102 + 杜邦线 | ⬜ 未买 |
+
+---
+
+## 10. 硬件采购清单
+
+> 价格是量级估算，非精确报价，下单前请自行核对。**「必买」列的含义见备注。**
+>
+> **采购状态（2026-11-07 定稿）**：摄像头、转接线、USB-UART 串口线**全部到位**。
+> 摄像头硬件侧**已无任何阻塞项**——选型定了（正品 8M 219）、线也搞定了
+> （官方规格 31→15 同面）。OLED、DSI 屏、USB 触控板未买，且**都不阻塞主线**。
+>
+> **关键含义**：阶段 2 的变砖保险已经到位，overlay 演练不再有「一次失败就要
+> 重新刷机」的风险。硬件不再是任何阶段的阻塞项，剩下的阻塞全在代码侧。
+
+### 10.1 必买（没有就无法做真机部分）
+
+| 项 | 型号/规格 | 接口 | 用途 | 估算价 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| **USB-UART 串口线** | CH340/CP2102，**必须 3.3V 电平** | USB-A → 排针 | **救砖 + 看启动日志** | ¥10-20 | ✅ **已备齐**。阶段 2 的变砖保险到位 |
+| MIPI 摄像头 | **Radxa Camera 8M 219（正品）**（Sony IMX219，3280×2464） | 模块侧 15pin / 1.0mm FPC | 方向 2 主载体 | ¥100-150 | ✅ **已购（正品）**。Cubie A7A 在官方支持列表内（见 §6.2.2 选型表） |
+| MIPI 摄像头转接排线 | **31pin / 0.3mm → 15pin / 1.0mm，同面（same side）** | — | 连接板端 CSI 与摄像头模块 | ¥10-20 | ✅ **已备齐**。到货后仍需当场核对三项：pin 数、间距、同面/反面 |
+| 40pin 排针 + 杜邦线 | 2.54mm 公对母 ×20 | — | I2C/SPI 接线 | ¥10 | 板端 40pin 已焊接则只需杜邦线 |
+
+### 10.2 建议买（按优先级）
+
+| 项 | 型号/规格 | 接口 | 用途 | 估算价 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| **SPI OLED** | SSD1306 128×64，**3.3V** | SPI 4 线 | 本地状态显示 | ¥15-25 | ⬜ **未买**（当前唯一确定还缺的显示件） |
+| ~~MIPI DSI 屏~~ | ~~Radxa Display 8HD（800×1280）~~ | ~~MIPI DSI 40pin FPC~~ | ~~DRM/KMS + GT911 触摸~~ | ~~¥250-350~~ | ⬜ **不买**（官方屏太贵；且图形栈已不是空白，见 §7.4.4） |
+| **HDMI 线 + 现成显示器** | 任意标准 HDMI | HDMI | `qt_dashboard` 实机显示 | **¥0** | ✅ **已有**（只差插上） |
+| USB 电容触控面板（外贴式） | 5"-10.1"，**USB 接口（非 I2C）** | USB-HID | 触摸交互 | ¥30-90 | ⬜ **等产品定位改完**（见 §7.6） |
+| IMU | MPU6050 模块 | I2C | 震动/倾倒证据 | ¥10-20 | ⬜ 未买 |
+| 温度传感器 | TMP102 模块 | I2C | 机柜环境温度 | ¥10-15 | ⬜ 未买 |
+
+#### 10.2.1 OLED 与 DSI 屏各自干什么（常被问）
+
+**两者都不解决新的观测问题，都只是「把已经算好的结果给人看」**，
+区别在技术栈与成本：
+
+| 维度 | SPI OLED（SSD1306） | MIPI DSI 屏（8HD） | USB 触控板 + HDMI |
+| --- | --- | --- | --- |
+| 显示能力 | 128×64 单色，几行文本 | 800×1280 彩色 | **复用现成显示器，分辨率不限** |
+| 交互 | 无（只有显示） | 有，GT911 电容触摸 | 有，USB 电容触摸 |
+| 技术栈 | SPI + 自绘字库，**不涉及图形栈** | DRM/KMS 全链路：`tcon` → `dsi` → `combo-phy` → `panel` | HID 子系统 + `hid-multitouch` 外部模块 |
+| 主要价值 | 现场快速看一眼当前状态 | MIPI DSI 总线经验 | **最便宜的触摸路径** |
+| 典型工作量 | 小（一天级） | 大（要踩 BSP 与 mainline 差异，且要配专用 FPC） | 中（要编外部模块，约 2000 行上游代码） |
+| 价格 | ¥15-25 | ¥250-350 + 排线 | **¥30-90** |
+
+**如果只想「现场能看到状态」，OLED 就够了**（¥20）；**想补触摸，USB 触控板
+最便宜**（¥30-90）；**想练 MIPI DSI 总线才需要官方屏**（¥300）。
+
+> **重要订正**：上一版表格把 DSI 屏的价值写成「补上项目完全空白的图形栈」。
+> 这句话在 2026-11-07 已**不成立**——板端 `sddm` + `Xorg` + `sunxi-drm` 都在跑，
+> `qt_dashboard` 也已完成 39/39 数据层测试 + 8/8 UI 测试 + ARM64 编译 + 板端运行
+> + 15 分钟长稳。图形栈不是空白，**只差一台显示器**。DSI 现在唯一的独有价值是
+> 「MIPI DSI 这条总线本身的经验」。
+
+#### 10.2.2 板端实际情况（2026-11-07 实测，影响买哪块屏）
+
+买之前先看这条路在**这块板**上通不通。实测结果排除了一个错误选项，也确认了
+真正该走的那条：
+
+| 检查项 | 结果 | 含义 |
+| --- | --- | --- |
+| `spi0` | ⚠️ **已被 SPI Flash 占用**（`spi0.0` → driver `spi-nor`） | **不要往 spi0 上接 OLED**，那是系统固件盘 |
+| `spi1` / `spi3` | ✅ overlay 已就位（`sun60iw2p1-spi1-spidev.dtbo.disabled`、`-spi3-` 同名） | 启用后即出 `/dev/spidev*`，不用自己写 DT |
+| spidev overlay 内部 | ✅ 已声明引脚（PD10/11/12/13，function `spi1`）与子节点 `spidev0`（`compatible = "rohm,dh2228fv"`，`spi-max-frequency` 100 MHz） | 引脚分配与总线模式都是现成的 |
+| SSD1306 驱动 | ✅ **已随内核提供**（`/lib/modules/.../staging/fbtft/fb_ssd1306.ko.xz`） | **不需要重编内核，不需要自己写驱动** |
+| `/dev/spidev*` 节点 | ❌ 当前不存在 | 现在 overlay 还 `.disabled`，启用后才有 |
+
+**结论：OLED 是纯配置工作，零驱动开发、零内核重编**。启用 `spi1` spidev overlay
+→ `modprobe fb_ssd1306`（fbtft 是 staging 驱动，需手工传 `busnum`/`cs`/`speed`
+等模块参数）→ 得到 `/dev/fbN` → 直接写 framebuffer。文档 §8 原估的
+「SPI + 自绘字库一天级」成立，但驱动那一半是现成的。
+
+> ⚠️ **买之前必须核对两件事**：
+> 1. **引脚位置**：spi1 用 PD10–PD13，要确认这几个脚确实引到了 40pin 排针
+>    （而不是被别的外设复用）。对着板子丝印或官方 pinout 图核对。
+> 2. **电平**：模块必须 **3.3V**。5V 模块会拉高电平，长期接会伤 SoC。
+>
+> 另注：`spi0` 被 Flash 占用这件事本身说明**不能照搬「树莓派 SPI 默认口」的经验**
+> ——树莓派用户习惯的 `spidev0.0` 在本板对应的是固件盘。用前先 `ls /sys/class/spi_master/`
+> 看清哪个 bus 是空的。
+
+#### 10.2.3 触摸能力的三种实现与真实代价（2026-11-07 实测定论）
+
+用户明确选择「官方屏太贵，走 HDMI + 便宜 USB 触控板」。这个选择在技术上
+**完全成立**，但代价和网上流传的说法差别很大，必须写清：
+
+| 维度 | 网上流传的说法 | 本板实测事实 |
+| --- | --- | --- |
+| USB 触控板驱动 | 「免驱、内核自带」 | ❌ **不成立**。`CONFIG_HID_MULTITOUCH` 未开，`CONFIG_TOUCHSCREEN_USB_COMPOSITE` 未开，`modprobe` 直接报 `not found`。插上去只能得到最基础的单点 HID 鼠标 |
+| 是否必须重编内核 | 「必须重编内核，会牵动 eBPF/kmod/sunxi-drm」 | ❌ **不成立**（这一条我上一轮说错了，此处订正）。实测外部模块编译 → `insmod rc=0` → `lsmod` 可见 → `rmmod rc=0` 全程成功 |
+| 需要什么 | — | **一个外部模块** `hid-multitouch.ko`（上游 Linux 5.15 GPL-2.0，约 2000 行），放 `kmod/hid_multitouch/` |
+
+外部模块可行的四项前提（全部实测）：
+
+| 前提 | 证据 |
+| --- | --- |
+| vermagic 匹配 | 编译出的 `vermagic: 5.15.147-99btf1-a733 SMP preempt mod_unload aarch64`，与 `uname -r` 逐字一致 |
+| 无签名强制 | `# CONFIG_MODULE_SIG is not set` |
+| 符号全导出 | `Module.symvers`（911398 B）含 37 个 `hid_*` + 9 个 `input_mt_*`，包括 `__hid_register_driver`、`hid_unregister_driver`、`hid_hw_start`、`hid_hw_stop`、`usb_register_driver`、`usb_deregister`、`input_mt_init_slots`、`input_mt_report_slot_state` |
+| 工具链齐全 | 板端 gcc 10.2.1-6 / make 4.3 / ld 2.35.2 / bc 1.07.1。**不需要 bison/flex**（那是全量内核构建才要） |
+
+**三条「重编内核才会有的风险」在本方案下全部不成立**：
+
+| 风险 | 判定 | 原因 |
+| --- | --- | --- |
+| eBPF `vmlinux.h` / BTF 失效 | ✅ 不受影响 | 内核二进制没变 |
+| kmod `vermagic` 失配（`weaknet_cpu_stat` 正在加载） | ✅ 不受影响 | 内核没变 |
+| BSP `sunxi-drm` 兼容性 | ✅ 不受影响 | 内核没变 |
+
+**2026-11-07 状态订正**：`kmod/hid_multitouch/` 已建成并实测通过
+（编译 / vermagic / 38 符号 / `insmod` / 虚拟 MT 设备绑定 / MT 能力位 /
+单帧事件贯通 / `rmmod` 可逆，全链路证据见 §7.5 与
+`kmod/hid_multitouch/README.md`）。
+
+**但「能力已具备」不等于「现在接入」。** 触摸当前**没有真实消费者**（见 §7.6），
+用户已明确表示后续会修改产品定位。因此：
+
+| 维度 | 状态 |
+| --- | --- |
+| 驱动能力 | ✅ 已补全并验证（外部模块，不重编内核） |
+| 默认加载 | ❌ 不加载（不写 systemd、不 `modprobe`、无 udev 规则） |
+| 进发布包 | ❌ 不进（不并入 `kmod/Makefile`，`tools/ci.sh` 不收集，不进 OTA manifest） |
+| 业务接线 | ⬜ 不做（等定位改完） |
+
+> **与 LRADC 的区别**：LRADC 是「永久判定为练习」，触摸是「能力已备好，
+> 等定位改完再接入」。两者都不能因为「技术上可行」就进生产链路，
+> 但后续路径不同——触摸的驱动侧工作已经全部完成，定位一改就能直接接线。
+
+### 10.3 可选（进阶 / 备选）
+
+| 项 | 型号/规格 | 用途 | 备注 |
+| --- | --- | --- | --- |
+| 更高分辨率摄像头 | Radxa Camera 13M（IMX214）或 4K（IMX415） | 更高码率压力测试 | overlay 都有；IMX415 需要更强 ISP 通路 |
+| USB 摄像头（UVC） | 任意 | **兜底**：MIPI 走不通时先验证业务层 | 技术深度低，但能让方向 2 立刻跑起来 |
+| 散热片/小风扇 | — | 若要做热节流实验 | 板子已有 pwm-fan 接口 |
+
+### 10.4 **不要买**
+
+| 项 | 原因 |
+| --- | --- |
+| CAN 收发器（MCP2515 / TJA1050） | 内核 `CONFIG_CAN` 未开，且项目无 CAN 业务 |
+| 独立 ADC 模块（ADS1115 等） | **不是「重复」而是「没有替代品」**：板上 GPADC 的 4 个通道经实测读的是固定分压电阻（8 核满载 3 分钟 SoC 温度涨 22.5℃，四通道波动仅 2~3 LSB，无相关），不能当模拟采集用；且 `/dev/iio:device0` 不存在，只有 4 个只读 sysfs raw。真要做模拟采集**必须外接**，但需先回答「采什么物理量、解释哪种故障」，否则仍是硬凑数据 |
+| 通用 I2C EEPROM（AT24C32 等） | 板载 24c16 已存在（虽然不建议写） |
+| 树莓派专用 HAT | 引脚定义不兼容 |
+
+### 10.5 采购顺序建议（按 2026-11-07 实际状态更新）
+
+```
+已完成：Camera 8M 219（正品）+ 转接排线 + USB-UART 串口线   ← 摄像头硬件侧零阻塞
+下一步：视频归因接进 NetworkExperience（三处改动，纯代码）   ← 唯一剩余工作
+顺手：  插 HDMI 显示器                                      ← ¥0，关掉 qt_dashboard 最后一个 ⏳
+再做：  SSD1306 OLED                                       ← ¥20 级
+等定位：触摸（USB 触控板 ¥30-90 优先于官方屏 ¥300）          ← 需先改产品定位
+不做：  官方 MIPI DSI 屏                                    ← 太贵，且图形栈已不是空白
+```
+
+> **为什么串口线关键（现已备齐）**：`u-boot-update` 之后如果 overlay 不兼容，板子可能
+> 起不来。`/boot/extlinux/extlinux.conf` 里有 rescue 标签，但**选择它需要串口
+> 控制台输入**（板上配了 `console=ttyAS0,115200n8`）。串口线已在手，阶段 2 的
+> 变砖风险从「可能重刷机」降为「可恢复」。
+>
+> **摄像头已到货不改变这条**：阶段 3 要用摄像头，仍必须先过阶段 2 的 overlay
+> 演练，而 overlay 演练是有变砖风险的动作。摄像头在手只是让阶段 3 的阻塞点从
+> 「等硬件」变成「等阶段 2 完成」。
+
+---
+
+## 11. 实施顺序与风险
+
+### 11.1 建议顺序（每步都可独立验证，不成功不进入下一步）
+
+```
+阶段 0（零硬件）   thermal_monitor  ──→  weaknet-cli experience 出现 thermal_attribution  ✅ 已完成
+                   cpu_stat 上线     ──→  cpu_busy_ratio 有真实读数（满载可到 ~1.0）      ✅ 已完成
+      ↓
+阶段 1（零硬件）   IFrameSource + SyntheticFrameSource  ──→  22 项单测全绿                ✅ 已完成
+                   VideoQoeAttribution 五象限 + 单测      ──→  21 项单测全绿                ✅ 已完成
+                   视频归因接进 NetworkExperience          ──→  experience 出 video 字段     ⬜ 下一步
+      ↓
+阶段 1.5（¥0）     插 HDMI 显示器  ──→  card0-HDMI-A-1 变 connected、qt_dashboard 实机显示   ⬜ 随时可做
+      ↓
+阶段 2（硬件已备） overlay 演练：先启用一个无副作用的 overlay，验证 rescue 可用
+      ↓
+阶段 3（摄像头已购） V4l2FrameSource 真机  ──→  /dev/video0 出帧
+      ↓
+阶段 4（买 OLED）  SPI 状态显示
+      ↓
+阶段 5（等定位）   触摸接线（USB 触控板 / 官方 DSI 屏）
+```
+
+> **原「阶段 5 DRM/KMS 本地看板」已取消。** 理由：`qt_dashboard` + Xorg + `sunxi-drm`
+> 已经在板上跑起来了（§7.1），图形栈不缺，缺的只是一台 HDMI 显示器。这条改动
+> 把阶段 5 从「¥300 + 大工作量」降到「¥0 + 插一根线」，并把它前移到阶段 1.5。
+
+> **阶段 0 的验收门槛已订正（2026-11-07）**：原写作 `ObserverAttribution != NONE`，
+> 这条**不可达成**。归因的前提是「观测确实降级」，而板上 eBPF 的
+> `capture_emit_failure_ratio` 与 `perf_delivery_loss_ratio` 长期为 0，
+> 没有证据丢失就没有可归因的东西——强行让它变非 `NONE` 只能靠伪造证据。
+> 正确门槛是数据源本身可用：`cpu_busy_ratio` 有真实读数（实测空闲
+> `0.0086`、8 核满载 `0.999857`、8/8 核参与）。`SELF_INFLICTED` 分支因此
+> 只在单测中验证，真机触发需三条件同时成立，属现场观察项。
+
+**阶段 2 是第一个有变砖风险的动作**，必须单独成阶段、单独验证，不要和别的
+改动混在一起。
+
+### 11.2 风险登记
+
+| 风险 | 影响 | 缓解 |
+| --- | --- | --- |
+| overlay 启用导致启动失败 | 板子离线 | 串口线 + rescue 标签；一次只改一个 overlay |
+| ISP 闭源库限制 | V4L2 出不了 NV12 | 退路见 §6.2.7 |
+| ~~`MetricId` 封闭枚举改动~~ | ~~持久化/评估链路断裂~~ | ✅ **已规避**：视频与 thermal 均改为挂 `NetworkExperience`，零 `MetricId` 改动（§4.3.8 / §6.2.5） |
+| ~~新增插件影响现有 20 个插件的时序~~ | ~~采集周期漂移~~ | ✅ **已规避**：不新增插件线程，采样在 quality 评估循环内同步完成 |
+| kmod 加载失败拖垮服务 | 采集全停 | 加载失败必须**不阻塞**，插件报 `unavailable`；`hid-multitouch` 若将来接入，同理用 `modprobe` 失败即降级 |
+| 文档与代码不同步 | 后续维护误判 | 每个表面实装后同步更新 `docs/架构设计-模块与代码结构.md` 的插件矩阵 |
+
+### 11.3 与既有工作流的衔接
+
+按 `CLAUDE.md`：
+
+- 本文是**方案文档**，不是 OpenSpec change。方案批准后，每个阶段应各自走
+  `change_new.sh` → proposal/design/specs/tasks → generator → evaluator 流程；
+- **不要**在代码写好之后再用 change 追认（会导致 footprint 为 0 与
+  `planning changed during command` 死锁）；
+- 若某阶段只是工作流外的快速验证（例如 overlay 演练），完成后必须在
+  `openspec/tasks/YYYY-MM-DD-<kebab-name>.md` 留记录（构思 / 实现方式 / 结果
+  三节），但它**不具备验收效力**。
+
+---
+
+## 12. 附：与既有代码的接口契约汇总
+
+新增代码必须遵守的现有不变量（违反即返工）：
+
+| 不变量 | 出处 | 对本方案的约束 |
+| --- | --- | --- |
+| 事实只由 L1 产生 | 五层权责契约 | 驱动面只能产事实，不能产判决 |
+| UNKNOWN 不得伪装成 GOOD | SLE v1（已 FROZEN） | 无摄像头时 `VideoQoeAttribution` 返回 `NONE`，不得返回健康 |
+| 不可用不得发布 0 | `host_pressure_monitor.cpp:266` | 所有新指标同规则 |
+| 持久化只读 `MetricsRegistry::global()` | 现有实现 | 新插件必须双发布 |
+| 归因不得参与评分/否决 | `observer_attribution.hpp` 注释 | `VideoQoeAttribution` / `ThermalAttribution` 同规则 |
+| 归因结果走 `NetworkExperience`，不开新接口 | `thermal_attribution` 先例（§4.3.8） | 视频归因同样只加三个字段，零 `MetricId` / 零插件 / 零新 D-Bus 方法 |
+| 单 writer per worktree | `CLAUDE.md` | 并行会话不得同时改同一文件 |
+| 文档与代码同步 | `CLAUDE.md` | 插件数从 20 变化后必须更新架构文档 |
+
+---
+
+## 13. 遗留问题：`kmod/weaknet_lradc_keys.c` 怎么办
+
+这是用户明确要求"在总结完文档以后再帮我做"的部分。**先给结论，再给依据。**
+
+### 13.1 结论
+
+**保留，但重新定位；不接进生产链路，不改成 GPADC，不作为按键输入设备。**
+
+理由是三条实测事实叠加：
+
+| 事实 | 证据 |
+| --- | --- |
+| LRADC 的模拟转换在本板从未启动 | `CTRL` 可精确回读、位布局与 mainline sun4i 逐位相同、时钟 26 MHz、复位已 deassert，但 `INTS` 恒 0、`DATA0` 恒 0x3f、IRQ 计数恒 0；横扫 `CHAN_SELECT×4` / `SAMPLE_RATE×4` / `KEY_MODE_SEL×LEVELB_VOL` 全 16 组合、`CONTINUE_TIME_SEL`、`FIRST_CONVERT_DLY`、`LEVELA_B_CNT`、纯 `ENABLE=1`、vendor 复位值 `0x01000168 + INTC=0x1f1f` 全部零响应 |
+| 已排除 GPADC 争用 | unbind `sunxi-gpadc` 后重测，仍无变化 |
+| 同一块板上的 GPADC 是活的 | `iio:device0` = `2521000.gpadc`，4 通道实测可读（1797 / 608 / 1567 / 1311） |
+
+也就是说：**LRADC 这个 IP 在 A733 上未被 BSP 接通**。这不是驱动写法问题。
+
+已有的三条根因证据（见 `openspec/tasks/2026-11-06-lradc-keys-driver.md`「根因定位」）：
+`# CONFIG_AW_LRADC is not set`、`sunxi-gpadc ... warn: keyadc not select`（说明按键
+ADC 分支在 gpadc 驱动里）、以及 DT 属性对比（模拟前端配置全在 gpadc 节点上，
+lradc 节点一个都没有）。结论是 **A733 上 LRADC 的按键功能已被 gpadc 取代**；
+`DATA0 = 0x3f` 不是转换失败，而是模拟输入未连接、通道浮到 VREF 满量程。
+
+### 13.2 为什么"改成 GPADC"不是一个好选项
+
+直觉上最省事的方案是把这套四层骨架搬到 GPADC（`0x02521000`）。**不建议**，原因是：
+
+| 障碍 | 说明 |
+| --- | --- |
+| 通道已被占满 | `sunxi-gpadc` 驱动已绑定 `iio:device0`，8 个通道 `channel_select = 0xff` 全开；且该驱动已注册 8 个 input 设备（`sunxi-gpadc0/channel0..7/input0`） |
+| 要绕开在树驱动 | 想接管就得 unbind `sunxi-gpadc` 或用裸 MMIO 强占，等于与在树驱动仲裁；**注意：目前板上没有任何进程持有 `/dev/iio:device0`，仓库内也没有 iio 消费者**，所以「会破坏现有消费者」不成立——真正的成本是与在树驱动打架，而非救活下游 |
+| 工作量远大于收益 | 要重写寄存器布局、重做 IIO 注册（不是 input）、还要解决与在树驱动的仲裁 |
+| 业务上没有需求 | 按键输入对本项目零业务价值（见下） |
+
+### 13.3 为什么按键输入对本项目没有业务价值
+
+这一点必须说透，否则会反复有人想"把它修好"。
+
+本项目的产品定义是**工业无线诊断网关**，部署形态是无人值守的机柜侧设备。
+按键输入在这个形态下：
+
+- **不需要**：没有用户会站在机柜前按设备上的键；
+- **有冲突**：现场误触会污染事件流；
+- **已有替代**：`weaknet-cli` 走 D-Bus，远程即可操作。
+
+而 `kmod/README.md` 自己写的定位是对的：
+
+> `weaknet_lradc_keys` 是**驱动技术栈练习**……不进生产链路。
+
+### 13.4 那它到底还有什么价值
+
+**作为驱动技术栈的能力证明与诊断设施**，具体是：
+
+1. **完整的四层驱动链路**：`platform_driver` + OF 匹配 → MMIO/clock/reset →
+   `request_irq` + 中断解码 → `input_register_device` + evdev 省电 → debugfs。
+   这套骨架换到任何 mainline 兼容 SoC 上都能复用。
+2. **一套可复用的诊断方法学**：`raw`（任意偏移读写）、`inject`（不依赖硬件地
+   端到端验证上报链路）、`selftest`（自证 ISR 是否活着）。这三个节点解决的问题
+   ——"驱动注册成功但硬件不动，怎么区分软件 bug 与硬件不存在"——是真实工程问题。
+   本次正是靠它们把结论从"驱动有 bug"推进到"硬件不转换"。
+3. **一个诚实记录的负面结论**：`selftest FAILED: ISR path is dead` 是正确的输出，
+   不是待修的 bug。这个结论本身有文档价值。
+
+### 13.5 具体动作
+
+| 动作 | 内容 |
+| --- | --- |
+| **保留源文件** | `kmod/weaknet_lradc_keys.c` 入库，作为驱动能力样本 |
+| **保持 README 定位** | 继续声明"实验代码，不进生产链路"，不注册插件、不加 D-Bus 方法 |
+| **在 README 补一条最终判定** | 把"ADC 不转换"从"待查"升级为"本板 LRADC IP 不可用，GPADC 才是活的" |
+| **不改 Makefile 默认构建** | 仍可通过 `make` 手工编译。**注意（2026-11-07 订正）**：`tools/ci.sh` 现在会把整个 `kmod/` 交叉编译进发布包，所以 `weaknet_lradc_keys.ko` 确实随 OTA 落到 `releases/<ver>/kmod/` 且进 `manifest.sha256`。这不等于"在用"——**没有任何 systemd 单元加载它，也没有生产消费者**，不 `insmod` 就不占资源。原表述"不进 `tools/ci.sh`"已不成立，改为"随包分发但不加载" |
+| **补 `openspec/tasks/` 记录** | 已有 `2026-11-06-lradc-keys-driver.md`，补齐最终判定即可 |
+
+> **不做的动作**：不重写为 GPADC 驱动、不删除、不试图让它变成可用的按键设备。
+
+---
+
+## 14. 一页速查
+
+| 问题 | 答案 |
+| --- | --- |
+| 现在不买硬件能做哪些？ | 只剩一件：**把视频归因接进 `NetworkExperience`**（三处改动：加字段 + 序列化 + 评估循环采样）。其上游两层均已就绪——`FrameStats` / `IFrameSource` / `SyntheticFrameSource` 22 项单测全绿，`VideoQoeAttribution` 21 项单测全绿，合计 43 项。thermal 与 cpu_stat 也已完成 |
+| 摄像头为什么必须 MIPI？ | 技术深度：V4L2 + vb2 + ISP + sensor subdev 全链路；且板端 UVC 只能走 USB，与「驱动面」无关 |
+| 需要重编内核吗？ | **不需要**（CAN 除外，已排除）。摄像头、官方 DSI 屏、USB 触控板三条路**全部不需要**重编内核——前两者靠 overlay + 现成驱动，第三者靠外部模块 |
+| 硬件买到哪一步了？ | **摄像头（正品 8M 219）、转接排线、USB-UART 串口线全部到位**——摄像头硬件侧零阻塞。OLED / DSI 屏 / USB 触控板未买，且都不阻塞主线 |
+| 官方 DSI 屏还买吗？ | **不买**。① 太贵（¥250-350 + 专用 39→40 反面 FPC）；② 「补图形栈」的理由已消失——`sddm` + `Xorg` + `sunxi-drm` 在跑，`qt_dashboard` 已完成 39/39 + 8/8 + ARM64 + 板端 + 15min 长稳，**只差一台 HDMI 显示器**；③ 触摸暂无消费者 |
+| 触摸怎么最便宜地实现？ | **HDMI 显示器 + USB 电容触控板（¥30-90）+ 外部模块 `hid-multitouch.ko`**。实测：**不需要重编内核**（vermagic 匹配、无签名强制、所需符号全导出、板端工具链齐全）。但网上说的「免驱」在本板不成立——`CONFIG_HID_MULTITOUCH` 未开 |
+| 触摸现在做吗？ | **不做**。当前无真实消费者（`MetricId` 无输入类、`assurance/` 零引用、`qt_dashboard` 只有一个刷新按钮）。用户将修改产品定位，改完再接入 |
+| OLED 和 DSI 屏到底干嘛？ | 都只是显示已算好的结果，不解决新观测问题。OLED 是 `spi` + 自绘字库的文本屏（¥20）；DSI 唯一独有价值是 MIPI DSI 总线经验（¥300）。**先插 HDMI，¥0** |
+| 视频会不会回控推流端？ | **不会**。只做观测与归因；需要控制时必须走 L5 动作目录 |
+| 视频指标进历史库吗？ | **不进**。与 thermal 一致：只挂 `NetworkExperience` 三个字段，从 `weaknet-cli experience` 出去。零 `MetricId`、零插件、零新 D-Bus 方法、零表结构迁移 |
+| LRADC 驱动怎么办？ | **保留但不接生产**：本板 LRADC IP 实际不转换（GPADC 才是活的），它是驱动技术栈样本 + 诊断方法学，不改成按键设备。见 §13 |
+| 五个表面哪个最值钱？ | 摄像头（业务价值最高）；thermal（零成本、已见效）；显示/触摸（业务价值最低，但 HDMI 是 ¥0 的顺手事） |
+
+---
+
+## 15. 当前方案一页纸（2026-11-07 定稿）
+
+前面十几节是论证，这一节是**结论**。若只看一页，看这里。
+
+### 15.1 已经做完的
+
+| 事项 | 状态 | 证据 |
+| --- | --- | --- |
+| thermal 归因（`ThermalStateReader` + `attributeThermalState`） | ✅ 已完成并真机验证 | `weaknet-cli experience` 真机输出 `"thermal_attribution":"FAN_ANOMALY"`，与设计逐字吻合 |
+| `weaknet_cpu_stat` 上线 | ✅ 已完成 | 满载 `cpu_busy_ratio` `0.0086 → 0.999857` |
+| `FrameStats` + `IFrameSource` + `SyntheticFrameSource` | ✅ 已完成（未提交） | `server/include/frame_source.hpp` + `server/src/synthetic_frame_source.cpp`，**22 项单测全绿** |
+| `VideoQoeAttribution` 纯函数 | ✅ 已完成（未提交） | `server/include/video_qoe_attribution.hpp` + `server/src/video_qoe_attribution.cpp`，枚举 6 值 + `VideoNetworkObservation` + 判定纯函数，**21 项单测全绿**；⬜ 尚未接进 `NetworkExperience` |
+| 摄像头选型 + 转接线 + 救砖串口线 | ✅ 全部到位 | 正品 8M 219；官方规格 31→15 同面线 |
+
+### 15.2 接下来做什么（按顺序）
+
+| # | 事项 | 成本 | 依赖 | 为什么是它 |
+| --- | --- | --- | --- | --- |
+| 1 | **把视频归因接进 `NetworkExperience`** | 零硬件 | 无（上游已就绪） | 三处改动：`NetworkExperience` 加 `video_qoe_attribution` / `_detail` / `video_qoe_issues`；`legacy_adapter.hpp` 序列化；`server.cpp` 评估循环采样。**完成后 `weaknet-cli experience` 即可见** |
+| 2 | **插 HDMI 显示器** | ¥0 | 有一台显示器 | 关掉 `qt_dashboard` 最后一个 ⏳；验证 `card0-HDMI-A-1` 从 `disconnected` 变 `connected` |
+| 3 | **阶段 2 overlay 演练** | ¥0 | 串口线（已有） | 第一个有变砖风险的动作，必须单独做、单独验证。先选无副作用的 overlay |
+| 4 | **摄像头 overlay 启用 + `V4l2FrameSource`** | 零额外硬件 | 阶段 2 完成 | 真机出帧，接进 `NetworkExperience` |
+| 5 | **SSD1306 OLED**（可选） | ¥20 | spi1 overlay | 现场状态显示，性价比最高 |
+| 6 | **触摸接线**（等定位改完） | ¥30-90 | 产品定位修订 | USB 触控板 + `hid-multitouch.ko` 外部模块，不重编内核 |
+
+### 15.3 明确不做的（附理由，避免反复动摇）
+
+| 不做的事 | 理由 |
+| --- | --- |
+| 新增 `MetricId`（视频或 thermal） | 封闭枚举改三处 + 落库再改三处；数据只在当轮评估用一次。thermal 已用一次真实落地证否这条路（§4.3.8） |
+| 新增第 21/22 个插件线程 | 没有 `enabled` / `interval_ms` 需求；`experience` 已是现成出口 |
+| 新增 `stats thermal` / `stats video` D-Bus 域 | 同上。`weaknet-cli experience` 足够 |
+| 视频指标进 `network_history` | 语义未稳定；真有趋势需求时再做表迁移 |
+| 买官方 MIPI DSI 屏 | ¥250-350 + 专用 FPC；图形栈已不是空白；触摸暂无消费者 |
+| 重编内核 | 三条路（摄像头 / DSI / USB 触控）全都不需要 |
+| 现在做触摸 | 无真实消费者；等产品定位修订 |
+| 改 `kmod/weaknet_lradc_keys.c` 为 GPADC | 无业务价值；见 §13 |
+
+### 15.4 一条贯穿全局的纪律
+
+本方案里所有「归因」类新增（`observer_attribution`、`thermal_attribution`、
+将来的 `video_qoe_attribution`）都遵守同一套形态：
+
+```
+纯函数判定 → NetworkExperience 三个字段 → toExperienceJsonV2 序列化 → weaknet-cli experience
+```
+
+三个字段的固定形状：
+
+| 字段 | 作用 |
+| --- | --- |
+| `<x>_attribution` | 枚举结论，默认 `NONE` |
+| `<x>_attribution_detail` | 人类可读解释，`NONE` 时为空 |
+| `<x>_issues` | 机器可读问题清单（thermal / video 有，observer 无） |
+
+**不参与 `OverallPolicy` 的评分与 veto。** 这是三条铁律之一，任何新增归因都不例外。
+
+违反这套形态的代价已经被验证过一次：thermal 原计划要 4 个 `MetricId` +
+1 个插件 + 1 个 D-Bus 域 + 1 个配置集合，实际落地只用了 3 个字段、
+零新接口（§4.3.8）。视频归因没有理由重走那条弯路。

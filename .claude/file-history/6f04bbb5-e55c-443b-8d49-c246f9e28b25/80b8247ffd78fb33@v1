@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# P0-C2 真机重启链路验证 —— 沙盒搭建设备端脚本
+#
+# 隔离原则：
+#   1. 独立 root：/tmp/p0c2-sb/root（不碰 /home/radxa/weaknet）
+#   2. 独立 state-dir：/tmp/p0c2-sb/state（不碰 /var/lib/weaknet-ota）
+#   3. 假服务名：weaknet-p0c2-probe.service（不碰 weaknet-server）
+#   4. 假 systemd 单元：真实存在但只跑 sleep，用来提供 is-active / NRestarts
+#
+# 这样即使验证失败/断电，生产事务与生产服务完全不受影响。
+set -eu
+
+SB=/tmp/p0c2-sb
+PROBE=weaknet-p0c2-probe
+PROBE_UNIT=/etc/systemd/system/${PROBE}.service
+
+echo "=== 1. 清理旧沙盒 ==="
+rm -rf "$SB"
+mkdir -p "$SB/root/releases/1.0.0" "$SB/root/releases/1.1.0" "$SB/state"
+
+echo "=== 2. 造两个版本目录 ==="
+for v in 1.0.0 1.1.0; do
+    mkdir -p "$SB/root/releases/$v/server/bin"
+    echo "#!/bin/sh
+echo p0c2-sandbox-$v" > "$SB/root/releases/$v/server/bin/weaknet-dbus-server"
+    chmod +x "$SB/root/releases/$v/server/bin/weaknet-dbus-server"
+    echo "$v" > "$SB/root/releases/$v/VERSION"
+done
+ln -sfn "$SB/root/releases/1.0.0" "$SB/root/current"
+echo "  current -> $(readlink -f "$SB/root/current")"
+
+echo "=== 3. 安装探针 systemd 单元（只 sleep，永远健康）==="
+sudo tee "$PROBE_UNIT" >/dev/null <<'UNIT'
+[Unit]
+Description=P0-C2 sandbox probe (never touches weaknet-server)
+[Service]
+Type=simple
+ExecStart=/bin/sleep infinity
+Restart=on-failure
+RestartSec=1
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now ${PROBE}.service
+sleep 1
+echo "  probe state: $(systemctl is-active ${PROBE}.service)"
+
+echo "=== 4. 复制控制器与恢复器到沙盒 ==="
+sudo install -m 0755 /usr/local/lib/weaknet/weaknet-ota-ctl "$SB/ctl" 2>/dev/null || true
+sudo install -m 0755 /usr/local/lib/weaknet/weaknet-ota-recover "$SB/recover" 2>/dev/null || true
+sudo install -m 0755 /usr/local/lib/weaknet/weaknet-ota-gate "$SB/gate" 2>/dev/null || true
+sudo chown -R root:root "$SB"
+ls -l "$SB/" | tail -5
+
+echo "=== 5. 造 TRIAL 事务（模拟升级刚翻转、待验证）==="
+sudo python3 "$SB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    begin --from 1.0.0 --to 1.1.0 --rollback-target 1.0.0 2>&1 | tail -3
+sudo python3 "$SB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    materialize 2>&1 | tail -2
+sudo python3 "$SB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    arm-switch 2>&1 | tail -2
+sudo python3 "$SB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    do-switch 2>&1 | tail -3
+
+echo "=== 6. 沙盒初始状态 ==="
+sudo python3 "$SB/ctl" --root "$SB/root" --state-dir "$SB/state" status 2>&1 | tail -20
+echo "  current -> $(readlink -f "$SB/root/current")"

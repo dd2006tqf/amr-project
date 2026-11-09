@@ -1,0 +1,137 @@
+# 弱网项目简历知识库
+
+本文件是简历撰写与面试讲解的知识沉淀，按简历条目组织。每条包含：标准写法、代码依据、讲解要点。
+
+写作硬规范（沿用既定四条）：无括号、无箭头、斜杠用顿号；每点 60 至 80 中文字符（约五号字两行）；只用行业公认技术名词，可用英文专有名词；简洁严谨，不堆砌形容词。
+
+---
+
+## 简历完整版（5 点）
+
+> **基于 eBPF 与 D-Bus 的多协议内核级网络质量监测平台**
+> **技术栈**：C++11、C++17、eBPF、libbpf、D-Bus、pthread、Netlink、SQLite、Python、CMake
+> **项目简介**：面向工业与边缘场景的网络质量监控系统，结合内核级被动采集与主动探测，提供端侧根因诊断并协同云端大模型实现智能化运维分析。
+>
+> * 基于 eBPF 实现内核态多探针低开销采集。实现流量速率、TCP 重传、HTTP 延迟等探针，经内核验证器校验后挂载至对应内核事件点完成采集；引入 CO-RE 机制消除对内核结构体布局的编译期依赖，兼容多内核版本。
+> * 实现多协议网络状态与无线指标全景监测。通过 Netlink 套接字统计 TCP 传输与重传计算丢包率，对接 wpa_supplicant 提取 Wi-Fi 信号 RSSI，基于 BlueZ 总线实现经典蓝牙与 BLE 双模设备拓扑感知。
+> * 基于 D-Bus 构建服务端与客户端通信架构。多线程采集经互斥锁同步检测指标变更，服务类注册方法接口，事件经管理器集中分发，信号带重试同步发送避免阻塞采集；采样周期与探测目标可动态调整，无需重启服务。
+> * 设计端侧网络体验评估与根因诊断引擎。按网络、服务、射频三层聚合多维评估指标，避免不同维度互相掩盖；内核采集丢失导致的超时证据降为未知而不误判，多故障并发时按因果依赖区分根因与伴生症状。
+> * 搭建端云协同遥测与大模型辅助诊断服务。边缘端基于水位增量机制可靠上报结构化网络事件，云端结合大模型多智能体与专家知识库推理异常告警，输出归因分析报告与排查建议。
+
+---
+
+## 条目一：多协议指标监控（Netlink + wpa_supplicant + BlueZ）
+
+### 简历标准写法
+
+> 实现多协议网络状态与无线指标全景监测。通过 Netlink 套接字统计 TCP 传输与重传计算丢包率，对接 wpa_supplicant 提取 Wi-Fi 信号 RSSI，基于 BlueZ 总线实现经典蓝牙与 BLE 双模设备拓扑感知。
+
+### 与 eBPF 监控的区别（面试必问）
+
+| 维度 | eBPF 监控 | 多协议监控 |
+| :--- | :--- | :--- |
+| 运行空间 | 内核态沙箱 | 用户态守护进程 |
+| 采集机制 | 探针挂载内核事件点，事件驱动、纳秒级 | 标准 API 或进程间通信查询状态快照 |
+| 关注平面 | 数据平面实时性能 | 管理平面与控制平面 |
+| 协议层级 | 传输层 TCP、应用层 DNS 与 HTTP | 物理层与数据链路层，以太网、Wi-Fi 802.11、蓝牙 |
+| 典型指标 | 单次 DNS 耗时、HTTP 延迟、TCP 重传次数 | RSSI、信道频段、蓝牙设备拓扑、链路丢包率 |
+| 数据形态 | 纳秒级连续高频时序 | 静态配置、连接拓扑、秒级状态快照 |
+
+协同关系：eBPF 发现症状（延迟飙升、重传陡增），多协议监控提供环境与根因（信号骤降、同频干扰、物理层健康）。两者结合支撑网络、服务、射频三层根因诊断。
+
+### 1. Netlink 统计 TCP 传输与重传
+
+**代码位置**：`server/src/net_tcp.cpp`（类 `TcpLossMonitor`，函数 `diagDumpFamilyIface`）
+
+核心流程：
+
+```cpp
+// 1. 构造 inet_diag_req_v2 请求
+struct { nlmsghdr nlh; inet_diag_req_v2 req; } msg{};
+msg.nlh.nlmsg_type  = SOCK_DIAG_BY_FAMILY;          // sock_diag 专用请求类型
+msg.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;   // 请求 + dump 全量 socket
+msg.req.sdiag_protocol = IPPROTO_TCP;
+msg.req.idiag_states   = 0xFFFFFFFFu;               // 匹配所有 TCP 状态
+msg.req.idiag_ext      = (1 << (INET_DIAG_INFO - 1)); // 请求内核 tcp_info 结构体
+sendmsg(nlSock, &msgh, 0);
+
+// 2. 循环 recvmsg 解析返回，提取 INET_DIAG_INFO 属性
+tcp_info* ti = reinterpret_cast<tcp_info*>(RTA_DATA(attr));
+totalRetrans += ti->tcpi_total_retrans;             // 分子：累计重传段数
+// 近似分母：旧内核无 tcpi_segs_out 时的估算
+segsOutApprox += ti->tcpi_unacked + ti->tcpi_retrans + ti->tcpi_sacked;
+
+// 3. 两次采样差值计算丢包率
+ratePercent = deltaRetrans / deltaSegs * 100.0;
+```
+
+讲解要点：
+
+- 创建 `socket(AF_NETLINK, SOCK_DGRAM, NETLINK_SOCK_DIAG)`，走 sock_diag 专用子通道，不同于 `NETLINK_ROUTE`。
+- `NLM_F_DUMP` 一次拿回系统全量 TCP socket 快照，可按 `idiag_if` 过滤网卡；比解析 `/proc/net/tcp` 文本省去大量字符串转换开销。
+- 丢包率基于前后两次采样的差值计算，划 good、degraded、poor、insufficient 四级。
+- 鲁棒性兜底：`tcpi_segs_out` 在旧内核缺失时用未确认加重传加 SACK 近似；仍为 0 则回退 `RTM_GETLINK` 读网卡 L2 层 `tx_packets` 作保底分母，杜绝除零。
+
+### 2. 对接 wpa_supplicant 提取 Wi-Fi RSSI
+
+**代码位置**：`server/src/net_wifiriss.cpp`（类 `WiFiRssiClient`）
+
+核心流程：
+
+```cpp
+// 1. Unix 域数据报套接字直连守护进程
+int sock = ::socket(AF_UNIX, SOCK_DGRAM, 0);
+// 2. 先 bind 本地临时地址（wpa_ctrl 协议要求）
+snprintf(local.sun_path, ..., "/tmp/wpa_ctrl_%d_%s", getpid(), iface.c_str());
+::bind(sock, ...);
+// 3. connect 到 /var/run/wpa_supplicant/<iface> 控制套接字
+::connect(sock, ...);
+// 4. 发送 SIGNAL_POLL，带超时接收并解析
+::send(sock, "SIGNAL_POLL", 11, 0);
+// 5. 解析形如 RSSI=-62 的响应
+std::sscanf(resp.c_str() + pos, "RSSI=%d", &rssi);
+```
+
+讲解要点：
+
+- 用 DGRAM 而非 STREAM，因为 wpa_ctrl 协议每条消息独立。
+- `SO_RCVTIMEO` 设置接收超时，避免守护进程无响应时主流程阻塞。
+- 三层容灾降级：控制套接字失败 → Generic Netlink（nl80211 发 `NL80211_CMD_GET_STATION`）→ 兜底读 `/proc/net/wireless`。
+- RSSI 值域校验（-100 至 -30），越界视为无效返回哨兵值 -1000，不把坏数据喂给评估引擎。
+
+### 3. 基于 BlueZ 总线的蓝牙双模拓扑感知
+
+**代码位置**：`server/src/bt_monitor.cpp`（类 `BtMonitor`）
+
+核心流程：
+
+```cpp
+// 1. 轻量 libdbus 直连系统总线上的 org.bluez（不依赖 GLib）
+#include <dbus/dbus.h>
+
+// 2. 一次性枚举所有对象：适配器 + 设备
+msg = dbus_message_new_method_call(
+    "org.bluez", "/",
+    "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
+
+// 3. 深度遍历 a{oa{sa{sv}}} 三层字典：对象路径 → 接口名 → 属性
+//    找到 org.bluez.Adapter1 的对象路径，Device1 提取 RSSI、Connected、UUIDs
+
+// 4. 双模识别：检查设备 UUIDs
+//    GATT 服务（0x1800、0x180F 等）→ BLE 低功耗蓝牙
+//    A2DP 0x110B、SPP 0x1101 等 → 经典蓝牙
+```
+
+讲解要点：
+
+- 依赖接口：`Adapter1` 电源与扫描控制、`Device1` 设备属性、`MediaTransport1` A2DP 音频状态、`ObjectManager` 全量枚举。
+- 独立工作线程 3 秒步长刷新，扫描 30 秒自动续期，设备事件经 `pendingEvents_` 队列加锁移交给 EventManager，与主监控链路解耦。
+- 双模识别依据 UUIDs 与 Appearance，区分 BR/EDR 与 BLE。
+- 蓝牙 A2DP 传输状态是 2.4GHz 同频共存干扰诊断（`band_conflict_detector`）的底层输入，连接射频层根因判断。
+
+### 面试应答模板
+
+> 这部分解决物理介质与空口环境的全局可观测性：
+> 1. 传输层用 Netlink 的 SOCK_DIAG dump TCP socket 快照，解析 tcp_info 算重传率，旧内核做了分母近似与 L2 包数兜底；
+> 2. 无线侧用 Unix Domain Socket 对接 wpa_supplicant 轮询 SIGNAL_POLL 拿精准 RSSI，备了 nl80211 与 proc 文件两级降级；
+> 3. 蓝牙用 libdbus 对接 BlueZ 系统总线，枚举对象的 UUID 与属性区分经典蓝牙与 BLE，掌握本地空口拓扑与同频干扰风险。

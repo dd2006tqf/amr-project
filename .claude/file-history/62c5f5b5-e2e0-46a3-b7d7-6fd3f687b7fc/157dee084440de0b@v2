@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# 复现 entrypoint.server.sh 的两阶段构建在干净工作区里会发生什么。
+# 用真实路径而非符号链接，避免上一轮 core 配置失败的干扰。
+set -o pipefail
+
+WS=/tmp/cleanws2
+rm -rf "$WS"
+mkdir -p "$WS"
+cp -a /workspace/src/amr_dispatcher_core "$WS"/
+cp -a /workspace/src/amr_dispatcher_interfaces "$WS"/
+cp -a /workspace/src/amr_dispatcher_bt "$WS"/
+cp -a /workspace/src/amr_dispatcher_ros "$WS"/
+cp -a /workspace/src/amr_dispatcher_tools "$WS"/
+cp -a /workspace/src/amr_dispatcher_proto "$WS"/
+cp -a /workspace/src/amr_dispatcher_proto_cli "$WS"/
+
+cd "$WS" || exit 1
+# shellcheck disable=SC1091
+source /opt/ros/jazzy/setup.bash
+
+echo "=== phase1: core + interfaces（entrypoint 原样）==="
+colcon build --base-paths . --symlink-install \
+  --packages-select amr_dispatcher_core amr_dispatcher_interfaces \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -6
+
+# shellcheck disable=SC1091
+source install/setup.bash
+
+echo
+echo "=== phase2: bt + ros + tools（entrypoint 原样，不含 proto）==="
+colcon build --base-paths . --symlink-install \
+  --packages-select amr_dispatcher_bt amr_dispatcher_ros amr_dispatcher_tools \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -25

@@ -1,0 +1,60 @@
+import io
+
+def patch(path, pairs):
+    s = io.open(path, encoding="utf-8").read()
+    for old, new in pairs:
+        n = s.count(old)
+        assert n == 1, (path, n, old[:120])
+        s = s.replace(old, new)
+    io.open(path, "w", encoding="utf-8").write(s)
+    print("ok", path)
+
+D = "docs/交叉编译与开发板部署.md"
+
+patch(D, [
+    # 打包目录：不再预建 logs/server（日志落盘位置已改为 <root>/data/logs）
+    (
+        "    dist-arm64/server/build \\\n    dist-arm64/server/logs/server \\\n",
+        "    dist-arm64/server/build \\\n",
+    ),
+
+    # rsync 排除项：日志已不在 dist 里，排除项失去意义
+    (
+        "# rsync 增量同步，排除日志目录（保留开发板日志）\nrsync -az --delete \\\n    --exclude 'server/logs/' \\\n    -e ssh \\\n",
+        "# rsync 增量同步（日志落盘在 <root>/data/logs，不在 dist 中，无需排除）\nrsync -az --delete \\\n    -e ssh \\\n",
+    ),
+
+    # 测试脚本内启动服务前建目录
+    (
+        "cd /home/radxa/weaknet/server\nmkdir -p logs/server\n: > /tmp/weaknet-server.log\n\necho \"===== 启动服务端 =====\"",
+        "cd /home/radxa/weaknet/server\nmkdir -p /home/radxa/weaknet/data/logs\n: > /tmp/weaknet-server.log\n\necho \"===== 启动服务端 =====\"",
+    ),
+
+    # 性能优化表格里的排除日志行
+    (
+        "| 排除日志 | `--exclude 'server/logs/'` 保留开发板日志（已启用） |",
+        "| 日志位置 | 落盘在 `<root>/data/logs`（`data/` 持久化，不随部署/OTA 切换） |",
+    ),
+
+    # 开发板目录结构
+    (
+        "│   ├── server/\n│   │   ├── bin/weaknet-dbus-server\n│   │   ├── build/*.bpf.o\n│   │   └── logs/server/           # 日志（rsync 排除，不会被覆盖）\n",
+        "│   ├── current -> releases/<version>   # OTA 原子切换点\n│   ├── releases/<version>/server/\n│   │   ├── bin/weaknet-dbus-server\n│   │   └── build/*.bpf.o\n│   ├── data/                      # 持久化（不随版本切换）\n│   │   ├── history.db\n│   │   └── logs/                  # 服务端日志（时间戳 .log，滚动 + 上限 5 个）\n",
+    ),
+
+    # 两处手动 rsync 命令
+    (
+        "# 4. 部署到开发板\nrsync -az --delete --exclude \"server/logs/\" -e ssh \\\n",
+        "# 4. 部署到开发板\nrsync -az --delete -e ssh \\\n",
+    ),
+    (
+        "# 3. 部署到开发板\nrsync -az --delete --exclude \"server/logs/\" -e ssh \\\n",
+        "# 3. 部署到开发板\nrsync -az --delete -e ssh \\\n",
+    ),
+
+    # 手动编译步骤里的启动段（无空行变体）
+    (
+        "cd /home/radxa/weaknet/server\nmkdir -p logs/server\n: > /tmp/weaknet-server.log\necho \"===== 启动服务端 =====\"",
+        "cd /home/radxa/weaknet/server\nmkdir -p /home/radxa/weaknet/data/logs\n: > /tmp/weaknet-server.log\necho \"===== 启动服务端 =====\"",
+    ),
+])

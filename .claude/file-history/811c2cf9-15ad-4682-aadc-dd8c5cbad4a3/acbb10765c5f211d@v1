@@ -1,0 +1,33 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#pragma once
+
+#include <cstdint>
+
+namespace ins {
+namespace live_broadcast {
+
+/**
+ * @brief LiveBroadcastManager 内部消息ID定义
+ * @details 集中管理Manager模块使用的所有MsgLooper事件ID
+ */
+namespace MessageIds {
+
+/// 状态机启动事件ID
+constexpr int32_t kStateMachineStart = 1000;
+
+/// RPC/状态机派发事件ID（由主线程 Post，工作线程执行）
+constexpr int32_t kDispatchPrepare = 1001;
+constexpr int32_t kDispatchStart = 1002;
+constexpr int32_t kDispatchStop = 1003;
+constexpr int32_t kDispatchResume = 1004;
+constexpr int32_t kDispatchDiscardResume = 1005;
+constexpr int32_t kDispatchPrepareComplete = 1006;
+
+/// 异步连接/开流结果（由连接线程或开流完成后投递到工作线程派发）
+constexpr int32_t kDispatchStartResult = 1007;
+
+}  // namespace MessageIds
+
+}  // namespace live_broadcast
+}  // namespace ins

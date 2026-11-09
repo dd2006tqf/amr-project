@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""一次性 PNG 检查器：验证看板截图不是空白、且各区块真的画上了内容。
+不依赖 PIL，只用 zlib + struct 手工解 PNG。用完即删。"""
+import struct
+import sys
+import zlib
+from collections import Counter
+
+
+def read_png(path):
+    data = open(path, "rb").read()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos = 8
+    width = height = None
+    bitdepth = colortype = None
+    idat = b""
+    while pos < len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        ctype = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            width, height, bitdepth, colortype, _, _, interlace = struct.unpack(
+                ">IIBBBBB", chunk)
+            assert interlace == 0, "interlaced PNG unsupported"
+        elif ctype == b"IDAT":
+            idat += chunk
+        elif ctype == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colortype]
+    assert bitdepth == 8, f"bitdepth {bitdepth} unsupported"
+    stride = width * channels
+    out = bytearray(width * height * channels)
+    prev = bytearray(stride)
+    p = 0
+    for y in range(height):
+        f = raw[p]
+        p += 1
+        line = bytearray(raw[p:p + stride])
+        p += stride
+        if f == 1:      # Sub
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 0xFF
+        elif f == 2:    # Up
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 0xFF
+        elif f == 3:    # Average
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                line[i] = (line[i] + ((a + prev[i]) >> 1)) & 0xFF
+        elif f == 4:    # Paeth
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = prev[i]
+                c = prev[i - channels] if i >= channels else 0
+                pp = a + b - c
+                pa, pb, pc = abs(pp - a), abs(pp - b), abs(pp - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = (line[i] + pr) & 0xFF
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    return width, height, channels, bytes(out)
+
+
+def main(path):
+    w, h, ch, px = read_png(path)
+    print(f"尺寸: {w}x{h}, 通道: {ch}")
+
+    def rgb(x, y):
+        o = (y * w + x) * ch
+        return px[o], px[o + 1], px[o + 2]
+
+    # 全图统计
+    colors = Counter()
+    for y in range(0, h, 3):
+        for x in range(0, w, 3):
+            colors[rgb(x, y)] += 1
+
+    total = sum(colors.values())
+    print(f"采样点: {total}, 不同颜色: {len(colors)}")
+    print("前 6 种颜色:")
+    for c, n in colors.most_common(6):
+        print(f"   RGB{c}  {n * 100.0 / total:.1f}%")
+
+    # 判据 1：不是空白（单一颜色占比 < 99%）
+    top_share = colors.most_common(1)[0][1] * 100.0 / total
+    print(f"\n[1] 非空白: 最高占比 {top_share:.1f}% -> "
+          f"{'PASS' if top_share < 99 else 'FAIL'}")
+
+    # 判据 2：文字像素存在（深色像素，文字通常是黑/深灰）
+    dark = sum(n for c, n in colors.items() if sum(c) < 300)
+    dark_pct = dark * 100.0 / total
+    print(f"[2] 深色像素 {dark_pct:.2f}% (文字/边框) -> "
+          f"{'PASS' if dark_pct > 0.2 else 'FAIL'}")
+
+    # 判据 3：状态色存在。GOOD 绿 #2E7D32 / DEGRADED 黄 #F9A825
+    targets = {
+        "GOOD 绿 #2E7D32": (0x2E, 0x7D, 0x32),
+        "DEGRADED 黄 #F9A825": (0xF9, 0xA8, 0x25),
+        "BAD 红 #C62828": (0xC6, 0x28, 0x28),
+        "灰 #9E9E9E": (0x9E, 0x9E, 0x9E),
+    }
+    found = {}
+    for name, t in targets.items():
+        near = sum(n for c, n in colors.items()
+                   if all(abs(c[i] - t[i]) <= 18 for i in range(3)))
+        found[name] = near
+        print(f"[3] {name}: {near} 个采样点 -> "
+              f"{'存在' if near > 0 else '缺失'}")
+
+    # 判据 4：趋势图区域有折线（右侧 60% 区域找非白/非底色像素）
+    chart_colored = 0
+    for y in range(60, h - 80, 2):
+        for x in range(int(w * 0.42), w - 10, 2):
+            r, g, b = rgb(x, y)
+            if not (r > 240 and g > 240 and b > 240):
+                chart_colored += 1
+    print(f"[4] 趋势图区域非白像素: {chart_colored} -> "
+          f"{'PASS' if chart_colored > 200 else 'FAIL'}")
+
+    # 判据 5：顶栏大号分数存在（顶部 60px 内非白像素）
+    top_colored = sum(1 for y in range(0, 60, 2) for x in range(0, w, 2)
+                      if sum(rgb(x, y)) < 720)
+    print(f"[5] 顶栏内容像素: {top_colored} -> "
+          f"{'PASS' if top_colored > 50 else 'FAIL'}")
+
+    # 判据 6：底栏诊断文字存在（底部 60px）
+    bot_colored = sum(1 for y in range(h - 60, h, 2) for x in range(0, w, 2)
+                      if sum(rgb(x, y)) < 720)
+    print(f"[6] 底栏诊断文字像素: {bot_colored} -> "
+          f"{'PASS' if bot_colored > 50 else 'FAIL'}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "/tmp/dash.png")

@@ -1,0 +1,46 @@
+#pragma once
+
+#include <string>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <fstream>
+
+namespace xgrids {
+
+// 异步日志：业务线程只 enqueue，真正的写盘在独立日志线程。
+// 目的：避免日志刷盘的 page cache / fsync 延迟阻塞采集线程
+//（对应简历“日志异步化消除调度延迟 → 丢帧率降至 0”）。
+class AsyncLogger {
+public:
+    enum class Level { kDebug, kInfo, kWarn, kError };
+
+    static AsyncLogger& instance();
+
+    void init(const std::string& log_path);
+    void shutdown();
+
+    void log(Level lvl, const std::string& tag, const std::string& msg);
+    void set_log_level(Level lvl);
+
+private:
+    AsyncLogger() = default;
+    ~AsyncLogger();
+
+    void writer_loop();
+
+    struct Entry { int64_t ts_us; Level lvl; std::string tag, msg; };
+
+    std::ofstream file_;
+    std::queue<Entry> queue_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::thread writer_;
+    std::atomic<bool> running_{false};
+    std::atomic<Level> min_level_{Level::kDebug};
+};
+
+}  // namespace xgrids

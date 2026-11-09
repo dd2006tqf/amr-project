@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""解包已下载的 tgz，并下载剩余仓库。全部使用绝对路径。"""
+import os
+import subprocess
+import sys
+import tarfile
+import time
+
+VENDOR = "/home/ubuntu/个人学习/leap_ros_vendor"
+REPOS = [
+    ("leap_ros_ws", "master"),
+    ("leap_ros_max_mcu_driver", "main"),
+    ("esp32_s3_wifi_camera", "main"),
+    ("voice_assistant_client", "main"),
+]
+
+
+def extract(tgz):
+    """解包到同名目录（去掉顶层 _main/_master 前缀）。"""
+    base = os.path.basename(tgz)[:-4]  # 去掉 .tgz
+    dest = os.path.join(VENDOR, base)
+    if os.path.isdir(dest) and os.listdir(dest):
+        print(f"SKIP {base} (已解包)")
+        return True
+    os.makedirs(dest, exist_ok=True)
+    try:
+        with tarfile.open(tgz, "r:gz") as tf:
+            members = tf.getmembers()
+            for m in members:
+                parts = m.name.split("/", 1)
+                if len(parts) < 2:
+                    continue
+                m.name = parts[1]
+                tf.extract(m, dest)
+        print(f"OK   {base} ({len(members)} 项)")
+        os.remove(tgz)
+        return True
+    except Exception as e:
+        print(f"FAIL {base}: {e}")
+        return False
+
+
+def download(repo, branch):
+    tgz = os.path.join(VENDOR, repo + ".tgz")
+    url = f"https://codeload.github.com/czu963889306-dev/{repo}/tar.gz/refs/heads/{branch}"
+    print(f"--- 下载 {repo} ({branch})")
+    r = subprocess.run(
+        ["curl", "-sSL", "--max-time", "900", "--retry", "1", "-o", tgz, url],
+        capture_output=True,
+    )
+    if os.path.exists(tgz) and os.path.getsize(tgz) > 10000:
+        chk = subprocess.run(["gzip", "-t", tgz], capture_output=True)
+        if chk.returncode == 0:
+            return extract(tgz)
+    if os.path.exists(tgz):
+        os.remove(tgz)
+    print(f"FAIL {repo} ({branch}) 下载失败")
+    return False
+
+
+if __name__ == "__main__":
+    # 1. 先处理已存在的 tgz
+    for f in os.listdir(VENDOR):
+        if f.endswith(".tgz"):
+            print(f"=== 解包已有 {f} ===")
+            extract(os.path.join(VENDOR, f))
+
+    # 2. 下载缺失的
+    for repo, branch in REPOS:
+        dest = os.path.join(VENDOR, repo)
+        if os.path.isdir(dest) and os.listdir(dest):
+            print(f"SKIP {repo} (已存在)")
+            continue
+        if not download(repo, branch):
+            # 换分支再试
+            alt = "master" if branch == "main" else "main"
+            download(repo, alt)
+
+    print("\n=== 最终状态 ===")
+    for d in sorted(os.listdir(VENDOR)):
+        p = os.path.join(VENDOR, d)
+        if os.path.isdir(p):
+            n = sum(len(files) for _, _, files in os.walk(p))
+            print(f"  {d:32s} {n:6d} 文件")
+        else:
+            print(f"  {d:32s} {os.path.getsize(p)/1e6:.1f} MB (未解包)")

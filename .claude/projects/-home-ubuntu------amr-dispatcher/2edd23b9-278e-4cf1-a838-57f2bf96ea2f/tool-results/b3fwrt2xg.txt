@@ -1,0 +1,1624 @@
+===== src/amr_dispatcher_core/src/catalog/business_order_catalog.cpp =====
+     1	#include "amr_dispatcher_core/catalog/business_order_catalog.hpp"
+     2	
+     3	#include <fstream>
+     4	
+     5	namespace amr_dispatcher_core::catalog {
+     6	namespace {
+     7	
+     8	std::string Trim(const std::string& value) {
+     9	  const auto first = value.find_first_not_of(" \t\r\n");
+    10	  if (first == std::string::npos) {
+    11	    return "";
+    12	  }
+    13	  const auto last = value.find_last_not_of(" \t\r\n");
+    14	  return value.substr(first, last - first + 1);
+    15	}
+    16	
+    17	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    18	  const std::string prefix = key + ":";
+    19	  if (line.rfind(prefix, 0) != 0) {
+    20	    return std::nullopt;
+    21	  }
+    22	  return Trim(line.substr(prefix.size()));
+    23	}
+    24	
+    25	}  // namespace
+    26	
+    27	std::optional<BusinessOrderCatalog> LoadBusinessOrderCatalog(const std::filesystem::path& path) {
+    28	  std::ifstream input(path);
+    29	  if (!input) {
+    30	    return std::nullopt;
+    31	  }
+    32	
+    33	  BusinessOrderCatalog catalog;
+    34	  BusinessOrderType current;
+    35	  bool in_entry = false;
+    36	  bool has_type = false;
+    37	  bool has_scenario = false;
+    38	  bool has_workflow = false;
+    39	
+    40	  auto flush = [&]() {
+    41	    if (in_entry && has_type && has_scenario && has_workflow) {
+    42	      catalog.order_types.push_back(current);
+    43	    }
+    44	    current = BusinessOrderType{};
+    45	    in_entry = false;
+    46	    has_type = false;
+    47	    has_scenario = false;
+    48	    has_workflow = false;
+    49	  };
+    50	
+    51	  std::string line;
+    52	  while (std::getline(input, line)) {
+    53	    line = Trim(line);
+    54	    if (line.empty() || line.front() == '#') {
+    55	      continue;
+    56	    }
+    57	    if (line == "business_orders:" || line == "order_types:") {
+    58	      continue;
+    59	    }
+    60	    if (line.rfind("- ", 0) == 0) {
+    61	      flush();
+    62	      in_entry = true;
+    63	      line = Trim(line.substr(2));
+    64	    }
+    65	    if (!in_entry) {
+    66	      continue;
+    67	    }
+    68	    if (auto value = ValueAfterColon(line, "business_type")) {
+    69	      current.business_type = *value;
+    70	      has_type = !current.business_type.empty();
+    71	      continue;
+    72	    }
+    73	    if (auto value = ValueAfterColon(line, "label")) {
+    74	      current.label = *value;
+    75	      continue;
+    76	    }
+    77	    if (auto value = ValueAfterColon(line, "scenario_id")) {
+    78	      current.scenario_id = *value;
+    79	      has_scenario = !current.scenario_id.empty();
+    80	      continue;
+    81	    }
+    82	    if (auto value = ValueAfterColon(line, "workflow_id")) {
+    83	      current.workflow_id = *value;
+    84	      has_workflow = !current.workflow_id.empty();
+    85	      continue;
+    86	    }
+    87	  }
+    88	  flush();
+    89	  return catalog;
+    90	}
+    91	
+    92	const BusinessOrderType* FindBusinessOrderType(
+    93	    const BusinessOrderCatalog& catalog, const std::string& business_type) {
+    94	  for (const auto& order_type : catalog.order_types) {
+    95	    if (order_type.business_type == business_type) {
+    96	      return &order_type;
+    97	    }
+    98	  }
+    99	  return nullptr;
+   100	}
+   101	
+   102	BusinessOrderSubmitDecision PlanBusinessOrderSubmit(
+   103	    const BusinessOrderSubmitRequest& request,
+   104	    const BusinessOrderCatalog* catalog,
+   105	    const std::string& catalog_error_message) {
+   106	  BusinessOrderSubmitDecision decision;
+   107	  decision.business_order_id = request.business_order_id;
+   108	  decision.business_type = request.business_type;
+   109	  decision.priority = request.priority;
+   110	  decision.start_if_idle = request.start_if_idle;
+   111	  decision.preempt_current = request.preempt_current;
+   112	
+   113	  if (request.business_order_id.empty() || request.business_type.empty()) {
+   114	    decision.message = "business_order_id or business_type is empty";
+   115	    return decision;
+   116	  }
+   117	  if (catalog == nullptr) {
+   118	    decision.message = catalog_error_message;
+   119	    return decision;
+   120	  }
+   121	  const auto* order_type = FindBusinessOrderType(*catalog, request.business_type);
+   122	  if (order_type == nullptr) {
+   123	    decision.message = "unsupported business_type: " + request.business_type;
+   124	    return decision;
+   125	  }
+   126	
+   127	  decision.success = true;
+   128	  decision.routed_scenario_id = order_type->scenario_id;
+   129	  decision.routed_workflow_id = order_type->workflow_id;
+   130	  decision.workflow_order_id = "business_" + request.business_order_id;
+   131	  decision.message = "accepted business order " + request.business_order_id + " as " +
+   132	                     order_type->scenario_id + "/" + order_type->workflow_id;
+   133	  return decision;
+   134	}
+   135	
+   136	}  // namespace amr_dispatcher_core::catalog
+===== src/amr_dispatcher_core/src/catalog/scenario_catalog.cpp =====
+     1	#include "amr_dispatcher_core/catalog/scenario_catalog.hpp"
+     2	
+     3	#include <cmath>
+     4	#include <fstream>
+     5	#include <sstream>
+     6	#include <string>
+     7	#include <unordered_set>
+     8	
+     9	namespace amr_dispatcher_core::catalog {
+    10	namespace {
+    11	
+    12	std::string Trim(const std::string& value) {
+    13	  const auto first = value.find_first_not_of(" \t\r\n");
+    14	  if (first == std::string::npos) {
+    15	    return "";
+    16	  }
+    17	  const auto last = value.find_last_not_of(" \t\r\n");
+    18	  return value.substr(first, last - first + 1);
+    19	}
+    20	
+    21	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    22	  const std::string prefix = key + ":";
+    23	  if (line.rfind(prefix, 0) != 0) {
+    24	    return std::nullopt;
+    25	  }
+    26	  return Trim(line.substr(prefix.size()));
+    27	}
+    28	
+    29	std::optional<int> ParseInt(const std::string& value) {
+    30	  std::istringstream parser(value);
+    31	  int result = 0;
+    32	  parser >> result;
+    33	  if (parser.fail()) {
+    34	    return std::nullopt;
+    35	  }
+    36	  return result;
+    37	}
+    38	
+    39	bool ParseBool(const std::string& value) {
+    40	  const auto normalized = Trim(value);
+    41	  return normalized == "true" || normalized == "True" || normalized == "1" ||
+    42	         normalized == "yes";
+    43	}
+    44	
+    45	std::vector<std::string> ParseCsv(const std::string& value) {
+    46	  std::vector<std::string> result;
+    47	  std::stringstream stream(value);
+    48	  std::string item;
+    49	  while (std::getline(stream, item, ',')) {
+    50	    item = Trim(item);
+    51	    if (!item.empty()) {
+    52	      result.push_back(item);
+    53	    }
+    54	  }
+    55	  return result;
+    56	}
+    57	
+    58	}  // namespace
+    59	
+    60	std::optional<ScenarioCatalog> LoadScenarioCatalog(const std::filesystem::path& path) {
+    61	  std::ifstream input(path);
+    62	  if (!input) {
+    63	    return std::nullopt;
+    64	  }
+    65	
+    66	  ScenarioCatalog catalog;
+    67	  ScenarioTask current;
+    68	  ScenarioWorkflow current_workflow;
+    69	  bool in_task = false;
+    70	  bool in_workflow = false;
+    71	  bool has_scenario = false;
+    72	  bool has_task = false;
+    73	  bool has_pickup = false;
+    74	  bool has_dropoff = false;
+    75	  bool has_workflow = false;
+    76	  bool has_workflow_tasks = false;
+    77	  std::string section;
+    78	
+    79	  auto flush_task = [&]() {
+    80	    if (!in_task) {
+    81	      return;
+    82	    }
+    83	    const auto task_type = current.task_type.empty() ? "station_transport" : current.task_type;
+    84	    const bool has_required_fields =
+    85	        task_type == "facility_action"
+    86	            ? (!current.action.empty() &&
+    87	               (!current.resource_id.empty() || !current.resource_type.empty()))
+    88	            : (task_type == "station_sequence" ? current.station_sequence_ids.size() >= 2U
+    89	                                                : (has_pickup && has_dropoff));
+    90	    if (in_task && has_scenario && has_task && has_required_fields) {
+    91	      catalog.tasks.push_back(current);
+    92	    }
+    93	    current = ScenarioTask{};
+    94	    in_task = false;
+    95	    has_scenario = false;
+    96	    has_task = false;
+    97	    has_pickup = false;
+    98	    has_dropoff = false;
+    99	  };
+   100	
+   101	  auto flush_workflow = [&]() {
+   102	    if (!in_workflow) {
+   103	      return;
+   104	    }
+   105	    if (in_workflow && has_scenario && has_workflow && has_workflow_tasks) {
+   106	      catalog.workflows.push_back(current_workflow);
+   107	    }
+   108	    current_workflow = ScenarioWorkflow{};
+   109	    in_workflow = false;
+   110	    has_scenario = false;
+   111	    has_workflow = false;
+   112	    has_workflow_tasks = false;
+   113	  };
+   114	
+   115	  std::string line;
+   116	  while (std::getline(input, line)) {
+   117	    line = Trim(line);
+   118	    if (line.empty() || line.front() == '#') {
+   119	      continue;
+   120	    }
+   121	    if (line == "tasks:" || line == "scenario_tasks:") {
+   122	      flush_workflow();
+   123	      flush_task();
+   124	      section = line.substr(0, line.size() - 1);
+   125	      continue;
+   126	    }
+   127	    if (line == "workflows:" || line == "scenario_workflows:") {
+   128	      flush_task();
+   129	      flush_workflow();
+   130	      section = line.substr(0, line.size() - 1);
+   131	      continue;
+   132	    }
+   133	    if (line.rfind("- ", 0) == 0) {
+   134	      if (section != "tasks" && section != "scenario_tasks" &&
+   135	          section != "workflows" && section != "scenario_workflows") {
+   136	        continue;
+   137	      }
+   138	      if (section == "tasks" || section == "scenario_tasks") {
+   139	        flush_workflow();
+   140	        flush_task();
+   141	        in_task = true;
+   142	      } else {
+   143	        flush_workflow();
+   144	        flush_task();
+   145	        in_workflow = true;
+   146	      }
+   147	      line = Trim(line.substr(2));
+   148	    }
+   149	    if (!in_task && !in_workflow) {
+   150	      continue;
+   151	    }
+   152	    if (auto value = ValueAfterColon(line, "scenario_id")) {
+   153	      if (in_task) {
+   154	        current.scenario_id = *value;
+   155	        has_scenario = !current.scenario_id.empty();
+   156	      } else {
+   157	        current_workflow.scenario_id = *value;
+   158	        has_scenario = !current_workflow.scenario_id.empty();
+   159	      }
+   160	      continue;
+   161	    }
+   162	    if (in_workflow) {
+   163	      if (auto value = ValueAfterColon(line, "workflow_id")) {
+   164	        current_workflow.workflow_id = *value;
+   165	        has_workflow = !current_workflow.workflow_id.empty();
+   166	        continue;
+   167	      }
+   168	      if (auto value = ValueAfterColon(line, "label")) {
+   169	        current_workflow.label = *value;
+   170	        continue;
+   171	      }
+   172	      if (auto value = ValueAfterColon(line, "task_ids")) {
+   173	        current_workflow.task_ids = ParseCsv(*value);
+   174	        has_workflow_tasks = !current_workflow.task_ids.empty();
+   175	        continue;
+   176	      }
+   177	      if (auto value = ValueAfterColon(line, "default_priority")) {
+   178	        if (auto parsed = ParseInt(*value)) {
+   179	          current_workflow.default_priority = *parsed;
+   180	        }
+   181	        continue;
+   182	      }
+   183	      continue;
+   184	    }
+   185	    if (auto value = ValueAfterColon(line, "task_id")) {
+   186	      current.task_id = *value;
+   187	      has_task = !current.task_id.empty();
+   188	      continue;
+   189	    }
+   190	    if (auto value = ValueAfterColon(line, "label")) {
+   191	      current.label = *value;
+   192	      continue;
+   193	    }
+   194	    if (auto value = ValueAfterColon(line, "task_type")) {
+   195	      current.task_type = value->empty() ? "station_transport" : *value;
+   196	      continue;
+   197	    }
+   198	    if (auto value = ValueAfterColon(line, "pickup_station_id")) {
+   199	      current.pickup_station_id = *value;
+   200	      has_pickup = !current.pickup_station_id.empty();
+   201	      continue;
+   202	    }
+   203	    if (auto value = ValueAfterColon(line, "dropoff_station_id")) {
+   204	      current.dropoff_station_id = *value;
+   205	      has_dropoff = !current.dropoff_station_id.empty();
+   206	      continue;
+   207	    }
+   208	    if (auto value = ValueAfterColon(line, "station_sequence_ids")) {
+   209	      current.station_sequence_ids = ParseCsv(*value);
+   210	      continue;
+   211	    }
+   212	    if (auto value = ValueAfterColon(line, "required_capability")) {
+   213	      current.required_capability = value->empty() ? "station_transport" : *value;
+   214	      continue;
+   215	    }
+   216	    if (auto value = ValueAfterColon(line, "resource_id")) {
+   217	      current.resource_id = *value;
+   218	      continue;
+   219	    }
+   220	    if (auto value = ValueAfterColon(line, "resource_type")) {
+   221	      current.resource_type = *value;
+   222	      continue;
+   223	    }
+   224	    if (auto value = ValueAfterColon(line, "action")) {
+   225	      current.action = *value;
+   226	      continue;
+   227	    }
+   228	    if (auto value = ValueAfterColon(line, "hold_after_action")) {
+   229	      current.hold_after_action = ParseBool(*value);
+   230	      continue;
+   231	    }
+   232	    if (auto value = ValueAfterColon(line, "default_priority")) {
+   233	      if (auto parsed = ParseInt(*value)) {
+   234	        current.default_priority = *parsed;
+   235	      }
+   236	      continue;
+   237	    }
+   238	  }
+   239	  flush_workflow();
+   240	  flush_task();
+   241	
+   242	  std::string message;
+   243	  if (!ValidateScenarioCatalog(catalog, &message)) {
+   244	    return std::nullopt;
+   245	  }
+   246	  return catalog;
+   247	}
+   248	
+   249	const ScenarioTask* FindScenarioTask(
+   250	    const ScenarioCatalog& catalog, const std::string& scenario_id, const std::string& task_id) {
+   251	  for (const auto& task : catalog.tasks) {
+   252	    if (task.scenario_id == scenario_id && task.task_id == task_id) {
+   253	      return &task;
+   254	    }
+   255	  }
+   256	  return nullptr;
+   257	}
+   258	
+   259	const ScenarioWorkflow* FindScenarioWorkflow(
+   260	    const ScenarioCatalog& catalog, const std::string& scenario_id,
+   261	    const std::string& workflow_id) {
+   262	  for (const auto& workflow : catalog.workflows) {
+   263	    if (workflow.scenario_id == scenario_id && workflow.workflow_id == workflow_id) {
+   264	      return &workflow;
+   265	    }
+   266	  }
+   267	  return nullptr;
+   268	}
+   269	
+   270	bool ValidateScenarioCatalog(const ScenarioCatalog& catalog, std::string* message) {
+   271	  std::unordered_set<std::string> ids;
+   272	  for (const auto& task : catalog.tasks) {
+   273	    if (task.scenario_id.empty() || task.task_id.empty()) {
+   274	      if (message != nullptr) {
+   275	        *message = "scenario_id or task_id is empty";
+   276	      }
+   277	      return false;
+   278	    }
+   279	    const auto task_type = task.task_type.empty() ? "station_transport" : task.task_type;
+   280	    if (task_type == "station_transport" &&
+   281	        (task.pickup_station_id.empty() || task.dropoff_station_id.empty())) {
+   282	      if (message != nullptr) {
+   283	        *message = "scenario task station is empty: " + task.scenario_id + "/" + task.task_id;
+   284	      }
+   285	      return false;
+   286	    }
+   287	    if (task_type == "facility_action" &&
+   288	        ((task.resource_id.empty() && task.resource_type.empty()) || task.action.empty())) {
+   289	      if (message != nullptr) {
+   290	        *message = "scenario facility action is incomplete: " + task.scenario_id + "/" +
+   291	                   task.task_id;
+   292	      }
+   293	      return false;
+   294	    }
+   295	    if (task_type == "station_sequence" && task.station_sequence_ids.size() < 2U) {
+   296	      if (message != nullptr) {
+   297	        *message = "scenario station sequence is incomplete: " + task.scenario_id + "/" +
+   298	                   task.task_id;
+   299	      }
+   300	      return false;
+   301	    }
+   302	    if (task_type != "station_transport" && task_type != "facility_action" &&
+   303	        task_type != "station_sequence") {
+   304	      if (message != nullptr) {
+   305	        *message = "unsupported scenario task type: " + task.scenario_id + "/" +
+   306	                   task.task_id + "/" + task_type;
+   307	      }
+   308	      return false;
+   309	    }
+   310	    const auto key = task.scenario_id + "/" + task.task_id;
+   311	    if (!ids.insert(key).second) {
+   312	      if (message != nullptr) {
+   313	        *message = "duplicate scenario task id: " + key;
+   314	      }
+   315	      return false;
+   316	    }
+   317	  }
+   318	  std::unordered_set<std::string> workflow_ids;
+   319	  for (const auto& workflow : catalog.workflows) {
+   320	    if (workflow.scenario_id.empty() || workflow.workflow_id.empty()) {
+   321	      if (message != nullptr) {
+   322	        *message = "scenario workflow id is empty";
+   323	      }
+   324	      return false;
+   325	    }
+   326	    if (workflow.task_ids.empty()) {
+   327	      if (message != nullptr) {
+   328	        *message = "scenario workflow has no tasks: " + workflow.scenario_id + "/" +
+   329	                   workflow.workflow_id;
+   330	      }
+   331	      return false;
+   332	    }
+   333	    const auto key = workflow.scenario_id + "/" + workflow.workflow_id;
+   334	    if (!workflow_ids.insert(key).second) {
+   335	      if (message != nullptr) {
+   336	        *message = "duplicate scenario workflow id: " + key;
+   337	      }
+   338	      return false;
+   339	    }
+   340	    for (const auto& task_id : workflow.task_ids) {
+   341	      if (FindScenarioTask(catalog, workflow.scenario_id, task_id) == nullptr) {
+   342	        if (message != nullptr) {
+   343	          *message = "scenario workflow references unknown task: " + key + "/" + task_id;
+   344	        }
+   345	        return false;
+   346	      }
+   347	    }
+   348	  }
+   349	  if (message != nullptr) {
+   350	    *message = "scenario catalog ok";
+   351	  }
+   352	  return true;
+   353	}
+   354	
+   355	ScenarioWorkflowSubmitDecision PlanScenarioWorkflowSubmit(
+   356	    const ScenarioWorkflowSubmitRequest& request,
+   357	    const ScenarioCatalog* catalog,
+   358	    const std::string& catalog_error_message) {
+   359	  ScenarioWorkflowSubmitDecision decision;
+   360	  decision.scenario_id = request.scenario_id;
+   361	  decision.workflow_id = request.workflow_id;
+   362	
+   363	  if (catalog == nullptr) {
+   364	    decision.message = catalog_error_message;
+   365	    return decision;
+   366	  }
+   367	
+   368	  const auto* workflow = FindScenarioWorkflow(*catalog, request.scenario_id, request.workflow_id);
+   369	  if (workflow == nullptr) {
+   370	    decision.message =
+   371	        "unknown scenario workflow: " + request.scenario_id + "/" + request.workflow_id;
+   372	    return decision;
+   373	  }
+   374	
+   375	  const auto base_order_id =
+   376	      request.order_id.empty()
+   377	          ? "workflow_" + request.scenario_id + "_" + request.workflow_id
+   378	          : request.order_id;
+   379	  const auto priority = request.priority > 0 ? request.priority : workflow->default_priority;
+   380	
+   381	  decision.success = true;
+   382	  decision.steps.reserve(workflow->task_ids.size());
+   383	  for (std::size_t index = 0; index < workflow->task_ids.size(); ++index) {
+   384	    ScenarioWorkflowStepPlan step;
+   385	    step.scenario_id = request.scenario_id;
+   386	    step.task_id = workflow->task_ids[index];
+   387	    step.order_id = base_order_id + "_step_" +
+   388	                    std::to_string(static_cast<int>(index) + 1);
+   389	    step.priority = priority - static_cast<int>(index);
+   390	    step.start_if_idle = request.start_if_idle && index == 0U;
+   391	    step.preempt_current = request.preempt_current && index == 0U;
+   392	    decision.steps.push_back(step);
+   393	  }
+   394	  decision.message = "planned scenario workflow " + request.scenario_id + "/" +
+   395	                     request.workflow_id + " with " +
+   396	                     std::to_string(decision.steps.size()) + " task(s)";
+   397	  return decision;
+   398	}
+   399	
+   400	ScenarioTaskSubmitDecision PlanScenarioTaskSubmit(
+   401	    const ScenarioTaskSubmitRequest& request,
+   402	    const ScenarioCatalog* catalog,
+   403	    const std::string& catalog_error_message) {
+   404	  ScenarioTaskSubmitDecision decision;
+   405	  decision.scenario_id = request.scenario_id;
+   406	  decision.task_id = request.task_id;
+   407	  decision.start_if_idle = request.start_if_idle;
+   408	  decision.preempt_current = request.preempt_current;
+   409	
+   410	  if (catalog == nullptr) {
+   411	    decision.message = catalog_error_message;
+   412	    return decision;
+   413	  }
+   414	
+   415	  const auto* task = FindScenarioTask(*catalog, request.scenario_id, request.task_id);
+   416	  if (task == nullptr) {
+   417	    decision.message = "unknown scenario task: " + request.scenario_id + "/" + request.task_id;
+   418	    return decision;
+   419	  }
+   420	
+   421	  decision.success = true;
+   422	  decision.order_id =
+   423	      request.order_id.empty()
+   424	          ? "scenario_" + request.scenario_id + "_" + request.task_id
+   425	          : request.order_id;
+   426	  decision.priority = request.priority > 0 ? request.priority : task->default_priority;
+   427	  const auto task_type = task->task_type.empty() ? "station_transport" : task->task_type;
+   428	  if (task_type == "facility_action") {
+   429	    decision.dispatch_kind = ScenarioTaskDispatchKind::kFacilityAction;
+   430	    decision.resource_id = task->resource_id;
+   431	    decision.resource_type = task->resource_type;
+   432	    decision.action = task->action;
+   433	    decision.hold_after_action = task->hold_after_action;
+   434	    decision.message =
+   435	        "planned scenario facility task " + request.scenario_id + "/" + request.task_id;
+   436	    return decision;
+   437	  }
+   438	  if (task_type == "station_sequence") {
+   439	    decision.dispatch_kind = ScenarioTaskDispatchKind::kStationSequence;
+   440	    decision.station_ids = task->station_sequence_ids;
+   441	    decision.message =
+   442	        "planned scenario station sequence task " + request.scenario_id + "/" +
+   443	        request.task_id;
+   444	    return decision;
+   445	  }
+   446	  if (task_type != "station_transport") {
+   447	    decision.success = false;
+   448	    decision.message =
+   449	        "unsupported scenario task type: " + request.scenario_id + "/" +
+   450	        request.task_id + "/" + task_type;
+   451	    return decision;
+   452	  }
+   453	
+   454	  decision.dispatch_kind = ScenarioTaskDispatchKind::kFleetStation;
+   455	  decision.required_capability = task->required_capability;
+   456	  decision.pickup_station = task->pickup_station_id;
+   457	  decision.dropoff_station = task->dropoff_station_id;
+   458	  decision.message = "planned scenario task " + request.scenario_id + "/" + request.task_id;
+   459	  return decision;
+   460	}
+   461	
+   462	}  // namespace amr_dispatcher_core::catalog
+===== src/amr_dispatcher_core/src/catalog/station_catalog.cpp =====
+     1	#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+     2	
+     3	#include <algorithm>
+     4	#include <cmath>
+     5	#include <fstream>
+     6	#include <limits>
+     7	#include <sstream>
+     8	#include <string>
+     9	#include <unordered_set>
+    10	#include <vector>
+    11	
+    12	namespace amr_dispatcher_core::catalog {
+    13	namespace {
+    14	
+    15	std::string Trim(const std::string& value) {
+    16	  auto first = value.find_first_not_of(" \t\r\n");
+    17	  if (first == std::string::npos) {
+    18	    return "";
+    19	  }
+    20	  auto last = value.find_last_not_of(" \t\r\n");
+    21	  std::string s = value.substr(first, last - first + 1);
+    22	  // 去除 YAML 引号包裹：例如 "station_pickup_A" 或 'station_pickup_A'
+    23	  if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))) {
+    24	    s = s.substr(1, s.size() - 2);
+    25	  }
+    26	  return s;
+    27	}
+    28	
+    29	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    30	  const std::string prefix = key + ":";
+    31	  if (line.rfind(prefix, 0) != 0) {
+    32	    return std::nullopt;
+    33	  }
+    34	  return Trim(line.substr(prefix.size()));
+    35	}
+    36	
+    37	std::optional<double> ParseDouble(const std::string& value) {
+    38	  std::istringstream parser(value);
+    39	  double result = 0.0;
+    40	  parser >> result;
+    41	  if (parser.fail() || !std::isfinite(result)) {
+    42	    return std::nullopt;
+    43	  }
+    44	  return result;
+    45	}
+    46	
+    47	bool ParseBool(const std::string& value) {
+    48	  return value == "true" || value == "True" || value == "1";
+    49	}
+    50	
+    51	// 解析 "- [1.5, 2.0]" 形式的 flow 折线点（取前两个分量）
+    52	std::optional<std::pair<double, double>> ParseFlowPoint(const std::string& content) {
+    53	  if (content.size() < 2 || content.front() != '[' || content.back() != ']') {
+    54	    return std::nullopt;
+    55	  }
+    56	  const std::string inner = content.substr(1, content.size() - 2);
+    57	  const auto comma = inner.find(',');
+    58	  if (comma == std::string::npos) {
+    59	    return std::nullopt;
+    60	  }
+    61	  const auto x = ParseDouble(Trim(inner.substr(0, comma)));
+    62	  const auto y = ParseDouble(Trim(inner.substr(comma + 1)));
+    63	  if (!x || !y) {
+    64	    return std::nullopt;
+    65	  }
+    66	  return std::pair<double, double>{*x, *y};
+    67	}
+    68	
+    69	// edge 自身字段键（用于识别折线块何时结束）
+    70	bool IsEdgeFieldKey(const std::string& line) {
+    71	  return ValueAfterColon(line, "from").has_value() ||
+    72	         ValueAfterColon(line, "to").has_value() ||
+    73	         ValueAfterColon(line, "distance_m").has_value() ||
+    74	         ValueAfterColon(line, "distance").has_value() ||
+    75	         ValueAfterColon(line, "bidirectional").has_value() ||
+    76	         ValueAfterColon(line, "enabled").has_value();
+    77	}
+    78	
+    79	}  // namespace
+    80	
+    81	std::optional<StationCatalog> LoadStationCatalog(const std::filesystem::path& path) {
+    82	  std::ifstream input(path);
+    83	  if (!input) {
+    84	    return std::nullopt;
+    85	  }
+    86	
+    87	  StationCatalog catalog;
+    88	  Station current_station;
+    89	  RoadNode current_road_node;
+    90	  CatalogStationEdge current_edge;
+    91	  std::string default_frame_id = "map";
+    92	  std::string section;
+    93	  bool in_station = false;
+    94	  bool in_road_node = false;
+    95	  bool in_edge = false;
+    96	  bool in_polyline = false;
+    97	  bool has_id = false;
+    98	  bool has_x = false;
+    99	  bool has_y = false;
+   100	  bool has_node_id = false;
+   101	  bool has_node_x = false;
+   102	  bool has_node_y = false;
+   103	  bool has_from = false;
+   104	  bool has_to = false;
+   105	  bool has_distance = false;
+   106	  // map 风格折线点（- x: ... / y: ...）的暂存分量
+   107	  std::pair<double, double> pending_point{0.0, 0.0};
+   108	  bool point_has_x = false;
+   109	  bool point_has_y = false;
+   110	  // 折线严格解析失败标记：半截点/坏点/未知条目一律让加载失败，
+   111	  // 而不是静默丢弃折线后仍报告加载成功。
+   112	  bool malformed = false;
+   113	
+   114	  auto flush_polyline_point = [&]() {
+   115	    if (point_has_x != point_has_y) {
+   116	      malformed = true;  // 半截点（缺 x 或缺 y）：不静默丢弃
+   117	    }
+   118	    if (point_has_x && point_has_y) {
+   119	      current_edge.polyline.push_back(pending_point);
+   120	    }
+   121	    pending_point = std::pair<double, double>{0.0, 0.0};
+   122	    point_has_x = false;
+   123	    point_has_y = false;
+   124	  };
+   125	
+   126	  auto flush_station = [&]() {
+   127	    if (in_station && has_id && has_x && has_y) {
+   128	      if (current_station.frame_id.empty()) {
+   129	        current_station.frame_id = default_frame_id;
+   130	      }
+   131	      catalog.stations.push_back(current_station);
+   132	    }
+   133	    current_station = Station{};
+   134	    current_station.frame_id = default_frame_id;
+   135	    in_station = false;
+   136	    has_id = false;
+   137	    has_x = false;
+   138	    has_y = false;
+   139	  };
+   140	
+   141	  auto flush_road_node = [&]() {
+   142	    if (in_road_node && has_node_id && has_node_x && has_node_y) {
+   143	      if (current_road_node.frame_id.empty()) {
+   144	        current_road_node.frame_id = default_frame_id;
+   145	      }
+   146	      catalog.road_nodes.push_back(current_road_node);
+   147	    }
+   148	    current_road_node = RoadNode{};
+   149	    current_road_node.frame_id = default_frame_id;
+   150	    in_road_node = false;
+   151	    has_node_id = false;
+   152	    has_node_x = false;
+   153	    has_node_y = false;
+   154	  };
+   155	
+   156	  auto flush_edge = [&]() {
+   157	    flush_polyline_point();
+   158	    if (in_edge && has_from && has_to && has_distance) {
+   159	      catalog.edges.push_back(current_edge);
+   160	    }
+   161	    current_edge = CatalogStationEdge{};
+   162	    in_edge = false;
+   163	    in_polyline = false;
+   164	    has_from = false;
+   165	    has_to = false;
+   166	    has_distance = false;
+   167	  };
+   168	
+   169	  std::string line;
+   170	  while (std::getline(input, line)) {
+   171	    if (malformed) {
+   172	      return std::nullopt;  // 折线块内已记录的非法结构：快速失败
+   173	    }
+   174	    line = Trim(line);
+   175	    if (line.empty() || line.front() == '#') {
+   176	      continue;
+   177	    }
+   178	
+   179	    if (line == "stations:" || line == "edges:" || line == "routes:" || line == "road_nodes:" ||
+   180	        line == "version:") {
+   181	      flush_station();
+   182	      flush_road_node();
+   183	      flush_edge();
+   184	      section = line.substr(0, line.size() - 1);
+   185	      continue;
+   186	    }
+   187	
+   188	    if (!in_station && !in_edge && !in_road_node) {
+   189	      if (auto value = ValueAfterColon(line, "frame_id")) {
+   190	        default_frame_id = value->empty() ? "map" : *value;
+   191	        current_station.frame_id = default_frame_id;
+   192	        current_road_node.frame_id = default_frame_id;
+   193	        continue;
+   194	      }
+   195	      if (auto value = ValueAfterColon(line, "map_hash")) {
+   196	        catalog.map_hash = *value;
+   197	        continue;
+   198	      }
+   199	      if (auto value = ValueAfterColon(line, "graph_version")) {
+   200	        catalog.graph_version = *value;
+   201	        continue;
+   202	      }
+   203	    }
+   204	
+   205	    if (line.rfind("- ", 0) == 0) {
+   206	      const std::string content = Trim(line.substr(2));
+   207	      if (in_polyline && !content.empty() && content.front() == '[') {
+   208	        // flow 风格折线点：- [x, y]；坏点（如 - [broken]）严格失败，不静默丢弃
+   209	        const auto point = ParseFlowPoint(content);
+   210	        if (!point) {
+   211	          return std::nullopt;
+   212	        }
+   213	        flush_polyline_point();
+   214	        current_edge.polyline.push_back(*point);
+   215	        continue;
+   216	      }
+   217	      if (in_polyline && (ValueAfterColon(content, "x") || ValueAfterColon(content, "y"))) {
+   218	        // map 风格折线点起始：- x: ... / - y: ...
+   219	        flush_polyline_point();
+   220	        if (auto value = ValueAfterColon(content, "x")) {
+   221	          const auto parsed = ParseDouble(*value);
+   222	          if (!parsed) {
+   223	            return std::nullopt;
+   224	          }
+   225	          pending_point.first = *parsed;
+   226	          point_has_x = true;
+   227	        } else if (auto value = ValueAfterColon(content, "y")) {
+   228	          const auto parsed = ParseDouble(*value);
+   229	          if (!parsed) {
+   230	            return std::nullopt;
+   231	          }
+   232	          pending_point.second = *parsed;
+   233	          point_has_y = true;
+   234	        }
+   235	        continue;
+   236	      }
+   237	      if (in_polyline) {
+   238	        // 折线块内既不是合法折线点、也不是已知 edge 字段/新 polyline 键的
+   239	        // "- " 条目（如嵌套块序列）：严格失败。此前会当成新边起点，
+   240	        // 把整条折线静默吞掉却仍报告加载成功。
+   241	        if (!IsEdgeFieldKey(content) && !ValueAfterColon(content, "polyline")) {
+   242	          return std::nullopt;
+   243	        }
+   244	        flush_edge();
+   245	        in_edge = true;
+   246	      } else if (section == "edges" || section == "routes") {
+   247	        flush_edge();
+   248	        in_edge = true;
+   249	      } else if (section == "road_nodes") {
+   250	        flush_road_node();
+   251	        in_road_node = true;
+   252	        current_road_node.frame_id = default_frame_id;
+   253	      } else {
+   254	        flush_station();
+   255	        in_station = true;
+   256	        current_station.frame_id = default_frame_id;
+   257	      }
+   258	      line = content;
+   259	    }
+   260	
+   261	    if (in_edge) {
+   262	      if (ValueAfterColon(line, "polyline")) {
+   263	        flush_polyline_point();
+   264	        in_polyline = true;
+   265	        continue;
+   266	      }
+   267	      if (in_polyline) {
+   268	        if (IsEdgeFieldKey(line)) {
+   269	          flush_polyline_point();
+   270	          if (malformed) {
+   271	            return std::nullopt;
+   272	          }
+   273	          in_polyline = false;  // 折线块结束，继续按 edge 字段解析本行
+   274	        } else if (auto value = ValueAfterColon(line, "x")) {
+   275	          if (point_has_x) {
+   276	            flush_polyline_point();  // 未走 "- " 的连续 x：先结算上一个点
+   277	          }
+   278	          const auto parsed = ParseDouble(*value);
+   279	          if (!parsed) {
+   280	            return std::nullopt;
+   281	          }
+   282	          pending_point.first = *parsed;
+   283	          point_has_x = true;
+   284	          continue;
+   285	        } else if (auto value = ValueAfterColon(line, "y")) {
+   286	          if (point_has_y) {
+   287	            flush_polyline_point();  // 未走 "- " 的连续 y：先结算上一个点
+   288	          }
+   289	          const auto parsed = ParseDouble(*value);
+   290	          if (!parsed) {
+   291	            return std::nullopt;
+   292	          }
+   293	          pending_point.second = *parsed;
+   294	          point_has_y = true;
+   295	          continue;
+   296	        } else {
+   297	          return std::nullopt;  // 折线块内未知行：严格失败，不再静默忽略
+   298	        }
+   299	      }
+   300	      if (auto value = ValueAfterColon(line, "from")) {
+   301	        current_edge.from = *value;
+   302	        has_from = !current_edge.from.empty();
+   303	        continue;
+   304	      }
+   305	      if (auto value = ValueAfterColon(line, "to")) {
+   306	        current_edge.to = *value;
+   307	        has_to = !current_edge.to.empty();
+   308	        continue;
+   309	      }
+   310	      if (auto value = ValueAfterColon(line, "distance_m")) {
+   311	        if (auto parsed = ParseDouble(*value)) {
+   312	          current_edge.distance_m = *parsed;
+   313	          has_distance = true;
+   314	        }
+   315	        continue;
+   316	      }
+   317	      if (auto value = ValueAfterColon(line, "distance")) {
+   318	        if (auto parsed = ParseDouble(*value)) {
+   319	          current_edge.distance_m = *parsed;
+   320	          has_distance = true;
+   321	        }
+   322	        continue;
+   323	      }
+   324	      if (auto value = ValueAfterColon(line, "bidirectional")) {
+   325	        current_edge.bidirectional = ParseBool(*value);
+   326	        continue;
+   327	      }
+   328	      if (auto value = ValueAfterColon(line, "enabled")) {
+   329	        current_edge.enabled = ParseBool(*value);
+   330	        continue;
+   331	      }
+   332	      continue;
+   333	    }
+   334	
+   335	    if (in_road_node) {
+   336	      if (auto value = ValueAfterColon(line, "id")) {
+   337	        current_road_node.id = *value;
+   338	        has_node_id = !current_road_node.id.empty();
+   339	        continue;
+   340	      }
+   341	      if (auto value = ValueAfterColon(line, "frame_id")) {
+   342	        current_road_node.frame_id = value->empty() ? default_frame_id : *value;
+   343	        continue;
+   344	      }
+   345	      if (auto value = ValueAfterColon(line, "x")) {
+   346	        if (auto parsed = ParseDouble(*value)) {
+   347	          current_road_node.x = *parsed;
+   348	          has_node_x = true;
+   349	        }
+   350	        continue;
+   351	      }
+   352	      if (auto value = ValueAfterColon(line, "y")) {
+   353	        if (auto parsed = ParseDouble(*value)) {
+   354	          current_road_node.y = *parsed;
+   355	          has_node_y = true;
+   356	        }
+   357	        continue;
+   358	      }
+   359	      if (auto value = ValueAfterColon(line, "yaw")) {
+   360	        if (auto parsed = ParseDouble(*value)) {
+   361	          current_road_node.yaw = *parsed;
+   362	        }
+   363	        continue;
+   364	      }
+   365	      continue;  // road_nodes 条目内的其他字段（如 type）忽略
+   366	    }
+   367	
+   368	    if (auto value = ValueAfterColon(line, "id")) {
+   369	      current_station.id = *value;
+   370	      has_id = !current_station.id.empty();
+   371	      continue;
+   372	    }
+   373	    if (auto value = ValueAfterColon(line, "frame_id")) {
+   374	      current_station.frame_id = value->empty() ? default_frame_id : *value;
+   375	      continue;
+   376	    }
+   377	    if (auto value = ValueAfterColon(line, "x")) {
+   378	      if (auto parsed = ParseDouble(*value)) {
+   379	        current_station.x = *parsed;
+   380	        has_x = true;
+   381	      }
+   382	      continue;
+   383	    }
+   384	    if (auto value = ValueAfterColon(line, "y")) {
+   385	      if (auto parsed = ParseDouble(*value)) {
+   386	        current_station.y = *parsed;
+   387	        has_y = true;
+   388	      }
+   389	      continue;
+   390	    }
+   391	    if (auto value = ValueAfterColon(line, "yaw")) {
+   392	      if (auto parsed = ParseDouble(*value)) {
+   393	        current_station.yaw = *parsed;
+   394	      }
+   395	      continue;
+   396	    }
+   397	    if (auto value = ValueAfterColon(line, "type")) {
+   398	      // 业务语义类型（pickup/dropoff/charge/normal 等），缺省 "normal"。
+   399	      current_station.type = value->empty() ? "normal" : *value;
+   400	      continue;
+   401	    }
+   402	  }
+   403	  flush_station();
+   404	  flush_road_node();
+   405	  flush_edge();
+   406	  if (malformed) {
+   407	    return std::nullopt;  // 文件末尾结算时发现半截折线点
+   408	  }
+   409	
+   410	  std::string message;
+   411	  if (!ValidateStationCatalog(catalog, &message)) {
+   412	    return std::nullopt;
+   413	  }
+   414	  return catalog;
+   415	}
+   416	
+   417	const Station* FindStation(const StationCatalog& catalog, const std::string& id) {
+   418	  for (const auto& station : catalog.stations) {
+   419	    if (station.id == id) {
+   420	      return &station;
+   421	    }
+   422	  }
+   423	  return nullptr;
+   424	}
+   425	
+   426	std::optional<double> EstimateRouteDistance(
+   427	    const StationCatalog& catalog, const std::string& from, const std::string& to) {
+   428	  const auto path = FindRoutePath(catalog, from, to);
+   429	  if (!path.has_value()) {
+   430	    return std::nullopt;
+   431	  }
+   432	  double distance_m = 0.0;
+   433	  for (std::size_t index = 1; index < path->size(); ++index) {
+   434	    for (const auto& edge : catalog.edges) {
+   435	      const bool forward = edge.from == (*path)[index - 1] && edge.to == (*path)[index];
+   436	      const bool reverse =
+   437	          edge.bidirectional && edge.to == (*path)[index - 1] && edge.from == (*path)[index];
+   438	      if (edge.enabled && (forward || reverse)) {
+   439	        distance_m += edge.distance_m;
+   440	        break;
+   441	      }
+   442	    }
+   443	  }
+   444	  return distance_m;
+   445	}
+   446	
+   447	namespace {
+   448	
+   449	// 资源键：与 dispatcher::ResourceTable::RouteEdgeId 的格式保持一致
+   450	// （无序两端、`route_edge:` 前缀 + `__` 分隔）。core 的 catalog 层不依赖
+   451	// dispatcher 层，故在此按同一契约拼键——两者格式若漂移，
+   452	// test_station_catalog 的 FindRoutePathAvoiding 用例会直接失败。
+   453	std::string RouteEdgeResourceKey(const std::string& a, const std::string& b) {
+   454	  return a <= b ? "route_edge:" + a + "__" + b : "route_edge:" + b + "__" + a;
+   455	}
+   456	
+   457	// FindRoutePath 与 FindRoutePathAvoiding 的唯一实现：
+   458	// blocked 为空时与原实现逐字等价（无禁用边）。
+   459	std::optional<std::vector<std::string>> FindRoutePathImpl(
+   460	    const StationCatalog& catalog, const std::string& from, const std::string& to,
+   461	    const std::unordered_set<std::string>& blocked_edge_keys) {
+   462	  if (from == to) {
+   463	    return std::vector<std::string>{from};
+   464	  }
+   465	
+   466	  std::vector<std::string> ids;
+   467	  ids.reserve(catalog.stations.size() + catalog.road_nodes.size());
+   468	  for (const auto& station : catalog.stations) {
+   469	    ids.push_back(station.id);
+   470	  }
+   471	  // 通行节点与站点共用同一图节点集合，支持途经路口的混合图寻路
+   472	  for (const auto& road_node : catalog.road_nodes) {
+   473	    ids.push_back(road_node.id);
+   474	  }
+   475	  const auto index_of = [&](const std::string& id) -> std::optional<std::size_t> {
+   476	    const auto it = std::find(ids.begin(), ids.end(), id);
+   477	    if (it == ids.end()) {
+   478	      return std::nullopt;
+   479	    }
+   480	    return static_cast<std::size_t>(std::distance(ids.begin(), it));
+   481	  };
+   482	
+   483	  const auto start = index_of(from);
+   484	  const auto goal = index_of(to);
+   485	  if (!start.has_value() || !goal.has_value()) {
+   486	    return std::nullopt;
+   487	  }
+   488	
+   489	  const double infinity = std::numeric_limits<double>::infinity();
+   490	  std::vector<double> distance(ids.size(), infinity);
+   491	  std::vector<std::optional<std::size_t>> previous(ids.size(), std::nullopt);
+   492	  std::vector<bool> visited(ids.size(), false);
+   493	  distance[*start] = 0.0;
+   494	
+   495	  for (std::size_t iteration = 0; iteration < ids.size(); ++iteration) {
+   496	    std::optional<std::size_t> current;
+   497	    for (std::size_t i = 0; i < ids.size(); ++i) {
+   498	      if (!visited[i] && (!current.has_value() || distance[i] < distance[*current])) {
+   499	        current = i;
+   500	      }
+   501	    }
+   502	    if (!current.has_value() || !std::isfinite(distance[*current])) {
+   503	      break;
+   504	    }
+   505	    if (*current == *goal) {
+   506	      break;
+   507	    }
+   508	    visited[*current] = true;
+   509	
+   510	    for (const auto& edge : catalog.edges) {
+   511	      if (!edge.enabled) {
+   512	        continue;
+   513	      }
+   514	      // 静态绕行：整条边（两个方向）被禁用即跳过
+   515	      if (!blocked_edge_keys.empty() &&
+   516	          blocked_edge_keys.count(RouteEdgeResourceKey(edge.from, edge.to)) > 0) {
+   517	        continue;
+   518	      }
+   519	      const auto edge_from = index_of(edge.from);
+   520	      const auto edge_to = index_of(edge.to);
+   521	      if (!edge_from.has_value() || !edge_to.has_value()) {
+   522	        continue;
+   523	      }
+   524	      auto relax = [&](const std::size_t source, const std::size_t target) {
+   525	        if (source == *current && distance[source] + edge.distance_m < distance[target]) {
+   526	          distance[target] = distance[source] + edge.distance_m;
+   527	          previous[target] = source;
+   528	        }
+   529	      };
+   530	      relax(*edge_from, *edge_to);
+   531	      if (edge.bidirectional) {
+   532	        relax(*edge_to, *edge_from);
+   533	      }
+   534	    }
+   535	  }
+   536	  if (!std::isfinite(distance[*goal])) {
+   537	    return std::nullopt;
+   538	  }
+   539	  std::vector<std::string> path;
+   540	  for (auto current = *goal;;) {
+   541	    path.push_back(ids[current]);
+   542	    if (current == *start) {
+   543	      break;
+   544	    }
+   545	    if (!previous[current].has_value()) {
+   546	      return std::nullopt;
+   547	    }
+   548	    current = *previous[current];
+   549	  }
+   550	  std::reverse(path.begin(), path.end());
+   551	  return path;
+   552	}
+   553	
+   554	}  // namespace
+   555	
+   556	std::optional<std::vector<std::string>> FindRoutePath(
+   557	    const StationCatalog& catalog, const std::string& from, const std::string& to) {
+   558	  static const std::unordered_set<std::string> kNoBlockedEdges;
+   559	  return FindRoutePathImpl(catalog, from, to, kNoBlockedEdges);
+   560	}
+   561	
+   562	std::optional<std::vector<std::string>> FindRoutePathAvoiding(
+   563	    const StationCatalog& catalog, const std::string& from, const std::string& to,
+   564	    const std::unordered_set<std::string>& blocked_edge_keys) {
+   565	  return FindRoutePathImpl(catalog, from, to, blocked_edge_keys);
+   566	}
+   567	
+   568	bool ValidateStationCatalog(const StationCatalog& catalog, std::string* message) {
+   569	  if (catalog.stations.empty()) {
+   570	    if (message != nullptr) {
+   571	      *message = "station catalog is empty";
+   572	    }
+   573	    return false;
+   574	  }
+   575	
+   576	  std::unordered_set<std::string> ids;
+   577	  for (const auto& station : catalog.stations) {
+   578	    if (station.id.empty()) {
+   579	      if (message != nullptr) {
+   580	        *message = "station id is empty";
+   581	      }
+   582	      return false;
+   583	    }
+   584	    if (station.frame_id.empty()) {
+   585	      if (message != nullptr) {
+   586	        *message = "station frame_id is empty: " + station.id;
+   587	      }
+   588	      return false;
+   589	    }
+   590	    if (!std::isfinite(station.x) || !std::isfinite(station.y) || !std::isfinite(station.yaw)) {
+   591	      if (message != nullptr) {
+   592	        *message = "station pose is not finite: " + station.id;
+   593	      }
+   594	      return false;
+   595	    }
+   596	    if (!ids.insert(station.id).second) {
+   597	      if (message != nullptr) {
+   598	        *message = "duplicate station id: " + station.id;
+   599	      }
+   600	      return false;
+   601	    }
+   602	  }
+   603	
+   604	  // road_nodes 与 stations 共用同一 id 空间：集合内与跨集合均不允许重复
+   605	  for (const auto& road_node : catalog.road_nodes) {
+   606	    if (road_node.id.empty()) {
+   607	      if (message != nullptr) {
+   608	        *message = "road node id is empty";
+   609	      }
+   610	      return false;
+   611	    }
+   612	    if (road_node.frame_id.empty()) {
+   613	      if (message != nullptr) {
+   614	        *message = "road node frame_id is empty: " + road_node.id;
+   615	      }
+   616	      return false;
+   617	    }
+   618	    if (!std::isfinite(road_node.x) || !std::isfinite(road_node.y) ||
+   619	        !std::isfinite(road_node.yaw)) {
+   620	      if (message != nullptr) {
+   621	        *message = "road node pose is not finite: " + road_node.id;
+   622	      }
+   623	      return false;
+   624	    }
+   625	    if (!ids.insert(road_node.id).second) {
+   626	      if (message != nullptr) {
+   627	        *message = "duplicate road node id: " + road_node.id;
+   628	      }
+   629	      return false;
+   630	    }
+   631	  }
+   632	
+   633	  for (const auto& edge : catalog.edges) {
+   634	    if (edge.from.empty() || edge.to.empty()) {
+   635	      if (message != nullptr) {
+   636	        *message = "station edge endpoint is empty";
+   637	      }
+   638	      return false;
+   639	    }
+   640	    if (ids.find(edge.from) == ids.end()) {
+   641	      if (message != nullptr) {
+   642	        *message = "station edge has unknown from endpoint: " + edge.from;
+   643	      }
+   644	      return false;
+   645	    }
+   646	    if (ids.find(edge.to) == ids.end()) {
+   647	      if (message != nullptr) {
+   648	        *message = "station edge has unknown to endpoint: " + edge.to;
+   649	      }
+   650	      return false;
+   651	    }
+   652	    if (!std::isfinite(edge.distance_m) || edge.distance_m < 0.0) {
+   653	      if (message != nullptr) {
+   654	        *message = "station edge distance is invalid: " + edge.from + " -> " + edge.to;
+   655	      }
+   656	      return false;
+   657	    }
+   658	    for (const auto& point : edge.polyline) {
+   659	      if (!std::isfinite(point.first) || !std::isfinite(point.second)) {
+   660	        if (message != nullptr) {
+   661	          *message = "station edge polyline point is not finite: " + edge.from + " -> " + edge.to;
+   662	        }
+   663	        return false;
+   664	      }
+   665	    }
+   666	  }
+   667	
+   668	  if (message != nullptr) {
+   669	    *message = "ok";
+   670	  }
+   671	  return true;
+   672	}
+   673	
+   674	StationListProjection BuildStationListProjection(const StationCatalog& catalog) {
+   675	  StationListProjection projection;
+   676	  projection.station_ids.reserve(catalog.stations.size());
+   677	  projection.frame_ids.reserve(catalog.stations.size());
+   678	  projection.x.reserve(catalog.stations.size());
+   679	  projection.y.reserve(catalog.stations.size());
+   680	  projection.yaw.reserve(catalog.stations.size());
+   681	  for (const auto& station : catalog.stations) {
+   682	    projection.station_ids.push_back(station.id);
+   683	    projection.frame_ids.push_back(station.frame_id);
+   684	    projection.x.push_back(station.x);
+   685	    projection.y.push_back(station.y);
+   686	    projection.yaw.push_back(station.yaw);
+   687	  }
+   688	  projection.message = "loaded " + std::to_string(catalog.stations.size()) + " station(s)";
+   689	  return projection;
+   690	}
+   691	
+   692	StationRouteListProjection BuildStationRouteListProjection(const StationCatalog& catalog) {
+   693	  StationRouteListProjection projection;
+   694	  projection.from_station.reserve(catalog.edges.size());
+   695	  projection.to_station.reserve(catalog.edges.size());
+   696	  projection.distance_m.reserve(catalog.edges.size());
+   697	  projection.bidirectional.reserve(catalog.edges.size());
+   698	  projection.enabled.reserve(catalog.edges.size());
+   699	  for (const auto& edge : catalog.edges) {
+   700	    projection.from_station.push_back(edge.from);
+   701	    projection.to_station.push_back(edge.to);
+   702	    projection.distance_m.push_back(edge.distance_m);
+   703	    projection.bidirectional.push_back(edge.bidirectional);
+   704	    projection.enabled.push_back(edge.enabled);
+   705	  }
+   706	  projection.message = "loaded " + std::to_string(catalog.edges.size()) + " route edge(s)";
+   707	  return projection;
+   708	}
+   709	
+   710	// ---- StationCatalogReloader：mtime 轮询热重载，校验失败保留旧目录 ----
+   711	StationCatalogReloader::StationCatalogReloader(std::filesystem::path path)
+   712	    : path_(std::move(path)),
+   713	      watcher_(path_.string(), [this](const YAML::Node&) { TryLoad(true); }) {
+   714	  TryLoad(false);   // 初始加载等价节点 on_configure 的一次性读取
+   715	  watcher_.Tick();  // 建立 mtime 基线：首拍只记基线不回调，之后的变化才重载
+   716	}
+   717	
+   718	bool StationCatalogReloader::Tick() {
+   719	  const auto before = reload_count_;
+   720	  watcher_.Tick();
+   721	  if (!watcher_.last_error().empty()) {
+   722	    last_error_ = watcher_.last_error();  // YAML 解析失败：回调未触发，旧目录保持
+   723	  }
+   724	  if (!loaded_) {
+   725	    // C1 闭环兜底：构造时文件缺失（use_map_server 场景下 dispatcher 先于
+   726	    // map_ingest 启动）时，HotReloadWatcher 对"文件首次出现"只记 mtime 基线、
+   727	    // 不触发重载回调——首次成功拍永远不会补加载。这里在未加载状态下重试
+   728	    // 初始加载，保证晚生成的目录（map_ingest 写出的 generated/stations.yaml）
+   729	    // 一旦出现即可被调度侧接管（成功即计一次换新，返回 true 驱动调用方同步）。
+   730	    TryLoad(true);
+   731	  }
+   732	  return reload_count_ > before;
+   733	}
+   734	
+   735	std::string StationCatalogReloader::last_error() const {
+   736	  return last_error_;
+   737	}
+   738	
+   739	void StationCatalogReloader::TryLoad(bool count_as_reload) {
+   740	  if (auto loaded = LoadStationCatalog(path_)) {
+   741	    catalog_ = std::move(*loaded);
+   742	    loaded_ = true;
+   743	    if (count_as_reload) {
+   744	      ++reload_count_;
+   745	    }
+   746	    last_error_.clear();
+   747	  } else {
+   748	    // 校验失败（空目录、重复 id、非法位姿等）：保留旧目录，记录错误
+   749	    last_error_ = "station catalog invalid or unreadable: " + path_.string();
+   750	  }
+   751	}
+   752	
+   753	}  // namespace amr_dispatcher_core::catalog
+===== src/amr_dispatcher_core/src/catalog/zone_catalog.cpp =====
+     1	#include "amr_dispatcher_core/catalog/zone_catalog.hpp"
+     2	
+     3	#include <algorithm>
+     4	#include <cctype>
+     5	#include <fstream>
+     6	#include <sstream>
+     7	#include <stdexcept>
+     8	
+     9	namespace amr_dispatcher_core::catalog {
+    10	namespace {
+    11	
+    12	std::string Trim(const std::string& value) {
+    13	  const auto first = value.find_first_not_of(" \t\r\n");
+    14	  if (first == std::string::npos) {
+    15	    return "";
+    16	  }
+    17	  const auto last = value.find_last_not_of(" \t\r\n");
+    18	  return value.substr(first, last - first + 1);
+    19	}
+    20	
+    21	std::string ToLower(std::string value) {
+    22	  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    23	    return static_cast<char>(std::tolower(c));
+    24	  });
+    25	  return value;
+    26	}
+    27	
+    28	bool StartsWith(const std::string& value, const std::string& prefix) {
+    29	  return value.rfind(prefix, 0) == 0;
+    30	}
+    31	
+    32	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    33	  const std::string prefix = key + ":";
+    34	  if (!StartsWith(line, prefix)) {
+    35	    return std::nullopt;
+    36	  }
+    37	  return Trim(line.substr(prefix.size()));
+    38	}
+    39	
+    40	bool ParseBool(const std::string& value) {
+    41	  const auto lowered = ToLower(Trim(value));
+    42	  return lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "on";
+    43	}
+    44	
+    45	double ParseDouble(const std::string& value, const std::string& field_name) {
+    46	  std::istringstream parser(value);
+    47	  double result = 0.0;
+    48	  parser >> result;
+    49	  if (parser.fail()) {
+    50	    throw std::runtime_error("invalid numeric field " + field_name + ": " + value);
+    51	  }
+    52	  return result;
+    53	}
+    54	
+    55	std::optional<std::pair<double, double>> ParsePoint(const std::string& line) {
+    56	  const auto open = line.find('[');
+    57	  const auto comma = line.find(',', open == std::string::npos ? 0 : open);
+    58	  const auto close = line.find(']', comma == std::string::npos ? 0 : comma);
+    59	  if (open == std::string::npos || comma == std::string::npos || close == std::string::npos) {
+    60	    return std::nullopt;
+    61	  }
+    62	  const auto x_text = Trim(line.substr(open + 1, comma - open - 1));
+    63	  const auto y_text = Trim(line.substr(comma + 1, close - comma - 1));
+    64	  return std::make_pair(ParseDouble(x_text, "polygon.x"), ParseDouble(y_text, "polygon.y"));
+    65	}
+    66	
+    67	void SortZones(std::vector<MapZone>& zones) {
+    68	  std::sort(zones.begin(), zones.end(), [](const MapZone& lhs, const MapZone& rhs) {
+    69	    if (lhs.map_name != rhs.map_name) {
+    70	      return lhs.map_name < rhs.map_name;
+    71	    }
+    72	    return lhs.zone_id < rhs.zone_id;
+    73	  });
+    74	}
+    75	
+    76	}  // namespace
+    77	
+    78	ZoneCatalog::ZoneCatalog(std::filesystem::path zones_file) : zones_file_(std::move(zones_file)) {}
+    79	
+    80	const std::filesystem::path& ZoneCatalog::ZonesFile() const { return zones_file_; }
+    81	
+    82	std::vector<MapZone> ZoneCatalog::Load(const bool include_disabled) const {
+    83	  auto zones = LoadMapZones(zones_file_);
+    84	  if (include_disabled) {
+    85	    return zones;
+    86	  }
+    87	  zones.erase(
+    88	      std::remove_if(zones.begin(), zones.end(), [](const MapZone& zone) { return !zone.enabled; }),
+    89	      zones.end());
+    90	  return zones;
+    91	}
+    92	
+    93	std::vector<MapZone> ZoneCatalog::ForMap(
+    94	    const std::string& map_name, const bool include_disabled) const {
+    95	  auto zones = Load(include_disabled);
+    96	  zones.erase(
+    97	      std::remove_if(
+    98	          zones.begin(), zones.end(),
+    99	          [&map_name](const MapZone& zone) { return zone.map_name != map_name; }),
+   100	      zones.end());
+   101	  return zones;
+   102	}
+   103	
+   104	ZoneEvaluation ZoneCatalog::EvaluatePoint(
+   105	    const std::string& map_name, const double x, const double y,
+   106	    const double default_speed_limit_mps) const {
+   107	  ZoneEvaluation result;
+   108	  result.config_valid = true;
+   109	  result.message = "ok";
+   110	  result.allowed = true;
+   111	  result.speed_limit_mps = default_speed_limit_mps;
+   112	
+   113	  for (const auto& zone : ForMap(map_name, false)) {
+   114	    if (!ContainsPoint(zone, x, y)) {
+   115	      continue;
+   116	    }
+   117	    result.matched_zones.push_back(zone);
+   118	    const auto type = ToLower(zone.type);
+   119	    if (type == "keepout") {
+   120	      result.allowed = false;
+   121	    } else if (type == "speed_limit" && zone.speed_limit_mps > 0.0) {
+   122	      result.speed_limit_mps = std::min(result.speed_limit_mps, zone.speed_limit_mps);
+   123	    }
+   124	  }
+   125	
+   126	  if (result.matched_zones.empty()) {
+   127	    result.message = "no matching zones";
+   128	  } else if (!result.allowed) {
+   129	    result.message = "point is inside keepout zone";
+   130	  } else {
+   131	    result.message = "point matched semantic zone";
+   132	  }
+   133	  return result;
+   134	}
+   135	
+   136	std::vector<MapZone> LoadMapZones(const std::filesystem::path& zones_file) {
+   137	  std::ifstream input(zones_file);
+   138	  if (!input) {
+   139	    return {};
+   140	  }
+   141	
+   142	  std::vector<MapZone> zones;
+   143	  std::optional<MapZone> current;
+   144	  bool reading_polygon = false;
+   145	  std::string line;
+   146	  while (std::getline(input, line)) {
+   147	    line = Trim(line);
+   148	    if (line.empty() || line.front() == '#') {
+   149	      continue;
+   150	    }
+   151	    if (line == "zones:") {
+   152	      continue;
+   153	    }
+   154	    if (StartsWith(line, "- zone_id:")) {
+   155	      if (current.has_value()) {
+   156	        if (auto error = ValidateZone(*current)) {
+   157	          throw std::runtime_error(*error);
+   158	        }
+   159	        zones.push_back(*current);
+   160	      }
+   161	      current = MapZone{};
+   162	      current->zone_id = Trim(line.substr(std::string("- zone_id:").size()));
+   163	      reading_polygon = false;
+   164	      continue;
+   165	    }
+   166	    if (!current.has_value()) {
+   167	      continue;
+   168	    }
+   169	    if (auto value = ValueAfterColon(line, "map_name")) {
+   170	      current->map_name = *value;
+   171	      reading_polygon = false;
+   172	      continue;
+   173	    }
+   174	    if (auto value = ValueAfterColon(line, "type")) {
+   175	      current->type = *value;
+   176	      reading_polygon = false;
+   177	      continue;
+   178	    }
+   179	    if (auto value = ValueAfterColon(line, "frame_id")) {
+   180	      current->frame_id = *value;
+   181	      reading_polygon = false;
+   182	      continue;
+   183	    }
+   184	    if (auto value = ValueAfterColon(line, "enabled")) {
+   185	      current->enabled = ParseBool(*value);
+   186	      reading_polygon = false;
+   187	      continue;
+   188	    }
+   189	    if (auto value = ValueAfterColon(line, "speed_limit_mps")) {
+   190	      current->speed_limit_mps = ParseDouble(*value, "speed_limit_mps");
+   191	      reading_polygon = false;
+   192	      continue;
+   193	    }
+   194	    if (auto value = ValueAfterColon(line, "rule")) {
+   195	      current->rule = *value;
+   196	      reading_polygon = false;
+   197	      continue;
+   198	    }
+   199	    if (StartsWith(line, "polygon:")) {
+   200	      reading_polygon = true;
+   201	      continue;
+   202	    }
+   203	    if (reading_polygon && StartsWith(line, "- [")) {
+   204	      const auto point = ParsePoint(line);
+   205	      if (!point.has_value()) {
+   206	        throw std::runtime_error("invalid polygon point in " + current->zone_id);
+   207	      }
+   208	      current->polygon_x.push_back(point->first);
+   209	      current->polygon_y.push_back(point->second);
+   210	    }
+   211	  }
+   212	  if (current.has_value()) {
+   213	    if (auto error = ValidateZone(*current)) {
+   214	      throw std::runtime_error(*error);
+   215	    }
+   216	    zones.push_back(*current);
+   217	  }
+   218	  SortZones(zones);
+   219	  return zones;
+   220	}
+   221	
+   222	bool ContainsPoint(const MapZone& zone, const double x, const double y) {
+   223	  const auto count = zone.polygon_x.size();
+   224	  if (count < 3 || zone.polygon_y.size() != count) {
+   225	    return false;
+   226	  }
+   227	
+   228	  bool inside = false;
+   229	  for (std::size_t i = 0, j = count - 1; i < count; j = i++) {
+   230	    const double xi = zone.polygon_x[i];
+   231	    const double yi = zone.polygon_y[i];
+   232	    const double xj = zone.polygon_x[j];
+   233	    const double yj = zone.polygon_y[j];
+   234	    const bool crosses = ((yi > y) != (yj > y)) &&
+   235	                         (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+   236	    if (crosses) {
+   237	      inside = !inside;
+   238	    }
+   239	  }
+   240	  return inside;
+   241	}
+   242	
+   243	std::optional<std::string> ValidateZone(const MapZone& zone) {
+   244	  if (zone.zone_id.empty()) {
+   245	    return "zone_id is required";
+   246	  }
+   247	  if (zone.map_name.empty()) {
+   248	    return "map_name is required for zone " + zone.zone_id;
+   249	  }
+   250	  if (zone.type.empty()) {
+   251	    return "type is required for zone " + zone.zone_id;
+   252	  }
+   253	  if (zone.frame_id.empty()) {
+   254	    return "frame_id is required for zone " + zone.zone_id;
+   255	  }
+   256	  if (zone.polygon_x.size() != zone.polygon_y.size() || zone.polygon_x.size() < 3U) {
+   257	    return "polygon requires at least 3 points for zone " + zone.zone_id;
+   258	  }
+   259	  const auto type = ToLower(zone.type);
+   260	  if (type != "keepout" && type != "speed_limit" && type != "preferred_lane") {
+   261	    return "unsupported zone type for zone " + zone.zone_id + ": " + zone.type;
+   262	  }
+   263	  if (type == "speed_limit" && zone.speed_limit_mps <= 0.0) {
+   264	    return "speed_limit zone requires positive speed_limit_mps for zone " + zone.zone_id;
+   265	  }
+   266	  return std::nullopt;
+   267	}
+   268	
+   269	}  // namespace amr_dispatcher_core::catalog

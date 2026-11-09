@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AMR Dispatcher & Fleet Console</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --text: #16202a;
+      --muted: #5b6777;
+      --border: #d9e0ea;
+      --accent: #2b5cff;
+      --accent-2: #0f766e;
+      --danger: #dc2626;
+      --warn: #d97706;
+      --success: #16a34a;
+      --soft: #eef3ff;
+      --shadow: 0 4px 20px rgba(22, 32, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, #f9fbff 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 19px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .subtitle {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px 24px 36px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      background: var(--panel);
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .toolbar input, .toolbar select {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    .toolbar button {
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      transition: all 0.15s ease;
+    }
+    .toolbar button:hover {
+      opacity: 0.9;
+    }
+    .toolbar button.secondary {
+      background: #fff;
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .toolbar button.danger {
+      background: var(--danger);
+      color: white;
+      border-color: var(--danger);
+    }
+    .statusline {
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .statusline .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      display: inline-block;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      min-width: 0;
+    }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-9 { grid-column: span 9; }
+    .span-12 { grid-column: span 12; }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid #edf1f6;
+      padding: 8px 6px;
+      vertical-align: middle;
+      word-break: break-word;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      width: 32%;
+    }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 18px;
+      font-weight: 500;
+    }
+    .pill.green { background: #dcfce7; color: var(--success); }
+    .pill.blue { background: var(--soft); color: var(--accent); }
+    .pill.red { background: #fee2e2; color: var(--danger); }
+    .pill.yellow { background: #fef3c7; color: var(--warn); }
+
+    .actions {
+      display: grid;
+      gap: 10px;
+    }
+    .action-row {
+      display: grid;
+      grid-template-columns: 100px 1fr 1fr 90px auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .action-row input,
+    .action-row select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    .action-row button {
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      color: #223041;
+      background: #f8fafc;
+      border: 1px solid #e8edf4;
+      border-radius: 6px;
+      padding: 12px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    @media (max-width: 1080px) {
+      .span-3, .span-4, .span-6, .span-8, .span-9 { grid-column: span 12; }
+      .action-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>AMR Dispatcher &amp; Fleet Console <span class="badge">ROS 2 Jazzy</span></h1>
+      <p class="subtitle">高可靠机器人任务调度、拓扑资源锁与高可用控制面运维看板</p>
+    </div>
+    <div>
+      <button id="estopBtn" class="toolbar" style="background:var(--danger);color:#fff;border:none;padding:8px 16px;border-radius:6px;font-weight:600;cursor:pointer;">
+        🚨 EMERGENCY STOP
+      </button>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <label>
+        <span style="font-size:12px;color:var(--muted)">Gateway Base URL</span><br>
+        <input id="baseUrl" value="http://127.0.0.1:8080" size="24" aria-label="REST Base URL">
+      </label>
+      <button id="refreshBtn">🔄 刷新快照</button>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;margin-left:6px;">
+        <input type="checkbox" id="autoPoll" checked> 自动轮询 (1s)
+      </label>
+      <div style="flex:1"></div>
+      <label style="font-size:12px;color:var(--muted)">在线策略热切换:
+        <select id="strategySelect">
+          <option value="PriorityFIFO">PriorityFIFO (优先级队列)</option>
+          <option value="EarliestDeadlineFirst">EarliestDeadlineFirst (EDF)</option>
+          <option value="ShortestJobFirst">ShortestJobFirst (SJF)</option>
+          <option value="WeightedScore">WeightedScore (加权打分)</option>
+        </select>
+      </label>
+      <button id="setStrategyBtn" class="secondary">切换算法</button>
+    </div>
+
+    <div class="statusline" id="statusLine"><span class="dot"></span> 正在连接 REST Gateway...</div>
+
+    <div class="grid">
+      <!-- 任务队列与状态 -->
+      <section class="span-4">
+        <h2>任务调度状态 (Dispatcher) <span id="queueBadge" class="pill blue">0 待处理</span></h2>
+        <table>
+          <tbody id="missionTable">
+            <tr><th>生效策略</th><td id="dispStrategy" class="muted">-</td></tr>
+            <tr><th>队列长度</th><td id="dispQueueSize" class="muted">0 / 256</td></tr>
+            <tr><th>执行中任务</th><td id="dispActiveCount" class="muted">0</td></tr>
+            <tr><th>死锁报警</th><td id="dispDeadlock" class="pill green">NORMAL</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 硬件与安全仲裁 -->
+      <section class="span-4">
+        <h2>安全门与硬件链路 (Safety &amp; HAL)</h2>
+        <table>
+          <tbody id="safetyTable">
+            <tr><th>急停锁定</th><td id="safetyEstop" class="pill green">RELEASED</td></tr>
+            <tr><th>看门狗心跳</th><td id="safetyWatchdog" class="pill green">HEALTHY</td></tr>
+            <tr><th>当前底盘通信</th><td id="chassisBackend" class="muted">Serial (Fallback UDP/Mock)</td></tr>
+            <tr><th>丢包容灾状态</th><td id="chassisQuality" class="pill green">0.0% (EXCELLENT)</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 拓扑锁与资源占用 -->
+      <section class="span-4">
+        <h2>拓扑互斥锁 (Traffic Locks)</h2>
+        <table>
+          <tbody id="locksTable">
+            <tr><th>已锁定边锁</th><td id="lockedEdges" class="muted">无</td></tr>
+            <tr><th>锁定节点</th><td id="lockedNodes" class="muted">无</td></tr>
+            <tr><th>设施预约锁</th><td id="facilityLocks" class="muted">充电桩[空闲], 自动门[就绪]</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 提单交互区 -->
+      <section class="span-8">
+        <h2>⚡ 快速下发运输订单 (Submit Order)</h2>
+        <div class="actions">
+          <div class="action-row">
+            <input id="orderId" value="order_001" placeholder="任务编号">
+            <select id="fromStation">
+              <option value="dock">起点: dock (充电桩)</option>
+              <option value="station_A" selected>起点: station_A (装配区)</option>
+              <option value="station_B">起点: station_B (测试区)</option>
+              <option value="station_C">起点: station_C (出库区)</option>
+            </select>
+            <select id="toStation">
+              <option value="station_B" selected>终点: station_B (测试区)</option>
+              <option value="station_C">终点: station_C (出库区)</option>
+              <option value="dock">终点: dock (充电桩)</option>
+              <option value="station_A">终点: station_A (装配区)</option>
+            </select>
+            <select id="orderPrio">
+              <option value="1">Prio: 1</option>
+              <option value="5" selected>Prio: 5 (默认)</option>
+              <option value="10">Prio: 10 (高)</option>
+              <option value="20">Prio: 20 (紧急抢占)</option>
+            </select>
+            <button id="submitOrderBtn">提单执行</button>
+          </div>
+          <div class="muted" style="font-size:12px;">直接调用 REST Gateway 接口向 ROS 2 Dispatcher 发起原子提单与资源互斥申请。</div>
+        </div>
+      </section>
+
+      <!-- 任务取消/抢占操作 -->
+      <section class="span-4">
+        <h2>任务取消 / 抢占 (Cancel &amp; Yield)</h2>
+        <div class="actions">
+          <div style="display:flex;gap:8px;">
+            <input id="cancelMissionId" value="order_001" placeholder="输入要取消的 ID" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:8px 10px;">
+            <button id="cancelMissionBtn" class="danger" style="border:none;padding:8px 14px;border-radius:6px;cursor:pointer;">Cancel</button>
+          </div>
+          <div class="muted" style="font-size:12px;">触发 Action 取消或释放拓扑锁，底盘优雅制动。</div>
+        </div>
+      </section>
+
+      <!-- 受管车辆面板与人工强清/恢复 -->
+      <section class="span-12">
+        <h2>
+          <span>🤖 受管车辆与人工强清 (Managed Vehicles &amp; Force-Clear)</span>
+          <span class="badge" style="background:#fef3c7;color:#92400e;">危险操作 · 需审计</span>
+        </h2>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div id="vehicleLinksTable" class="muted" style="font-size:13px;">正在加载受管车辆状态...</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input id="forceClearVehicleId" placeholder="车辆 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <input id="forceClearOperator" placeholder="操作员 id" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <input id="forceClearReason" placeholder="原因（必填，如：车辆物理故障下线）" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <button id="forceClearBtn" class="danger" style="border:none;padding:8px 14px;border-radius:6px;cursor:pointer;">强制清除链路</button>
+            <button id="restoreLinkBtn" class="secondary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">恢复车辆</button>
+          </div>
+          <div class="muted" style="font-size:12px;">
+            强制清除会把车辆转入<b>隔离态</b>（不再参与自动派发），释放其名下路权锁并作废在途任务；
+            <b>通信失联不等于车辆已停止</b>——物理位置未核实，释放锁的安全责任由操作员承担。
+            恢复需车辆在线且操作员已核实其物理位置。
+          </div>
+        </div>
+      </section>
+
+      <!-- 自定义地图热上传与交互式标注 -->
+      <section class="span-12">
+        <h2>
+          <span>🗺️ 自定义地图可视化热标注与一键导入 (Custom Map Hot-Ingest)</span>
+          <span class="badge" style="background:#e0f2fe;color:#0369a1;">Zero-CLI 交互</span>
+        </h2>
+        <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;">
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">1. 选择地图文件 (PGM / PNG / JPG)</label>
+              <input type="file" id="mapFileInput" accept=".pgm,.png,.jpg,.jpeg" style="margin-top:4px;width:100%;font-size:12px;">
+            </div>
+            <div style="display:flex;gap:8px;">
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">分辨率 (m/px)</span>
+                <input id="mapResInput" type="number" step="0.01" value="0.05" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">原点 X (m)</span>
+                <input id="mapOriginXInput" type="number" step="0.1" value="0.0" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+              <label style="flex:1;">
+                <span style="font-size:11px;color:var(--muted)">原点 Y (m)</span>
+                <input id="mapOriginYInput" type="number" step="0.1" value="0.0" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+              </label>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">2. 鼠标点击右侧地图标注站点</label>
+              <div style="display:flex;gap:6px;margin-top:4px;">
+                <select id="stationTypeSelect" style="flex:1;padding:6px;font-size:12px;border:1px solid var(--border);border-radius:4px;">
+                  <option value="pickup">🟢 取货站 (pickup)</option>
+                  <option value="dropoff">🟠 卸货站 (dropoff)</option>
+                  <option value="charge">🟡 充电桩 (charge)</option>
+                  <option value="normal">🔵 普通站点 (normal)</option>
+                </select>
+                <button id="clearAnchorsBtn" class="secondary" style="padding:4px 8px;font-size:12px;">清空</button>
+              </div>
+            </div>
+            <div>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">已标注站点 (<span id="anchorCount">0</span>):</span>
+              <div id="anchorList" style="max-height:120px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;background:#fafbfc;"></div>
+            </div>
+            <button id="uploadMapBtn" style="margin-top:6px;padding:10px;background:var(--accent-2);color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;">
+              🚀 一键生成路网并热重载
+            </button>
+          </div>
+          <div style="background:#1e293b;border-radius:6px;overflow:hidden;position:relative;display:flex;align-items:center;justify-content:center;min-height:300px;">
+            <canvas id="mapCanvas" style="max-width:100%;max-height:420px;cursor:crosshair;"></canvas>
+            <div id="canvasOverlayText" style="position:absolute;color:#94a3b8;font-size:13px;pointer-events:none;">请选择地图文件预览</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 原始快照 JSON -->
+      <section class="span-12">
+        <h2>
+          <span>系统聚合快照诊断 (Snapshot JSON)</span>
+          <div style="display:flex;gap:8px;">
+            <button id="copyJsonBtn" style="border:1px solid var(--border);background:#fff;color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">📋 复制 JSON</button>
+            <button id="pasteJsonBtn" style="border:1px solid var(--accent);background:var(--accent);color:#fff;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">📥 粘贴并解析 JSON</button>
+          </div>
+        </h2>
+        <pre id="eventsPane" contenteditable="true" style="outline:none;" title="可直接在框内粘贴自定义 JSON 并点击右上角解析">等待拉取聚合快照数据...</pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const baseUrlInput = document.getElementById('baseUrl');
+    const statusLine = document.getElementById('statusLine');
+    const eventsPane = document.getElementById('eventsPane');
+
+    function setStatus(msg, ok = true) {
+      statusLine.innerHTML = `<span class="dot" style="background:${ok ? 'var(--success)' : 'var(--danger)'}"></span> ${msg}`;
+    }
+
+    async function fetchSnapshot() {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      try {
+        const res = await fetch(`${baseUrl}/api/operator/snapshot`);
+        if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+        const data = await res.json();
+        renderData(data);
+        setStatus(`已更新状态: ${new Date().toLocaleTimeString()}`, true);
+      } catch (err) {
+        setStatus(`连接网关失败: ${err.message}`, false);
+      }
+    }
+
+    function renderData(data) {
+      eventsPane.textContent = JSON.stringify(data, null, 2);
+
+      // Dispatcher
+      document.getElementById('dispStrategy').textContent = data.comparator || data.strategy || 'PriorityFIFO';
+      document.getElementById('dispQueueSize').textContent = `${data.queue_size || 0} / ${data.queue_capacity || 256}`;
+      document.getElementById('dispActiveCount').textContent = data.active_count || 0;
+      document.getElementById('queueBadge').textContent = `${data.queue_size || 0} 待处理`;
+
+      const deadlockEl = document.getElementById('dispDeadlock');
+      if (data.deadlock || data.deadlock_detected) {
+        deadlockEl.textContent = 'DEADLOCK ALERT!';
+        deadlockEl.className = 'pill red';
+      } else {
+        deadlockEl.textContent = 'NORMAL';
+        deadlockEl.className = 'pill green';
+      }
+
+      // Safety
+      const estopEl = document.getElementById('safetyEstop');
+      if (data.estop_active) {
+        estopEl.textContent = 'LOCKED (E-STOP)';
+        estopEl.className = 'pill red';
+      } else {
+        estopEl.textContent = 'RELEASED';
+        estopEl.className = 'pill green';
+      }
+
+      // Locks
+      const lockedEdges = data.locked_edges || [];
+      document.getElementById('lockedEdges').textContent = lockedEdges.length ? lockedEdges.join(', ') : '无占用';
+    }
+
+    // 提单
+    document.getElementById('submitOrderBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const id = document.getElementById('orderId').value;
+      const from = document.getElementById('fromStation').value;
+      const to = document.getElementById('toStation').value;
+      const prio = document.getElementById('orderPrio').value;
+
+      try {
+        setStatus(`正在下发任务 ${id}...`);
+        const url = `${baseUrl}/api/v1/orders?id=${encodeURIComponent(id)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&prio=${prio}`;
+        const res = await fetch(url, { method: 'POST' });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          setStatus(`任务 ${id} 提交成功!`, true);
+          fetchSnapshot();
+        } else {
+          setStatus(`提交失败: ${JSON.stringify(result)}`, false);
+        }
+      } catch (err) {
+        setStatus(`提单错误: ${err.message}`, false);
+      }
+    });
+
+    // 取消任务
+    document.getElementById('cancelMissionBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const id = document.getElementById('cancelMissionId').value;
+      try {
+        setStatus(`正在取消任务 ${id}...`);
+        const url = `${baseUrl}/api/v1/cancel?id=${encodeURIComponent(id)}`;
+        const res = await fetch(url, { method: 'POST' });
+        const result = await res.json();
+        setStatus(`取消反馈: ${JSON.stringify(result)}`, true);
+        fetchSnapshot();
+      } catch (err) {
+        setStatus(`取消请求错误: ${err.message}`, false);
+      }
+    });
+
+    // 急停
+    document.getElementById('estopBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      try {
+        const res = await fetch(`${baseUrl}/api/operator/estop`, { method: 'POST' });
+        const result = await res.json();
+        alert(`🚨 全局急停触发: ${JSON.stringify(result)}`);
+        fetchSnapshot();
+      } catch (err) {
+        alert(`急停请求失败: ${err.message}`);
+      }
+    });
+
+    async function fetchVehicleLinks() {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const pane = document.getElementById('vehicleLinksTable');
+      try {
+        const res = await fetch(`${baseUrl}/api/v1/vehicle_links`);
+        if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+        const data = await res.json();
+        const links = data.vehicle_links || [];
+        if (!links.length) {
+          pane.textContent = '未配置受管车辆（vda5050_vehicles 为空）';
+          return;
+        }
+        const rows = links.map(v => {
+          const badges = [];
+          badges.push(v.online ? '<span class="pill green">在线</span>' : '<span class="pill red">离线</span>');
+          if (v.quarantined) badges.push('<span class="pill red">隔离</span>');
+          if (v.busy) badges.push('<span class="pill blue">忙</span>');
+          if (!v.position_valid) badges.push('<span class="pill blue">位置未知</span>');
+          const age = v.state_age_ms >= 0 ? `${Math.round(v.state_age_ms / 1000)}s` : '无状态';
+          return `<tr><td>${v.vehicle_id}</td><td>${v.backend}</td><td>${badges.join(' ')}</td>` +
+                 `<td>${v.current_station_id || '-'}</td><td>${Math.round(v.battery_percent)}%</td>` +
+                 `<td>${age}</td></tr>`;
+        }).join('');
+        pane.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">` +
+          `<tr><th style="text-align:left;">车辆</th><th style="text-align:left;">后端</th>` +
+          `<th style="text-align:left;">状态</th><th style="text-align:left;">位置</th>` +
+          `<th style="text-align:left;">电量</th><th style="text-align:left;">状态时延</th></tr>` +
+          rows + `</table>`;
+      } catch (err) {
+        pane.textContent = `加载受管车辆失败: ${err.message}`;
+      }
+    }
+
+    // 强制清除（危险操作）：二次确认 + 必填审计字段
+    document.getElementById('forceClearBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const vehicleId = document.getElementById('forceClearVehicleId').value.trim();
+      const operatorId = document.getElementById('forceClearOperator').value.trim();
+      const reason = document.getElementById('forceClearReason').value.trim();
+      if (!vehicleId || !operatorId || !reason) {
+        setStatus('强制清除需要填写车辆 id、操作员 id 与原因', false);
+        return;
+      }
+      const confirmed = window.confirm(
+        `确认对车辆 ${vehicleId} 执行强制清除？\n\n` +
+        `• 车辆将进入隔离态（不再参与自动派发）\n` +
+        `• 其名下路权锁将被释放，在途任务将被作废\n` +
+        `• 通信失联不代表车辆已停止：物理位置未核实，安全责任由你承担\n\n` +
+        `操作员: ${operatorId}\n原因: ${reason}`);
+      if (!confirmed) return;
+      try {
+        setStatus(`正在强制清除 ${vehicleId} 的链路...`);
+        const res = await fetch(`${baseUrl}/api/v1/force_clear_link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vehicle_id: vehicleId,
+            confirm_vehicle_id: vehicleId,
+            operator_id: operatorId,
+            reason: reason
+          })
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          const released = (result.released_resources || []).join(', ') || '无';
+          setStatus(`✅ ${vehicleId} 已转入隔离态，释放资源: ${released}`, true);
+          alert(`强制清除完成：\n${result.message}\n\n释放资源: ${released}`);
+        } else {
+          setStatus(`强制清除被拒绝: ${result.message || JSON.stringify(result)}`, false);
+          alert(`强制清除被拒绝：\n${result.message || JSON.stringify(result)}`);
+        }
+        fetchVehicleLinks();
+      } catch (err) {
+        setStatus(`强制清除请求错误: ${err.message}`, false);
+      }
+    });
+
+    // 恢复车辆（解除隔离）
+    document.getElementById('restoreLinkBtn').addEventListener('click', async () => {
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+      const vehicleId = document.getElementById('forceClearVehicleId').value.trim();
+      const operatorId = document.getElementById('forceClearOperator').value.trim();
+      const reason = document.getElementById('forceClearReason').value.trim();
+      if (!vehicleId || !operatorId || !reason) {
+        setStatus('恢复需要填写车辆 id、操作员 id 与原因', false);
+        return;
+      }
+      const confirmed = window.confirm(
+        `确认恢复车辆 ${vehicleId} 进入调度池？\n\n` +
+        `请确认你已核实该车的物理位置与通道占用情况。`);
+      if (!confirmed) return;
+      try {
+        setStatus(`正在恢复 ${vehicleId}...`);
+        const res = await fetch(`${baseUrl}/api/v1/restore_link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vehicle_id: vehicleId,
+            confirm_vehicle_id: vehicleId,
+            operator_id: operatorId,
+            reason: reason,
+            position_verified: true
+          })
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          setStatus(`✅ ${vehicleId} 已恢复，重新参与自动调度`, true);
+        } else {
+          setStatus(`恢复被拒绝: ${result.message || JSON.stringify(result)}`, false);
+          alert(`恢复被拒绝：\n${result.message || JSON.stringify(result)}`);
+        }
+        fetchVehicleLinks();
+      } catch (err) {
+        setStatus(`恢复请求错误: ${err.message}`, false);
+      }
+    });
+
+    // 复制与粘贴当前快照 JSON
+    document.getElementById('copyJsonBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(eventsPane.textContent);
+        setStatus("✅ 已将当前快照 JSON 复制到剪贴板！", true);
+      } catch (err) {
+        // Fallback for non-secure contexts
+        const textarea = document.createElement('textarea');
+        textarea.value = eventsPane.textContent;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setStatus("✅ 已将当前快照 JSON 复制到剪贴板！", true);
+      }
+    });
+
+    document.getElementById('pasteJsonBtn').addEventListener('click', async () => {
+      let pastedText = "";
+      try {
+        pastedText = await navigator.clipboard.readText();
+      } catch (err) {
+        // 如果浏览器拦截剪贴板权限，直接读取当前 pre 框内用户手动粘贴的文本
+        pastedText = eventsPane.textContent;
+      }
+      try {
+        const parsed = JSON.parse(pastedText);
+        // 取消自动轮询，避免覆盖刚刚粘贴调试的 JSON
+        document.getElementById('autoPoll').checked = false;
+        renderData(parsed);
+        setStatus("📥 成功解析并应用粘贴的 JSON 数据！(已暂停自动轮询)", true);
+      } catch (e) {
+        alert("❌ 粘贴的内容不是合法的 JSON 格式: " + e.message);
+      }
+    });
+
+    // 轮询
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      fetchSnapshot();
+      fetchVehicleLinks();
+    });
+    setInterval(() => {
+      if (document.getElementById('autoPoll').checked) {
+        fetchSnapshot();
+        fetchVehicleLinks();
+      }
+    }, 1000);
+
+    fetchSnapshot();
+    fetchVehicleLinks();
+
+    // ==========================================
+    // 自定义地图可视化与热交互标注逻辑
+    // ==========================================
+    const mapFileInput = document.getElementById('mapFileInput');
+    const mapCanvas = document.getElementById('mapCanvas');
+    const canvasOverlayText = document.getElementById('canvasOverlayText');
+    const stationTypeSelect = document.getElementById('stationTypeSelect');
+    const anchorListEl = document.getElementById('anchorList');
+    const anchorCountEl = document.getElementById('anchorCount');
+    const clearAnchorsBtn = document.getElementById('clearAnchorsBtn');
+    const uploadMapBtn = document.getElementById('uploadMapBtn');
+
+    let currentMapImage = null;
+    let mapWidth = 0, mapHeight = 0;
+    let gridData = [];
+    let anchors = [];
+
+    // 文件读取与 Canvas 渲染
+    mapFileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      const isPgm = file.name.toLowerCase().endsWith('.pgm');
+
+      if (isPgm) {
+        reader.readAsArrayBuffer(file);
+        reader.onload = () => {
+          parseAndRenderPgm(new Uint8Array(reader.result));
+        };
+      } else {
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            renderImageToCanvas(img);
+          };
+          img.src = reader.result;
+        };
+      }
+    });
+
+    function parseAndRenderPgm(bytes) {
+      // 解析 P5 二进制 PGM
+      let offset = 0;
+      function readToken() {
+        while (offset < bytes.length && (bytes[offset] === 32 || bytes[offset] === 10 || bytes[offset] === 13 || bytes[offset] === 9)) offset++;
+        if (offset >= bytes.length) return "";
+        if (bytes[offset] === 35) { // comment #
+          while (offset < bytes.length && bytes[offset] !== 10 && bytes[offset] !== 13) offset++;
+          return readToken();
+        }
+        let start = offset;
+        while (offset < bytes.length && bytes[offset] !== 32 && bytes[offset] !== 10 && bytes[offset] !== 13 && bytes[offset] !== 9) offset++;
+        return String.fromCharCode.apply(null, bytes.subarray(start, offset));
+      }
+
+      const magic = readToken();
+      if (magic !== 'P5') {
+        alert("目前仅支持二进制 PGM (P5) 格式！");
+        return;
+      }
+      mapWidth = parseInt(readToken());
+      mapHeight = parseInt(readToken());
+      const maxVal = parseInt(readToken());
+      offset++; // skip trailing newline
+
+      mapCanvas.width = mapWidth;
+      mapCanvas.height = mapHeight;
+      const ctx = mapCanvas.getContext('2d');
+      const imgData = ctx.createImageData(mapWidth, mapHeight);
+      gridData = new Array(mapWidth * mapHeight);
+
+      // PGM 坐标系：左上为 (0,0)，ROS 栅格通常以左下为 (0,0)
+      for (let r = 0; r < mapHeight; r++) {
+        for (let c = 0; c < mapWidth; c++) {
+          const val = bytes[offset + r * mapWidth + c];
+          const pxIdx = (r * mapWidth + c) * 4;
+          imgData.data[pxIdx] = val;
+          imgData.data[pxIdx + 1] = val;
+          imgData.data[pxIdx + 2] = val;
+          imgData.data[pxIdx + 3] = 255;
+
+          // 转换为 ROS 栅格占用概率 (-1, 0, 100)
+          // ROS 占据栅格行号从下到上：ros_row = (mapHeight - 1 - r)
+          const rosRow = mapHeight - 1 - r;
+          const rosIdx = rosRow * mapWidth + c;
+          if (val === 254 || val > 240) gridData[rosIdx] = 0; // free
+          else if (val === 0 || val < 50) gridData[rosIdx] = 100; // occupied
+          else gridData[rosIdx] = -1; // unknown
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+      currentMapImage = imgData;
+      canvasOverlayText.style.display = 'none';
+      redrawCanvas();
+    }
+
+    function renderImageToCanvas(img) {
+      mapWidth = img.width;
+      mapHeight = img.height;
+      mapCanvas.width = mapWidth;
+      mapCanvas.height = mapHeight;
+      const ctx = mapCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+      currentMapImage = imgData;
+      gridData = new Array(mapWidth * mapHeight);
+
+      for (let r = 0; r < mapHeight; r++) {
+        for (let c = 0; c < mapWidth; c++) {
+          const pxIdx = (r * mapWidth + c) * 4;
+          const gray = (imgData.data[pxIdx] + imgData.data[pxIdx+1] + imgData.data[pxIdx+2]) / 3;
+          const rosRow = mapHeight - 1 - r;
+          const rosIdx = rosRow * mapWidth + c;
+          if (gray > 200) gridData[rosIdx] = 0;
+          else if (gray < 80) gridData[rosIdx] = 100;
+          else gridData[rosIdx] = -1;
+        }
+      }
+      canvasOverlayText.style.display = 'none';
+      redrawCanvas();
+    }
+
+    // 鼠标点击标注站点
+    mapCanvas.addEventListener('click', (e) => {
+      if (!currentMapImage) return;
+      const rect = mapCanvas.getBoundingClientRect();
+      const scaleX = mapCanvas.width / rect.width;
+      const scaleY = mapCanvas.height / rect.height;
+
+      const clickCol = Math.round((e.clientX - rect.left) * scaleX);
+      const clickRow = Math.round((e.clientY - rect.top) * scaleY);
+
+      // 计算对应的米制坐标：ROS 行号为 mapHeight - 1 - clickRow
+      const res = parseFloat(document.getElementById('mapResInput').value) || 0.05;
+      const ox = parseFloat(document.getElementById('mapOriginXInput').value) || 0.0;
+      const oy = parseFloat(document.getElementById('mapOriginYInput').value) || 0.0;
+
+      const rosRow = mapHeight - 1 - clickRow;
+      const worldX = parseFloat((ox + (clickCol + 0.5) * res).toFixed(3));
+      const worldY = parseFloat((oy + (rosRow + 0.5) * res).toFixed(3));
+
+      const type = stationTypeSelect.value;
+      const autoId = `station_${type}_${anchors.length + 1}`;
+
+      anchors.push({
+        id: autoId,
+        type: type,
+        x: worldX,
+        y: worldY,
+        yaw: 0.0,
+        pixelCol: clickCol,
+        pixelRow: clickRow
+      });
+
+      renderAnchorList();
+      redrawCanvas();
+    });
+
+    clearAnchorsBtn.addEventListener('click', () => {
+      anchors = [];
+      renderAnchorList();
+      redrawCanvas();
+    });
+
+    function renderAnchorList() {
+      anchorCountEl.textContent = anchors.length;
+      anchorListEl.innerHTML = anchors.map((a, i) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-bottom:1px solid #edf2f7;">
+          <span><b>${a.id}</b> (${a.type}) [${a.x}, ${a.y}]</span>
+          <span style="color:var(--danger);cursor:pointer;font-weight:bold;" onclick="deleteAnchor(${i})">×</span>
+        </div>
+      `).join('') || '<div style="color:#94a3b8;padding:6px;">暂无标注，请点击右侧地图添加</div>';
+    }
+
+    window.deleteAnchor = function(idx) {
+      anchors.splice(idx, 1);
+      renderAnchorList();
+      redrawCanvas();
+    };
+
+    function redrawCanvas() {
+      if (!currentMapImage) return;
+      const ctx = mapCanvas.getContext('2d');
+      ctx.putImageData(currentMapImage, 0, 0);
+
+      // 绘制所有站点
+      anchors.forEach((a) => {
+        ctx.beginPath();
+        ctx.arc(a.pixelCol, a.pixelRow, 7, 0, Math.PI * 2);
+        if (a.type === 'pickup') ctx.fillStyle = '#22c55e';
+        else if (a.type === 'dropoff') ctx.fillStyle = '#f97316';
+        else if (a.type === 'charge') ctx.fillStyle = '#eab308';
+        else ctx.fillStyle = '#3b82f6';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3;
+        ctx.strokeText(a.id, a.pixelCol + 9, a.pixelRow + 4);
+        ctx.fillText(a.id, a.pixelCol + 9, a.pixelRow + 4);
+      });
+    }
+
+    // 一键上传并热更新
+    uploadMapBtn.addEventListener('click', async () => {
+      if (!currentMapImage || gridData.length === 0) {
+        alert("请先选择或拖拽地图文件！");
+        return;
+      }
+      if (anchors.length === 0) {
+        alert("请在地图上至少点击标注一个站点！");
+        return;
+      }
+
+      const res = parseFloat(document.getElementById('mapResInput').value) || 0.05;
+      const ox = parseFloat(document.getElementById('mapOriginXInput').value) || 0.0;
+      const oy = parseFloat(document.getElementById('mapOriginYInput').value) || 0.0;
+      const baseUrl = baseUrlInput.value.replace(/\/$/, '');
+
+      const payload = {
+        width: mapWidth,
+        height: mapHeight,
+        resolution: res,
+        origin_x: ox,
+        origin_y: oy,
+        grid_data: gridData,
+        anchors: anchors.map(a => ({
+          id: a.id,
+          type: a.type,
+          x: a.x,
+          y: a.y,
+          yaw: a.yaw
+        }))
+      };
+
+      try {
+        setStatus("🚀 正在生成骨架路网并原子重载调度拓扑...", true);
+        uploadMapBtn.disabled = true;
+        uploadMapBtn.textContent = "⏳ 正在提取拓扑...";
+
+        const resp = await fetch(`${baseUrl}/api/v1/map/upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await resp.json();
+
+        if (resp.ok && result.status === 'ok') {
+          setStatus(`🎉 地图路网热重载成功! 生成 ${result.stations_count} 站点, ${result.road_nodes_count} 通行路口, ${result.edges_count} 拓扑边`, true);
+          alert(`✅ 地图拓扑生成成功并生效！\n站点: ${result.stations_count} 个\n通行路口: ${result.road_nodes_count} 个\n拓扑折线边: ${result.edges_count} 条\n版本Hash: ${result.map_hash}`);
+          fetchSnapshot();
+        } else {
+          setStatus(`❌ 地图导入失败: ${result.message || result.error}`, false);
+          alert(`❌ 地图导入失败: ${result.message || result.error}`);
+        }
+      } catch (err) {
+        setStatus(`网络错误: ${err.message}`, false);
+        alert(`请求失败: ${err.message}`);
+      } finally {
+        uploadMapBtn.disabled = false;
+        uploadMapBtn.textContent = "🚀 一键生成路网并热重载";
+      }
+    });
+  </script>
+</body>
+</html>

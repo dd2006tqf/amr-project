@@ -1,0 +1,65 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <queue>
+#include <mutex>
+#include <functional>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include "backend/storage_backend.h"
+#include "manifest/manifest_recorder.h"
+
+namespace xgrids {
+
+// ============================================================
+// 数据包上传器：
+//   扫描结束后把包目录（含 manifest.json + 各通道帧流）排队上传后端。
+//   真实场景对接 LixelStudio/云端；这里模拟"上传队列 + 断点续传"
+// ============================================================
+
+struct UploadTask {
+    std::string scan_id;
+    std::string scan_dir;
+    DataPacketInfo info;
+    int retry = 0;
+    enum State { kPending, kUploading, kDone, kFailed } state = kPending;
+};
+
+class Uploader {
+public:
+    using ProgressCb = std::function<void(const UploadTask&, double pct)>;
+
+    Uploader(std::string endpoint, ProgressCb cb);
+
+    void start();      // 后台上传线程
+    void stop();
+
+    // 扫描完成回调里调用：把包加入队列
+    void enqueue(const UploadTask& t);
+
+    // 模拟网络条件：带宽限制 + 偶发断连
+    void set_bandwidth_mbps(double mbps) { bw_mbps_ = mbps; }
+    void inject_disconnect(int ms);
+
+    size_t pending() const;
+    uint64_t uploaded_bytes() const { return uploaded_bytes_.load(); }
+
+private:
+    void loop();
+    bool upload_one(UploadTask& t);   // 模拟单文件分片上传+校验
+
+    std::string endpoint_;
+    ProgressCb cb_;
+    std::queue<UploadTask> q_;
+    mutable std::mutex mu_;
+    std::condition_variable cv_;
+    std::thread worker_;
+    std::atomic<bool> running_{false};
+    std::atomic<double> bw_mbps_{50.0};
+    std::atomic<int64_t> disconnect_until_us_{0};
+    std::atomic<uint64_t> uploaded_bytes_{0};
+};
+
+}  // namespace xgrids

@@ -1,0 +1,49 @@
+p = 'scripts/check_topology_hot_update_e2e.sh'
+s = open(p).read()
+
+old = '''SUBMIT="$(api submit '{}' 2>/dev/null || true)"
+# /api/v1/orders 需要 query 参数，改用直接 POST
+SUBMIT="$(docker exec "${CONTAINER}" python3 - <<PY
+import json, urllib.request
+req = urllib.request.Request("${REST}/api/v1/orders?id=m_topo&from=a&to=e&idempotency_key=k_topo",
+                             data=b"{}", method="POST",
+                             headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        print(json.dumps({"status": r.status, **json.loads(r.read().decode())}, ensure_ascii=False))
+except Exception as exc:
+    print(json.dumps({"status": 0, "error": str(exc)}))
+PY
+)"
+echo "${SUBMIT}" | grep -q '"accepted": *true' || fail "T7 提单未被受理: ${SUBMIT}"
+'''
+
+new = '''# /api/v1/orders 的入参在 query string 上（id/from/to），body 可为空对象。
+# 用容器内的独立小脚本发请求：避免在 $( ) 里嵌 heredoc（可读性与转义都更稳）。
+cat > /tmp/topo_submit.py <<'PYSUBMIT'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+base, query = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(
+    f"{base}/api/v1/orders?{query}", data=b"{}", method="POST",
+    headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        print(json.dumps({"http_status": resp.status, **json.loads(resp.read().decode())},
+                         ensure_ascii=False))
+except urllib.error.HTTPError as exc:
+    print(json.dumps({"http_status": exc.code, "body": exc.read().decode()}, ensure_ascii=False))
+PYSUBMIT
+docker cp /tmp/topo_submit.py "${CONTAINER}:${STAMP_DIR}/submit.py" >/dev/null
+SUBMIT="$(docker exec "${CONTAINER}" python3 "${STAMP_DIR}/submit.py" "${REST}" \\
+    'id=m_topo&from=a&to=e&idempotency_key=k_topo')"
+echo "${SUBMIT}" | grep -q '"accepted": *true' || fail "T7 提单未被受理: ${SUBMIT}"
+'''
+
+assert old in s, 'submit block not found'
+s = s.replace(old, new)
+open(p, 'w').write(s)
+print('patched')

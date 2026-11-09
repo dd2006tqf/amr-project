@@ -1,0 +1,41 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 直播监控
+
+#pragma once
+
+#include "ins_error_code/ins_errorcode.h"
+
+namespace ins {
+namespace live_broadcast {
+
+/**
+ * @brief 直播监控
+ * @details 监控网络质量和推流状态
+ * @note 不可复制，仅可移动（管理监控线程和状态）
+ */
+class LiveMonitor {
+ public:
+  LiveMonitor();
+  ~LiveMonitor();
+
+  // 禁止拷贝
+  LiveMonitor(const LiveMonitor&) = delete;
+  LiveMonitor& operator=(const LiveMonitor&) = delete;
+
+  // 允许移动
+  LiveMonitor(LiveMonitor&&) = default;
+  LiveMonitor& operator=(LiveMonitor&&) = default;
+
+  /**
+   * @brief 启动监控线程
+   */
+  InsErrorCode Start();
+
+  /**
+   * @brief 停止监控线程
+   */
+  void Stop();
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

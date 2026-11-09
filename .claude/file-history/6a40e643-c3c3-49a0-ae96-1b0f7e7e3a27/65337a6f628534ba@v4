@@ -1,0 +1,132 @@
+# Phase 9 — 高层多车协同寻路算法插件（Conflict-Based Search, CBS）
+
+> 本阶段为演进路线图中的 **Phase 9 (方案 A)**。
+> Phase 8 (方案 B：工业物理设施 Modbus-TCP 集成与联锁控制) 已全部完成合并并标记 `phase-8-green`。
+> 全仓 1024/1024 测试与 6 套 E2E 脚本全部通过。
+
+## Context
+
+在复杂仓储与工业制造场景中，随着车队规模扩张（多台 AMR 在密集货架区或狭窄通道双向作业），传统的**贪心路径规划**（各车独立跑最短 Dijkstra，遇到冲突单向整体后移或依赖事后死锁绕行）存在明显的性能瓶颈与局限：
+1. **贪心预约导致无解/活锁**：当两车在单车道对向行驶时，静态预约或简单时空窗只支持“全路径整体后移”，无法在途中合适的分叉站点或避让点（Wait In Place / Safe Node）停留让行，容易在连续 8 次重试后直接报不可行；
+2. **缺乏多智能体全局最优性（MAPF, Multi-Agent Path Finding）**：缺乏在时空联合空间（Time-Space Graph）上对多车协同路径的系统化分支消解（Vertex/Edge Conflict Resolution）。
+
+### 核心设计原则
+1. **纯 C++ 算法引擎，零 ROS / 零外部三方重型库依赖**：
+   - 算法核心沉淀在 `src/amr_dispatcher_core/planning/` 与 `src/amr_dispatcher_core/workflow/`；
+   - 100% 可在宿主机脱离 ROS 环境通过 `ctest` 运行高速单元测试。
+2. **两层分层架构（Two-Level CBS 经典算法架构）**：
+   - **低层规划器（Low-Level Time-Space A*）**：
+     - 在给定的拓扑图 `StationCatalog` 与时空约束集合 `Constraints` 下，为单个智能体搜索一条满足时间约束的最优时空路径；
+     - 允许智能体在中间站点执行 **时空停留等待（Wait-in-place action）**，以便主动让出关键道口。
+   - **高层搜索器（High-Level Constraint Tree Search）**：
+     - 维护约束树（Constraint Tree, CT），每个 CT 节点包含所有智能体的独立路径、冲突列表以及总代价（Sum-of-Costs）；
+     - 检测时空两两冲突：**节点冲突（Vertex Conflict）** 与 **对向穿行冲突（Edge/Swap Conflict）**；
+     - 产生冲突后，分裂为两个子节点，分别向 Agent A 和 Agent B 注入禁止时空约束，进行最佳优先搜索。
+3. **严格兼容与平滑降级（IoC / Strategy Pattern）**：
+   - 抽象 `IMultiAgentPathPlanner` 接口，现有 `static` 与 `time_space` 模式保持 100% 字节级行为一致与向后兼容；
+   - 增加模式 `traffic_mode: cbs`（或在 `time_space` 中作为冲突重解的二级优化器）。
+
+---
+
+## 阶段规划 (P0 → P1 → P2 → P3)
+
+### P0：低层带约束时空 A* 寻路引擎 (Low-Level Time-Space A*)
+
+#### 目标
+实现能够在 `StationCatalog` 拓扑图上感知时间轴与避障约束的单车时空寻路算法。
+
+#### 核心数据结构与逻辑 (`src/amr_dispatcher_core/planning/space_time_astar.hpp` & `.cpp`)
+1. **时空约束模型 (Space-Time Constraints)**：
+   - `VertexConstraint { agent_id, station_id, time_step }`：指定智能体在某时刻不得出现在某站点；
+   - `EdgeConstraint { agent_id, from_station, to_station, time_step }`：指定智能体在某时刻不得穿越某有向边（支持双向对向对撞禁止）。
+2. **时空状态节点 (Space-Time Node)**：
+   - `SpaceTimeNode { station_id, time_step, g_cost, h_cost, parent }`；
+   - 邻接扩展动作：
+     - 移动（Move）：走向合法邻接站点 `next_station`，耗时基于边长与运动模型；
+     - 停留等待（Wait）：停留在当前站点一个时间步 `(current_station, t + 1)`，用于规避前车或让行。
+3. **启发式函数 (Admissible Heuristic)**：
+   - 使用静态 Dijkstra 预计算的单源最短距离作为 $h(n)$，保证 $A^*$ 搜索的可采纳性（Admissibility）与最优性。
+
+#### 单元测试 (`test/unit/test_space_time_astar.cpp`)
+- 无约束下寻路输出与单车 Dijkstra 一致；
+- 节点约束规避测试：在必经节点指定禁止时刻，算法自动选择“绕行”或“提前在上一站点等待让行”；
+- 边对向约束规避测试：阻断某条单行通道时，算法正确选择规避策略。
+
+---
+
+### P1：高层约束树搜索与冲突消解 (High-Level Conflict-Based Search)
+
+#### 目标
+实现经典的 CBS 高层约束树搜索，系统化消除多车时空重叠与对向锁死。
+
+#### 核心数据结构与逻辑 (`src/amr_dispatcher_core/planning/conflict_based_search.hpp` & `.cpp`)
+1. **冲突定义与检测器 (Conflict Detector)**：
+   - `VertexConflict { agent_a, agent_b, station_id, time_step }`：两车在同一时间步出现在同一站点；
+   - `EdgeConflict { agent_a, agent_b, from_station, to_station, time_step }`：两车在同一时间步互换位置（Swap Conflict）或同向超车重叠。
+2. **约束树节点 (Constraint Tree Node)**：
+   - `CTNode { constraints, solution (paths for all agents), cost, conflicts }`；
+   - 优先队列以 `cost`（总旅行时间 Sum-of-Costs）最小优先展开。
+3. **CBS 核心循环 (Solve)**：
+   - 根节点初始化：各智能体独立运行时空 A* 寻找无外加约束的最短路；
+   - 若根节点无冲突 -> 直接返回全局最优协同解；
+   - 否则取出冲突列表中首个冲突 `C`，分支生成两个子节点：
+     - 子节点 1：添加约束使得 `Agent A` 不能在对应时空发生该行为，为 `Agent A` 重新调用 Low-Level A* 更新路径；
+     - 子节点 2：添加约束使得 `Agent B` 不能在对应时空发生该行为，为 `Agent B` 重新调用 Low-Level A* 更新路径；
+   - 设置最大扩展节点数与搜索超时阈值，防止在极端病态拓扑中耗尽算力。
+
+#### 单元测试 (`test/unit/test_conflict_based_search.cpp`)
+- 狭窄单通道双向会车测试：两车对向相遇，CBS 自动规划一台车驶入避让站点等待，另一台车通过后再继续行驶；
+- 十字路口节点冲突消解测试：两车垂直穿行，CBS 正确规划先后顺序，消灭碰撞冲突；
+- 多车（3~4 台）并发协同寻路与无解降级兜底测试。
+
+---
+
+### P2：调度器时空协调插件与工作流接入 (Workflow & Dispatcher Wiring)
+
+#### 目标
+将 CBS 规划结果无缝映射到调度系统的时空预约表与动态执行管线中。
+
+#### 核心改动 (Core & ROS)
+1. **接口抽象与结果转换 (`src/amr_dispatcher_core/workflow/cbs_traffic_coordinator.hpp` & `.cpp`)**：
+   - 将 CBS 输出的离散时空路径序列转换为现有调度器通用的 `ResourceTimeWindowSet` 与 `TimeSpaceOccupancy`；
+   - 纯函数 `PlanCBSCoordination(requests, catalog, motion_cfg)`：接收批量待派发任务，输出全局协同预约方案。
+2. **ROS 调度主循环挂接 (`dispatcher_node.hpp` & `dispatcher_node.cpp`)**：
+   - 参数扩展：支持 `traffic_mode: cbs`（以及现有 `static` / `time_space`）；
+   - 在多车派发与路径重算时，当 `time_space` 发生连续冲突或检测到对向锁死时，可由 CBS 插件提供最优协同避让路径。
+
+---
+
+### P3：多车协同仿真与端到端集成验收 (E2E & Verification)
+
+#### 目标
+验证在狭窄死锁拓扑中，CBS 能够驱动多台车辆主动让行与错峰通过。
+
+#### 交付物
+1. **多车死锁避让集成测试 (`test/integration/test_cbs_multi_agent_e2e.cpp`)**：
+   - 典型工业死锁拓扑：单车道瓶颈通道、两端连接取卸货点、中间设有让车位（Siding）；
+   - 断言两车各自完整执行，且在任何时间戳下均无顶点与边冲突。
+2. **端到端多车自动化脚本 (`scripts/check_cbs_coordination_e2e.sh`)**：
+   - 模拟多车在狭窄通道并发运行，断言车辆成功避让完成任务，无需人工干预介入；
+   - 接入 `.github/workflows/ci.yml`。
+
+---
+
+## 验证与验收准则
+
+| 检验项 | 命令 | 预期 |
+|---|---|---|
+| Core 单测 | `ctest --test-dir build/core` | 全绿（现有 888 + 新增 CBS 单测全 PASS） |
+| ROS 测试 | `colcon test --packages-select amr_dispatcher_core amr_dispatcher_ros` | 全绿 |
+| 现有全部 6 套 E2E | 依次运行既有 e2e 脚本 | 全部 PASS（零回归） |
+| CBS 协同 E2E | `./scripts/check_cbs_coordination_e2e.sh` | 退出码 0，断言多车时空零冲突与避让等待 |
+| 文档同步 | 更新 `README.md` | 如实记录 CBS 算法插件原理与配置 |
+
+---
+
+## 提交批次规划
+
+1. `feat(core): 低层带时空约束A*单车搜索算法 (P0)`
+2. `feat(core): 高层冲突树搜索(CBS)与多车冲突消解引擎 (P1)`
+3. `feat(core+ros): CBS多车协同协调器与调度主链挂接 (P2)`
+4. `test(e2e): 新增多车狭窄通道CBS主动避让集成验证脚本 (P3)`
+5. `docs: 更新 README 与多车交通协调特性文档`

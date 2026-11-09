@@ -1,0 +1,35 @@
+---
+name: rehearsal-remote-leg-fixture
+description: 排练库那条 REMOTE 链是人工注入 fixture 而非真实 Council 产出；真实模型在超时类 incident 上只产 ACTION_ID
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 5ceebcb5-2ecb-4a68-b482-f59365603b14
+  modified: 2026-10-08T13:50:12.112Z
+---
+
+2026-10-08 在真实板端 incident 上复核路线图 ⑥ 时发现：`3054314` 提交信息里记为
+`council → proposal → … → TRACE OK` 的**远端腿是人工播种的，不是真实 Council 产出**。
+
+判定证据（直查排练库 `industrial_ops`）：
+- council `ncouncil-10d3ed70cf6749b1` 的 `proposals_json` 恰好 4 条，**全是 `ACTION_ID`**；
+- 那条 REMOTE 提案 `proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'` 的 id **不符合**
+  代码计算式 `ncprop-<council后缀16>-a<attempt>-<index>`，`proposal_index=10`（越界），
+  `proposal_digest` 是占位串 `sha256:remote-config-digest`，rationale 是人工措辞；
+- 它却独占全部真实执行（approval `ncapp-remote-dd84d6678966` → `nact-a30b29…` → `nout-4b076898…`）。
+
+**Why**：`action_policy.py` 把 `CONFIG_CHANGE → REMOTE_PENDING_ACTION`、
+`ACTION_ID → MANUAL_RUNBOOK` **写死**；而该 incident 是超时类，真实模型
+（deepseek-v4-pro-0813）三次会商（1 次 schema 失败 + 2 次成功）均只产出 `ACTION_ID`。
+所以「远端腿」在这个 incident 类型上**结构性不可得**，不是模型偶发。
+
+**How to apply**：
+- 看排练库 `network_action_outcomes` / `network_pending_actions` 里的 REMOTE 记录时，
+  先核 `proposal_id` 是否落在该 council 的 `proposals_json` 内——不在就是 fixture。
+- 要真机验证 REMOTE 腿，必须换一个**需要改配置**的可控 incident（真实断连/干扰），
+  或另建可控 fixture 并显式标注；不要把注入链当真实闭环证据。
+- 真实可得的安全边界（非 fixture、已验证）：SoD 403、REJECTED/SUPERSEDED 409、
+  MANUAL `/execute` 409、runbook 恒 `NOT_EXECUTED`、异幂等键 409 / 同键 replay、
+  陈旧 If-Match 409、未知 proposal 404。
+
+相关：[[cloud-rehearsal-harness]]、[[edge-downlink-rehearsal]]、[[cloud-integration-division-of-labor]]

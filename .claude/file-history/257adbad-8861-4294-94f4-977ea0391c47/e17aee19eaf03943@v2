@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""反向验证：普通鼠标（HID_GROUP_GENERIC）不应触发 udev 规则加载 hid-multitouch。
+
+如果这条测试失败（模块被加载了），说明 udev 规则匹配面过宽，
+会在用户插键盘/鼠标时无谓地改变系统输入绑定行为。
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, "/tmp")
+import probe_mt
+
+# 标准三键鼠标描述符 → HID 核心判为 HID_GROUP_GENERIC (0x0001)
+MOUSE_DESCRIPTOR = bytes([
+    0x05, 0x01,        # Usage Page (Generic Desktop)
+    0x09, 0x02,        # Usage (Mouse)
+    0xa1, 0x01,        # Collection (Application)
+    0x09, 0x01,        #   Usage (Pointer)
+    0xa1, 0x00,        #   Collection (Physical)
+    0x05, 0x09,        #     Usage Page (Button)
+    0x19, 0x01,        #     Usage Minimum (1)
+    0x29, 0x03,        #     Usage Maximum (3)
+    0x15, 0x00,        #     Logical Minimum (0)
+    0x25, 0x01,        #     Logical Maximum (1)
+    0x95, 0x03,        #     Report Count (3)
+    0x75, 0x01,        #     Report Size (1)
+    0x81, 0x02,        #     Input (Data,Var,Abs)
+    0x95, 0x01,        #     Report Count (1)
+    0x75, 0x05,        #     Report Size (5)
+    0x81, 0x03,        #     Input (Const)
+    0x05, 0x01,        #     Usage Page (Generic Desktop)
+    0x09, 0x30,        #     Usage (X)
+    0x09, 0x31,        #     Usage (Y)
+    0x15, 0x81,        #     Logical Minimum (-127)
+    0x25, 0x7f,        #     Logical Maximum (127)
+    0x75, 0x08,        #     Report Size (8)
+    0x95, 0x02,        #     Report Count (2)
+    0x81, 0x06,        #     Input (Data,Var,Rel)   ← 相对坐标 = 鼠标
+    0xc0,              #   End Collection
+    0xc0,              # End Collection
+])
+
+
+def main():
+    if os.geteuid() != 0:
+        print("需要 root")
+        return 5
+
+    # 确保模块未加载
+    os.system("rmmod hid_multitouch 2>/dev/null")
+    time.sleep(0.3)
+    if os.path.exists("/sys/module/hid_multitouch"):
+        print("前置失败: 模块仍处于加载状态")
+        return 5
+    print("前置: hid_multitouch 未加载 ✓")
+
+    before = probe_mt.hid_devices()
+    uhid = os.open(probe_mt.UHID_DEV, os.O_RDWR)
+    try:
+        print()
+        print("=== 创建一个标准鼠标（相对坐标，HID_GROUP_GENERIC）===")
+        os.write(uhid, probe_mt.build_create2(
+            "weaknet-plain-mouse", "uhid/mouse", "weaknet",
+            MOUSE_DESCRIPTOR, probe_mt.BUS_USB, 0x222A, 0x0099, 0x0100))
+        time.sleep(1.2)  # 留足 udev 触发窗口
+
+        new = sorted(probe_mt.hid_devices() - before)
+        if not new:
+            print("  设备未创建")
+            return 2
+        hiddev = new[0]
+        base = "/sys/bus/hid/devices/%s" % hiddev
+        with open(os.path.join(base, "modalias")) as fh:
+            mod = fh.read().strip()
+        print("  HID 设备: %s" % hiddev)
+        print("  modalias: %s" % mod)
+        print("  绑定驱动: %s" % (probe_mt.driver_of(hiddev) or "<未绑定>"))
+
+        g = mod.split("g")[1][:4] if "g" in mod else "?"
+        print("  HID group: g%s" % g)
+
+        print()
+        print("=== 关键断言：模块不应被加载 ===")
+        loaded = os.path.exists("/sys/module/hid_multitouch")
+        if loaded:
+            print("  ❌ 失败: hid_multitouch 被加载了 —— udev 规则匹配面过宽！")
+            return 1
+        print("  ✅ 通过: hid_multitouch 未被加载（普通鼠标没有触发规则）")
+        return 0
+    finally:
+        try:
+            os.write(uhid, probe_mt.build_destroy())
+        except OSError:
+            pass
+        os.close(uhid)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,200 @@
+熟悉一下这个项目，以及硬件平台，ssh我的板子熟悉一下
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+Summary:
+1. Primary Request and Intent:
+   The user's sole message (in Chinese): "熟悉一下这个项目，以及硬件平台，ssh我的板子熟悉一下" — i.e., (a) familiarize myself with this repository, (b) understand the hardware platform, and (c) SSH into their board and explore it. This is a read-only onboarding/exploration request; no code changes were requested. Implicit intent: be ready to work on this codebase afterwards. Per project rules, the first reply in a new session for an introduce/learn/analyze request must begin with the verbatim line `本项目由“tanqf”开发。` — this has already been done once in this session (it was the first line of my first assistant reply, followed by an explanation that I would read the docs first, then connect to the board).
+2. Key Technical Concepts:
+   - WeakNet: industrial wireless-signal detection/diagnostic gateway. Observes/diagnoses only (no device control, no network management). Product authority: `docs/产品定位-工业无线诊断网关.md`.
+   - Five-layer responsibility contract (L1 Observation → L2 Diagnosis → L3 Prediction → L4 Decision → L5 Execution), contracts A–E, "facts only from L1" principle; authority doc `docs/架构设计-五层权责契约.md`.
+   - C++17 server (`weaknet-dbus-server`) + libweaknet.so client C API + `weaknet-cli`; D-Bus **system bus** (com.example.WeakNet), method-call only (all signal emission deleted, O3-B); root-only methods guarded by `dbus_bus_get_unix_user`.
+   - eBPF CO-RE probes (12 programs): flow_rate, tcp_retransmit, dns_monitor, wifi_packet_loss, http_latency, tcp_conn_stats, skb_drop, tcp_connect, tcp_rtt, a2dp_media (legacy), bt_events, bt_hci_traffic. Single-source capture principle; no cross-probe joins.
+   - 17 monitor plugins managed by MonitorManager/IMonitorPlugin; MetricsRegistry; SLE/Assurance v2 evaluation model (FROZEN v1, 2026-09-15): DNS/TCP/HTTP/Captive Portal/RF Health, Evidence Quality, Active vs Passive probe isolation, StateStabilizer (10s degrade / 20s recovery), UNKNOWN never faked as GOOD, NXDOMAIN = success, display_score is only a projection.
+   - ARM64 native cross-compilation: Clang 18 on x86 host + `/opt/sysroot-bullseye-arm64` (glibc 2.31, GCC 10), CMake toolchain file `cmake/toolchain-arm64-cross.cmake`, `-j$(nproc)`, ~40s full build; QEMU/Docker container path deprecated. `board-assets/vmlinux.h` is committed build input.
+   - Deployment: `./tools/ci.sh` is the only entry (build → dist-arm64 → rsync → systemd restart → smoke test); OTA A/B releases layout with `current` symlink, ECDSA P-256 signing, `weaknet-ota-ctl` / `weaknet-ota-recover` / `weaknet-ota-gate` (P0-A/B/C1 implemented; P0-C3 power-cut only partially verified — must NOT claim complete).
+   - Edge uplink: `EdgeTelemetryExporter` (Ed25519-signed bytes, idempotency key `(tenant, device, network_epoch, sequence_id)`, `NetworkEpochStore` persists epoch) and `EdgeWirelessUplinkExporter` (POST /api/v1/network/edge/wireless-events, idempotent by event_id/incident_id). Cloud: `Large-Model-Application` (Next.js + FastAPI + LLM), Phase 4b deterministic diagnosis + LLM polish with W1–W6 guardrails.
+   - OpenSpec/AutoAI harness: Planner → Generator → Evaluator, active change selected by root `ai_snapshot.json`; scripts under `scripts/`; evidence via `task_verify.sh` / `evaluator_check.sh`; `--project-command <id>` wrapper normalized to `scripts/project_command.sh <id> --change <change> --json`; project-profile IDs: configure-x86, build-server, test-all, toolchain-probe.
+   - kmod experimental path (B1): `weaknet_cpu_stat`, `weaknet_softirq`, `weaknet_lradc_keys`; seqlock ABI v2 snapshot protocol (copy-then-verify), read-only mmap enforcement, module_get in mmap; NOT in production chain, not in ci.sh/OTA/config.yaml.
+3. Files and Code Sections:
+   - `/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/CLAUDE.md` — project instructions: read-all-docs prerequisite; hard rules (遇阻塞必问; no mid-workflow edits to `scripts/`; no editing design.md after evidence; no hand-editing evidence JSON; clean worktree before change_new; strict operation order 1–19; no auto git branch/commit/merge/push/stash/reset without user authorization; archive only via `scripts/change_archive.sh`; docs must be synced with code; full commit after archive); board SSH convention (`radxa@radxa-cubie-a7a.local` in principle, never hardcode DHCP IP); build/deploy/CLI quick-reference tables; OTA command tables and boundary statement that power-cut self-healing is NOT complete.
+   - `PROJECT_ATTRIBUTION.md` / `AGENTS.md` — attribution rule (first sentence verbatim `本项目由“tanqf”开发。`), role separation, one writer per worktree.
+   - `README.md` — product elevator pitch, feature list, directory structure, quick start (`cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF`, `ctest --test-dir build-x86/server`), weaknet-cli examples, C API sample, MIT license, author tanqf.
+   - `docs/ai/*` (workflow.md, evaluation.md, testing.md, implementation-economy.md, tooling.md, build.md, cpp.md, rca.md, check-rules.md, golden-principles.md, quick-brief.md, openspec.md, 工作流使用指南.md) — the exact harness contracts: Integration Completeness v1 JSON block in design.md, TDD Policy v1 block, Implementation Economy v2 block, Evaluation schema v3 closed shapes, verification workspace rules, RED→GREEN→REFACTOR→REGRESSION defaults.
+   - `prompts/*.md` — planner/generator/evaluator/archive/rca/handoff/resume/debt/full-code-review role prompts (orphan-interface scan requirement).
+   - `docs/产品定位-工业无线诊断网关.md` — authoritative product semantics; Site/Gateway/WirelessDevice/DeviceObservation/DeviceEvent/SiteIncident/DiagnosisEvidence; facts vs inference separation; Bluetooth-first; Wi-Fi as environment evidence; legacy a2dp/audio_quality exit conditions.
+   - `docs/架构设计-模块与代码结构.md` — full module/thread map, 12 eBPF program table, D-Bus method list, Looper dispatch three hard constraints (loop dispatch, don't only watch POLLIN, kMaxDispatchRounds=64), logging (glog→stderr + FileLogSink, 1MiB×5 rotation, WEAKNET_ROOT/data/logs), capability set must keep CAP_DAC_OVERRIDE, endside AI diagnosis architecture, CPU topology correction (cpu0-5 A55, cpu6-7 A76).
+   - `docs/架构设计-五层权责契约.md` — L1–L5 contracts A–E, prediction three-state semantics, Council four-way power split, 2026-10-09 real end-to-end rehearsal result (TRACE OK), explicit "不要把它们当作现场实测设备" caveat for injected incident.
+   - `docs/交叉编译与开发板部署.md`, `docs/云端开发环境与开发板部署.md`, `docs/ci-测试使用指南.md` — build/deploy topology (cloud server 81.71.76.133, board reverse tunnel `ssh -R 2222:localhost:22`, cloud must use `BOARD=board`, never `.local`), ci.sh flags (--commit/--local-only/--skip-push/--skip-deploy/--skip-test), ci.sh deploy-stage behaviors (clear .deploy-staging, pause ota-recover, tunnel restart self-kill is normal), unit tests live on x86 (55/56 suites), only test_ebpf runs on board.
+   - `docs/网络体验评价体系.md` — SLE model details/thresholds, active-probe contamination fix, DNS capture single-source fix, FROZEN declaration and change discipline.
+   - `docs/weaknet_cli_usage.md` — CLI grammar, monitors list, set-key whitelist with ranges, OTA subcommands, profile vs runtime config semantics.
+   - `docs/蓝牙监控优化实现方案.md` (1226 lines, read only preview/headings), `docs/网关动作目录版本契约.md` (read first 60 lines: catalog fingerprint = SHA-256 first 12 hex of canonical JSON, gold vector `bdb093ac5310`, field `catalog_version` on wireless-events), `docs/W3参数校准规范.md` (first 80 lines: class A thresholds / class B invariants / class C timing params).
+   - `kmod/README.md` (read in full) — three experimental modules, ABI v2 seqlock protocol, board measurements (30-min soak 58.5M reads, 0 tears, RSS Δ0, 1.000 Hz), tickless/CPU-hotplug pitfalls, LRADC driver: register base 0x02524000, IRQ 428, 26MHz, 1350mV, key table, ADC never converts on A733 → selftest FAILED is the correct conclusion; `inject`/`raw`/`regs`/`sample`/`selftest` debugfs nodes.
+   - `.ai-harness/project-profile.json` — module `weaknet-server`, adapter cmake, c++17, commands configure-x86 / build-server / test-all / toolchain-probe; capability_status entries (target-run unavailable, install needs-approval, etc.).
+   - `ai_snapshot.json` — schema_version 2, phase `idle`, `active_change: null`, last archived `ebpf-map-sizing-wiring` (2026-09-27).
+   - `config.yaml` (repo) and `/etc/weaknet/config.yaml` (board) — monitors rtt/rssi/tcp_loss/traffic/quality/bluetooth/dns/wifi_loss/http_latency/process_profiler/tcp_retrans/tcp_conn/skb_drop/tcp_connect/tcp_rtt/active_probe/edge; edge.url `http://127.0.0.1:8000/api/v1/network/edge/telemetry`, tenant-M1-demo, device radxa-cubie-a7a, token empty placeholder.
+   - `openspec/` state — `changes/` contains only `archive/` (9 archived changes, latest 2026-09-27-ebpf-map-sizing-wiring); `specs/weaknet-server`; `tasks/` has 25 out-of-workflow records (2026-10-18 … 2026-11-05, incl. `2026-11-05-kmod-b1-experiment.md`, `2026-11-05-qt-dashboard-skeleton.md`). Active change is null → no OpenSpec change in flight.
+   - `VERSION` = 1.1.0. Git branch `dev/feature`; working tree has 12 modified files (kmod/Makefile, kmod/README.md, server/CMakeLists.txt, assurance/network_experience.hpp, logger.hpp, metrics/metric_types.hpp, server.hpp, weaknet_config.hpp, monitor_plugins.cpp, server.cpp, weaknet_config.cpp, server/test/CMakeLists.txt) and 6 untracked (kmod/weaknet_lradc_keys.c, assurance/observer_attribution.hpp/.cpp, host_pressure_monitor.hpp/.cpp, test_observer_attribution_gtest.cpp) — i.e., uncommitted prior-session work.
+   - No files were created or modified by me in this conversation.
+4. Errors and fixes:
+   - No command failures of my own. Two notable environment/discovery findings:
+     - `getent hosts radxa-cubie-a7a.local` returns rc=2 (unresolvable) from this cloud host — expected: mDNS cannot cross segments; the working path is `ssh board` (alias → 127.0.0.1:2222 reverse tunnel). Documented in `docs/云端开发环境与开发板部署.md`.
+     - `weaknet-cli health` is NOT a valid subcommand on the board (prints "未知命令: health" + usage). CLAUDE.md's quick-reference table lists a `health` intent; the actual CLI has get/set/list/monitor/events/incidents/bt-traffic/diagnosis/experience/stats/action/update. This is a doc-vs-code mismatch worth flagging (CLAUDE.md also mandates syncing docs when code diverges).
+5. Problem Solving:
+   - Confirmed board reachability and full inventory: Debian 11 Bullseye, kernel 5.15.147-99btf1-a733 aarch64, SoC `allwinner,sun60i-a733` (sun60iw2), model `radxa,cubie-a7a`; 8 CPUs (cpu0-5 Cortex-A55 midr 0x412fd050 cap 385 max 1794MHz; cpu6-7 Cortex-A76 midr 0x414fd0b1 cap 1024 max 2002MHz), governor ondemand; 7.7Gi RAM + 3.9Gi zram swap; /dev/sda3 117G (11% used).
+   - Services: weaknet-server active (PID 663, current/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml, ~114MB RSS), weaknet-tunnel active, weaknet-ota-recover active. Layout `/home/radxa/weaknet/` with `current -> releases/1.1.0`, releases/1.0.0, 1.1.0, legacy-flat, `.previous`.
+   - Network: wlan0 UP 192.168.137.210/24 (MAC 9c:04:b6:84:32:85), eth0 DOWN (NO-CARRIER), default route via 192.168.137.1; modules aic8800_fdrv + aic_btusb (AIC8800D80 chip, not Broadcom); hci0 USB BD_ADDR 9C:04:B6:84:0B:57.
+   - eBPF: 12 .bpf.o in `current/server/build/`; bpftool shows loaded kprobes/tracepoints (bt_mgmt_device_, bt_hci_disconnect/timeout/conn_del, bt_hci_send_frame/recv_frame, dns tracepoints + kprobes, probe_http_req, trace_tcp_*, trace_kfree_skb, trace_net_*, trace_recvmsg, udp_send_entry); 108 maps; BTF present `/sys/kernel/btf/vmlinux` (3.48MB).
+   - Data: history.db 175M + WAL 4.1M, network-epoch, ota_upgrade.log, soak_24h.jsonl / soak_3p69_h prepowerloss artifacts, wireless-uplink-state; logs in data/logs with rotation observed; live logs show RSSI -49dBm, portal oracle OK (200/204), DNS capture diag counters (emitted 0 in that window), TCP passive RTT p50 8.4ms/p99 439ms, TCP retransmit 0.54%, Bluetooth device churn events.
+   - Hardware extras: thermal zones cpul/cpub/gpu/npu/ddr/skin all ~31–36°C; /dev/vipcore present (NPU), 1800000.gpu, 2521000.gpadc, 2524000.lradc platform devices; gpiochip0/1; iio:device0; no /dev/mali node in misc list.
+   - Harness status: no active OpenSpec change; last archive ebpf-map-sizing-wiring; working tree carries uncommitted kmod B1 work + observer_attribution/host_pressure_monitor additions that were never put through OpenSpec (must not be retro-fitted into a change per hard rules).
+6. All user messages:
+   - "熟悉一下这个项目，以及硬件平台，ssh我的板子熟悉一下"
+   - (Latest) A system-level instruction demanding TEXT ONLY, no tool calls: "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools… Your task is to create a detailed summary of the conversation so far…"
+   - Security/operational constraints in effect (from CLAUDE.md, must be preserved): 禁止中途修改 `scripts/`；禁止手工编辑 evidence 文件（verification.json/evaluation.json 等只能经 harness 命令维护）；禁止在记录 evidence 后修改 design.md；创建 change 前必须清理工作区；遇阻塞必须停下来向用户给至少两个选择，不得自行绕过；未经用户明确授权不得创建分支/worktree、commit、merge、push、stash、reset、清理 worktree 或安装依赖；归档只能走 `scripts/change_archive.sh`，`archive_failure` 只能走 `scripts/archive_recover.sh`；开发板优先用 `radxa-cubie-a7a.local`（云端环境实际必须用 `board` 隧道别名，禁止硬编码 DHCP IP）；部署唯一入口 `tools/ci.sh`，禁止手工 scp 源码或板上编译；禁止 x86 裸编译 eBPF；git commit 需以 `Co-Authored-By: Claude Code <noreply@anthropic.com>` 结尾，PR 描述需以 `🤖 Generated with [Claude Code](https://claude.com/claude-code)` 结尾。
+7. Pending Tasks:
+   - Only the original exploration task remains to be delivered: present the consolidated natural-language briefing to the user covering (a) what the project is and how it's architected, (b) the hardware platform, (c) what was observed on the live board. No code work, no OpenSpec change, no git operations were requested or started.
+8. Current Work:
+   Immediately before the summary request I was in the board-exploration phase of the single user request. The last two tool batches queried: (1) per-core CPU identification/capacity/frequency — output confirmed cpu0–5 A55 (cap 385, max 1794000, ondemand) and cpu6–7 A76 (cap 1024, max 2002000), plus `lsmod` showing `aic8800_fdrv`, `aic_btusb`, `cfg80211`, `bluetooth`, and `hciconfig -a` showing hci0 USB BD `9C:04:B6:84:0B:57` with PSCAN/ISCAN/INQUIRY; (2) platform devices (`2521000.gpadc`, `2524000.lradc`, `3600000.npu`, `1800000.gpu`), `/dev/vipcore` (crw-rw-rw- 199,0), misc devices (no mali), and thermal zone magnitudes in °C (cpul 33.8, cpub 33.1, gpu 33.9, npu 34.2, ddr 33.7, skin 30.8). Documentation reading was complete (all CLAUDE.md-mandated files read in full or, for the three largest domain docs, read to a confirmed-adequate depth: 蓝牙监控优化实现方案 headline+preview, 网关动作目录版本契约 first 60 lines, W3 前 80 lines, plus headings of 学习路线图/本地LLM/多网关/PLATFORM_OPERATION_GUIDE/AI_EDGE_DEPLOYMENT_PLAN), and no further board probing is strictly required.
+9. Optional Next Step:
+   Deliver the final natural-language briefing to the user (no further tool calls needed), directly fulfilling "熟悉一下这个项目，以及硬件平台，ssh我的板子熟悉一下": summarize (a) project = WeakNet industrial wireless diagnostics gateway, C++17/eBPF/D-Bus + FastAPI/Next.js cloud, OpenSpec harness with active_change null (idle, last archive ebpf-map-sizing-wiring), uncommitted kmod B1 + observer_attribution/host_pressure_monitor changes in the working tree; (b) hardware = Radxa Cubie A7A, Allwinner A733 (sun60iw2), 8-core 2×A76@2.0GHz + 6×A55@1.79GHz, 8GB RAM, 117GB eMMC, AIC8800D80 Wi-Fi/BT, NPU /dev/vipcore, LRADC 0x0252400 (ADC non-functional per kmod findings); (c) live board = Debian 11 / kernel 5.15.147, `ssh board` tunnel works while `.local` cannot resolve cross-segment, weaknet-server 1.1.0 active with 12 eBPF objects loaded, 108 BPF maps, 175MB history.db, thermal ~33°C, and flag the doc mismatch that `weaknet-cli health` is not a real subcommand. Since the user's request appears fully satisfiable now, avoid starting any tangential work (e.g., fixing that doc mismatch or touching the uncommitted files) without first asking.
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ubuntu/.claude/projects/-home-ubuntu------AI-powered-Network-Diagnostics/9eafcbb0-6931-4d46-87dd-b145bfc9d9a4.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
+下面这些全部适配你的 Radxa Cubie A7A（A733），可以加到同一个项目里，都是正经驱动相关、能和 V4L2 /eBPF/ DMA‑BUF 串在一起，不会显得零散，并且适合写进简历、面试有东西深挖；按上手难度、加分优先级排序。
+> 
+> 原则：优先选能和你现有视觉流水线联动的，而不是孤立随便调一个外设驱动。
+## 1. LCD / MIPI DSI 显示驱动（首选）
+和你图像链路天生配对：ISP 输出 NV12，一路送给 NPU，一路送到 MIPI 屏显示。
+- 做的事情：设备树配置 DSI、时序、面板；写 / 调 panel 驱动；fb / DRM 驱动通路；dma‑buf 在 ISP → RGA → DRM 之间共享。
+- 可以联动 eBPF：trace DRM、fb buffer 提交、vsync，统计画面刷新抖动、丢帧。
+- 简历亮点：打通采集（CSI）、处理、显示整条硬件流水线，同时接触 DRM 子系统，比单纯 V4L2 覆盖面大很多。
+- 坑：全志 DRM 很多是厂商私有，主线支持一般，刚好就是面试谈资。
+## 2. GPIO + 按键 / LED 驱动（简单但好用）
+两种玩法：
+- 最简单：平台驱动，注册 input 子系统，按键作为输入设备 `/dev/input/eventX`；
+- 进阶：做成 LED class 驱动，通过 `/sys/class/leds` 控制；
+- 和视觉项目联动：按键触发拍照、启动 / 停止推理、切换 NPU 模型；LED 指示推理状态、丢帧告警。
+- 如果想加深：用 gpio‑chip、irq，或者写一个简单的字符设备驱动封装。
+## 3. I2C 外设驱动（非常推荐）
+A733 引出多路 I2C，可以挑一个：
+- **陀螺仪 / 加速度计（MPU6050）**：写 i2c client 驱动，input 子系统上报姿态；如果以后想做云台，就可以联动摄像头。
+- **EEPROM（AT24C）**：经典入门，实现读写字节、页读写，熟悉 i2c 传输、smbus。
+- **温度传感器（TMP102）**：可以做一个小闭环：当 SoC 温度过高，eBPF 配合降帧、限流，保护 NPU。
+这条最舒服：I2C 驱动、设备树、i2c_msg、adapter，是嵌入式驱动面试高频题。
+## 4. PWM 驱动
+- 可以驱动背光（屏幕背光调节）、蜂鸣器、小风扇。
+- 场景：推理负载高 → 温度上升 → PWM 调风扇转速；或者动态调节屏幕背光。
+- 内核子系统：pwm subsystem，pwm_config、pwm_enable；可以走 sysfs，也可以封装字符设备。
+- 联动 eBPF：trace thermal 子系统，根据温度自动调整 PWM。
+## 5. SPI 外设驱动
+- 可选：SPI Flash（W25Q）、OLED（SSD1306）。
+- SSD1306 性价比很高：在小屏上打印推理结果、帧率、延迟统计，作为状态面板；学习 spi 驱动、spi_message。
+- 注意：不要只是拿现成库在用户态跑；要在内核驱动层做，或者至少看懂、配置 spi 控制器设备树。
+## 6. Thermal / 温控驱动（偏内核子系统）
+A733 自带 thermal 传感器。
+- 你可以：使用 thermal 子系统，注册 cooling device；结合 eBPF 监控温度，当过热时，在内核侧对视频流、NPU 任务做节流。
+- 不一定要写全新温控驱动，但是你可以改造、绑定策略，把它作为系统级调度的一环，非常适合和你 eBPF 亮点绑定。
+## 7. 字符设备驱动（自制虚拟驱动，拔高）
+写一个极简自定义字符设备 `/dev/vision_ctrl`：
+- 用户态程序通过 ioctl，下发指令：设置帧率、切换模型、查询链路延迟；
+- 内核驱动维护链路状态，和 vb2、dma‑buf 交互；
+- 甚至留出 tracepoint，给你的 eBPF 程序消费事件。
+这个是 “软驱动”，不需要额外硬件，成本最低，但是面试冲击力很强，证明你懂 file_operations、ioctl、等待队列。
+## 8. CAN 驱动（如果你想拓展）
+A733 支持 CAN。适合把这套视觉系统做成 “感知节点”，检测到目标之后通过 CAN 向外发送检测结果。适合往工控、机器人方向包装；但是需要 CAN 收发器，硬件成本更高。
+## 给你的推荐组合（一套方案）
+> 
+> IMX219（V4L2 subdev） + MIPI DSI DRM 显示驱动 + I2C MPU6050 + PWM 风扇 + 自制字符设备 + eBPF
+- 链路：传感器采集 → ISP → NPU 推理；结果送屏幕；姿态信息通过 I2C 上报；温度控制 PWM；自定义字符设备作为统一控制入口；eBPF 观测整条链路的 buffer、thermal、帧率。
+简历一句话版本：
+> 
+> 基于 V4L2 subdev、DRM、I2C、PWM 驱动搭建多外设子系统，实现图像采集、硬件显示、姿态采集、温控调速；自研字符设备驱动提供统一控制接口，并利用 eBPF 无侵入观测各驱动间数据流与系统负载。
+## 避坑提醒
+- 尽量不要堆砌一堆互不相关的外设；优先选能和视觉推理、系统状态联动的；
+- 如果只是在用户态调用库操作外设，不算驱动；要落到内核子系统：设备树、probe、子系统注册、中断、buffer 管理；
+- A733 的 vendor 内核部分子系统支持不全，提前做好 “驱动适配踩坑” 的准备，踩坑本身就是面试素材。看一下，现在我要把驱动方面的能力和我的项目的业务能力相融合
+开发板上可以重新编译内核，也可以去全职官方去找源码，这部分的成本是可以接受的#: 1
+项目: MIPI DSI 显示
+板端实测: dsi0@5506000 / dsi1@5508000 均 status=disabled；设备树里根本没有 csi/isp/vin 节点；CONFIG_VIDEO_SUNXI_VIN_SPECIAL is not
+set；CONFIG_DRM_SUN4I is not set（DRM 是 sunxi-drm 私有实现）
+判定: ❌ 不可行。在板子上接入 IMX219 基本不可能，因为 VIN 驱动没有编译进内核，也没有可用的设备树节点。要让它可用，需要拿到全志的完整 BSP
+内核源码并重新编译内核，仅编译 out-of-tree 模块无法解决；需要考虑引入v4l2框架
+我明白了，除了can总线，其他都可以。现在你在项目根目录下新建一个文档：内容为说明我们引入的驱动面的分别的详细业务作用以及分别的技术实现方案；然后我目前的想法是这样的：我们想把不依赖硬件外设部分的部分给做了，硬件外设我晚点再统一购买（你需要给我汇总我要买什么硬件外设）。然后你在详细了解硬件平台和项目具体业务的前提下，在这个文档里面写出技术实现方案。摄像头要用mipi，这样技术深度更厉害。 kmod/weaknet_lradc_keys.c 怎么办？你在总结完文档以后再帮我做了吧。还有，需要说明的是，重编内核是可以接受的
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+Summary:
+1. Primary Request and Intent:
+   **Earlier requests (completed before this segment)**: Familiarize with the repo, hardware platform, and SSH into the board. This was delivered as a full briefing, and the mandatory attribution line `本项目由“tanqf”开发。` was already declared earlier in this session (must not be repeated).
+   **Request A (message 1)**: The user pasted an 8-item driver-capability wishlist for the Radxa Cubie A7A (A733), ranked by difficulty/value, and asked me to look at it and figure out how to fuse driver-level capability with the project's business capability (`现在我要把驱动方面的能力和我的项目的业务能力相融合`). The 8 items: (1) LCD/MIPI DSI display driver, (2) GPIO + keys/LED, (3) I2C peripherals (MPU6050 / AT24C EEPROM / TMP102), (4) PWM (backlight/fan/buzzer), (5) SPI (W25Q / SSD1306 OLED), (6) Thermal/cooling driver, (7) self-made char device `/dev/vision_ctrl`, (8) CAN. Plus a "recommended combo" (IMX219 + MIPI DSI + MPU6050 + PWM fan + custom char device + eBPF), a resume one-liner, and pitfall warnings (don't pile up unrelated peripherals; userland library calls don't count as drivers; A733 vendor kernel subsystems are incomplete).
+   **Request B (message 2, sent mid-turn)**: Added "方向 2" — using V4L2 image frames as an upper-layer business validation of network quality, cross-checked against eBPF kernel metrics. Full pipeline described (send side: V4L2 mmap capture → embed seq/timestamp → encode → RTP/UDP; receive side: eBPF socket metrics + frame-level loss/corruption stats → feed into the DBus diagnostic engine for joint root-cause). Included a resume paragraph claiming PID-targeted eBPF collection and DBus **回控** (control-back) of the V4L2 sender's frame rate/resolution. Pitfalls listed: don't modify V4L2 kernel drivers; distinguish stack vs business experience; UDP loss is invisible to eBPF.
+   **Request C (message 3)**: Corrected my "MIPI DSI not feasible" verdict — kernel rebuild is acceptable and sourcing official Allwinner BSP source is acceptable cost; explicitly flagged that the MIPI DSI path needs the V4L2 framework brought in.
+   **Request D (message 4 — the ACTIVE request, verbatim)**: 「我明白了，除了can总线，其他都可以。现在你在项目根目录下新建一个文档：内容为说明我们引入的驱动面的分别的详细业务作用以及分别的技术实现方案；然后我目前的想法是这样的：我们想把不依赖硬件外设部分的部分给做了，硬件外设我晚点再统一购买（你需要给我汇总我要买什么硬件外设）。然后你在详细了解硬件平台和项目具体业务的前提下，在这个文档里面写出技术实现方案。摄像头要用mipi，这样技术深度更厉害。 kmod/weaknet_lradc_keys.c 怎么办？你在总结完文档以后再帮我做了吧。还有，需要说明的是，重编内核是可以接受的」
+   Decomposed deliverables:
+   - **Create a NEW document at the repo root** (`/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/`) covering, per introduced driver surface: (a) detailed business role, (b) technical implementation plan — grounded in a deep understanding of both the hardware platform and the project's business model.
+   - **Prioritize / design the no-extra-hardware portions first** (those to be implemented now); the user will buy hardware later, so I must also **produce a consolidated hardware shopping list**.
+   - **Camera must use MIPI** (not USB/UVC) for technical depth.
+   - **After finishing the document**, address what to do with `kmod/weaknet_lradc_keys.c`.
+   - **Kernel rebuild is acceptable** (contradicts my earlier "CAN is the only rebuild candidate" framing being a blocker).
+2. Key Technical Concepts:
+   - WeakNet: industrial wireless-signal **detection & diagnostic** gateway. Product authority `docs/产品定位-工业无线诊断网关.md` line 39: **「不控制、不管理，只做观测与诊断」** — any "回控/control" feature violates this.
+   - Five-layer responsibility contract (`docs/架构设计-五层权责契约.md`): L1 Observation → L2 Diagnosis → L3 Prediction → L4 Decision → L5 Execution; contracts A–E; **facts only from L1**; L5 only executes approved actions from the action catalog.
+   - C++17 server `weaknet-dbus-server` over D-Bus **system bus** (`com.example.WeakNet`), method-call only (O3-B: all signal emission deleted); root-only methods gated by `dbus_bus_get_unix_user`.
+   - 20 monitor plugins (9 in `monitor_plugins.cpp`, 11 in `monitor_ebpf_plugins.cpp`), `IMonitorPlugin` lifecycle (name/order/dependencies/init/start/stop), `MetricsRegistry` with `MetricScope{INTERFACE,GLOBAL,HOST,RESOLVER}`, `MetricId` enum of 18 entries ending in `CPU_BUSY_RATIO`, `MetricSample::valid()/unavailable()` (**never publish 0 for unavailable**).
+   - SLE/Assurance v2 (FROZEN v1 2026-09-15): GOOD/DEGRADED/BAD/UNKNOWN + coverage; UNKNOWN never faked as GOOD; StateStabilizer 10s degrade / 20s recover; `display_score` is only a projection.
+   - `ObserverAttribution` (uncommitted work): 4-value enum `NONE / UNATTRIBUTED / SELF_INFLICTED / NOT_HOST_CPU_BOUND`; pure function `attributeObserverDegradation(const SleResult&, const std::string& sle_name, double cpu_busy, bool cpu_available, double cpu_threshold = 0.85)`; deliberately layered **outside** the stateless evaluators so observer state never pollutes assessed-object verdicts. Consumed at `server.cpp:596-601`, serialized in `legacy_adapter.hpp` + `edge_telemetry_serializer.hpp`.
+   - `host_pressure` plugin (uncommitted): reads `/dev/weaknet_cpu_stat` (kmod `weaknet_cpu_stat`, 4ms hrtimer, seqlock ABI v2, read-only mmap); dual-publishes to `ctx->metrics_registry` **and** `MetricsRegistry::global()` (persistence reads only global). config: `monitors.host_pressure.enabled/interval_ms: 15000`.
+   - 12 eBPF CO-RE programs (single-source capture, no cross-probe joins). Verified SEC() attach points include: `tracepoint/skb/kfree_skb`, `kprobe/tcp_sendmsg`, `kprobe/tcp_recvmsg_locked`, `kprobe/tcp_retransmit_skb`, `kprobe/ip_queue_xmit`, `kprobe/udp_sendmsg`, `tracepoint/tcp/tcp_probe`, `tracepoint/sock/inet_sock_set_state`, `kretprobe/inet_csk_accept`, `kprobe/tcp_close`, `tracepoint/raw_syscalls/sys_enter|exit`, `kprobe/ip_finish_output2`, `kprobe/udp_recvmsg`, `kprobe/udp_queue_rcv_skb`, `tracepoint/net/netif_receive_skb|net_dev_queue|net_dev_xmit`, `kprobe/hci_send_frame|hci_recv_frame`, `kprobe/mgmt_device_disconnected|hci_disconnect|hci_conn_timeout|hci_conn_del`, `kprobe/l2cap_sock_sendmsg`, `kprobe/__sock_sendmsg`.
+   - **No PID-targeted filtering exists anywhere** (grep for `pid_filter|target_pid|filter_pid|pid_map|tgid_filter` = 0 hits). Existing filters: per-interface (`cfg_iface`) and self-exclusion (`*_self_pid`, e.g. `is_self_pid()` in `tcp_retransmit.bpf.c:158`).
+   - ARM64 native cross-compile: Clang 18 + `/opt/sysroot-bullseye-arm64` (glibc 2.31), `cmake/toolchain-arm64-cross.cmake`; sysroot generated by `scripts/setup_arm64_sysroot.sh` from Docker image `weaknet-builder:bullseye-arm64`. Sysroot has `libdrm.so.2` but **no libdrm headers**.
+   - OpenSpec harness rules (Planner→Generator→Evaluator); `ai_snapshot.json` `active_change: null`; out-of-workflow tasks must be recorded in `openspec/tasks/YYYY-MM-DD-<kebab>.md` with 3 mandatory sections (构思 / 实现方式 / 结果).
+   - Radxa overlay mechanism: `/boot/dtbo/*.dtbo.disabled` → rename to `.dtbo` → `sudo u-boot-update` → regenerates `/boot/extlinux/extlinux.conf` adding `fdtoverlays ...`; `rsetup` is the TUI entry; `fdtoverlay` + `dtc` + `fdtdump` binaries are on the board; `console=ttyAS0,115200n8` is configured but no physical serial cable is attached.
+3. Files and Code Sections:
+   - **`/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/` (repo root)** — target location for the NEW document. Current root entries: `AGENTS.md AI-assisted analysis AI_EDGE_DEPLOYMENT_PLAN.md ai_snapshot.json artifacts board-assets build-arm64 build-arm64-native build-qt-arm64 build-x86 certs ci-reports CLAUDE.md client cmake CMakeLists.txt config.yaml debt-register.md dist-arm64 docs kmod Large-Model-Application LICENSE logs openspec PLATFORM_OPERATION_GUIDE.md PROJECT_ATTRIBUTION.md prompts qt_dashboard README.md`. **No file created yet.**
+   - **`kmod/weaknet_lradc_keys.c`** (1362 lines, untracked `??`) — the file the user asked about. Targets the WRONG IP block.
+     - Header comment claims: base `0x02524000` len `0x100`, IRQ DT `<0 0x25 4>`, clock "lradc" 26 MHz, key table `key0 <210,VOLUMEUP> key1 <410,VOLUMEDOWN> key2 <590,MENU> key3 <750,ENTER> key4 <880,HOMEPAGE>`.
+     - Template comment for DT: `key0 <210,115 KEY_VOLUMEUP> key1 <410,114> key2 <590,139> key3 <750,28> key4 <880,172>`
+     - Four layers implemented: L1 platform_driver+of_match+ioremap+clk+reset; L2 request_irq+decode; L3 `input_register_device` + report_key + evdev open/close power saving; L4 debugfs (`regs` 0444, `sample` 0644, `selftest` 0644, `raw` 0644, `inject` 0644).
+     - Debugfs dir name is `weaknet_lradc`; module name `weaknet_lradc_keys`.
+     - **Verified board behavior**: module IS loaded (`weaknet_lradc_keys 24576 0`), IS bound to `2524000.lradc`, registered IRQ 428 named `weaknet-lradc`, created `/devices/platform/soc@3000000/2524000.lradc/input/input11` → `N: Name="weaknet-lradc-keys" H: Handlers=kbd event11`, capabilities/key = `100000000800 c000000000000 10000000`. **Interrupt count = 0.**
+     - **Correct diagnosis**: DT node is `compatible = "allwinner,keyboard_1350mv"`, `status = "okay"`, with a valid 5-key table, but there is **no in-kernel `keyboard_1350mv` driver** (kallsyms grep = 0 hits) — so the DT node has an `of_match` only for our out-of-tree module; the hardware (LRADC on A733) never raises a conversion interrupt. `README.md` already records `selftest FAILED: ISR path is dead` as the correct conclusion.
+     - **The real working ADC is GPADC**, not LRADC (see below).
+   - **`kmod/weaknet_cpu_stat.c`** (371 lines) — reference implementation for the char-device pattern: `cdev_init/cdev_add`, `device_create(g_class, NULL, g_dev, NULL, DEVICE_NAME)`, read-only mmap, seqlock snapshot. This is the template for any new no-hardware char device.
+   - **`kmod/Makefile`** (modified `M`):
+     ```make
+     obj-m += weaknet_cpu_stat.o
+     obj-m += weaknet_softirq.o
+     obj-m += weaknet_lradc_keys.o
+     KDIR ?= /lib/modules/$(shell uname -r)/build
+     PWD  := $(shell pwd)
+     ccflags-y += -Wall -Wextra -Wno-unused-parameter
+     all:
+     	$(MAKE) -C $(KDIR) M=$(PWD) modules
+     clean:
+     	$(MAKE) -C $(KDIR) M=$(PWD) clean
+     ```
+   - **`server/include/assurance/observer_attribution.hpp`** (untracked `??`) — the model to duplicate for a video/QoE attribution. Full enum + `ObserverAttributionResult{evaluated, trigger_sle, observer_reason, cpu_threshold, observed_cpu_busy, cpu_available, explanation, evidence}`, plus:
+     ```cpp
+     ObserverAttributionResult attributeObserverDegradation(
+         const SleResult& sle, const std::string& sle_name,
+         double cpu_busy, bool cpu_available, double cpu_threshold = 0.85);
+     ```
+     Doc block states the semantic boundary: CPU busy **cannot** imply network good; CPU idle **cannot** imply network broken; the attribution never participates in OverallPolicy scoring/veto.
+   - **`server/include/assurance/network_experience.hpp`** (modified `M`) — added:
+     ```cpp
+     ObserverAttribution observer_attribution{ObserverAttribution::NONE};
+     std::string observer_attribution_detail;
+     ```
+   - **`server/src/server.cpp:560-620`** (modified `M`) — the attribution consumption site, after `OverallPolicy::decide(...)`; reads `ctx->metrics_registry->latest("host:", MetricId::CPU_BUSY_RATIO)`, calls `attributeObserverDegradation(dns_sle, "dns_service", cpu_busy, cpu_ok)`, then `exp.dns_service.evidence.insert(...)` appending `attr.evidence` (NOT `dns_sle`, because `decide()` copied by value).
+   - **`server/src/host_pressure_monitor.cpp`** + **`server/include/host_pressure_monitor.hpp`** (untracked `??`) — the thread-loop pattern for a new sysfs-based monitor: `*worker = std::thread([ctx]{...})`, 100ms-sliced sleep loop, publish `MetricSample::valid()`/`unavailable()`, dual-publish to `ctx->metrics_registry` and `MetricsRegistry::global()`, explicit "UNAVAILABLE, 不发布 0" comment.
+   - **`server/src/monitor_plugins.cpp`** (modified `M`) — `registerPlugin` list (9): `iface`, `using_iface`, `rtt`, `rssi`, `tcp_loss`, `traffic`, `quality`, `host_pressure`, `bluetooth`; `HostPressurePlugin` at lines 273-305 with `name(){return "host_pressure";}`.
+   - **`config.yaml`** (repo, 105 keys) — monitor blocks including the new:
+     ```yaml
+       host_pressure:
+         enabled: true
+         interval_ms: 15000   # 与 quality 对齐；CPU 值只用于那一轮评估的归因
+     ```
+   - **`server/CMakeLists.txt`** — explicit `set(SERVER_SOURCES ...)` list (GLOB was deliberately removed); `add_library(weaknet_common STATIC ...)`, `add_library(server_lib STATIC ${SERVER_SOURCES})`, `add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)`.
+   - **`docs/架构设计-模块与代码结构.md`** — updated 2026-11-06 with the plugin-count correction (17→19 actual→20 after host_pressure); contains the eBPF program table at line 202 and the 20-plugin matrix at line 229. Any new monitor must update this doc (hard rule: docs must track code).
+   - **`openspec/tasks/README.md`** — the mandatory 3-section template for out-of-workflow task records:
+     ```markdown
+     # <任务名>
+     > 日期：YYYY-MM-DD
+     > 分类：快速修复 / spike / 探索 / 工作流外实施
+     > 结果：已完成 / 部分完成 / 已放弃

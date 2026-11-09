@@ -1,0 +1,4 @@
+# MEMORY.md
+
+- [简历知识库同步流程](resume-kb-sync-workflow.md) — 简历文本是准绳，改简历后同步 机器人项目简历知识库.md 并用源码核对备注支撑
+- [多车与 VDA 5050 契约裁定](vda5050-fleet-contract-rulings.md) — 执行后端分离/选车三态/强清隔离，多车化前必读

@@ -1,0 +1,360 @@
+# Design: fix-bt-events-pointer-lifecycle
+
+## 架构方案
+
+### 1. 生命周期所有权与锁拓扑
+
+`ServerContext` 中的 `wireless_event_store`、`bt_link_quality_tracker` 与 `site_incident_correlator` 原先由 `BtEventsPlugin` 裸指针直写。修复方案将这三者与既有的 12 个受管 monitor 指针拉平，统一受 `ServerContext::monitor_pointers_mutex`（`std::shared_mutex`）治理：
+
+```text
+写侧（BtEventsPlugin::start / stop，独占锁）
+    ┌───────────────────────────┐
+    │ unique_lock(pointers_mut) │
+    │                           │
+    │ start: 赋值 ctx 指针       │
+    │ stop:  置空 ctx 指针       │
+    │        解绑 correlator    │
+    │        析构 3 成员对象     │
+    └─────────────┬─────────────┘
+                  │ 内存屏障 + 互斥排他
+    ┌─────────────▼─────────────┐
+    │ shared_lock(pointers_mut) │
+    │                           │
+    │ 读侧 A: bt_hci worker     │
+    │ 读侧 B: D-Bus 查询方法    │
+    │ 读侧 C: BtMonitor 周期循环│
+    └───────────────────────────┘
+```
+
+**关键设计决策：对象析构必须在独占锁内。**
+如果先置空退出独占锁，再重置 `std::unique_ptr`，在置空与析构之间读者虽然读到 `nullptr`，但如果读者在前一轮持有了指针对浅层字段操作，仍有微观重叠。更重要的是：把「置空 + 析构」作为原子事务封装在独占锁内，保证共享锁读者解开后看到的系统状态永远是清晰的二元态（完全可用 vs 完全不可用），杜绝部分析构的中间态。
+
+### 2. BtMonitor 现取改造
+
+`BtMonitor` 原先在线程启动前由 `server.cpp:1413` 调 `setQualityTracker(ctx->bt_link_quality_tracker, ctx->wireless_event_store)` 做一次性裸指针拷贝。改造后：
+- `setQualityTracker` 废除，改为注入 `ServerContext* ctx_`；
+- 原先检查 `if (tracker_)` / `if (eventStore_)` 的三个业务点（D-Bus `PropertiesChanged` 的新鲜射频更新、初次发现快照登记、定时轮询快照处理）以及每 18 秒的基线画像持久化路径，改为：
+  ```cpp
+  if (ctx_) {
+      std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+      if (ctx_->bt_link_quality_tracker) {
+          // 在锁内使用，完成后退出锁
+      }
+  }
+  ```
+- 收益：`bt_events` 无论在 `BtMonitor` 启动前启动、启动后启动，还是运行期间发生 `restart`，`BtMonitor` 下一周期均能自适应感知最新指针，彻底消除悬垂指针隐患。
+
+### 3. BtHciTrafficPlugin 依赖与消费
+
+- `BtHciTrafficPlugin::dependencies()` 返回 `{"bt_events"}`。`MonitorManager::startConfigured` 会保证依赖校验，且停止时逆序停止；
+- 其 worker 内部消费 `wireless_event_store->recordEvent(ev)` 时持 `std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex)` 判空后调用。
+
+### 4. UsingInterfaceManager 显式停机
+
+为 `UsingInterfaceManager` 声明并实现公共 `stop()`：
+```cpp
+void UsingInterfaceManager::stop() {
+#if defined(__linux__)
+    std::lock_guard<std::mutex> lk(stateMutex_);
+    if (impl_ && impl_->running.load()) {
+        impl_->running.store(false);
+        if (impl_->worker.joinable()) {
+            impl_->worker.join();
+        }
+    }
+#endif
+}
+```
+该操作与现有析构逻辑完全兼容且幂等：若已提前调用 `stop()`，析构时 `impl_->running.load()` 为 false，`joinable()` 为 false，安全析构并 `delete impl_`。
+
+---
+
+<!-- autoai:implementation-economy:v2 -->
+```json
+{
+  "schema_version": 2,
+  "profile": "small",
+  "rationale": "修复 bt_events 跨插件指针在 BtEventsPlugin/BtHciTrafficPlugin/BtMonitor/D-Bus 之间的生命周期读写锁纪律，显式化插件依赖，并为 UsingInterfaceManager 补齐显式停机接口，全部为并发安全与生命周期收口",
+  "classification": {
+    "production": [
+      "server/include/bt_monitor.hpp",
+      "server/src/bt_monitor.cpp",
+      "server/src/monitor_ebpf_plugins.cpp",
+      "server/src/dbus_service.cpp",
+      "server/include/using_iface.h",
+      "server/src/using_iface.cpp",
+      "server/src/server.cpp"
+    ],
+    "tests": [
+      "server/test/CMakeLists.txt",
+      "server/test/unit/test_bt_events_lifecycle_gtest.cpp"
+    ],
+    "project_docs": [],
+    "project_tooling": [],
+    "examples": [],
+    "generated": [],
+    "vendor": []
+  },
+  "thresholds": {
+    "production": {
+      "added_lines": {"expected": 110, "review_at": 200, "hard_limit": 300},
+      "touched_files": {"expected": 7, "review_at": 9, "hard_limit": 11},
+      "new_files": {"expected": 0, "review_at": 1, "hard_limit": 2}
+    },
+    "tests": {
+      "added_lines": {"expected": 160, "review_at": 280, "hard_limit": 380},
+      "touched_files": {"expected": 2, "review_at": 4, "hard_limit": 6},
+      "new_files": {"expected": 1, "review_at": 2, "hard_limit": 3}
+    },
+    "project_support": {
+      "added_lines": {"expected": 0, "review_at": 30, "hard_limit": 60},
+      "new_files": {"expected": 0, "review_at": 1, "hard_limit": 2}
+    },
+    "generated": {
+      "files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "bytes": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    }
+  },
+  "structural_allowances": {
+    "public_contracts": [
+      {
+        "id": "contract-using-iface-stop",
+        "name": "UsingInterfaceManager::stop()",
+        "reason": "允许服务端在关机序列中显式停止 Netlink 监听线程，避免静态析构时可能发生的并发竞态"
+      }
+    ],
+    "build_targets": [
+      {
+        "id": "target-test-bt-events-lifecycle",
+        "name": "test_bt_events_lifecycle_gtest",
+        "reason": "生命周期与并发读写锁的回归测试目标"
+      }
+    ],
+    "build_graph_entries": [],
+    "distribution_surfaces": [],
+    "direct_dependencies": []
+  },
+  "reuse_decisions": [
+    {
+      "id": "reuse-monitor-pointers-mutex",
+      "path": "server/include/server.hpp",
+      "symbol": "ServerContext::monitor_pointers_mutex",
+      "decision": "reuse",
+      "reason": "复用既有的共享互斥锁，将其保护范围从 12 个监视器指针扩展到 3 个事件与关联器指针，保持锁拓扑单一无锁分层"
+    },
+    {
+      "id": "reuse-plugin-deps",
+      "path": "server/include/monitor_plugin.hpp",
+      "symbol": "IMonitorPlugin::dependencies",
+      "decision": "extend",
+      "reason": "覆盖 BtHciTrafficPlugin::dependencies() 显式返回 bt_events，复用已有的 MonitorManager 依赖拓扑校验"
+    }
+  ],
+  "obsolete_items": [
+    {
+      "id": "obsolete-set-quality-tracker",
+      "path": "server/include/bt_monitor.hpp",
+      "symbol": "BtMonitor::setQualityTracker",
+      "disposition": "delete",
+      "reason": "一次性裸指针注入已证实存在悬垂隐患，由持有 ServerContext* 并在周期循环现取现用的模式替代"
+    }
+  ],
+  "exceptions": []
+}
+```
+<!-- /autoai:implementation-economy:v2 -->
+
+<!-- autoai:tdd-policy:v1 -->
+```json
+{
+  "schema_version": 1,
+  "default": "required",
+  "exceptions": []
+}
+```
+<!-- /autoai:tdd-policy:v1 -->
+
+<!-- autoai:integration-completeness:v1 -->
+```json
+{
+  "schema_version": 1,
+  "discovery": {
+    "compile_commands_path": null,
+    "mode": "reviewed_inventory"
+  },
+  "surfaces": [
+    {
+      "id": "surface-bt-events-pointer-lifecycle",
+      "kind": "internal_api",
+      "name": "BtEventsPlugin 与 BtHciTrafficPlugin/BtMonitor 指针读写锁闭环",
+      "change_kind": "modified",
+      "contract_impact": "compatible",
+      "compatibility": null,
+      "producer_paths": [
+        "server/src/monitor_ebpf_plugins.cpp"
+      ],
+      "consumer_kind": "production_caller",
+      "consumer_paths": [
+        "server/src/bt_monitor.cpp",
+        "server/src/dbus_service.cpp",
+        "server/src/server.cpp"
+      ],
+      "entrypoint": "bt_hci_traffic worker -> recordEvent, D-Bus QueryDeviceEvents/QuerySiteIncidents, BtMonitor refresh cycle",
+      "evidence_contracts": [
+        {
+          "probe_id": "probe-bt-events-lifecycle-build-current",
+          "kind": "build",
+          "role": "current",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "fix-bt-events-pointer-lifecycle",
+            "--json"
+          ],
+          "expected_exit_codes": [0],
+          "output_contains": "weaknet-dbus-server"
+        },
+        {
+          "probe_id": "probe-bt-events-lifecycle-test-current",
+          "kind": "test",
+          "role": "current",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "fix-bt-events-pointer-lifecycle",
+            "--json"
+          ],
+          "expected_exit_codes": [0],
+          "output_contains": "100% tests passed"
+        }
+      ],
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "跨插件蓝牙事件与关联器指针纳入读写锁纪律",
+          "scenarios": [
+            "插件停止期间安全撤销指针与销毁"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "跨插件蓝牙事件与关联器指针纳入读写锁纪律",
+          "scenarios": [
+            "并发异常事件注入在共享锁下原子消费"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "跨插件蓝牙事件与关联器指针纳入读写锁纪律",
+          "scenarios": [
+            "蓝牙主监控器跨周期现取最新上下文"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "蓝牙 HCI 流量插件显式依赖事件插件",
+          "scenarios": [
+            "插件启动与停止感知依赖拓扑"
+          ]
+        }
+      ],
+      "task_ids": ["1", "2", "4"],
+      "verify_kinds": ["build", "test"],
+      "task_obligations": [
+        {
+          "task_id": "1",
+          "verify_kinds": ["build", "test"],
+          "evidence_roles": ["current"]
+        },
+        {
+          "task_id": "2",
+          "verify_kinds": ["build", "test"],
+          "evidence_roles": ["current"]
+        },
+        {
+          "task_id": "4",
+          "verify_kinds": ["build", "test"],
+          "evidence_roles": ["current"]
+        }
+      ],
+      "expected_observation": "代码在读写锁下编译通过，新增并发测试在反复 start/stop 下 100% 通过无崩溃",
+      "symbol_identities": null
+    },
+    {
+      "id": "surface-using-iface-stop",
+      "kind": "internal_api",
+      "name": "UsingInterfaceManager::stop 显式关机接口",
+      "change_kind": "added",
+      "contract_impact": "compatible",
+      "compatibility": null,
+      "producer_paths": [
+        "server/include/using_iface.h",
+        "server/src/using_iface.cpp"
+      ],
+      "consumer_kind": "production_caller",
+      "consumer_paths": [
+        "server/src/server.cpp"
+      ],
+      "entrypoint": "server shutdown sequence in server.cpp -> UsingInterfaceManager::getInstance()->stop()",
+      "evidence_contracts": [
+        {
+          "probe_id": "probe-using-iface-stop-build-current",
+          "kind": "build",
+          "role": "current",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "fix-bt-events-pointer-lifecycle",
+            "--json"
+          ],
+          "expected_exit_codes": [0],
+          "output_contains": "weaknet-dbus-server"
+        },
+        {
+          "probe_id": "probe-using-iface-stop-test-current",
+          "kind": "test",
+          "role": "current",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "fix-bt-events-pointer-lifecycle",
+            "--json"
+          ],
+          "expected_exit_codes": [0],
+          "output_contains": "100% tests passed"
+        }
+      ],
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "上网网卡监听管理器提供显式停机操作",
+          "scenarios": [
+            "服务端关机显式停止上网网卡监听线程"
+          ]
+        }
+      ],
+      "task_ids": ["3"],
+      "verify_kinds": ["build", "test"],
+      "task_obligations": [
+        {
+          "task_id": "3",
+          "verify_kinds": ["build", "test"],
+          "evidence_roles": ["current"]
+        }
+      ],
+      "expected_observation": "stop 接口编译并通过单元测试，关机序列显式调用",
+      "symbol_identities": null
+    }
+  ]
+}
+```
+<!-- /autoai:integration-completeness:v1 -->

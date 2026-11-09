@@ -1,0 +1,280 @@
+# 官方固件构建、ECDSA 签名与 GitHub Release 制品发布（OTA Phase 2/3）
+name: Release Firmware (OTA)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（如 1.1.0）'
+        required: true
+        type: string
+
+jobs:
+  release-arm64:
+    name: 构建、ECDSA 签名与发布 ARM64 固件包
+    # 必须用**原生 ARM64 runner**，不能用 ubuntu-latest（x86）+ docker run
+    # --platform linux/arm64：
+    #   - docker/setup-buildx-action 只给 buildx 内部注册 QEMU 模拟，**不给
+    #     宿主 docker 守护进程注册 binfmt**，于是 `docker run --platform
+    #     linux/arm64 ... sleep infinity` 在 x86 runner 上启动即退出，下一句
+    #     docker exec 报 "container ... is not running"（首次实跑 v1.1.0 就是
+    #     死在这里）。
+    #   - 即便补 setup-qemu-action 让它跑起来，QEMU 模拟下 gcc 会偶发
+    #     "c++: internal compiler error: Segmentation fault"（本机复现过），
+    #     且单核全量编译要 20 分钟以上——发布流水线不该建立在这种基础上。
+    # 原生 arm64 runner 上容器就是原生执行：glibc 2.31（bullseye）与开发板
+    # 严格一致，编译速度与本地交叉编译同量级。
+    # 公开仓库免费；私有仓库需按分钟计费。
+    runs-on: ubuntu-24.04-arm
+    # 发布 Release 需要写仓库内容（创建 tag 对应的 Release 并上传制品）。
+    # 仓库默认工作流权限是 read，不显式声明的话 GITHUB_TOKEN 拿不到写权限，
+    # 表现为发布步骤 403 Resource not accessible by integration。
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 确认 runner 架构
+        # 前置断言：这个 job 的一切前提都是"跑在 arm64 上"。若 runner 标签
+        # 被误改成 x86（或 self-hosted 回归），这里立刻显式失败，而不是等到
+        # 第 5 步报一句语焉不详的 "container is not running"。
+        run: |
+          ARCH="$(uname -m)"
+          echo "runner 架构: ${ARCH}"
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "::error::本 job 必须跑在 aarch64 runner 上（当前 ${ARCH}）；x86 上 docker run --platform 需要宿主 binfmt，未注册时容器启动即退出"
+            exit 1
+          fi
+
+      - name: 确定发布版本号
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            # 从 git tag vX.Y.Z 剥去前缀 v
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "VERSION=$V" >> $GITHUB_OUTPUT
+          echo "构建目标版本: $V"
+
+      - name: 启动构建容器编译 ARM64 二进制
+        run: |
+          # 容器的作用不是"模拟 ARM64"（runner 本就是 arm64），而是**锁定
+          # glibc 与工具链基线**：runner 是 Ubuntu 24.04（glibc 2.39），直接
+          # 在上面编出来的二进制 NEEDED 会是 libc.so.6 的新符号版本，拿到
+          # 开发板（Debian 11 / glibc 2.31）上直接跑不起来。
+          #
+          # 构建镜像优先从 GHCR 拉预编译版（省 10+ 分钟依赖构建）。
+          # 回退路径 debian:11-slim **不带** libcurl/libssl 开发头文件，
+          # 必须在本步把私有 sysroot 装好（见下一步），否则编出来的服务端
+          # 会静默降级为"无 TLS / 无边缘遥测"——这两项能力是 fail-closed
+          # 的（缺能力时明确关闭而不是假装有），但发布出去的固件就没有
+          # 上行遥测与 HTTPS 探测能力，等于发布了一个残缺版本。
+          IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/weaknet-builder:bullseye-arm64"
+          if ! docker pull "$IMAGE_NAME" 2>/dev/null; then
+            echo "回退基础镜像 debian:11-slim"
+            IMAGE_NAME="debian:11-slim"
+            NEED_INSTALL=true
+          else
+            NEED_INSTALL=false
+          fi
+
+          # 不带 --platform：runner 原生 aarch64，镜像天然匹配。显式指定
+          # linux/arm64 在 x86 runner 上需要宿主 binfmt（未注册时容器启动
+          # 即退出），留着反而掩盖"runner 架构被改动"这类问题。
+          docker run -d --name arm64-builder \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -v "$PWD":/src:Z -w /src \
+            "$IMAGE_NAME" sleep infinity
+
+          # 容器必须真的在跑——否则后面每一步 docker exec 都只会报一句
+          # 语焉不详的 "container ... is not running"。这里立刻 dump 状态
+          # 与日志并失败，把根因留在 CI 页面上。
+          if [ "$(docker inspect -f '{{.State.Running}}' arm64-builder 2>/dev/null)" != "true" ]; then
+            echo "::error::构建容器启动后未保持运行"
+            docker ps -a --filter name=arm64-builder
+            docker logs arm64-builder 2>&1 | tail -30 || true
+            exit 1
+          fi
+
+          if [ "$NEED_INSTALL" = "true" ]; then
+            # 依赖安装必须以 root 跑：apt 需要 /var/lib/dpkg 锁，libbpf 要装到
+            # /usr/local。容器以 --user $(id -u) 启动是为了让 /src 里的构建
+            # 产物归 runner 用户（否则 checkout 目录被 root 写脏，后续步骤
+            # 读不到），但 docker exec 会**继承**容器的 user —— 不显式加
+            # --user root 就是 uid 1000 跑 apt，实测直接报
+            # "Could not open lock file /var/lib/dpkg/lock-frontend"。
+            #
+            # 源必须换成 archive.debian.org：Debian 11 (bullseye) 已结束
+            # 支持并整体移入归档，deb.debian.org 上的 bullseye-security
+            # 池已清空——实测整套安全更新包（libc6-dev / perl / git /
+            # libcurl4 / openssl ...）全部 404，apt 直接 "Unable to fetch
+            # some archives"，连带 git/make 都装不上（首次原生 ARM64 实跑
+            # 就是死在这里，且因为没开 set -e 还被吞成了"成功"）。
+            # archive 上的 Release 已过期，必须配 Check-Valid-Until=false，
+            # 否则 apt 以 "Release file expired" 拒绝更新。
+            #
+            # set -euo pipefail 是**每次都必要**的：docker exec bash -c 的
+            # 退出码只取最后一条命令，不加 set -e 就会把"apt 失败"整段吞掉。
+            docker exec --user root arm64-builder bash -c '
+              set -euo pipefail
+              printf "%s\n" \
+                "deb http://archive.debian.org/debian bullseye main" \
+                "deb http://archive.debian.org/debian-security bullseye-security main" \
+                > /etc/apt/sources.list
+              apt-get -o Acquire::Check-Valid-Until=false update -qq
+              apt-get install -y -qq --no-install-recommends \
+                build-essential g++ make cmake pkg-config clang llvm git ca-certificates file \
+                libdbus-1-dev libgoogle-glog-dev libelf-dev zlib1g-dev libcap-dev \
+                libnl-3-dev libnl-genl-3-dev libsqlite3-dev libgtest-dev zstd
+              git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
+              make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
+              ldconfig
+            '
+          fi
+
+          # 私有 sysroot：OpenSSL 1.1 + libcurl 开发头文件与链接名。
+          # 运行时库（libssl.so.1.1 / libcurl.so.4）由板端提供，sysroot 只
+          # 用于编译，不随包分发。
+          #
+          # 必须以 root 跑：sysroot 落在 /opt/weaknet-openssl-1.1 与
+          # /opt/weaknet-libcurl，uid 1000 在容器里写不了 /opt（实测
+          # "Permission denied"）。sysroot 内容只读，编译阶段以 uid 1000
+          # 访问完全正常。
+          #
+          # 下载源：脚本按 snapshot.debian.org → tuna → aliyun → ustc 依次
+          # 回退（snapshot 对 CI 出口 IP 常年 509 限流）；.deb 的 SHA256 是
+          # 硬编码常量并在本地逐一比对，完整性由哈希保证而非来源。
+          docker exec --user root arm64-builder bash -c '
+            set -euo pipefail
+            cd /src
+            bash scripts/setup_openssl_sysroot.sh
+            bash scripts/setup_libcurl_sysroot.sh
+            # 打包用 tar --zstd，需要容器内有 zstd 命令（tar 通过 fork/exec
+            # 调用它，缺了会在打包阶段才炸："zstd: not found"）。预编译镜像
+            # 已含 zstd；回退基础镜像需要补装（同 apt 限制，要 root）。
+            command -v zstd >/dev/null 2>&1 || true
+          '
+
+          # 写入 VERSION 并编译
+          echo "${{ steps.ver.outputs.VERSION }}" > VERSION
+          docker exec arm64-builder bash -c '
+            # set -euo pipefail 必须有：docker exec 的退出码只取最后一条命令。
+            # 首次原生 ARM64 实跑时，apt 装不上依赖 → cmake 找不到编译器 →
+            # 6 个 install 全部 "cannot stat"，但最后一条 install 成功，整步
+            # 退出 0，工作流报 success 并发布了 26 KB 的残缺包（正常是 3.5 MB）。
+            # 发布流水线上的假绿灯比失败更糟：它会产出一个板端装不上的制品。
+            set -euo pipefail
+            cd /src
+            cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Release
+            # -j$(nproc)：原生 arm64 执行，可安全并行。历史上这里是 -j1，
+            # 那是 QEMU 模拟时代的约束（高并行度会 segfault），随 runner
+            # 改为原生 ARM64 后不再适用。
+            cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)"
+          '
+
+          # 组装 dist（单独一步，仍带 set -e）
+          docker exec arm64-builder bash -c '
+            set -euo pipefail
+            cd /src
+            rm -rf dist-arm64
+            mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
+                     dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
+
+            install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
+            install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
+            install -m 0755 build-arm64/server/test/test_ebpf dist-arm64/server/test/
+            for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/; done
+            install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
+            install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+            install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
+            install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
+            install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
+            install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
+            cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
+            install -m 0644 VERSION dist-arm64/VERSION
+            install -m 0755 tools/weaknet-local-update.sh dist-arm64/weaknet-local-update.sh
+          '
+
+          # 产物健全性断言：发布前证明"这不是一个残缺包"。
+          # 光靠上面 set -e 只能保证命令没报错；这里再按内容核对——
+          # 服务端二进制是 arm64 ELF、eBPF 程序数量对得上、TLS/curl 能力
+          # 真被编译进去（sysroot 没装上时 CMake 是**静默降级**的，产物
+          # 依然能链接成功，但缺 HTTPS 探测与上行遥测）。
+          docker exec arm64-builder bash -c '
+            set -euo pipefail
+            cd /src
+            BIN=dist-arm64/server/bin/weaknet-dbus-server
+            test -x "$BIN"
+            SIZE=$(stat -c %s "$BIN")
+            echo "服务端二进制: ${SIZE} 字节"
+            # 1100 万字节阈值的依据：正常 Release 产物约 2.1 MB。留足余量
+            # 但远高于"链接失败留下的残骸"（数十 KB）。
+            [ "$SIZE" -gt 1100000 ] || { echo "::error::服务端二进制过小（${SIZE} 字节），构建不完整"; exit 1; }
+            readelf -h "$BIN" | grep -q "AArch64" || { echo "::error::产物不是 AArch64"; exit 1; }
+            readelf -d "$BIN" | grep -q "libssl.so.1.1" || { echo "::error::缺 TLS 能力（sysroot OpenSSL 未生效）"; exit 1; }
+            readelf -d "$BIN" | grep -q "libcurl.so.4" || { echo "::error::缺边缘遥测能力（sysroot libcurl 未生效）"; exit 1; }
+            BPF_COUNT=$(ls dist-arm64/server/build/*.bpf.o | wc -l)
+            echo "eBPF 程序: ${BPF_COUNT} 个"
+            [ "$BPF_COUNT" -ge 12 ] || { echo "::error::eBPF 程序不足（${BPF_COUNT} < 12）"; exit 1; }
+            echo "dist 文件数: $(find dist-arm64 -type f | wc -l)"
+          '
+
+      - name: 制品打包、ECDSA 签名与自验
+        env:
+          RELEASE_PRIV_KEY: ${{ secrets.WEAKNET_RELEASE_PRIV_KEY }}
+        run: |
+          # 打包用 tar --zstd → 需要 zstd 命令（GNU tar 通过 fork/exec 调它，
+          # 缺了会在打包阶段才炸）。runner 镜像通常自带，但显式校验并给出
+          # 明确报错比让 release.sh 半路失败更好定位。
+          command -v zstd >/dev/null 2>&1 || {
+            echo "::error::缺少 zstd（打包 tar --zstd 依赖它）"
+            sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          }
+          mkdir -p secrets artifacts
+          if [ -n "$RELEASE_PRIV_KEY" ]; then
+            echo "$RELEASE_PRIV_KEY" > secrets/release_priv.pem
+            chmod 0600 secrets/release_priv.pem
+          else
+            # fail-closed：缺 Secret 就**中止发布**，绝不生成临时私钥顶替。
+            #
+            # 临时密钥签出的包，板端一律验签失败（板端 /home/radxa/weaknet/config/
+            # release_pub.pem 是仓库 certs/release_pub.pem 的分发副本，只有同一
+            # 密钥对才能验过）——发布一个必然被拒的固件，比不发布更糟：运维在
+            # 平台上下发升级后只会看到 REJECTED，且现场多一份误导性的 Release。
+            echo "::error::未配置 WEAKNET_RELEASE_PRIV_KEY Secret，拒绝发布（用临时密钥签出的包板端验签必失败）"
+            exit 1
+          fi
+
+          ./tools/release.sh "${{ steps.ver.outputs.VERSION }}" --skip-build
+
+      - name: 发布 Release 制品文件
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst
+            artifacts/weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst.sig
+            artifacts/SHA256SUMS
+          body: |
+            ## WeakNet 固件更新发布 (v${{ steps.ver.outputs.VERSION }})
+
+            ### 制品清单
+            - `weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst`: ARM64 完整二进制固件包
+            - `weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst.sig`: NIST P-256 分离式数字签名
+            - `SHA256SUMS`: 完整性校验和汇总
+
+            ### 板端升级方法
+            ```bash
+            sudo weaknet-cli update apply https://github.com/${{ github.repository }}/releases/download/v${{ steps.ver.outputs.VERSION }}/weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

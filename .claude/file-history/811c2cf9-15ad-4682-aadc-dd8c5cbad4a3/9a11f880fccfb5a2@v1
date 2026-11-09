@@ -1,0 +1,194 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "ibus/live_broadcast_ibus_impl.h"
+
+#include "ins_base/log.h"
+#include "manager/live_broadcast_manager.h"
+#include "service/live_broadcast_service.h"
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "ins_livecast"
+}  // namespace
+
+// ============================================================================
+// LiveBroadcastLiveBroadcastServer 实现
+// ============================================================================
+
+namespace ins::ibus::camera::live_broadcast {
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastPrepare() {
+  ILOGS_I << "LiveBroadcastPrepare";
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (!live_broadcast_manager) {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return live_broadcast_manager->LiveBroadcastPrepare();
+}
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastStart() {
+  ILOGS_I << "LiveBroadcastStart";
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (!live_broadcast_manager) {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return live_broadcast_manager->LiveBroadcastRequestStart();
+}
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastStop(
+    LiveBroadcastStopReason stop_reason) {
+  ILOGS_I << "LiveBroadcastStop, reason=" << static_cast<int32_t>(stop_reason);
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (!live_broadcast_manager) {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return live_broadcast_manager->LiveBroadcastRequestStop(stop_reason);
+}
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastGetState(
+    LiveBroadcastStateInfo& state_info) {
+  ILOGS_I << "LiveBroadcastGetState";
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->GetLiveBroadcastState(state_info);
+  } else {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastResume() {
+  ILOGS_I << "LiveBroadcastResume";
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (!live_broadcast_manager) {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return live_broadcast_manager->LiveBroadcastRequestResume();
+}
+
+InsErrorCode LiveBroadcastLiveBroadcastServer::LiveBroadcastDiscardResume() {
+  ILOGS_I << "LiveBroadcastDiscardResume";
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (!live_broadcast_manager) {
+    ILOGS_E << "LiveBroadcastManager not available";
+    return kInsErrorCode_Comm_Enodev;
+  }
+  return live_broadcast_manager->LiveBroadcastRequestDiscardResume();
+}
+
+}  // namespace ins::ibus::camera::live_broadcast
+
+// ============================================================================
+// ConfigSubscriber 实现
+// ============================================================================
+
+namespace ins::ibus::camera::config {
+
+void ConfigSubscriber::OnTopicConfigUpdateInfo(
+    const std::vector<ConfigKey>& changed_configs) {
+  ILOGS_I << "OnTopicConfigUpdateInfo, changed_configs count="
+          << changed_configs.size();
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->OnConfigUpdate(changed_configs);
+  }
+  static_cast<void>(changed_configs);
+}
+
+}  // namespace ins::ibus::camera::config
+
+// ============================================================================
+// NetdSubscriber 实现
+// ============================================================================
+
+namespace ins::ibus::camera::netd {
+
+void NetdSubscriber::OnTopicWifiStaOn(WifiConnectionResult error_code,
+                                      const WifiInfo& wifi_info) {
+  ILOGS_I << "OnTopicWifiStaOn, error_code="
+          << static_cast<int32_t>(error_code);
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->OnWifiStaOn(error_code, wifi_info);
+  }
+}
+
+void NetdSubscriber::OnTopicWifiStaConnect(int32_t error_code,
+                                           const WifiInfo& wifi_info) {
+  ILOGS_I << "OnTopicWifiStaConnect, error_code=" << error_code;
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->OnWifiStaConnect(error_code, wifi_info);
+  }
+}
+
+void NetdSubscriber::OnTopicWifiStaAutoConnect(WifiConnectionResult error_code,
+                                               const WifiInfo& wifi_info) {
+  ILOGS_I << "OnTopicWifiStaAutoConnect, error_code="
+          << static_cast<int32_t>(error_code);
+  // TODO(lianxingwang|2026-03-10): 处理WIFI STA自动连接事件
+  static_cast<void>(wifi_info);
+}
+
+void NetdSubscriber::OnTopicWifiStaOff(InsErrorCode error_code) {
+  ILOGS_I << "OnTopicWifiStaOff, error_code=" << error_code;
+  // TODO(lianxingwang|2026-03-10): 处理WIFI STA断开事件
+  static_cast<void>(error_code);
+}
+
+}  // namespace ins::ibus::camera::netd
+
+// ============================================================================
+// MediadSubscriber 实现
+// ============================================================================
+
+namespace ins::ibus::camera::mediad {
+
+void MediadSubscriber::OnTopicRecordState(RecordStatus record_status) {
+  ILOGS_I << "OnTopicRecordState, status="
+          << static_cast<int32_t>(record_status);
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->OnRecordState(record_status);
+  }
+}
+
+void MediadSubscriber::OnTopicRecordAbnormal(SysAbnormalType abnormal_reason) {
+  ILOGS_I << "OnTopicRecordAbnormal, reason="
+          << static_cast<int32_t>(abnormal_reason);
+  auto live_broadcast_manager =
+      ins::live_broadcast::LiveBroadcastService::GetInstance()
+          .GetLiveBroadcastManager();
+  if (live_broadcast_manager) {
+    live_broadcast_manager->OnRecordAbnormal(abnormal_reason);
+  }
+}
+
+}  // namespace ins::ibus::camera::mediad

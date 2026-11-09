@@ -1,0 +1,37 @@
+---
+name: lower-layer-firmware-build-env
+description: 下位机 ESP32-S3 固件的编译环境实况——IDF 主体可装、22 个子模块拉不全，固件在本机无法完整构建
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: e1788e8c-1686-4b78-b185-8f8ed807d83c
+  modified: 2026-11-08T13:49:37.063Z
+---
+
+下位机固件（`lower/leap_ros_mcu_driver/`，ESP32-S3）的编译环境在 2026-11-08 实测结论：
+
+**要求**：`dependencies.lock` 钉死 **ESP-IDF 5.5.3**（`main/idf_component.yml` 只写 `idf >= 5.3.0`）。
+仓库里**没有 `sdkconfig`**，首次编译前必须 `idf.py set-target esp32s3` 重新生成。
+仓库自身**从不构建固件**——`scripts/` `docker/` `.github/` 里没有任何一处调用 `idf.py`。
+
+**已装好的部分**（本机 `/home/ubuntu/esp/esp-idf` + `~/.espressif`，共约 4.3 GB）：
+- IDF v5.5.3 主体：350 MB，从 **gitee 镜像** `https://gitee.com/EspressifSystems/esp-idf.git` 克隆
+  （GitHub 直连实测 **0 MB/30s**，不可用；gitee 40 秒拉完）
+- Xtensa 工具链：`~/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/`，
+  `xtensa-esp32s3-elf-gcc 14.2.0` 可用，`idf.py --version` → `ESP-IDF v5.5.3`
+- 系统依赖：`flex bison gperf ninja-build libffi-dev libssl-dev` 已装
+
+**卡住的部分**：**22 个 git 子模块全部缺失**，包括 `esp_phy/lib`、`esp_wifi/lib`、
+`mbedtls`、`lwip`、`micro-ecc`、`bt/controller/*` 等预编译库。
+- gitee 镜像的子模块 URL 指向 `gitee.com/espressif/esp32-bt-lib` 等**需要认证**的仓库 → `Unauthorized`
+- 子模块指向的 commit（如 micro-ecc `24c60e2`）在 GitHub 上游**不存在**（镜像是残缺镜像）
+- `idf.py set-target esp32s3` 因此失败：`Git submodule init failed for components/bootloader/subproject/components/micro-ecc/micro-ecc`
+
+**How to apply**：
+- 要真正编译固件，必须拿到**完整的 IDF 归档**（官方 release tarball 自带子模块，但
+  `github.com/.../releases/download/...` 与 `dl.espressif.cn` 两个地址实测都 404/超时），
+  或换一台能访问 GitHub release 的机器。
+- 不要以为 `idf.py --version` 能跑就等于能编译——**子模块缺失要到 `set-target` 才暴露**。
+- `lower/leap_ros_mcu_driver/build/` 是编译残留，已删；不要提交。
+
+相关：[[low-memory-build-constraints]]、[[deploy-only-failure-modes]]

@@ -1,0 +1,122 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_prepare.h"
+
+#include "controller/config_manager.h"
+#include "controller/network_controller.h"
+#include "ins_base/log.h"
+#include "ins_error_code_string.h"
+#include "state_machine/live_state_idle.h"
+#include "state_machine/live_state_starting.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStatePrepare"
+}  // namespace
+
+LiveStatePrepare::LiveStatePrepare()
+    : LiveStateMachine(LiveBroadcastState::kPrepare) {}
+
+void LiveStatePrepare::OnEntry() {
+  ILOGS_I << "Entering Prepare state";
+
+  if (!config_manager_ || !network_controller_) {
+    ILOGS_E << "ConfigManager/NetworkController not set";
+    return;
+  }
+
+  // 读取上次连接的WiFi配置（进入Running时由SaveConnectedWifiSsid落盘）
+  const std::string saved_ssid = config_manager_->GetLastConnectedSsid();
+  if (saved_ssid.empty()) {
+    ILOGS_W << "No saved WiFi config, waiting for provisioning";
+    return;  // 无历史AP记录：等待配网流程/EventStartRequest驱动
+  }
+
+  // 已连接：不做处理，等待EventStartRequest（或EventPrepareComplete）驱动
+  WifiConnectionStatus wifi_status{};
+  const InsErrorCode status_ret =
+      network_controller_->GetCurrentWifiStatus(&wifi_status);
+  if (status_ret == kInsErrorCode_Comm_Success &&
+      wifi_status.state == WifiConnectionState::kConnected) {
+    ILOGS_I << "WiFi already connected: " << wifi_status.ssid;
+    return;
+  }
+
+  // 未连接：异步请求连接上次的AP（仅表示请求已提交）；
+  // 实际连接结果由netd Topic回投OnWifiStaOn → EventPrepareComplete
+  const InsErrorCode ret = network_controller_->RequestConnectWifi(saved_ssid);
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "RequestConnectWifi(" << saved_ssid
+            << ") failed: " << ins::errc::GetInsErrorCodeString(ret);
+  } else {
+    ILOGS_I << "WiFi reconnect requested for saved AP (async)";
+  }
+}
+
+void LiveStatePrepare::OnExit() { ILOGS_I << "Exiting Prepare state"; }
+
+void LiveStatePrepare::OnEvent(const EventStartRequest& event) {
+  ILOGS_I << "Received EventStartRequest in Prepare state";
+  // SSID读取与"是否需要重连WiFi"的判定已在OnEntry完成（本处只复查
+  // 当前连接态）；
+  // TODO(lianxingwang|2026-03-17): config实现WiFi密码的保存和读取
+  WifiConnectionStatus wifi_status{};
+  if (network_controller_->GetCurrentWifiStatus(&wifi_status) ==
+          kInsErrorCode_Comm_Success &&
+      wifi_status.state == WifiConnectionState::kConnected &&
+      !config_manager_->GetRtmpUrl().empty()) {
+    ChangeState<LiveStateStarting>();
+  } else {
+    ILOGS_W << "WIFI connection failed or RTMP URL not ready, staying in "
+               "Prepare state";
+  }
+}
+
+void LiveStatePrepare::OnEvent(const EventPrepareComplete& event) {
+  ILOGS_I << "Received EventPrepareComplete in Prepare state (WIFI connected)";
+  if (!config_manager_->GetRtmpUrl().empty()) {
+    ChangeState<LiveStateStarting>();
+  } else {
+    ILOGS_W << "RTMP URL not ready, staying in Prepare state";
+  }
+  static_cast<void>(event);
+}
+
+void LiveStatePrepare::OnEvent(const EventCancel& event) {
+  ILOGS_I << "Received EventCancel in Prepare state";
+
+  // 用户取消配网，回到Idle状态
+  ChangeState<LiveStateIdle>();
+  static_cast<void>(event);
+}
+
+void LiveStatePrepare::OnEvent(const EventStopRequest& event) {
+  ILOGS_I << "Received EventStopRequest in Prepare state, reason="
+          << static_cast<int32_t>(event.reason);
+
+  // 停止请求，直接回到Idle状态（无需Stopping状态，因为还没启动资源）
+  ChangeState<LiveStateIdle>();
+}
+
+void LiveStatePrepare::OnEvent(const EventError& event) {
+  ILOGS_E << "Received EventError in Prepare state, error_code="
+          << static_cast<int32_t>(event.error_code)
+          << ", message=" << event.message;
+
+  // 如果是网络错误，保持在Prepare状态，等待重试或用户取消
+  if (event.error_code == LiveBroadcastErrorCode::kNetworkError) {
+    ILOGS_W << "Network error in Prepare state, staying for retry";
+    return;
+  }
+
+  // 其他错误，回到Idle状态
+  ChangeState<LiveStateIdle>();
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

@@ -1,0 +1,74 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+enum class GapReason : uint8_t {
+    kFrameDrop = 0,
+    kSensorFault,
+    kBackpressure,
+    kSyncIncomplete,
+    kRtkLossLock,
+};
+
+struct GapEvent {
+    int channel_id;
+    int64_t start_ts_us;
+    int64_t end_ts_us;
+    uint32_t seq_from;
+    uint32_t seq_to;
+    GapReason reason;
+};
+
+struct ChannelManifest {
+    int channel_id = -1;
+    uint64_t frames = 0;
+    uint64_t lost = 0;
+    int64_t first_ts_us = -1;
+    int64_t last_ts_us = -1;
+    uint64_t bytes = 0;
+    std::vector<GapEvent> gaps;
+};
+
+struct ScanManifest {
+    int64_t scan_start_us;
+    int64_t scan_end_us;
+    std::array<ChannelManifest, 5> channels;
+    std::vector<GapEvent> rtk_loss_windows;
+    uint64_t total_imu_samples = 0;
+    bool clean = false;
+    std::vector<std::pair<int64_t,int64_t>> rescan_windows;
+};
+
+class ManifestRecorder {
+public:
+    void on_frame(const FrameMeta& f);
+    void on_lidar(const LidarFrame& f);
+    void on_imu_count(uint64_t n) { imu_samples_ += n; }
+    void on_gap(int channel, int64_t ts_us, GapReason r, uint32_t from, uint32_t to);
+    void on_rtk_window(int64_t start_us, int64_t end_us);
+    void on_sync_incomplete(int64_t ts_us, const std::array<bool,4>& valid);
+
+    void begin_scan(int64_t t_us) { scan_start_ = t_us; }
+    ScanManifest finish(int64_t t_us);
+    bool is_clean() const;
+
+private:
+    std::array<ChannelManifest, 5> ch_{};
+    std::array<uint32_t, 5> last_seq_{};
+    std::array<bool, 5> have_last_{};
+    std::vector<GapEvent> rtk_windows_;
+    uint64_t imu_samples_ = 0;
+    int64_t scan_start_ = -1;
+    mutable std::mutex mu_;
+
+    std::vector<std::pair<int64_t,int64_t>> compute_rescan_windows() const;
+};
+
+}  // namespace xgrids

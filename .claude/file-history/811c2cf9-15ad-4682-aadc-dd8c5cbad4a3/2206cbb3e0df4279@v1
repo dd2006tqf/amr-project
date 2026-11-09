@@ -1,0 +1,62 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 直播模块配置常量
+
+#pragma once
+
+#include <cstdint>
+
+namespace ins {
+namespace live_broadcast {
+namespace config {
+
+// ============================================================================
+// 线程池配置
+// ============================================================================
+
+/// 线程池大小
+/// @details 用于异步任务处理（如网络重连、资源清理等）
+/// @note 选择4是因为直播模块主要任务包括：
+///       1. 视频流读取  2. 音频流读取  3. RTMP推送  4. 监控/定时任务
+/// @note 可调范围：2-8，根据实际负载和设备性能调整
+/// @note 未来可通过运行时配置覆盖（TODO(yinjun|2025-12-30)）
+constexpr int32_t kThreadPoolSize = 4;
+
+// ============================================================================
+// 队列配置
+// ============================================================================
+
+/// 视频帧队列容量（约3秒缓冲，按30fps计算）
+constexpr int32_t kVideoQueueCapacity = 90;
+
+/// 音频帧队列容量（约3秒缓冲，按50fps计算）
+constexpr int32_t kAudioQueueCapacity = 150;
+
+// ============================================================================
+// 超时配置
+// ============================================================================
+
+/// RTMP连接超时（毫秒）
+constexpr int32_t kRtmpConnectTimeoutMs = 10000;
+
+/// WIFI连接超时（毫秒）
+constexpr int32_t kWifiConnectTimeoutMs = 30000;
+
+/// 重连间隔基础值（毫秒，指数退避）
+constexpr int32_t kReconnectBaseIntervalMs = 1000;
+
+/// 最大重连次数
+constexpr int32_t kMaxReconnectAttempts = 5;
+
+// ============================================================================
+// 监控配置
+// ============================================================================
+
+/// 状态上报周期（毫秒）
+constexpr int32_t kStateReportIntervalMs = 1000;
+
+/// 时长更新周期（秒）
+constexpr int32_t kDurationUpdateIntervalSec = 1;
+
+}  // namespace config
+}  // namespace live_broadcast
+}  // namespace ins

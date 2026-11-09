@@ -1,0 +1,17 @@
+#pragma once
+
+#include <string>
+#include "manifest/manifest_recorder.h"
+
+namespace xgrids {
+
+// 把 manifest 写入数据包附带文件（设备端本地存储）
+// 并标记随包上传。真实场景里会是 JSON + 上传队列条目。
+class ManifestWriter {
+public:
+    // 写 manifest 到数据目录，返回文件路径
+    static std::string write(const ManifestRecorder& rec,
+                             const std::string& scan_dir);
+};
+
+}  // namespace xgrids

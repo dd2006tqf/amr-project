@@ -1,0 +1,76 @@
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+#include <vector>
+#include <array>
+#include <string>
+#include <cmath>
+
+namespace xgrids {
+
+// ============================================================
+// 设备端采集层数据模型
+// 约定：channel 0-3 = 四相机阵列, channel 4 = LiDAR, channel 5 = IMU 汇总
+// ============================================================
+
+// ---- 相机帧元数据（应用层看见的一帧）----
+struct FrameMeta {
+    int channel_id = -1;     // 0..3
+    int64_t ts_us = 0;       // 曝光时刻，MonotonicClock 时基
+    uint32_t seq = 0;        // 通道内递增帧号（硬件打序）
+    size_t bytes = 0;        // 编码后大小
+    uint16_t width = 0, height = 0;
+};
+
+// ---- 原始图像载荷 ----
+struct ImageFrame {
+    FrameMeta meta;
+    std::vector<uint8_t> yuv;     // 简化存 YUV420 数据
+    double lux = 300.0;           // 平均照度估计（质量反馈用）
+    uint8_t blur_score = 255;     // 0-255, 越大越清
+};
+
+// ---- LiDAR 一帧点云 ----
+struct LidarFrame {
+    int64_t ts_us = 0;            // 扫描周期中心时刻
+    uint32_t seq = 0;
+    uint32_t point_count = 0;
+    std::vector<float> xyz;       // x,y,z 连续存储
+    std::vector<uint8_t> intensity;
+};
+
+// ---- IMU 采样包 ----
+struct ImuPacket {
+    int64_t ts_us = 0;
+    float ax, ay, az;             // 加速度 m/s²
+    float gx, gy, gz;             // 角速度 rad/s
+};
+
+// ---- RTK/GNSS 解 ----
+struct GnssFix {
+    int64_t ts_us = 0;
+    double lat = 0, lon = 0, alt = 0;
+    int fix_type = 0;             // 0=无, 4=RTK固定解(3cm), 5=RTK浮点, 1=单点
+    uint8_t num_sats = 0;
+    float hdop = 99.0f;
+    bool rtk_fixed() const { return fix_type == 4; }
+};
+
+// ---- 传感器抽象：产出什么帧由驱动决定 ----
+enum class SensorType { kCamera, kLidar, kImu, kGnss };
+
+// 统一的"任一传感器事件"，应用在单队列里收
+struct SensorEvent {
+    SensorType type;
+    int64_t ts_us;
+    uint32_t seq;
+    int channel_id;               // 相机才有意义
+    // 载荷多选一（小对象）
+    ImageFrame image;
+    LidarFrame lidar;
+    ImuPacket imu;
+    GnssFix gnss;
+};
+
+}  // namespace xgrids

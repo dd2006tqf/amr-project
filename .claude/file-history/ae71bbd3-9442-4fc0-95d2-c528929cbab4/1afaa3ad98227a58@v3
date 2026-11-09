@@ -1,0 +1,273 @@
+#include "capture_session.h"
+#include "manifest/manifest_writer.h"
+#include <thread>
+#include <chrono>
+#include <iostream>
+
+namespace xgrids {
+
+CaptureSession::CaptureSession(Config cfg, UiCb ui_cb, DoneCb done_cb)
+    : cfg_(std::move(cfg)),
+      ui_cb_(std::move(ui_cb)), done_cb_(std::move(done_cb)),
+      aligner_(TimeAligner::Config{cfg_.sync_window_us, 20'000, 500'000,
+                                    cfg_.use_clock_model, cfg_.use_imu_interp}),
+      monitor_(SyncMonitor::Config{.max_skew_us = cfg_.sync_window_us},
+               [this](int ch, const char* r, int64_t ts) {
+                   AsyncLogger::instance().warn("sync",
+                       "ch=" + std::to_string(ch) + " alert=" + r);
+                   if (std::string(r) == "frame_gap")
+                       manifest_.on_gap(ch, ts, GapReason::kFrameDrop, 0, 0);
+               }),
+      quality_(QualityFeedback::Thresholds{}, ui_cb_),
+      storage_(cfg_.data_root)
+{
+    uploader_.reset(new Uploader(
+        Uploader::Config{"https://cloud.xgrids.local/ingest", 50.0, 5,
+                         1'000'000, 60'000'000},
+        [](const UploadTask& t, double pct) {
+            if ((int)pct % 25 < 10)
+                std::fprintf(stderr, "[upload] %s %.0f%%\n",
+                             t.scan_id.c_str(), pct);
+        }));
+    uploader_->start();
+}
+
+CaptureSession::~CaptureSession() {
+    if (state_.load() != SessionState::kDone &&
+        state_.load() != SessionState::kFailed)
+        stop();
+    uploader_->stop();
+}
+
+bool CaptureSession::start(const std::string& scan_id) {
+    if (state_.load() != SessionState::kIdle) return false;
+    scan_id_ = scan_id;
+    scan_start_us_ = MonotonicClock::now_us();
+
+    if (!storage_.begin_scan(scan_id, scan_start_us_,
+                             cfg_.device_sn.c_str(),
+                             cfg_.calib_hash.c_str())) {
+        AsyncLogger::instance().error("session", "begin_scan failed");
+        return false;
+    }
+    manifest_.begin_scan(scan_start_us_);
+    state_.store(SessionState::kCapturing);
+    running_.store(true);
+
+    // 传感器驱动：硬件触发模式（四相机同步曝光），确定性参数
+    for (int c = 0; c < cfg_.num_camera_channels; ++c) {
+        CameraSim::Params p;
+        p.channel_id = c; p.fps = cfg_.cam_fps;
+        p.drop_prob = 0.0;
+        p.exposure_jitter_us = 1500;   // 曝光抖动，压在对齐窗口内
+        p.readout_offset_us = c * 100; // 各通道读出延迟差（硬件固有 ~百微秒）
+        p.width = cfg_.frame_width;
+        p.height = cfg_.frame_height;
+        cams_.push_back(std::make_unique<CameraSim>(p,
+            [this](const ImageFrame& f){
+                SensorEvent e; e.type = SensorType::kCamera;
+                e.ts_us = f.meta.ts_us; e.seq = f.meta.seq;
+                e.channel_id = f.meta.channel_id; e.image = f;
+                event_q_.push(std::move(e), decltype(event_q_)::Priority::kHigh);
+            }));
+        cams_.back()->set_trigger(&trig_);
+    }
+    lidar_ = std::make_unique<LidarSim>([this](const LidarFrame& f){
+        SensorEvent e; e.type = SensorType::kLidar;
+        e.ts_us = f.ts_us; e.seq = f.seq; e.lidar = f;
+        event_q_.push(std::move(e), decltype(event_q_)::Priority::kHigh);
+    });
+    imu_ = std::make_unique<ImuSim>([this](const ImuPacket& p){
+        SensorEvent e; e.type = SensorType::kImu;
+        e.ts_us = p.ts_us; e.imu = p;
+        event_q_.push(std::move(e), decltype(event_q_)::Priority::kHigh);
+    });
+    gnss_ = std::make_unique<GnssSim>([this](const GnssFix& g){
+        SensorEvent e; e.type = SensorType::kGnss;
+        e.ts_us = g.ts_us; e.gnss = g;
+        event_q_.push(std::move(e), decltype(event_q_)::Priority::kHigh);
+        rtk_locked_.store(g.rtk_fixed());
+    });
+
+    align_th_ = std::thread(&CaptureSession::aligner_loop, this);
+    writer_th_ = std::thread(&CaptureSession::writer_loop, this);
+    quality_th_ = std::thread(&CaptureSession::quality_loop, this);
+
+    // 硬件触发线程：周期性产生触发脉冲（四相机共享）
+    trig_thread_ = std::thread([this] {
+        const int64_t period_us = 1'000'000 / cfg_.cam_fps;
+        int64_t next = MonotonicClock::now_us();
+        while (running_.load()) {
+            trig_.fire(next);
+            next += period_us;
+            int64_t now = MonotonicClock::now_us();
+            if (next > now)
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(next - now));
+            else
+                next = now + period_us;  // 落后了就重新对齐
+        }
+        trig_.stop();
+    });
+
+    for (auto& c : cams_)
+        cam_threads_.emplace_back([&, c = c.get()] { c->start(running_); });
+    cam_threads_.emplace_back([&] { lidar_->start(running_); });
+    cam_threads_.emplace_back([&] { imu_->start(running_); });
+    cam_threads_.emplace_back([&] { gnss_->start(running_); });
+
+    AsyncLogger::instance().info("session", "scan " + scan_id + " started");
+    return true;
+}
+
+void CaptureSession::process_event(const SensorEvent& e) {
+    switch (e.type) {
+    case SensorType::kCamera:
+        monitor_.on_frame(e.image.meta);
+        manifest_.on_frame(e.image.meta);
+        break;
+    case SensorType::kLidar:
+        manifest_.on_lidar(e.lidar);
+        break;
+    case SensorType::kImu:
+        manifest_.on_imu_count(1);
+        break;
+    case SensorType::kGnss:
+        if (!e.gnss.rtk_fixed())
+            manifest_.on_rtk_window(e.ts_us, e.ts_us + 1'000'000);
+        break;
+    }
+}
+
+void CaptureSession::aligner_loop() {
+    AlignedSlice slice;
+    while (running_.load() || event_q_.size() > 0) {
+        auto ev = event_q_.pop_for(50'000);
+        if (!ev) continue;
+        process_event(*ev);
+        if (aligner_.on_event(*ev, slice)) {
+            monitor_.on_sync_group(slice.cams);
+            if (!slice.cams.complete)
+                manifest_.on_sync_incomplete(slice.t_us, slice.cams.valid);
+            write_q_.push(std::move(slice),
+                          decltype(write_q_)::Priority::kHigh);
+            slice = AlignedSlice{};
+        }
+        // 迟到帧（乱序）：不参与成组，但原始数据照样落盘（不能丢数据）。
+        // 它错过的窗口已在关闭时记为 sync_incomplete —— 这就是它的"缺口"。
+        FrameMeta stale;
+        while (aligner_.take_stale(stale)) {
+            AlignedSlice s;
+            s.t_us = stale.ts_us;
+            s.cams.anchor_ts_us = stale.ts_us;
+            s.cams.complete = false;
+            s.cams.valid.fill(false);
+            s.cams.valid[stale.channel_id] = true;
+            s.cams.frames[stale.channel_id] = stale;
+            // 不经 monitor：迟到不是同步误差，是队列时延
+            write_q_.push(std::move(s), decltype(write_q_)::Priority::kHigh);
+            AsyncLogger::instance().warn("aligner",
+                "stale frame ch=" + std::to_string(stale.channel_id) +
+                " seq=" + std::to_string(stale.seq));
+        }
+    }
+    if (aligner_.flush(slice))
+        write_q_.push(std::move(slice), decltype(write_q_)::Priority::kHigh);
+}
+
+void CaptureSession::writer_loop() {
+    while (running_.load() || write_q_.size() > 0) {
+        auto s = write_q_.pop_for(50'000);
+        if (!s) continue;
+        for (int i = 0; i < 4; ++i)
+            if (s->cams.valid[i]) {
+                ImageFrame f; f.meta = s->cams.frames[i];
+                f.yuv.assign(f.meta.bytes, 0x80);
+                storage_.write(f);
+            }
+        if (s->lidar.point_count)
+            storage_.write(s->lidar);
+        for (const auto& imu : s->imu_in_slice)
+            storage_.write(imu);
+    }
+}
+
+void CaptureSession::quality_loop() {
+    while (running_.load()) {
+        QualityInput in;
+        in.motion_speed_mps = motion_speed_.load();
+        in.ambient_lux = ambient_lux_.load();
+        in.storage_free_gb = storage_.free_gb();
+        in.write_rate_gbps = storage_.current_write_rate_gbps();
+        in.buffer_fill = write_q_.fill_ratio();
+        in.cpu_temp_x10 = cpu_temp_x10_.load();
+        in.sync_violations = monitor_.skew_violations();
+        in.frame_gaps = monitor_.frame_gap_count();
+        in.rtk_locked = rtk_locked_.load();
+        quality_.update(in);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+}
+
+SessionReport CaptureSession::stop() {
+    if (state_.load() != SessionState::kCapturing)
+        return {state_.load(), scan_id_, {}, QualityLevel::kOk, 0, {}};
+
+    state_.store(SessionState::kFinishing);
+    running_.store(false);
+    trig_.stop();
+    if (trig_thread_.joinable()) trig_thread_.join();
+    for (auto& t : cam_threads_) t.join();
+    align_th_.join();
+    writer_th_.join();
+    quality_th_.join();
+
+    int64_t end = MonotonicClock::now_us();
+    ScanManifest mf = manifest_.finish(end);
+
+    auto info = storage_.finish_scan(end, ManifestWriter::serialize(mf));
+    UploadTask t; t.scan_id = scan_id_; t.scan_dir = info.scan_dir; t.info = info;
+    uploader_->enqueue(t);
+
+    SessionReport rep;
+    rep.state = SessionState::kDone;
+    rep.scan_id = scan_id_;
+    rep.manifest = mf;
+    rep.quality = quality_.final_verdict();
+    rep.uploaded_bytes = uploader_->uploaded_bytes();
+
+    state_.store(SessionState::kDone);
+    AsyncLogger::instance().info("session", "scan " + scan_id_ +
+        " done clean=" + std::to_string(mf.clean));
+    if (done_cb_) done_cb_(rep);
+    return rep;
+}
+
+void CaptureSession::inject_camera_drop(int ch, int n) {
+    if (ch >= 0 && ch < (int)cams_.size()) cams_[ch]->inject_drop_burst(n);
+}
+void CaptureSession::inject_rtk_loss(int ms) {
+    if (gnss_) {
+        gnss_->inject_loss_lock(true); rtk_locked_.store(false);
+        std::thread([this, ms]{
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            gnss_->inject_loss_lock(false); rtk_locked_.store(true);
+        }).detach();
+    }
+}
+void CaptureSession::inject_cpu_heat(int t) { cpu_temp_x10_.store(t); }
+void CaptureSession::inject_slowdown(int ch, double f) {
+    if (ch >= 0 && ch < (int)cams_.size()) cams_[ch]->inject_slowdown(f);
+}
+void CaptureSession::inject_camera_jitter(int ch, int64_t us) {
+    if (ch >= 0 && ch < (int)cams_.size()) cams_[ch]->inject_jitter_us(us);
+}
+
+double CaptureSession::cam_drift_ppm(int ch) const {
+    return aligner_.cam_drift_ppm(ch);
+}
+bool CaptureSession::clock_converged() const {
+    return aligner_.clock_converged();
+}
+
+}  // namespace xgrids

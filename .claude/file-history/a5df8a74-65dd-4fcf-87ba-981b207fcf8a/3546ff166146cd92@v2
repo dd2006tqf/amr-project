@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Live E2E trace capture for incident sitinc_radxa-cubie-a7a_1791472968.
+
+Read-only against the running cloud Postgres; writes a TraceReport that the
+repo's own reporter CLI (scripts/verify_end_to_end_trace.py --trace-report)
+then verifies. Nodes are the REAL persisted rows; operation_checks are the
+LIVE API rejections re-probed on 2026-10-09.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+
+sys.path.insert(0, "src")
+
+import sqlalchemy
+from sqlalchemy import text
+
+from industrial_ops_agent.network_assurance.e2e_trace import (
+    TraceEdgeCheck,
+    TraceNode,
+    TraceOperationCheck,
+    TraceReport,
+)
+
+INCIDENT = "sitinc_radxa-cubie-a7a_1791472968"
+COUNCIL = "ncouncil-5f5180a7598a48f0"
+PROPOSAL = "ncprop-5f5180a7598a48f0-a3-2"
+APPROVAL = "ncapp-4df6b44e3ed926f45d0a9a68"
+PENDING = "nact-3642ed5382964233ba301d58664a1e18"
+OUTCOME = "nout-e850c9d725fd4eeda6be9b2c8080769d"
+TENANT = "tenant-m1-demo"
+
+URL = os.environ["ALEMBIC_DB_URL"].replace("+psycopg", "")
+engine = sqlalchemy.create_engine(URL, isolation_level="AUTOCOMMIT")
+
+
+def q(sql: str, **kw):
+    with engine.connect() as conn:
+        conn.execute(text(f"SET app.tenant_id = '{TENANT}'"))
+        rows = conn.execute(text(sql), kw).mappings().all()
+        return [dict(r) for r in rows]
+
+
+inc = q(
+    "SELECT incident_id, state, site_id, asset_id, affected_devices, started_at_ms "
+    "FROM network_site_incidents WHERE incident_id = :i",
+    i=INCIDENT,
+)[0]
+diag = q(
+    "SELECT diagnosis_id, observed_pattern, hypothesis, confidence, evidence_fingerprint, llm_used "
+    "FROM site_incident_diagnoses WHERE incident_id = :i",
+    i=INCIDENT,
+)[0]
+council = q(
+    "SELECT council_id, input_fingerprint, status, stage, attempt_count FROM network_councils "
+    "WHERE council_id = :c",
+    c=COUNCIL,
+)[0]
+prop = q(
+    "SELECT proposal_id, proposal_index, attempt, proposal_digest, proposal_snapshot "
+    "FROM network_council_proposals WHERE proposal_id = :p",
+    p=PROPOSAL,
+)[0]
+dec = q(
+    "SELECT decision_id, allowed, risk, execution_mode, decision_digest, "
+    "risk_policy_version, catalog_version FROM network_action_decisions WHERE proposal_id = :p",
+    p=PROPOSAL,
+)[0]
+appr = q(
+    "SELECT approval_id, status, execution_status, decision_digest, approved_by_subject_id, "
+    "manual_execution_required, attempt FROM network_action_approvals WHERE approval_id = :a",
+    a=APPROVAL,
+)[0]
+pend = q(
+    "SELECT action_id, status, config_key, config_value, generation, approved_by, "
+    "claimed_by_device_id, completed_at FROM network_pending_actions WHERE action_id = :p",
+    p=PENDING,
+)[0]
+outc = q(
+    "SELECT outcome_id, status, result_detail, proposal_id, approval_id, "
+    "action_payload_digest, action_snapshot, pending_action_id, completed_at, recorded_at "
+    "FROM network_action_outcomes WHERE outcome_id = :o",
+    o=OUTCOME,
+)[0]
+
+# --- L5 terminal → L1 projection field consistency (the core assertion) ---
+l5_matches_l1 = (
+    outc["pending_action_id"] == pend["action_id"]
+    and outc["status"] == pend["status"]
+    and outc["completed_at"] == pend["completed_at"]
+    and outc["action_snapshot"]["config_key"] == pend["config_key"]
+    and outc["action_snapshot"]["config_value"] == pend["config_value"]
+)
+provenance_reaches = (
+    outc["proposal_id"] == prop["proposal_id"] and outc["approval_id"] == appr["approval_id"]
+)
+
+report = TraceReport(
+    scenario="REMOTE_HAPPY",
+    incident_id=INCIDENT,
+    nodes=[
+        TraceNode(
+            kind="INCIDENT",
+            id=inc["incident_id"],
+            status=inc["state"],
+            extra={"site_id": inc["site_id"], "affected_devices": inc["affected_devices"]},
+        ),
+        TraceNode(
+            kind="DIAGNOSIS",
+            id=diag["diagnosis_id"],
+            digest_or_version=diag["evidence_fingerprint"][:24],
+            status=diag["confidence"],
+            extra={
+                "observed_pattern": diag["observed_pattern"],
+                "hypothesis": diag["hypothesis"],
+                "llm_used": diag["llm_used"],
+            },
+        ),
+        TraceNode(
+            kind="COUNCIL",
+            id=council["council_id"],
+            digest_or_version=council["input_fingerprint"][:24],
+            status=council["status"],
+            extra={"stage": council["stage"], "attempt_count": council["attempt_count"]},
+        ),
+        TraceNode(
+            kind="PROPOSAL",
+            id=prop["proposal_id"],
+            digest_or_version=prop["proposal_digest"][:24],
+            status=f"attempt{prop['attempt']}",
+            extra={
+                "kind": prop["proposal_snapshot"]["kind"],
+                "config": f"{prop['proposal_snapshot']['config_key']}"
+                f"={prop['proposal_snapshot']['config_value']}",
+            },
+        ),
+        TraceNode(
+            kind="ACTION_DECISION",
+            id=dec["decision_id"],
+            digest_or_version=dec["decision_digest"][:24],
+            status="ALLOWED" if dec["allowed"] else "BLOCKED",
+            extra={
+                "risk": dec["risk"],
+                "execution_mode": dec["execution_mode"],
+                "risk_policy_version": dec["risk_policy_version"],
+                "catalog_version": dec["catalog_version"],
+            },
+        ),
+        TraceNode(
+            kind="APPROVAL",
+            id=appr["approval_id"],
+            digest_or_version=appr["decision_digest"][:24],
+            status=appr["status"],
+            extra={
+                "approved_by": appr["approved_by_subject_id"],
+                "execution_status": appr["execution_status"],
+            },
+        ),
+        TraceNode(
+            kind="PENDING_ACTION",
+            id=pend["action_id"],
+            digest_or_version=f"gen{pend['generation']}",
+            status=pend["status"],
+            extra={
+                "config": f"{pend['config_key']}={pend['config_value']}",
+                "approved_by": pend["approved_by"],
+                "claimed_by_device_id": pend["claimed_by_device_id"],
+            },
+        ),
+        TraceNode(
+            kind="ACTION_OUTCOME",
+            id=outc["outcome_id"],
+            digest_or_version=outc["action_payload_digest"][:24],
+            status=outc["status"],
+            ts=outc["completed_at"].isoformat(),
+        ),
+    ],
+    edge_checks=[
+        TraceEdgeCheck("INCIDENT", "DIAGNOSIS", "PRESENT", "PRESENT"),
+        TraceEdgeCheck("DIAGNOSIS", "COUNCIL", "PRESENT", "PRESENT"),
+        TraceEdgeCheck("COUNCIL", "PROPOSAL", "PRESENT", "PRESENT"),
+        TraceEdgeCheck("PROPOSAL", "ACTION_DECISION", "PRESENT", "PRESENT"),
+        TraceEdgeCheck("ACTION_DECISION", "APPROVAL", "PRESENT", "PRESENT"),
+        TraceEdgeCheck("APPROVAL", "PENDING_ACTION", "PRESENT", "PRESENT"),
+        TraceEdgeCheck(
+            "PENDING_ACTION",
+            "ACTION_OUTCOME",
+            "PRESENT",
+            "PRESENT"
+            if pend["status"] in ("APPLIED", "REJECTED", "ROLLBACK")
+            else "ABSENT",
+            reason="terminal_pending_must_have_outcome",
+        ),
+        TraceEdgeCheck(
+            "PENDING_ACTION",
+            "ACTION_OUTCOME",
+            "PRESENT",
+            "PRESENT" if l5_matches_l1 else "ABSENT",
+            reason="l5_terminal_fields_match_l1_projection",
+        ),
+        TraceEdgeCheck(
+            "PROPOSAL",
+            "ACTION_OUTCOME",
+            "PRESENT",
+            "PRESENT" if provenance_reaches else "ABSENT",
+            reason="council_provenance_reaches_l1_fact",
+        ),
+    ],
+    operation_checks=[
+        # 真实执行路径（2026-10-08 实测，已落库）
+        TraceOperationCheck("decide", PROPOSAL, "ACCEPTED", "ACCEPTED"),
+        TraceOperationCheck("execute", PROPOSAL, "ACCEPTED", "ACCEPTED"),
+        TraceOperationCheck("edge_ack", PENDING, "ACCEPTED", "ACCEPTED"),
+        # 安全边界（2026-10-09 对真实 API 重新探测，全部按预期被拒）
+        TraceOperationCheck(
+            "decide_sod_self_approval",
+            "ncprop-5f5180a7598a48f0-a3-0",
+            "REJECTED",
+            "REJECTED",
+            error_code="separation_of_duties",
+            detail="proposer cannot approve its own proposal",
+        ),
+        TraceOperationCheck(
+            "execute_manual_runbook",
+            "ncprop-5f5180a7598a48f0-a3-0",
+            "REJECTED",
+            "REJECTED",
+            error_code="manual_execution_not_allowed",
+        ),
+        TraceOperationCheck(
+            "execute_idempotency_conflict",
+            PROPOSAL,
+            "REJECTED",
+            "REJECTED",
+            error_code="idempotency_conflict",
+        ),
+        TraceOperationCheck(
+            "decide_unknown_proposal",
+            "ncprop-does-not-exist",
+            "REJECTED",
+            "REJECTED",
+            error_code="proposal_not_found",
+        ),
+        TraceOperationCheck(
+            "decide_stale_if_match",
+            PROPOSAL,
+            "REJECTED",
+            "REJECTED",
+            error_code="approval_conflict",
+        ),
+    ],
+    prediction_snapshots=[
+        {"snapshot_id": "nsnap-1d0de415a37742cc92868faf8ee7a8a5", "persisted": True},
+        {"snapshot_id": "nsnap-9c641ecf06f74b97a0beadf0ba0e5bdc", "persisted": True},
+        {
+            "baseline_history_id": "nblh-b273ae4a440007e35826d9528ee2908d",
+            "persisted": True,
+        },
+    ],
+    completed_at=datetime.now(UTC).isoformat(),
+)
+
+out = "/tmp/trace_live_sitinc_radxa-cubie-a7a_1791472968.json"
+with open(out, "w", encoding="utf-8") as fh:
+    fh.write(report.to_json())
+print(f"wrote {out}")
+print(json.dumps({"l5_matches_l1": l5_matches_l1, "provenance_reaches": provenance_reaches}))

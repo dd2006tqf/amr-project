@@ -1,0 +1,90 @@
+import io
+
+def patch(path, pairs):
+    s = io.open(path, encoding="utf-8").read()
+    for old, new in pairs:
+        n = s.count(old)
+        assert n == 1, (path, n, old[:100])
+        s = s.replace(old, new)
+    io.open(path, "w", encoding="utf-8").write(s)
+    print("ok", path)
+
+D = "docs/交叉编译与开发板部署.md"
+patch(D, [
+  # 打包目录：不再预建 logs/server
+  ("""mkdir -p \\
+    dist-arm64/server/bin \\
+    dist-arm64/server/build \\
+    dist-arm64/server/logs/server \\
+    dist-arm64/client/bin \\""",
+   """mkdir -p \\
+    dist-arm64/server/bin \\
+    dist-arm64/server/build \\
+    dist-arm64/client/bin \\"""),
+
+  # rsync 排除项：日志已不在 dist 里（落到 <root>/data/logs），排除项失去意义
+  ("""# rsync 增量同步，排除日志目录（保留开发板日志）
+rsync -az --delete \\
+    --exclude 'server/logs/' \\
+    -e ssh \\""",
+   """# rsync 增量同步（日志落盘在 <root>/data/logs，不在 dist 中，无需排除）
+rsync -az --delete \\
+    -e ssh \\"""),
+
+  ("""cd /home/radxa/weaknet/server
+mkdir -p logs/server
+: > /tmp/weaknet-server.log
+
+echo "===== 启动服务端 =====" """,
+   """cd /home/radxa/weaknet/server
+mkdir -p /home/radxa/weaknet/data/logs
+: > /tmp/weaknet-server.log
+
+echo "===== 启动服务端 =====" """),
+
+  ("""| 排除日志 | `--exclude 'server/logs/'` 保留开发板日志（已启用） |""",
+   """| 日志位置 | 落盘在 `<root>/data/logs`（`data/` 持久化，不受部署/OTA 影响） |"""),
+
+  ("""│   ├── server/
+│   │   ├── bin/weaknet-dbus-server
+│   │   ├── build/*.bpf.o
+│   │   └── logs/server/           # 日志（rsync 排除，不会被覆盖）
+│   ├── client/
+│   │   ├── bin/test-client
+│   │   └── lib/libweaknet.so
+│   └── lib/
+│       └── libbpf.so*
+└── weaknet-test-full.sh                # 测试脚本""",
+   """│   ├── current -> releases/<version>   # OTA 原子切换点
+│   ├── releases/<version>/server/
+│   │   ├── bin/weaknet-dbus-server
+│   │   └── build/*.bpf.o
+│   ├── data/                      # 持久化（不随版本切换）
+│   │   ├── history.db
+│   │   └── logs/                  # 服务端日志（时间戳 .log，滚动 + 上限 5 个）
+│   ├── client/
+│   │   ├── bin/test-client
+│   │   └── lib/libweaknet.so
+│   └── lib/
+│       └── libbpf.so*
+└── weaknet-test-full.sh                # 测试脚本"""),
+
+  ("""# 4. 部署到开发板
+rsync -az --delete --exclude "server/logs/" -e ssh \\""",
+   """# 4. 部署到开发板
+rsync -az --delete -e ssh \\"""),
+
+  ("""# 3. 部署到开发板
+rsync -az --delete --exclude "server/logs/" -e ssh \\""",
+   """# 3. 部署到开发板
+rsync -az --delete -e ssh \\"""),
+
+  ("""cd /home/radxa/weaknet/server
+mkdir -p logs/server
+: > /tmp/weaknet-server.log
+echo "===== 启动服务端 =====" """,
+   """cd /home/radxa/weaknet/server
+mkdir -p /home/radxa/weaknet/data/logs
+: > /tmp/weaknet-server.log
+echo "===== 启动服务端 =====" """),
+])

@@ -1,0 +1,885 @@
+===== src/amr_dispatcher_core/src/fleet/fleet_catalog.cpp =====
+     1	#include "amr_dispatcher_core/fleet/fleet_catalog.hpp"
+     2	
+     3	#include <algorithm>
+     4	#include <cmath>
+     5	#include <fstream>
+     6	#include <sstream>
+     7	#include <unordered_set>
+     8	
+     9	namespace amr_dispatcher_core::fleet {
+    10	namespace {
+    11	
+    12	using amr_dispatcher_core::catalog::EstimateRouteDistance;
+    13	using amr_dispatcher_core::catalog::FindStation;
+    14	using amr_dispatcher_core::catalog::Station;
+    15	using amr_dispatcher_core::catalog::StationCatalog;
+    16	
+    17	std::string Trim(const std::string& value) {
+    18	  const auto first = value.find_first_not_of(" \t\r\n");
+    19	  if (first == std::string::npos) {
+    20	    return "";
+    21	  }
+    22	  const auto last = value.find_last_not_of(" \t\r\n");
+    23	  return value.substr(first, last - first + 1);
+    24	}
+    25	
+    26	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    27	  const std::string prefix = key + ":";
+    28	  if (line.rfind(prefix, 0) != 0) {
+    29	    return std::nullopt;
+    30	  }
+    31	  return Trim(line.substr(prefix.size()));
+    32	}
+    33	
+    34	bool ParseBool(const std::string& value) {
+    35	  return value == "true" || value == "True" || value == "1";
+    36	}
+    37	
+    38	std::optional<double> ParseDouble(const std::string& value) {
+    39	  std::istringstream parser(value);
+    40	  double result = 0.0;
+    41	  parser >> result;
+    42	  if (parser.fail() || !std::isfinite(result)) {
+    43	    return std::nullopt;
+    44	  }
+    45	  return result;
+    46	}
+    47	
+    48	std::vector<std::string> SplitCommaList(const std::string& value) {
+    49	  std::vector<std::string> result;
+    50	  std::stringstream stream(value);
+    51	  std::string item;
+    52	  while (std::getline(stream, item, ',')) {
+    53	    item = Trim(item);
+    54	    if (!item.empty()) {
+    55	      result.push_back(item);
+    56	    }
+    57	  }
+    58	  return result;
+    59	}
+    60	
+    61	bool RobotAvailableForTask(const FleetRobot& robot) {
+    62	  return robot.enabled && (robot.state == "available" || robot.state == "idle");
+    63	}
+    64	
+    65	bool RobotUnavailable(
+    66	    const FleetRobot& robot, const std::vector<std::string>& unavailable_robot_ids) {
+    67	  return std::find(unavailable_robot_ids.begin(), unavailable_robot_ids.end(), robot.id) !=
+    68	         unavailable_robot_ids.end();
+    69	}
+    70	
+    71	std::optional<double> RouteOrEuclideanDistance(
+    72	    const StationCatalog& catalog, const std::string& from, const std::string& to) {
+    73	  if (from.empty() || to.empty()) {
+    74	    return std::nullopt;
+    75	  }
+    76	  if (const auto route_distance = EstimateRouteDistance(catalog, from, to)) {
+    77	    return route_distance;
+    78	  }
+    79	  const auto* from_station = FindStation(catalog, from);
+    80	  const auto* to_station = FindStation(catalog, to);
+    81	  if (from_station == nullptr || to_station == nullptr ||
+    82	      from_station->frame_id != to_station->frame_id) {
+    83	    return std::nullopt;
+    84	  }
+    85	  return std::hypot(from_station->x - to_station->x, from_station->y - to_station->y);
+    86	}
+    87	
+    88	}  // namespace
+    89	
+    90	std::optional<FleetCatalog> LoadFleetCatalog(const std::filesystem::path& path) {
+    91	  std::ifstream input(path);
+    92	  if (!input) {
+    93	    return std::nullopt;
+    94	  }
+    95	
+    96	  FleetCatalog catalog;
+    97	  FleetRobot current;
+    98	  bool in_robot = false;
+    99	  bool has_id = false;
+   100	  std::string section;
+   101	  std::string line;
+   102	
+   103	  auto flush_robot = [&]() {
+   104	    if (in_robot && has_id) {
+   105	      catalog.robots.push_back(current);
+   106	    }
+   107	    current = FleetRobot{};
+   108	    in_robot = false;
+   109	    has_id = false;
+   110	  };
+   111	
+   112	  while (std::getline(input, line)) {
+   113	    line = Trim(line);
+   114	    if (line.empty() || line.front() == '#') {
+   115	      continue;
+   116	    }
+   117	    if (line == "robots:" || line == "fleet:") {
+   118	      flush_robot();
+   119	      section = line.substr(0, line.size() - 1);
+   120	      continue;
+   121	    }
+   122	    if (line.rfind("- ", 0) == 0) {
+   123	      if (section != "robots" && section != "fleet") {
+   124	        continue;
+   125	      }
+   126	      flush_robot();
+   127	      in_robot = true;
+   128	      line = Trim(line.substr(2));
+   129	    }
+   130	    if (!in_robot) {
+   131	      continue;
+   132	    }
+   133	    if (auto value = ValueAfterColon(line, "id")) {
+   134	      current.id = *value;
+   135	      has_id = !current.id.empty();
+   136	      continue;
+   137	    }
+   138	    if (auto value = ValueAfterColon(line, "enabled")) {
+   139	      current.enabled = ParseBool(*value);
+   140	      continue;
+   141	    }
+   142	    if (auto value = ValueAfterColon(line, "state")) {
+   143	      current.state = value->empty() ? "available" : *value;
+   144	      continue;
+   145	    }
+   146	    if (auto value = ValueAfterColon(line, "battery_voltage")) {
+   147	      if (auto parsed = ParseDouble(*value)) {
+   148	        current.battery_voltage = *parsed;
+   149	      }
+   150	      continue;
+   151	    }
+   152	    if (auto value = ValueAfterColon(line, "max_payload_kg")) {
+   153	      if (auto parsed = ParseDouble(*value)) {
+   154	        current.max_payload_kg = *parsed;
+   155	      }
+   156	      continue;
+   157	    }
+   158	    if (auto value = ValueAfterColon(line, "current_station_id")) {
+   159	      current.current_station_id = *value;
+   160	      continue;
+   161	    }
+   162	    if (auto value = ValueAfterColon(line, "capabilities")) {
+   163	      current.capabilities = SplitCommaList(*value);
+   164	      continue;
+   165	    }
+   166	    if (auto value = ValueAfterColon(line, "backend")) {
+   167	      // 执行后端（P0.1）：只接受已知标签，未知值回落 local_sim 并由校验报错
+   168	      current.backend = value->empty() ? "local_sim" : *value;
+   169	      continue;
+   170	    }
+   171	  }
+   172	  flush_robot();
+   173	
+   174	  std::string message;
+   175	  if (!ValidateFleetCatalog(catalog, &message)) {
+   176	    return std::nullopt;
+   177	  }
+   178	  return catalog;
+   179	}
+   180	
+   181	const FleetRobot* FindFleetRobot(const FleetCatalog& catalog, const std::string& robot_id) {
+   182	  for (const auto& robot : catalog.robots) {
+   183	    if (robot.id == robot_id) {
+   184	      return &robot;
+   185	    }
+   186	  }
+   187	  return nullptr;
+   188	}
+   189	
+   190	bool RobotHasCapability(const FleetRobot& robot, const std::string& capability) {
+   191	  if (capability.empty()) {
+   192	    return true;
+   193	  }
+   194	  return std::find(robot.capabilities.begin(), robot.capabilities.end(), capability) !=
+   195	         robot.capabilities.end();
+   196	}
+   197	
+   198	const FleetRobot* SelectFleetRobot(
+   199	    const FleetCatalog& catalog, const std::string& required_capability,
+   200	    const std::vector<std::string>& unavailable_robot_ids) {
+   201	  const FleetRobot* selected = nullptr;
+   202	  for (const auto& robot : catalog.robots) {
+   203	    if (!RobotAvailableForTask(robot) || !RobotHasCapability(robot, required_capability)) {
+   204	      continue;
+   205	    }
+   206	    if (RobotUnavailable(robot, unavailable_robot_ids)) {
+   207	      continue;
+   208	    }
+   209	    if (selected == nullptr || robot.battery_voltage > selected->battery_voltage) {
+   210	      selected = &robot;
+   211	    }
+   212	  }
+   213	  return selected;
+   214	}
+   215	
+   216	using amr_dispatcher_core::catalog::StationCatalog;
+   217	
+   218	const FleetRobot* SelectFleetRobotForStationTask(
+   219	    const FleetCatalog& fleet_catalog, const StationCatalog& station_catalog,
+   220	    const std::string& required_capability, const std::string& pickup_station,
+   221	    const std::string& dropoff_station, const std::vector<std::string>& unavailable_robot_ids,
+   222	    FleetRobotTaskScore* selected_score) {
+   223	  const auto task_distance = RouteOrEuclideanDistance(station_catalog, pickup_station, dropoff_station);
+   224	  if (!task_distance.has_value()) {
+   225	    return SelectFleetRobot(fleet_catalog, required_capability, unavailable_robot_ids);
+   226	  }
+   227	
+   228	  const FleetRobot* selected = nullptr;
+   229	  FleetRobotTaskScore best_score;
+   230	  for (const auto& robot : fleet_catalog.robots) {
+   231	    if (!RobotAvailableForTask(robot) || !RobotHasCapability(robot, required_capability) ||
+   232	        RobotUnavailable(robot, unavailable_robot_ids)) {
+   233	      continue;
+   234	    }
+   235	    const auto approach_distance =
+   236	        RouteOrEuclideanDistance(station_catalog, robot.current_station_id, pickup_station);
+   237	    if (!approach_distance.has_value()) {
+   238	      continue;
+   239	    }
+   240	    FleetRobotTaskScore score;
+   241	    score.robot_id = robot.id;
+   242	    score.approach_distance_m = *approach_distance;
+   243	    score.task_distance_m = *task_distance;
+   244	    score.total_distance_m = score.approach_distance_m + score.task_distance_m;
+   245	    score.battery_voltage = robot.battery_voltage;
+   246	    if (selected == nullptr || score.total_distance_m < best_score.total_distance_m ||
+   247	        (score.total_distance_m == best_score.total_distance_m &&
+   248	         score.battery_voltage > best_score.battery_voltage)) {
+   249	      selected = &robot;
+   250	      best_score = score;
+   251	    }
+   252	  }
+   253	  if (selected != nullptr && selected_score != nullptr) {
+   254	    *selected_score = best_score;
+   255	  }
+   256	  if (selected == nullptr) {
+   257	    return SelectFleetRobot(fleet_catalog, required_capability, unavailable_robot_ids);
+   258	  }
+   259	  return selected;
+   260	}
+   261	
+   262	std::optional<double> EstimateVehicleApproachCost(
+   263	    const StationCatalog& catalog, const double vehicle_x, const double vehicle_y,
+   264	    const std::string& vehicle_station_id, const std::string& target_station_id) {
+   265	  if (target_station_id.empty()) {
+   266	    return std::nullopt;
+   267	  }
+   268	  const auto* target = FindStation(catalog, target_station_id);
+   269	  if (target == nullptr) {
+   270	    return std::nullopt;
+   271	  }
+   272	  // 规则 1：车挂在已知站点上 -> 直接算路网成本
+   273	  if (!vehicle_station_id.empty()) {
+   274	    return EstimateRouteDistance(catalog, vehicle_station_id, target_station_id);
+   275	  }
+   276	  // 规则 2：车在站点之间 -> 先直线接驳到最近站点，再叠路网成本
+   277	  const Station* nearest = nullptr;
+   278	  double nearest_dist = 0.0;
+   279	  for (const auto& station : catalog.stations) {
+   280	    if (station.frame_id != target->frame_id) {
+   281	      continue;  // 跨 frame 不比较
+   282	    }
+   283	    const double d = std::hypot(station.x - vehicle_x, station.y - vehicle_y);
+   284	    if (nearest == nullptr || d < nearest_dist) {
+   285	      nearest = &station;
+   286	      nearest_dist = d;
+   287	    }
+   288	  }
+   289	  if (nearest == nullptr) {
+   290	    return std::nullopt;
+   291	  }
+   292	  const auto route = EstimateRouteDistance(catalog, nearest->id, target_station_id);
+   293	  if (!route.has_value()) {
+   294	    return std::nullopt;
+   295	  }
+   296	  return nearest_dist + *route;
+   297	}
+   298	
+   299	bool ValidateFleetCatalog(const FleetCatalog& catalog, std::string* message) {
+   300	  std::unordered_set<std::string> ids;
+   301	  for (const auto& robot : catalog.robots) {
+   302	    if (robot.id.empty()) {
+   303	      if (message != nullptr) {
+   304	        *message = "fleet robot id is empty";
+   305	      }
+   306	      return false;
+   307	    }
+   308	    if (!ids.insert(robot.id).second) {
+   309	      if (message != nullptr) {
+   310	        *message = "duplicate fleet robot id: " + robot.id;
+   311	      }
+   312	      return false;
+   313	    }
+   314	    if (!std::isfinite(robot.battery_voltage) || robot.battery_voltage < 0.0) {
+   315	      if (message != nullptr) {
+   316	        *message = "invalid battery voltage for fleet robot: " + robot.id;
+   317	      }
+   318	      return false;
+   319	    }
+   320	    if (!std::isfinite(robot.max_payload_kg) || robot.max_payload_kg < 0.0) {
+   321	      if (message != nullptr) {
+   322	        *message = "invalid payload for fleet robot: " + robot.id;
+   323	      }
+   324	      return false;
+   325	    }
+   326	    // 执行后端标签必须是已知值（local_sim / vda5050）——不猜、不静默回落
+   327	    if (robot.backend != "local_sim" && robot.backend != "vda5050") {
+   328	      if (message != nullptr) {
+   329	        *message = "unknown execution backend for fleet robot " + robot.id + ": " + robot.backend;
+   330	      }
+   331	      return false;
+   332	    }
+   333	  }
+   334	  if (message != nullptr) {
+   335	    *message = "fleet catalog ok";
+   336	  }
+   337	  return true;
+   338	}
+   339	
+   340	}  // namespace amr_dispatcher_core::fleet
+===== src/amr_dispatcher_core/src/facility/facility_catalog.cpp =====
+     1	#include "amr_dispatcher_core/facility/facility_catalog.hpp"
+     2	
+     3	#include <fstream>
+     4	#include <unordered_set>
+     5	
+     6	namespace amr_dispatcher_core::facility {
+     7	namespace {
+     8	
+     9	std::string Trim(const std::string& value) {
+    10	  const auto first = value.find_first_not_of(" \t\r\n");
+    11	  if (first == std::string::npos) {
+    12	    return "";
+    13	  }
+    14	  const auto last = value.find_last_not_of(" \t\r\n");
+    15	  return value.substr(first, last - first + 1);
+    16	}
+    17	
+    18	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    19	  const std::string prefix = key + ":";
+    20	  if (line.rfind(prefix, 0) != 0) {
+    21	    return std::nullopt;
+    22	  }
+    23	  return Trim(line.substr(prefix.size()));
+    24	}
+    25	
+    26	bool ParseBool(const std::string& value) {
+    27	  return value == "true" || value == "True" || value == "1";
+    28	}
+    29	
+    30	}  // namespace
+    31	
+    32	std::optional<FacilityCatalog> LoadFacilityCatalog(const std::filesystem::path& path) {
+    33	  std::ifstream input(path);
+    34	  if (!input) {
+    35	    return std::nullopt;
+    36	  }
+    37	
+    38	  FacilityCatalog catalog;
+    39	  FacilityResource current;
+    40	  bool in_resource = false;
+    41	  bool has_id = false;
+    42	  bool has_type = false;
+    43	  bool incomplete = false;  // 有 id 却缺 type 的记录：配置错误，不得静默丢弃
+    44	
+    45	  auto flush_resource = [&]() {
+    46	    if (in_resource && has_id) {
+    47	      if (!has_type) {
+    48	        incomplete = true;  // 记录不完整 -> 整份目录判负
+    49	      } else {
+    50	        catalog.resources.push_back(current);
+    51	      }
+    52	    }
+    53	    current = FacilityResource{};
+    54	    in_resource = false;
+    55	    has_id = false;
+    56	    has_type = false;
+    57	  };
+    58	
+    59	  std::string section;
+    60	  std::string line;
+    61	  while (std::getline(input, line)) {
+    62	    line = Trim(line);
+    63	    if (line.empty() || line.front() == '#') {
+    64	      continue;
+    65	    }
+    66	    if (line == "resources:" || line == "facilities:") {
+    67	      flush_resource();
+    68	      section = line.substr(0, line.size() - 1);
+    69	      continue;
+    70	    }
+    71	    if (line.rfind("- ", 0) == 0) {
+    72	      if (section != "resources" && section != "facilities") {
+    73	        continue;
+    74	      }
+    75	      flush_resource();
+    76	      in_resource = true;
+    77	      line = Trim(line.substr(2));
+    78	    }
+    79	    if (!in_resource) {
+    80	      continue;
+    81	    }
+    82	    if (auto value = ValueAfterColon(line, "id")) {
+    83	      current.id = *value;
+    84	      has_id = !current.id.empty();
+    85	      continue;
+    86	    }
+    87	    if (auto value = ValueAfterColon(line, "type")) {
+    88	      current.type = *value;
+    89	      has_type = !current.type.empty();
+    90	      continue;
+    91	    }
+    92	    if (auto value = ValueAfterColon(line, "station_id")) {
+    93	      current.station_id = *value;
+    94	      continue;
+    95	    }
+    96	    if (auto value = ValueAfterColon(line, "enabled")) {
+    97	      current.enabled = ParseBool(*value);
+    98	      continue;
+    99	    }
+   100	    if (auto value = ValueAfterColon(line, "exclusive")) {
+   101	      current.exclusive = ParseBool(*value);
+   102	      continue;
+   103	    }
+   104	    if (auto value = ValueAfterColon(line, "protocol")) {
+   105	      current.protocol = *value;
+   106	      continue;
+   107	    }
+   108	    if (auto value = ValueAfterColon(line, "ip")) {
+   109	      current.ip = *value;
+   110	      continue;
+   111	    }
+   112	    if (auto value = ValueAfterColon(line, "port")) {
+   113	      try {
+   114	        current.port = static_cast<uint16_t>(std::stoi(*value));
+   115	      } catch (...) {}
+   116	      continue;
+   117	    }
+   118	    if (auto value = ValueAfterColon(line, "unit_id")) {
+   119	      try {
+   120	        current.unit_id = static_cast<uint8_t>(std::stoi(*value));
+   121	      } catch (...) {}
+   122	      continue;
+   123	    }
+   124	  }
+   125	  flush_resource();
+   126	  if (incomplete) {
+   127	    return std::nullopt;  // 存在缺 type 的资源记录 -> 配置错误，整份判负
+   128	  }
+   129	
+   130	  std::string message;
+   131	  if (!ValidateFacilityCatalog(catalog, &message)) {
+   132	    return std::nullopt;
+   133	  }
+   134	  return catalog;
+   135	}
+   136	
+   137	const FacilityResource* FindFacilityResource(
+   138	    const FacilityCatalog& catalog, const std::string& resource_id) {
+   139	  for (const auto& resource : catalog.resources) {
+   140	    if (resource.id == resource_id) {
+   141	      return &resource;
+   142	    }
+   143	  }
+   144	  return nullptr;
+   145	}
+   146	
+   147	const FacilityResource* FindFirstAvailableResource(
+   148	    const FacilityCatalog& catalog, const std::string& resource_type,
+   149	    const std::vector<std::string>& unavailable_resource_ids) {
+   150	  for (const auto& resource : catalog.resources) {
+   151	    if (!resource.enabled || resource.type != resource_type) {
+   152	      continue;
+   153	    }
+   154	    bool unavailable = false;
+   155	    for (const auto& unavailable_id : unavailable_resource_ids) {
+   156	      if (resource.id == unavailable_id) {
+   157	        unavailable = true;
+   158	        break;
+   159	      }
+   160	    }
+   161	    if (!unavailable) {
+   162	      return &resource;
+   163	    }
+   164	  }
+   165	  return nullptr;
+   166	}
+   167	
+   168	bool ValidateFacilityCatalog(const FacilityCatalog& catalog, std::string* message) {
+   169	  std::unordered_set<std::string> ids;
+   170	  for (const auto& resource : catalog.resources) {
+   171	    if (resource.id.empty()) {
+   172	      if (message != nullptr) {
+   173	        *message = "facility resource id is empty";
+   174	      }
+   175	      return false;
+   176	    }
+   177	    if (resource.type.empty()) {
+   178	      if (message != nullptr) {
+   179	        *message = "facility resource type is empty: " + resource.id;
+   180	      }
+   181	      return false;
+   182	    }
+   183	    if (!ids.insert(resource.id).second) {
+   184	      if (message != nullptr) {
+   185	        *message = "duplicate facility resource id: " + resource.id;
+   186	      }
+   187	      return false;
+   188	    }
+   189	  }
+   190	  if (message != nullptr) {
+   191	    *message = "facility catalog ok";
+   192	  }
+   193	  return true;
+   194	}
+   195	
+   196	FacilityCatalogReloader::FacilityCatalogReloader(std::filesystem::path path)
+   197	    : path_(std::move(path)),
+   198	      watcher_(path_.string(), [this](const YAML::Node&) {
+   199	        // HotReloadWatcher 经 mtime 检测到变动后回调
+   200	        TryLoad(/*count_as_reload=*/true);
+   201	      }) {
+   202	  TryLoad(/*count_as_reload=*/false);
+   203	}
+   204	
+   205	bool FacilityCatalogReloader::Tick() {
+   206	  const std::size_t before = reload_count_;
+   207	  watcher_.Tick();
+   208	  if (!loaded_) {
+   209	    // 启动时缺失的文件可能在运行期间生成，补尝试加载
+   210	    TryLoad(/*count_as_reload=*/false);
+   211	  }
+   212	  return reload_count_ > before;
+   213	}
+   214	
+   215	std::string FacilityCatalogReloader::last_error() const {
+   216	  if (!last_error_.empty()) {
+   217	    return last_error_;
+   218	  }
+   219	  return watcher_.last_error();
+   220	}
+   221	
+   222	void FacilityCatalogReloader::TryLoad(bool count_as_reload) {
+   223	  if (path_.empty()) {
+   224	    return;
+   225	  }
+   226	  std::error_code ec;
+   227	  if (!std::filesystem::exists(path_, ec)) {
+   228	    last_error_ = "facility catalog file does not exist: " + path_.string();
+   229	    return;
+   230	  }
+   231	
+   232	  const auto loaded = LoadFacilityCatalog(path_);
+   233	  if (!loaded.has_value()) {
+   234	    last_error_ = "failed to load/validate facility catalog from: " + path_.string();
+   235	    return;
+   236	  }
+   237	
+   238	  catalog_ = *loaded;
+   239	  loaded_ = true;
+   240	  last_error_.clear();
+   241	  if (count_as_reload) {
+   242	    ++reload_count_;
+   243	  }
+   244	}
+   245	
+   246	}  // namespace amr_dispatcher_core::facility
+===== src/amr_dispatcher_core/src/dispatcher/dock_catalog.cpp =====
+     1	#include "amr_dispatcher_core/dispatcher/dock_catalog.hpp"
+     2	
+     3	namespace amr_dispatcher_core::dispatcher {
+     4	
+     5	void DockCatalog::AddDock(ChargingDock dock) {
+     6	  std::string id = dock.id;
+     7	  docks_[id] = std::move(dock);
+     8	}
+     9	
+    10	void DockCatalog::RemoveDock(const std::string& dock_id) {
+    11	  docks_.erase(dock_id);
+    12	}
+    13	
+    14	const ChargingDock* DockCatalog::FindDock(const std::string& dock_id) const {
+    15	  auto it = docks_.find(dock_id);
+    16	  if (it == docks_.end()) return nullptr;
+    17	  return &it->second;
+    18	}
+    19	
+    20	const ChargingDock* DockCatalog::FindAvailableDock() const {
+    21	  for (const auto& [_, d] : docks_) {
+    22	    if (d.enabled && !d.occupied) {
+    23	      return &d;
+    24	    }
+    25	  }
+    26	  return nullptr;
+    27	}
+    28	
+    29	bool DockCatalog::SetDockEnabled(const std::string& dock_id, bool enabled) {
+    30	  auto it = docks_.find(dock_id);
+    31	  if (it == docks_.end()) return false;
+    32	  it->second.enabled = enabled;
+    33	  return true;
+    34	}
+    35	
+    36	bool DockCatalog::OccupyDock(const std::string& dock_id, const std::string& robot_id) {
+    37	  auto it = docks_.find(dock_id);
+    38	  if (it == docks_.end() || !it->second.enabled || it->second.occupied) {
+    39	    return false;
+    40	  }
+    41	  it->second.occupied = true;
+    42	  it->second.current_robot_id = robot_id;
+    43	  return true;
+    44	}
+    45	
+    46	bool DockCatalog::ReleaseDock(const std::string& dock_id) {
+    47	  auto it = docks_.find(dock_id);
+    48	  if (it == docks_.end()) return false;
+    49	  it->second.occupied = false;
+    50	  it->second.current_robot_id.clear();
+    51	  return true;
+    52	}
+    53	
+    54	std::vector<ChargingDock> DockCatalog::ListDocks() const {
+    55	  std::vector<ChargingDock> list;
+    56	  list.reserve(docks_.size());
+    57	  for (const auto& [_, d] : docks_) {
+    58	    list.push_back(d);
+    59	  }
+    60	  return list;
+    61	}
+    62	
+    63	void DockCatalog::Clear() {
+    64	  docks_.clear();
+    65	}
+    66	
+    67	}  // namespace amr_dispatcher_core::dispatcher
+===== src/amr_dispatcher_core/src/workflow/dock_catalog.cpp =====
+     1	#include "amr_dispatcher_core/workflow/dock_catalog.hpp"
+     2	
+     3	#include <fstream>
+     4	#include <unordered_set>
+     5	
+     6	namespace amr_dispatcher_core::workflow {
+     7	namespace {
+     8	
+     9	using amr_dispatcher_core::facility::FacilityCatalog;
+    10	using amr_dispatcher_core::facility::FacilityResource;
+    11	using amr_dispatcher_core::facility::FacilityReservationMap;
+    12	using amr_dispatcher_core::facility::MissionResourceMap;
+    13	using amr_dispatcher_core::facility::ResourceReservation;
+    14	
+    15	std::string Trim(const std::string& value) {
+    16	  const auto first = value.find_first_not_of(" \t\r\n");
+    17	  if (first == std::string::npos) {
+    18	    return "";
+    19	  }
+    20	  const auto last = value.find_last_not_of(" \t\r\n");
+    21	  return value.substr(first, last - first + 1);
+    22	}
+    23	
+    24	std::optional<std::string> ValueAfterColon(const std::string& line, const std::string& key) {
+    25	  const std::string prefix = key + ":";
+    26	  if (line.rfind(prefix, 0) != 0) {
+    27	    return std::nullopt;
+    28	  }
+    29	  return Trim(line.substr(prefix.size()));
+    30	}
+    31	
+    32	bool ParseBool(const std::string& value) {
+    33	  return value == "true" || value == "True" || value == "1";
+    34	}
+    35	
+    36	}  // namespace
+    37	
+    38	std::optional<DockCatalog> LoadDockCatalog(const std::filesystem::path& path) {
+    39	  std::ifstream input(path);
+    40	  if (!input) {
+    41	    return std::nullopt;
+    42	  }
+    43	
+    44	  DockCatalog catalog;
+    45	  Dock current;
+    46	  bool in_dock = false;
+    47	  bool has_id = false;
+    48	  bool has_station = false;
+    49	  bool has_charger = false;
+    50	
+    51	  auto flush_dock = [&]() {
+    52	    if (in_dock && has_id && has_station && has_charger) {
+    53	      if (current.approach_station_id.empty()) {
+    54	        current.approach_station_id = current.station_id;
+    55	      }
+    56	      catalog.docks.push_back(current);
+    57	    }
+    58	    current = Dock{};
+    59	    in_dock = false;
+    60	    has_id = false;
+    61	    has_station = false;
+    62	    has_charger = false;
+    63	  };
+    64	
+    65	  std::string section;
+    66	  std::string line;
+    67	  while (std::getline(input, line)) {
+    68	    line = Trim(line);
+    69	    if (line.empty() || line.front() == '#') {
+    70	      continue;
+    71	    }
+    72	    if (line == "docks:") {
+    73	      flush_dock();
+    74	      section = "docks";
+    75	      continue;
+    76	    }
+    77	    if (line.rfind("- ", 0) == 0) {
+    78	      if (section != "docks") {
+    79	        continue;
+    80	      }
+    81	      flush_dock();
+    82	      in_dock = true;
+    83	      line = Trim(line.substr(2));
+    84	    }
+    85	    if (!in_dock) {
+    86	      continue;
+    87	    }
+    88	    if (auto value = ValueAfterColon(line, "id")) {
+    89	      current.id = *value;
+    90	      has_id = !current.id.empty();
+    91	      continue;
+    92	    }
+    93	    if (auto value = ValueAfterColon(line, "station_id")) {
+    94	      current.station_id = *value;
+    95	      has_station = !current.station_id.empty();
+    96	      continue;
+    97	    }
+    98	    if (auto value = ValueAfterColon(line, "approach_station_id")) {
+    99	      current.approach_station_id = *value;
+   100	      continue;
+   101	    }
+   102	    if (auto value = ValueAfterColon(line, "charger_resource_id")) {
+   103	      current.charger_resource_id = *value;
+   104	      has_charger = !current.charger_resource_id.empty();
+   105	      continue;
+   106	    }
+   107	    if (auto value = ValueAfterColon(line, "enabled")) {
+   108	      current.enabled = ParseBool(*value);
+   109	      continue;
+   110	    }
+   111	  }
+   112	  flush_dock();
+   113	
+   114	  std::string message;
+   115	  if (!ValidateDockCatalog(catalog, &message)) {
+   116	    return std::nullopt;
+   117	  }
+   118	  return catalog;
+   119	}
+   120	
+   121	const Dock* FindDock(const DockCatalog& catalog, const std::string& dock_id) {
+   122	  for (const auto& dock : catalog.docks) {
+   123	    if (dock.id == dock_id) {
+   124	      return &dock;
+   125	    }
+   126	  }
+   127	  return nullptr;
+   128	}
+   129	
+   130	const Dock* FindFirstEnabledDock(const DockCatalog& catalog) {
+   131	  for (const auto& dock : catalog.docks) {
+   132	    if (dock.enabled) {
+   133	      return &dock;
+   134	    }
+   135	  }
+   136	  return nullptr;
+   137	}
+   138	
+   139	bool ValidateDockCatalog(const DockCatalog& catalog, std::string* message) {
+   140	  std::unordered_set<std::string> ids;
+   141	  for (const auto& dock : catalog.docks) {
+   142	    if (dock.id.empty()) {
+   143	      if (message != nullptr) {
+   144	        *message = "dock id is empty";
+   145	      }
+   146	      return false;
+   147	    }
+   148	    if (dock.station_id.empty()) {
+   149	      if (message != nullptr) {
+   150	        *message = "dock station_id is empty: " + dock.id;
+   151	      }
+   152	      return false;
+   153	    }
+   154	    if (dock.charger_resource_id.empty()) {
+   155	      if (message != nullptr) {
+   156	        *message = "dock charger_resource_id is empty: " + dock.id;
+   157	      }
+   158	      return false;
+   159	    }
+   160	    if (!ids.insert(dock.id).second) {
+   161	      if (message != nullptr) {
+   162	        *message = "duplicate dock id: " + dock.id;
+   163	      }
+   164	      return false;
+   165	    }
+   166	  }
+   167	  if (message != nullptr) {
+   168	    *message = "dock catalog ok";
+   169	  }
+   170	  return true;
+   171	}
+   172	
+   173	DockStateProjection BuildDockStateProjection(
+   174	    const Dock& dock, const DockingStateMap& dock_states,
+   175	    const FacilityReservationMap& reservations) {
+   176	  DockStateProjection projection;
+   177	  projection.dock_id = dock.id;
+   178	  projection.station_id = dock.station_id;
+   179	  projection.approach_station_id = dock.approach_station_id;
+   180	  projection.charger_resource_id = dock.charger_resource_id;
+   181	  projection.enabled = dock.enabled;
+   182	  projection.available = dock.enabled && reservations.find(dock.charger_resource_id) == reservations.end();
+   183	  projection.state = dock.enabled ? "AVAILABLE" : "DISABLED";
+   184	
+   185	  const auto reservation = reservations.find(dock.charger_resource_id);
+   186	  if (reservation != reservations.end()) {
+   187	    projection.state = reservation->second.status;
+   188	    projection.mission_id = reservation->second.mission_id;
+   189	  }
+   190	  const auto runtime = dock_states.find(dock.id);
+   191	  if (runtime != dock_states.end()) {
+   192	    projection.state = runtime->second.state;
+   193	    projection.mission_id = runtime->second.mission_id;
+   194	  }
+   195	  return projection;
+   196	}
+   197	
+   198	DockListProjection BuildDockListProjection(
+   199	    const DockCatalog& catalog, const DockingStateMap& dock_states,
+   200	    const FacilityReservationMap& reservations, const bool include_disabled) {
+   201	  DockListProjection projection;
+   202	  projection.dock_ids.reserve(catalog.docks.size());
+   203	  projection.station_ids.reserve(catalog.docks.size());
+   204	  projection.approach_station_ids.reserve(catalog.docks.size());
+   205	  projection.charger_resource_ids.reserve(catalog.docks.size());
+   206	  projection.enabled.reserve(catalog.docks.size());
+   207	  projection.available.reserve(catalog.docks.size());
+   208	  projection.states.reserve(catalog.docks.size());
+   209	  projection.mission_ids.reserve(catalog.docks.size());
+   210	  for (const auto& dock : catalog.docks) {
+   211	    if (!include_disabled && !dock.enabled) {
+   212	      continue;
+   213	    }
+   214	    const auto state = BuildDockStateProjection(dock, dock_states, reservations);
+   215	    projection.dock_ids.push_back(state.dock_id);
+   216	    projection.station_ids.push_back(state.station_id);
+   217	    projection.approach_station_ids.push_back(state.approach_station_id);
+   218	    projection.charger_resource_ids.push_back(state.charger_resource_id);
+   219	    projection.enabled.push_back(state.enabled);
+   220	    projection.available.push_back(state.available);
+   221	    projection.states.push_back(state.state);
+   222	    projection.mission_ids.push_back(state.mission_id);
+   223	  }
+   224	  projection.message = "loaded " + std::to_string(projection.dock_ids.size()) + " dock(s)";
+   225	  return projection;
+   226	}
+   227	
+   228	}  // namespace amr_dispatcher_core::workflow

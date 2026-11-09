@@ -1,0 +1,104 @@
+#include "sync/interpolator.h"
+#include <mutex>
+#include <algorithm>
+#include <cmath>
+
+namespace xgrids {
+
+// ---------------- ImuInterpolator ----------------
+
+void ImuInterpolator::push(const ImuPacket& p) {
+    std::lock_guard<std::mutex> lk(mu_);
+    buf_.push_back(p);
+    if (buf_.size() > kMaxBuf) buf_.pop_front();
+}
+
+bool ImuInterpolator::estimate(int64_t t_us, ImuState& out) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (buf_.size() < 2) return false;
+    if (t_us < buf_.front().ts_us || t_us > buf_.back().ts_us) return false;
+
+    // 找 t 所在的 [i, i+1] 区间
+    auto it = std::lower_bound(buf_.begin(), buf_.end(), t_us,
+        [](const ImuPacket& p, int64_t t){ return p.ts_us < t; });
+    if (it == buf_.begin() || it == buf_.end()) return false;
+    size_t i = std::distance(buf_.begin(), it) - 1;
+    const auto& a = buf_[i];
+    const auto& b = buf_[i + 1];
+    double r = (double)(t_us - a.ts_us) / (b.ts_us - a.ts_us + 1);
+
+    out.ts_us = t_us;
+    out.ax = a.ax + r * (b.ax - a.ax);
+    out.ay = a.ay + r * (b.ay - a.ay);
+    out.az = a.az + r * (b.az - a.az);
+    out.gx = a.gx + r * (b.gx - a.gx);
+    out.gy = a.gy + r * (b.gy - a.gy);
+    out.gz = a.gz + r * (b.gz - a.gz);
+    // 位姿增量由 integrate() 负责，这里只输出采样值
+    out.rx = out.ry = out.rz = 0;
+    out.dx = out.dy = out.dz = 0;
+    return true;
+}
+
+bool ImuInterpolator::integrate(int64_t t0, int64_t t1, ImuState& out) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (buf_.size() < 2 || t1 <= t0) return false;
+
+    // 预积分：从 t0 到 t1 把角速度和线加速度积成旋转/位移增量
+    // 简化：矩形积分（真实产品会用 RK4/中值）
+    double rx = 0, ry = 0, rz = 0, dx = 0, dy = 0, dz = 0;
+    double vx = 0, vy = 0, vz = 0;
+    int64_t last_t = -1;
+    ImuPacket last_p{};
+
+    auto it = buf_.begin();
+    // 跳过 t0 之前的样本
+    while (it != buf_.end() && it->ts_us < t0) ++it;
+    if (it == buf_.end()) return false;
+
+    last_p = *it; last_t = it->ts_us;
+    ++it;
+    for (; it != buf_.end() && it->ts_us <= t1; ++it) {
+        double dt = (it->ts_us - last_t) / 1e6;
+        if (dt <= 0) continue;
+        // 角速度积分 -> 旋转增量（弧度）
+        rx += it->gx * dt; ry += it->gy * dt; rz += it->gz * dt;
+        // 线加速度积分 -> 速度 -> 位移（简化：忽略重力分离与坐标系旋转）
+        vx += it->ax * dt; vy += it->ay * dt; vz += it->az * dt;
+        dx += vx * dt; dy += vy * dt; dz += vz * dt;
+        last_t = it->ts_us;
+        last_p = *it;
+    }
+
+    out.ts_us = t1;
+    out.ax = last_p.ax; out.ay = last_p.ay; out.az = last_p.az;
+    out.gx = last_p.gx; out.gy = last_p.gy; out.gz = last_p.gz;
+    out.rx = rx; out.ry = ry; out.rz = rz;
+    out.dx = dx; out.dy = dy; out.dz = dz;
+    return true;
+}
+
+// ---------------- PoseExtrapolator ----------------
+
+void PoseExtrapolator::push_imu(const ImuPacket& p) { imu_.push(p); }
+
+bool PoseExtrapolator::pose_at(int64_t t_us, PosePoint& out) const {
+    ImuState s;
+    if (!imu_.estimate(t_us, s)) return false;
+    out.ts_us = t_us;
+    // 单点查询只给角速度对应的瞬时姿态增量近似
+    out.rx = s.gx; out.ry = s.gy; out.rz = s.gz;
+    out.dx = s.ax; out.dy = s.ay; out.dz = s.az;
+    return true;
+}
+
+bool PoseExtrapolator::integrate_scan(int64_t t0, int64_t t1, PosePoint& c) const {
+    ImuState s;
+    if (!imu_.integrate(t0, t1, s)) return false;
+    c.ts_us = (t0 + t1) / 2;
+    c.rx = s.rx; c.ry = s.ry; c.rz = s.rz;
+    c.dx = s.dx; c.dy = s.dy; c.dz = s.dz;
+    return true;
+}
+
+}  // namespace xgrids

@@ -1,0 +1,27 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "monitor/live_monitor.h"
+
+#include "ins_base/log.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveMonitor"
+}  // namespace
+
+InsErrorCode LiveMonitor::Start() {
+  // TODO(yinjun|2025-12-30): 启动监控线程
+  return kInsErrorCode_Comm_Success;
+}
+
+void LiveMonitor::Stop() {
+  // TODO(yinjun|2025-12-30): 停止监控线程
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

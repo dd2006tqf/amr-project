@@ -1,0 +1,52 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <functional>
+#include <mutex>
+#include "sync/sync_monitor.h"
+
+namespace xgrids {
+
+// 对应简历“扫描过程实时质量反馈”：
+// 根据运动状态/存储余量/传感器健康度，在设备端实时提示用户。
+// 目的：降低无效采集导致的数据作废率（糊片、存储溢出、过热）。
+
+enum class QualityLevel { kOk, kWarn, kError };
+
+struct QualityReport {
+    QualityLevel level = QualityLevel::kOk;
+    std::string message;           // 设备屏提示文案
+    double scanned_area_m2 = 0.0;
+    double remain_storage_gb = 0.0;
+    double remain_minutes = 0.0;
+};
+
+class QualityFeedback {
+public:
+    struct Input {
+        double motion_speed_mps;      // 运动速度（运动模糊检测）
+        double ambient_lux;           // 环境照度（光照不足检测）
+        double storage_free_gb;
+        double storage_rate_gbps;     // 当前写盘速率
+        int cpu_temp_x10;             // 温度（过热降频预警）
+        uint64_t sync_violations;     // 同步异常计数
+    };
+
+    using Callback = std::function<void(const QualityReport&)>;
+
+    explicit QualityFeedback(Callback cb);
+
+    // 周期调用（如 2Hz），根据输入更新质量提示
+    void update(const Input& in);
+
+    QualityReport current() const;
+
+private:
+    Callback cb_;
+    mutable std::mutex mu_;
+    QualityReport cur_;
+    double area_accum_ = 0.0;
+};
+
+}  // namespace xgrids

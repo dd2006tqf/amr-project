@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""夹具拓扑（供 L2 守护契约测试用）。
+
+放在 /tmp 而不是仓库里：它是一次性的测试输入，和 stations.yaml 的正式
+schema 一起演进才有价值；仓库里的 config/stations.yaml 是演示地图，
+用它会引入"测试依赖演示地图形状"的脆弱性。
+"""
+
+STATION_CATALOG = """version:
+  map_hash: "l2_supervision_fixture_v1"
+  graph_version: "v1"
+stations:
+  - id: "dock"
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+    type: "charger"
+  - id: "pick"
+    x: 4.0
+    y: 0.0
+    yaw: 0.0
+    type: "pickup"
+  - id: "drop"
+    x: 8.0
+    y: 0.0
+    yaw: 0.0
+    type: "dropoff"
+road_nodes:
+  - id: "r1"
+    x: 2.0
+    y: 0.0
+    yaw: 0.0
+  - id: "r2"
+    x: 6.0
+    y: 0.0
+    yaw: 0.0
+edges:
+  - from: "dock"
+    to: "r1"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [0.0, 0.0]
+      - [2.0, 0.0]
+  - from: "r1"
+    to: "pick"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [2.0, 0.0]
+      - [4.0, 0.0]
+  - from: "pick"
+    to: "r2"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [4.0, 0.0]
+      - [6.0, 0.0]
+  - from: "r2"
+    to: "drop"
+    distance_m: 2.0
+    bidirectional: true
+    enabled: true
+    polyline:
+      - [6.0, 0.0]
+      - [8.0, 0.0]
+"""

@@ -129,3 +129,14 @@ runtime/
 lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/build/
 lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/install/
 lower/leap_ros_mcu_driver/managed_components/micro_ros_espidf_component/micro_ros_dev/log/
+
+# --- Claude Code 工作环境的本地垃圾 ---
+# laneai-usage-proxy.py 在 LANEAI_RAW_DUMP 打开时会把每个 SSE 流式响应
+# 原样追加到这个文件。实测一天能长到 549 MB / 1362 万行，纯调试产物，
+# 且超过 GitHub 单文件 100 MB 硬上限，永远不要入库。
+.claude/laneai-raw-dump.log
+.claude/__pycache__/
+.claude/backups/
+.claude/shell-snapshots/
+.claude/paste-cache/
+.claude/sessions/

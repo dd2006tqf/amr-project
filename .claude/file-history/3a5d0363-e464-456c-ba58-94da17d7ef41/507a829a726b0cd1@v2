@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# 切流后 lifecycle 节点仍要能正常激活并发布 proto 数据。
+#
+# 这里守的是一个容易漏的失败模式：rosidl 侧不建了，若 Activate() 的逻辑
+# 依赖 rosidl 侧的状态（或调用方仍直接读 rosidl 句柄判断），节点会
+# 「激活成功但一条消息都不发」——编译通过、lifecycle 状态正常，
+# 只有真正订阅 proto 话题才看得出来。
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+DISP="$PKG/lib/amr_dispatcher_ros/dispatcher_node"
+
+"$DISP" --ros-args -r __node:=disp_cut_flow -p proto_rosidl_publish:=false \
+  > /tmp/disp_cut_flow.log 2>&1 &
+PID=$!
+sleep 4
+ros2 lifecycle set /disp_cut_flow configure > /dev/null 2>&1
+sleep 2
+ros2 lifecycle set /disp_cut_flow activate > /dev/null 2>&1
+sleep 2
+
+echo "=== lifecycle 状态（应为 active）==="
+ros2 lifecycle get /disp_cut_flow 2>/dev/null
+
+echo
+echo "=== 5s 内 /dispatcher/state_proto 的帧数（应 > 0，2Hz 定时器）==="
+timeout 8 ros2 topic hz /dispatcher/state_proto --window 10 2>/dev/null &
+HZPID=$!
+sleep 7
+kill "$HZPID" 2>/dev/null || true
+wait "$HZPID" 2>/dev/null || true
+
+echo
+echo "=== rosidl 侧话题不应存在 ==="
+ros2 topic list 2>/dev/null | grep -E '^/dispatcher/(state|events|topology_state)$' || echo "  (none — 符合预期)"
+
+echo
+echo "=== deactivate 后 proto 应停发 ==="
+ros2 lifecycle set /disp_cut_flow deactivate > /dev/null 2>&1
+sleep 2
+timeout 5 ros2 topic hz /dispatcher/state_proto --window 10 2>/dev/null || echo "  (no data after deactivate — 符合预期)"
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true

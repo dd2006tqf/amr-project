@@ -1,0 +1,86 @@
+#include "sync/frame_timestamp.h"
+#include <algorithm>
+
+namespace xgrids {
+
+FrameGrouper::FrameGrouper(int64_t window_us) : window_us_(window_us) {}
+
+bool FrameGrouper::push(const FrameMeta& f, SyncGroup& out) {
+    if (f.channel_id < 0 || f.channel_id >= 4) return false;
+
+    if (cur_anchor_ < 0) cur_anchor_ = f.ts_us;
+
+    // 新帧超出当前窗口 → 先把当前窗口作为不完整组（若有内容）输出，
+    // 再开新窗口。调用方负责把不完整组记进 manifest。
+    if (f.ts_us - cur_anchor_ > window_us_) {
+        out.anchor_ts_us = cur_anchor_;
+        out.max_skew_us = 0;
+        int64_t min_ts = -1, max_ts = -1;
+        int cnt = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (have_[i]) {
+                out.frames[i] = pending_[i];
+                cnt++;
+                if (min_ts < 0 || pending_[i].ts_us < min_ts) min_ts = pending_[i].ts_us;
+                if (pending_[i].ts_us > max_ts) max_ts = pending_[i].ts_us;
+            }
+        }
+        out.max_skew_us = (cnt > 1) ? (max_ts - min_ts) : 0;
+        out.complete = (cnt == 4);
+
+        // reset 并开新窗口（以当前帧为锚）
+        cur_anchor_ = f.ts_us;
+        for (int i = 0; i < 4; ++i) have_[i] = false;
+        pending_count_ = 0;
+        // 注意：out 返回了上一组；当前帧属于新组，下面照常放入
+    }
+
+    if (!have_[f.channel_id]) {
+        pending_[f.channel_id] = f;
+        have_[f.channel_id] = true;
+        pending_count_++;
+    }
+
+    if (pending_count_ == 4) {
+        // 四路齐全，组成立
+        out.anchor_ts_us = cur_anchor_;
+        int64_t min_ts = pending_[0].ts_us, max_ts = pending_[0].ts_us;
+        for (int i = 0; i < 4; ++i) {
+            out.frames[i] = pending_[i];
+            min_ts = std::min(min_ts, pending_[i].ts_us);
+            max_ts = std::max(max_ts, pending_[i].ts_us);
+        }
+        out.max_skew_us = max_ts - min_ts;
+        out.complete = true;
+
+        cur_anchor_ = -1;
+        for (int i = 0; i < 4; ++i) have_[i] = false;
+        pending_count_ = 0;
+        return true;
+    }
+    return false;
+}
+
+std::vector<SyncGroup> FrameGrouper::flush_incomplete() {
+    std::vector<SyncGroup> out;
+    if (pending_count_ == 0) return out;
+    SyncGroup g;
+    g.anchor_ts_us = cur_anchor_;
+    g.complete = false;
+    int64_t min_ts = -1, max_ts = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (have_[i]) {
+            g.frames[i] = pending_[i];
+            if (min_ts < 0 || pending_[i].ts_us < min_ts) min_ts = pending_[i].ts_us;
+            if (pending_[i].ts_us > max_ts) max_ts = pending_[i].ts_us;
+        }
+    }
+    g.max_skew_us = (pending_count_ > 1) ? (max_ts - min_ts) : 0;
+    out.push_back(g);
+    pending_count_ = 0;
+    cur_anchor_ = -1;
+    for (int i = 0; i < 4; ++i) have_[i] = false;
+    return out;
+}
+
+}  // namespace xgrids

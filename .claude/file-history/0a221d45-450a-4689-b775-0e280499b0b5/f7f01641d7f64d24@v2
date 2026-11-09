@@ -1,0 +1,38 @@
+import json, urllib.request
+
+def get(url, timeout=90):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def jget(url):
+    try:
+        return json.loads(get(url))
+    except Exception as e:
+        return {'__err__': str(e)}
+
+BR = 'allwinner-aiot-linux-5.15'
+
+print('=== 1) Kconfig 里 msgbox 的真实符号 ===')
+try:
+    s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/drivers/mailbox/Kconfig')
+    seg = s[s.find('SUN6I') - 400 if s.find('SUN6I') > 400 else 0:]
+    print(seg[:900])
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== 2) sun6i-msgbox.c 支持的 compatible ===')
+try:
+    s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/drivers/mailbox/sun6i-msgbox.c')
+    print('bytes:', len(s))
+    idx = s.find('of_device_id')
+    print(s[idx-200: idx+600] if idx > 0 else s[:600])
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== 3) hwspinlock 的 Kconfig 符号 ===')
+try:
+    s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/drivers/hwspinlock/Kconfig')
+    print(s[:700])
+except Exception as e:
+    print('ERR', e)

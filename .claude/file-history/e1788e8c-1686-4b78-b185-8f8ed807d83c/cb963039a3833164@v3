@@ -1,0 +1,21 @@
+# 本仓库不提交 sdkconfig（见 .gitignore）。全新克隆后若不写这份 defaults，
+# `idf.py build` 会按 IDF 内置默认值走 **esp32**（不是 esp32s3），
+# 于是 components/battery_adc/battery_adc.cpp:51 的
+# `adc_cali_curve_fitting_config_t` 找不到（该 API 只在 esp32s3/c3/c6 等
+# 带曲线拟合校准的型号上存在），编译直接失败。因此把 target 钉死在这里。
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---- 分区表 ----
+# 默认 partitions_singleapp.csv 的 factory 只有 1 MB。
+# 本固件全功能构建后 leap_ros.bin 约 1.06 MB
+# （text 892 KB + data 227 KB），会溢出约 57 KB：
+#     Error: app partition is too small for binary leap_ros.bin size 0x10e600
+#       - Part 'factory' 0/0 @ 0x10000 size 0x100000 (overflow 0xe600)
+# 改用 IDF 自带的 partitions_singleapp_large.csv（factory 1500K），
+# 余量约 418 KB（构建日志实测 28% free）。
+#
+# 代价：放弃 OTA 双分区。本仓库当前没有 OTA 流程
+# （scripts/ docker/ .github/ 里没有任何 idf.py 调用）。
+# 若将来要接 OTA，改成 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
+# （两个 1.5 MB app 分区，需 4 MB flash，且分区表起始偏移要相应调整）。
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

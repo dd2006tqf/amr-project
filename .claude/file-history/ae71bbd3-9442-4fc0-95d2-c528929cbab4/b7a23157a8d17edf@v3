@@ -1,0 +1,211 @@
+#include "backend/storage_backend.h"
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <cstring>
+#include <algorithm>
+#include "common/monotonic_clock.h"
+
+namespace xgrids {
+
+// CRC32（标准 IEEE 多项式，表驱动）
+static uint32_t crc_table[256];
+static bool crc_init = []{
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; ++j)
+            c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+        crc_table[i] = c;
+    }
+    return true;
+}();
+
+uint32_t StorageBackend::crc32(const void* data, size_t len) const {
+    uint32_t c = 0xFFFFFFFF;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < len; ++i)
+        c = crc_table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFF;
+}
+
+StorageBackend::StorageBackend(const std::string& root) : root_(root) {
+    mkdir(root_.c_str(), 0755);
+    (void)crc_init;
+}
+
+bool StorageBackend::begin_scan(const std::string& scan_id, int64_t start_ts_us,
+                                const char* device_sn, const char* calib_hash) {
+    cur_dir_ = root_ + "/" + scan_id;
+    if (mkdir(cur_dir_.c_str(), 0755) != 0) return false;
+
+    header_.scan_start_us = start_ts_us;
+    header_.scan_end_us = -1;
+    header_.num_channels = 4;
+    std::strncpy(header_.device_sn, device_sn ? device_sn : "UNKNOWN",
+                 sizeof(header_.device_sn) - 1);
+    std::strncpy(header_.calib_hash, calib_hash ? calib_hash : "",
+                 sizeof(header_.calib_hash) - 1);
+
+    for (int i = 0; i < 4; ++i) {
+        cam_files_[i] = cur_dir_ + "/ch" + std::to_string(i) + ".bin";
+        std::ofstream(cam_files_[i]);
+    }
+    lidar_file_ = cur_dir_ + "/lidar.bin";
+    imu_file_ = cur_dir_ + "/imu.bin";
+    index_file_ = cur_dir_ + "/index.bin";
+    header_file_ = cur_dir_ + "/header.bin";
+    { std::ofstream(lidar_file_); }
+    { std::ofstream(imu_file_); }
+    { std::ofstream(index_file_); }
+
+    scan_start_us_ = start_ts_us;
+    bytes_written_ = 0;
+    index_.clear();
+    last_rate_ts_us_ = start_ts_us;
+    last_rate_bytes_ = 0;
+    return true;
+}
+
+int64_t StorageBackend::write(const ImageFrame& f) {
+    if (f.meta.channel_id < 0 || f.meta.channel_id > 3) return -1;
+    std::ofstream o(cam_files_[f.meta.channel_id],
+                    std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+
+    // 帧头：ts + seq + w + h + len + crc(载荷)
+    uint32_t crc = crc32(f.yuv.data(), f.yuv.size());
+    uint32_t len = f.yuv.size();
+    o.write(reinterpret_cast<const char*>(&f.meta.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&f.meta.seq), 4);
+    o.write(reinterpret_cast<const char*>(&f.meta.width), 2);
+    o.write(reinterpret_cast<const char*>(&f.meta.height), 2);
+    o.write(reinterpret_cast<const char*>(&len), 4);
+    o.write(reinterpret_cast<const char*>(&crc), 4);
+    o.write(reinterpret_cast<const char*>(f.yuv.data()), len);
+
+    FrameIndex idx{f.meta.ts_us, off, len + kFrameHeadSize,
+                   (uint8_t)f.meta.channel_id, 0};
+    {
+        std::lock_guard<std::mutex> lk(index_mu_);
+        index_.push_back(idx);
+    }
+    bytes_written_ += kFrameHeadSize + len;
+    return off;
+}
+
+int64_t StorageBackend::write(const LidarFrame& f) {
+    std::ofstream o(lidar_file_, std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+    uint32_t payload = f.point_count * 12 + f.intensity.size();
+    uint32_t crc = crc32(f.xyz.data(), f.xyz.size() * 4);
+    o.write(reinterpret_cast<const char*>(&f.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&f.seq), 4);
+    o.write(reinterpret_cast<const char*>(&f.point_count), 4);
+    o.write(reinterpret_cast<const char*>(&crc), 4);
+    o.write(reinterpret_cast<const char*>(f.xyz.data()), f.point_count * 12);
+    o.write(reinterpret_cast<const char*>(f.intensity.data()), f.intensity.size());
+
+    FrameIndex idx{f.ts_us, off, payload + 20, 4, 0};
+    { std::lock_guard<std::mutex> lk(index_mu_); index_.push_back(idx); }
+    bytes_written_ += 20 + payload;
+    return off;
+}
+
+int64_t StorageBackend::write(const ImuPacket& p) {
+    std::ofstream o(imu_file_, std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+    o.write(reinterpret_cast<const char*>(&p.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&p.ax), 24);
+    FrameIndex idx{p.ts_us, off, 32, 5, 0};
+    { std::lock_guard<std::mutex> lk(index_mu_); index_.push_back(idx); }
+    bytes_written_ += 32;
+    return off;
+}
+
+StorageBackend::PacketInfo StorageBackend::finish_scan(
+    int64_t end_ts_us, const std::string& manifest_json) {
+    PacketInfo info;
+    info.scan_dir = cur_dir_;
+    info.start_ts_us = scan_start_us_;
+    info.end_ts_us = end_ts_us;
+    info.total_bytes = bytes_written_;
+    info.num_frames = index_.size();
+
+    // 写 manifest
+    std::ofstream(cur_dir_ + "/manifest.json") << manifest_json;
+
+    // 写帧索引（排序后）
+    {
+        std::lock_guard<std::mutex> lk(index_mu_);
+        std::sort(index_.begin(), index_.end(),
+                  [](const FrameIndex& a, const FrameIndex& b){
+                      return a.ts_us < b.ts_us; });
+        std::ofstream idx(index_file_, std::ios::binary);
+        uint32_t n = index_.size();
+        idx.write(reinterpret_cast<const char*>(&n), 4);
+        for (const auto& e : index_)
+            idx.write(reinterpret_cast<const char*>(&e), sizeof(e));
+    }
+
+    // 写包头
+    header_.scan_end_us = end_ts_us;
+    {
+        std::ofstream h(header_file_, std::ios::binary);
+        h.write(reinterpret_cast<const char*>(&header_), sizeof(header_));
+    }
+    return info;
+}
+
+std::vector<FrameIndex> StorageBackend::index_range(
+    int ch, int64_t t0, int64_t t1) const {
+    std::vector<FrameIndex> out;
+    std::lock_guard<std::mutex> lk(index_mu_);
+    for (const auto& e : index_)
+        if (e.channel == ch && e.ts_us >= t0 && e.ts_us <= t1)
+            out.push_back(e);
+    return out;
+}
+
+bool StorageBackend::read_frame(const FrameIndex& idx, ImageFrame& out) const {
+    std::ifstream f(cam_files_[idx.channel], std::ios::binary);
+    if (!f) return false;
+    f.seekg(idx.offset);
+    int64_t ts; uint32_t seq, len, crc; uint16_t w, h;
+    f.read(reinterpret_cast<char*>(&ts), 8);
+    f.read(reinterpret_cast<char*>(&seq), 4);
+    f.read(reinterpret_cast<char*>(&w), 2);
+    f.read(reinterpret_cast<char*>(&h), 2);
+    f.read(reinterpret_cast<char*>(&len), 4);
+    f.read(reinterpret_cast<char*>(&crc), 4);
+    out.meta = {idx.channel, ts, seq, len, w, h};
+    out.yuv.resize(len);
+    f.read(reinterpret_cast<char*>(out.yuv.data()), len);
+    return f.good() && crc32(out.yuv.data(), len) == crc;
+}
+
+bool StorageBackend::validate_crc(const FrameIndex& idx) const {
+    ImageFrame tmp;
+    return read_frame(idx, tmp);
+}
+
+double StorageBackend::free_gb() const {
+    struct statvfs vfs;
+    if (statvfs(root_.c_str(), &vfs) != 0) return 0;
+    return (double)vfs.f_bavail * vfs.f_frsize / (1 << 30);
+}
+
+double StorageBackend::current_write_rate_gbps() const {
+    std::lock_guard<std::mutex> lk(rate_mu_);
+    int64_t now = MonotonicClock::now_us();
+    if (last_rate_ts_us_ < 0 || now - last_rate_ts_us_ < 500'000)
+        return rate_gbps_;
+    double dt = (now - last_rate_ts_us_) / 1e6;
+    double gb = (bytes_written_ - last_rate_bytes_) / 1e9;
+    rate_gbps_ = gb / dt;
+    last_rate_ts_us_ = now;
+    last_rate_bytes_ = bytes_written_;
+    return rate_gbps_;
+}
+
+}  // namespace xgrids

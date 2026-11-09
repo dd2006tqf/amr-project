@@ -1,0 +1,69 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_idle.h"
+
+#include "controller/config_manager.h"
+#include "ins_base/log.h"
+#include "state_machine/live_state_prepare.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStateIdle"
+}  // namespace
+
+LiveStateIdle::LiveStateIdle() : LiveStateMachine(LiveBroadcastState::kIdle) {}
+
+void LiveStateIdle::OnEntry() {
+  ILOGS_I << "Entering Idle state";
+  // 重载直播模块配置
+  if (config_manager_) {
+    config_manager_->OnConfigChanged(LiveBroadcastState::kIdle);
+  }
+}
+
+void LiveStateIdle::OnExit() { ILOGS_I << "Exiting Idle state"; }
+
+void LiveStateIdle::OnEvent(const EventPrepareRequest& event) {
+  ILOGS_I << "Received EventPrepareRequest in Idle state";
+
+  // 转换到Prepare状态
+  ChangeState<LiveStatePrepare>();
+  static_cast<void>(event);
+}
+
+void LiveStateIdle::OnEvent(const EventResume& event) {
+  ILOGS_I << "Received EventResume in Idle state";
+
+  // 检查是否有续播记录
+  if (!resume_manager_) {
+    ILOGS_E << "ResumeManager not set";
+    return;
+  }
+
+  // TODO(yinjun|2025-12-30): 从ResumeManager加载上次配置
+  // TODO(yinjun|2025-12-30): 恢复上次的RTMP地址和直播参数
+
+  // 转换到Prepare状态
+  ChangeState<LiveStatePrepare>();
+  static_cast<void>(event);
+}
+
+void LiveStateIdle::OnEvent(const EventDiscardResume& event) {
+  ILOGS_I << "Received EventDiscardResume in Idle state";
+
+  // 清除续播记录
+  if (resume_manager_) {
+    // TODO(yinjun|2025-12-30): resume_manager_->ClearResumeRecord();
+  }
+
+  // 保持在Idle状态
+  static_cast<void>(event);
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

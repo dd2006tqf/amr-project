@@ -1,0 +1,43 @@
+// 验证：同一 protobuf 类型能否作为 create_subscription<T> 的类型参数。
+#include <cstdint>
+#include <memory>
+
+#include "spike/telemetry_typesupport.hpp"
+
+namespace
+{
+
+class ProtoListener : public rclcpp::Node
+{
+public:
+  explicit ProtoListener(const rclcpp::NodeOptions & options)
+  : rclcpp::Node("proto_listener", options)
+  {
+    sub_ = this->create_subscription<amr_dispatcher::proto::FleetTelemetry>(
+      "spike_telemetry", rclcpp::QoS(10),
+      [this](const amr_dispatcher::proto::FleetTelemetry & msg) { this->on_msg(msg); });
+  }
+
+private:
+  void on_msg(const amr_dispatcher::proto::FleetTelemetry & msg)
+  {
+    const int64_t dt_ns = this->get_clock()->now().nanoseconds() - msg.stamp_ns();
+    RCLCPP_INFO(
+      this->get_logger(),
+      "recv seq=%llu vehicle=%s x=%.2f payload=%zu latency=%.2fms",
+      static_cast<unsigned long long>(msg.sequence()), msg.vehicle_id().c_str(),
+      msg.x_m(), msg.payload().size(), static_cast<double>(dt_ns) / 1e6);
+  }
+
+  rclcpp::Subscription<amr_dispatcher::proto::FleetTelemetry>::SharedPtr sub_;
+};
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<ProtoListener>(rclcpp::NodeOptions{}));
+  rclcpp::shutdown();
+  return 0;
+}

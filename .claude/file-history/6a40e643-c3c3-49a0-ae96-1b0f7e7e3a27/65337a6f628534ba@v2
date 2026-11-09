@@ -1,0 +1,171 @@
+# Phase 7 — 运行时交通协调与死锁恢复 (Runtime Traffic Coordination & Recovery)
+
+> 本文档为 Phase 7 专属实施计划。Phase 0～6 已全部完成、打标 `batch-6-green` 并通过 1004 项测试。
+
+## Context
+
+多车并发、VDA 5050 接入、选车三态、状态持久化与网关加固均已闭环。但在真实工业现场运行时，系统仍缺少一条核心闭环：
+**当多台 AMR 在途执行时，遇到通道阻塞、资源冲突或相互等待时，调度系统能否主动调整路线、协调路权并让任务安全继续执行？**
+
+### 现状痛点
+1. **在途任务零等待语义**：`pending_wait_` 目前只记录“排队出队时预留被拒”的任务。在途运行中的车辆一旦前方受阻，系统没有在途等待模型，无法形成在途-在途、在途-排队的真实 Wait-For Graph (WFG)。
+2. **重规划绕行缺少事务闭环**：`FindRoutePathAvoiding` 在 core 中就绪且有单测，但生产未接入。如果在途车辆贸然重规划，极易出现“先释放旧锁，新路线预约不上导致车辆失去路权无处可去”或“重规划直接下发空路径打死底盘”。
+3. **死锁恢复手段单一**：`DeadlockTick` 遇到互斥死锁只支持单向的 Pause / Cancel / Retry，缺乏“优先绕行、无解等待、最终报警”的分级恢复阶梯。
+
+### 核心设计原则
+1. **优先复用已有能力**：复用 `catalog::FindRoutePathAvoiding` 与 `DeadlockDetector`（WFG DFS），不引入外部复杂搜索算法（暂不引入网格 A*，CBS 作为高级插件在底层闭环完成后再接入）。
+2. **两阶段资源置换（Two-Phase Resource Swap）**：**新路线路权预约成功前，绝不释放当前所在路段，也绝不下发新路径**；只释放未来未到达路段，且只在成功后释放。
+3. **安全停靠锚点**：车辆只在已确认的安全节点/道口发起转向重规划，不进行越界或无保护倒车。
+4. **兼容红线**：不改变单车模式/未阻塞任务的行为；所有新增逻辑下沉 `amr_dispatcher_core`（纯函数，宿主 `ctest` 覆盖），ROS 侧仅作为执行驱动。
+
+---
+
+## 阶段规划 (P0 → P1 → P2 → P3)
+
+### P0：建立运行时交通状态模型与在途等待图扩展
+
+#### 目标
+为在途任务建立交通协调状态机，扩展死锁检测器的 WFG 输入，使在途等待能够被系统识别。
+
+#### 核心改动 (Core)
+1. **`src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/traffic_coordination_model.hpp`**
+   ```cpp
+   namespace amr_dispatcher_core::workflow {
+   enum class TrafficCoordinationState {
+     kRunning,              // 正常行进
+     kBlocked,              // 前方阻塞或资源冲突
+     kReplanning,           // 正在重规划替代路线
+     kWaitingForResource,   // 在安全等待点等待路权释放
+     kRecoveryFailed,       // 无替代路线且无法等待，告警挂起
+   };
+   
+   struct InFlightProgressReport {
+     std::string mission_id;
+     std::string vehicle_id;
+     std::string last_confirmed_node;      // 车辆当前/最近停靠的安全节点
+     std::vector<std::string> remaining_path; // 剩余待行驶节点
+     std::vector<std::string> blocked_edges;  // 前方受阻的边 (route_edge:A__B)
+   };
+   }
+   ```
+2. **`AssembleDeadlockSnapshot` 升级**：
+   - 将在途任务在 `kWaitingForResource` 状态下等待的前方资源列表注入 `allocation_graph.waiting_for`。
+   - `allocation_graph.held_by` 维持 `reservation_table_->Snapshot()` 中的实际持有者。
+   - 使得 `DeadlockDetector::DetectCycles()` 能够原生检测到**在途车辆之间的死锁环**。
+
+#### 单元测试
+- `test/unit/test_traffic_coordination_model.cpp`：状态机流转合法性校验、在途等待注入 WFG 环检测单测。
+
+---
+
+### P1：在途任务安全重规划事务 (In-Flight Rerouting Transaction)
+
+#### 目标
+实现纯函数重规划决策 `PlanInFlightRerouteTransaction`，以及 ROS 侧向 local_sim 和 VDA 5050 下发路线更新。
+
+#### 核心改动 (Core & ROS)
+1. **`src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/in_flight_reroute_planning.hpp`**
+   ```cpp
+   struct InFlightRerouteRequest {
+     std::string mission_id;
+     std::string vehicle_id;
+     std::string current_safe_node;       // 当前所在安全节点（重规划起点）
+     std::string destination_node;        // 最终目标点
+     std::vector<std::string> current_held_locks; // 当前该任务持有的所有路权锁
+     std::vector<std::string> passed_nodes;       // 已经驶过的节点
+     std::unordered_set<std::string> blocked_edge_keys; // 冲突/受阻边
+     const catalog::StationCatalog* catalog = nullptr;
+   };
+
+   struct InFlightRerouteDecision {
+     enum class Outcome {
+       kRerouteReady,     // 找到替代路线并规划出新锁
+       kNoAlternative,    // 拓扑上无可用替代路线
+       kInvalidStart,     // 起始安全节点未知
+     };
+     Outcome outcome = Outcome::kNoAlternative;
+     std::vector<std::string> new_route_path;     // 从当前节点到终点的新路径
+     std::vector<std::string> new_required_locks; // 新路径所需的边锁与节点锁
+     std::vector<std::string> obsolete_locks;     // 原路线中未来不再需要的旧锁
+     std::string message;
+   };
+
+   InFlightRerouteDecision PlanInFlightReroute(const InFlightRerouteRequest& request);
+   ```
+2. **两阶段资源置换落地流程（ROS `dispatcher_node`）**：
+   - 步骤 1：调用 `PlanInFlightReroute` 计算 `new_required_locks` 和 `obsolete_locks`；
+   - 步骤 2：对 `new_required_locks` 调用 `reservation_table_->Reserve(mission_id, new_required_locks)`；
+   - 步骤 3：
+     - **若 Reserve 失败**：不释放任何既有锁！将任务标为 `kWaitingForResource`，记录进在途等待队列；
+     - **若 Reserve 成功**：
+       - 调用 `reservation_table_->ReleaseResources(mission_id, obsolete_locks)` 释放废弃锁；
+       - 更新 `mission_route_paths_[mission_id]`；
+       - 向车辆发布新航线：
+         - **local_sim**：裁剪出当前位置至终点的新 path，经 `PublishPlanForVehicle(vid, path)` 下发；
+         - **VDA 5050**：自增 `vda5050_next_order_update_id_[vid]`，重新调用 `BuildVda5050OrderFromPath` 发布更新订单。
+
+#### 单元测试
+- `test/unit/test_in_flight_reroute_planning.cpp`：
+  - 成功绕行并准确算出 `new_required_locks` 与 `obsolete_locks`；
+  - 保留车辆当前所在的节点锁不被划入 `obsolete_locks`；
+  - 拓扑阻断无解时返回 `kNoAlternative`。
+
+---
+
+### P2：多车等待协调与死锁分级恢复
+
+#### 目标
+完善多车竞争和死锁检测后的处置闭环。
+
+#### 核心逻辑 (Core & ROS)
+1. **分级恢复策略矩阵**：
+   - **Level 1（让行等待）**：若在途车遇到单向资源冲突（非环），进入 `kWaitingForResource`，车辆在道口节点停车等待，前车离开释放锁后触发唤醒；
+   - **Level 2（破环重规划）**：`DeadlockTick` 检测到 WFG 互斥死锁环时：
+     - 识别环中涉及的任务；
+     - 优先选取重规划代价最小或优先级较低的任务尝试 `PlanInFlightReroute`；
+     - 成功则完成资源置换与路线重下发，破除死锁环；
+   - **Level 3（安全驻车挂起）**：若死锁环内所有任务均无替代路线（如双向死胡同窄道），下发停车路径，置 `kRecoveryFailed` 并挂起；
+   - **Level 4（人工报警）**：记录审计日志，自增 `/metrics` 计数器 `amr_deadlock_unresolvable_total`。
+
+#### 单元测试
+- `test/unit/test_traffic_recovery_coordinator.cpp`：
+  - 针对两车互锁、三车循环等待的场景，验证能够准确选定绕行者并解除环路；
+  - 验证在无可替代路径时安全回退至挂起状态。
+
+---
+
+### P3：全流程端到端集成验证与矩阵测试
+
+#### 验证矩阵
+1. **单测覆盖**：
+   - 核心纯逻辑单测全绿（覆盖状态机、在途 WFG 注入、两阶段置换算法）。
+2. **ROS 契约回归**：
+   - 确保原有的 1004 个测试用例（包括 `test_lifecycle_contracts`、BT 单测、tools 单测等）100% 保持通过。
+3. **集成脚本与 E2E**：
+   - 编写 `test/integration/test_traffic_coordination_pipeline.cpp`：模拟两车在路网中遭遇通道封闭，触发在途重规划，成功完成任务。
+   - 编写 `scripts/check_traffic_coordination_e2e.sh`（独立域 89）：
+     - 场景 1：在途单车前方边动态加锁（封路），断言车辆收到新路线并安全绕行到达目标；
+     - 场景 2：双车窄道相向冲突，断言死锁检测器捕获环路、选车重规划绕行、旧未来锁释放、两车均成功到达。
+
+---
+
+## 验证与验收准则
+
+| 检验项 | 命令 | 预期 |
+|---|---|---|
+| Core 单测 | `ctest --test-dir build/core` | 全绿（原 868 + 新增 ~25 个全部 PASS） |
+| ROS 单测 | `colcon test --packages-select amr_dispatcher_ros` | 30 + 新增全绿 |
+| 原有 E2E 回归 | `./scripts/check_rest_gateway_hardening.sh` 等 | 保持 100% PASS |
+| 新增交通协调 E2E | `./scripts/check_traffic_coordination_e2e.sh` | EXIT=0，断言在途重规划、锁置换与死锁破环成功 |
+| 标签归档 | `git tag phase-7-green` | 正式归档 Phase 7 |
+
+---
+
+## 提交批次规划
+
+1. `feat(core): 运行时交通协调状态模型与在途等待语义` (P0)
+2. `feat(core): 在途任务安全重规划事务决策纯函数` (P1-core)
+3. `feat(ros): 接入两阶段资源置换与在途航线更新` (P1-ros)
+4. `feat(core+ros): 死锁恢复接入拓扑绕行破环与分级处置` (P2)
+5. `test(e2e): 新增多车交通协调与在途死锁恢复集成测试` (P3)
+6. `docs: 更新 EXTENSION_ROADMAP 与 API 文档`

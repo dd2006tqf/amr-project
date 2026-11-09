@@ -1,0 +1,281 @@
+#pragma once
+
+#include "assurance/network_experience.hpp"
+#include "network_quality_result.hpp"
+#include <string>
+#include <sstream>
+#include <iomanip>
+
+namespace weaknet {
+
+/**
+ * @brief 唯一无状态兼容适配器 (LegacyAdapter)
+ *
+ * CR-1, CR-2, CR-3: 将内部唯一的 NetworkExperience 映射为：
+ * 1. 旧 NetworkQualityResult (供 DatabaseManager & 单元测试)
+ * 2. 旧 HealthCheck JSON 响应 (供 D-Bus HealthCheck)
+ * 3. 旧 NetworkQualityChanged 信号事件载荷 (供 EventManager)
+ */
+class LegacyAdapter {
+public:
+    static weaknet_dbus::NetworkQualityLevel toLegacyLevel(const NetworkExperience& exp) {
+        switch (exp.overall) {
+            case HealthState::GOOD:
+                return (exp.display_score >= 90) ? weaknet_dbus::NetworkQualityLevel::EXCELLENT
+                                                 : weaknet_dbus::NetworkQualityLevel::GOOD;
+            case HealthState::DEGRADED:
+                return weaknet_dbus::NetworkQualityLevel::FAIR;
+            case HealthState::BAD:
+                return weaknet_dbus::NetworkQualityLevel::POOR;
+            case HealthState::UNKNOWN:
+            default:
+                return weaknet_dbus::NetworkQualityLevel::UNKNOWN;
+        }
+    }
+
+    static std::string toLegacyLevelName(weaknet_dbus::NetworkQualityLevel level) {
+        switch (level) {
+            case weaknet_dbus::NetworkQualityLevel::EXCELLENT: return "EXCELLENT";
+            case weaknet_dbus::NetworkQualityLevel::GOOD: return "GOOD";
+            case weaknet_dbus::NetworkQualityLevel::FAIR: return "FAIR";
+            case weaknet_dbus::NetworkQualityLevel::POOR: return "POOR";
+            case weaknet_dbus::NetworkQualityLevel::UNKNOWN:
+            default: return "UNKNOWN";
+        }
+    }
+
+    static std::string toHealthCheckJson(const NetworkExperience& exp,
+                                        int rtt_ms = -1,
+                                        double tcp_loss = 0.0,
+                                        int rssi_dbm = -1000,
+                                        double jitter_ms = 0.0,
+                                        double median_rtt_ms = -1.0,
+                                        const std::string& resp_reason = "") {
+        weaknet_dbus::NetworkQualityLevel legacyLevel = toLegacyLevel(exp);
+        std::string levelName = toLegacyLevelName(legacyLevel);
+
+        std::ostringstream json;
+        json << "{\"success\":true,\"data\":{";
+        json << "\"interface\":\"" << exp.iface << "\",";
+        json << "\"quality_score\":" << std::fixed << std::setprecision(1) << static_cast<double>(exp.display_score) << ",";
+        json << "\"rtt_ms\":" << rtt_ms << ",";
+        json << "\"tcp_loss_rate\":" << std::fixed << std::setprecision(2) << (tcp_loss >= 0 ? tcp_loss : 0.0) << ",";
+        json << "\"rssi_dbm\":" << rssi_dbm << ",";
+        json << "\"rssi_estimated\":false,";
+        json << "\"rssi_source\":\"nl80211\",";
+        json << "\"traffic_bps\":0,";
+        json << "\"traffic_pps\":0,";
+        json << "\"active_flows\":0,";
+        json << "\"jitter_ms\":" << std::fixed << std::setprecision(1) << (jitter_ms >= 0.0 ? jitter_ms : 0.0) << ",";
+        json << "\"median_rtt_ms\":" << std::fixed << std::setprecision(1) << median_rtt_ms << ",";
+        json << "\"assessment_reason\":\"" << (resp_reason.empty() ? exp.responsiveness.reason : resp_reason) << "\",";
+        json << "\"quality_level\":" << static_cast<int>(legacyLevel) << ",";
+        json << "\"link_quality\":\"Good\",";
+        json << "\"overall_quality\":\"" << levelName << "\",";
+        json << "\"overall_score\":" << std::fixed << std::setprecision(1) << static_cast<double>(exp.display_score) << ",";
+        json << "\"rf_applicability\":\"" << applicabilityToString(exp.rf_health.applicability) << "\",";
+        json << "\"assessment_profile\":\"" << assessmentProfileToString(exp.assessment_profile) << "\",";
+
+        json << "\"issues\":[";
+        std::vector<std::string> all_issues = exp.warnings;
+        if (exp.primary_issue.has_value()) {
+            all_issues.insert(all_issues.begin(), exp.primary_issue.value());
+        }
+        for (size_t i = 0; i < all_issues.size(); ++i) {
+            json << "\"" << all_issues[i] << "\"";
+            if (i + 1 < all_issues.size()) json << ",";
+        }
+        json << "],";
+
+        json << "\"score_model\":\"assurance_v2\"";
+        json << "}}";
+        return json.str();
+    }
+
+    // 保留 Phase 1 的旧结果适配接口；HealthCheck 主路径使用 assurance_v2。
+    static weaknet_dbus::NetworkQualityResult toQualityResult(const NetworkExperience& exp,
+                                                            int rtt_ms = -1,
+                                                            double tcp_loss = 0.0,
+                                                            int rssi_dbm = -1000,
+                                                            double jitter_ms = 0.0,
+                                                            double median_rtt_ms = -1.0) {
+        weaknet_dbus::NetworkQualityResult res;
+        res.level = toLegacyLevel(exp);
+        res.levelName = toLegacyLevelName(res.level);
+        res.score = static_cast<double>(exp.display_score);
+        if (exp.primary_issue.has_value()) {
+            res.issues.push_back(exp.primary_issue.value());
+        }
+        for (const auto& w : exp.warnings) {
+            res.issues.push_back(w);
+        }
+        res.details = toHealthCheckJson(exp, rtt_ms, tcp_loss, rssi_dbm, jitter_ms, median_rtt_ms);
+        return res;
+    }
+
+    static std::string toExperienceJsonV1(const NetworkExperience& exp) {
+        std::ostringstream json;
+        json << "{\"schema_version\":1,";
+        json << "\"interface\":\"" << exp.iface << "\",";
+        json << "\"overall\":{";
+        json << "\"state\":\"" << healthStateToString(exp.overall) << "\",";
+        json << "\"coverage\":\"" << coverageToString(exp.overall_coverage) << "\",";
+        json << "\"display_score\":" << exp.display_score;
+        json << "},";
+
+        auto dump_sle = [&json](const char* key, const SleResult& sle) {
+            json << "\"" << key << "\":{";
+            json << "\"state\":\"" << healthStateToString(sle.state) << "\",";
+            json << "\"coverage\":\"" << coverageToString(sle.coverage) << "\",";
+            json << "\"applicability\":\"" << applicabilityToString(sle.applicability) << "\",";
+            json << "\"reason\":\"" << sle.reason << "\",";
+            json << "\"evidence\":[";
+            for (size_t i = 0; i < sle.evidence.size(); ++i) {
+                json << "{\"metric\":\"" << sle.evidence[i].metric << "\",\"value\":" << sle.evidence[i].value << ",\"detail\":\"" << sle.evidence[i].detail << "\"}";
+                if (i + 1 < sle.evidence.size()) json << ",";
+            }
+            json << "]}";
+        };
+
+        json << "\"sle\":{";
+        dump_sle("ip_reachability", exp.ip_reachability);
+        json << ",";
+        dump_sle("responsiveness", exp.responsiveness);
+        json << ",";
+        dump_sle("reliability", exp.reliability);
+        json << ",";
+        dump_sle("rf_health", exp.rf_health);
+        json << "},";
+
+        json << "\"warnings\":[";
+        for (size_t i = 0; i < exp.warnings.size(); ++i) {
+            json << "\"" << exp.warnings[i] << "\"";
+            if (i + 1 < exp.warnings.size()) json << ",";
+        }
+        json << "],";
+
+        json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
+        json << "}";
+        return json.str();
+    }
+
+    static std::string toExperienceJsonV2(const NetworkExperience& exp) {
+        std::ostringstream json;
+        json << "{\"schema_version\":2,";
+        json << "\"interface\":\"" << exp.iface << "\",";
+        json << "\"assessment_profile\":\"" << assessmentProfileToString(exp.assessment_profile) << "\",";
+        json << "\"overall\":{";
+        json << "\"state\":\"" << healthStateToString(exp.overall) << "\",";
+        json << "\"coverage\":\"" << coverageToString(exp.overall_coverage) << "\",";
+        json << "\"display_score\":" << exp.display_score;
+        json << "},";
+
+        auto dump_sle = [&json](const char* key, const SleResult& sle) {
+            json << "\"" << key << "\":{";
+            json << "\"state\":\"" << healthStateToString(sle.state) << "\",";
+            json << "\"coverage\":\"" << coverageToString(sle.coverage) << "\",";
+            json << "\"applicability\":\"" << applicabilityToString(sle.applicability) << "\",";
+            json << "\"reason\":\"" << sle.reason << "\",";
+            json << "\"evidence\":[";
+            for (size_t i = 0; i < sle.evidence.size(); ++i) {
+                json << "{\"metric\":\"" << sle.evidence[i].metric << "\",\"value\":" << sle.evidence[i].value << ",\"detail\":\"" << sle.evidence[i].detail << "\"}";
+                if (i + 1 < sle.evidence.size()) json << ",";
+            }
+            json << "]}";
+        };
+
+        json << "\"network_health\":{";
+        dump_sle("ip_reachability", exp.ip_reachability);
+        json << ",";
+        dump_sle("responsiveness", exp.responsiveness);
+        json << ",";
+        dump_sle("reliability", exp.reliability);
+        json << ",";
+        dump_sle("rf_health", exp.rf_health);
+        json << "},";
+
+        json << "\"service_health\":{";
+        dump_sle("dns", exp.dns_service);
+        json << ",";
+        dump_sle("tcp_connect", exp.tcp_connect);
+        json << ",";
+        dump_sle("tcp_rtt", exp.tcp_rtt);
+        json << ",";
+        dump_sle("http_access", exp.http_access);
+        json << ",";
+        dump_sle("captive_portal", exp.captive_portal);
+        json << ",";
+        dump_sle("active_dns", exp.active_dns);
+        json << ",";
+        dump_sle("active_tcp", exp.active_tcp);
+        json << ",";
+        dump_sle("active_https", exp.active_https);
+        json << ",";
+        dump_sle("active_portal", exp.active_portal);
+        json << "},";
+
+        json << "\"warnings\":[";
+        for (size_t i = 0; i < exp.warnings.size(); ++i) {
+            json << "\"" << exp.warnings[i] << "\"";
+            if (i + 1 < exp.warnings.size()) json << ",";
+        }
+        json << "],";
+
+        // 观测者降级归因（机器可读）。
+        //
+        // 为什么必须进这里：该字段此前只写进 NetworkExperience，而
+        // toExperienceJsonV2 是 GetNetworkExperience 的唯一出口
+        // （dbus_service.cpp:923）——不序列化就等于没有任何消费者能读到，
+        // 是标准的孤儿字段。归因值域是四个固定字符串，第 2 层判定
+        // （observer_attribution.hpp:65-80）保证不会出现别的值。
+        json << "\"observer_attribution\":\""
+             << observerAttributionToString(exp.observer_attribution) << "\",";
+        json << "\"observer_attribution_detail\":"
+             << "\"" << exp.observer_attribution_detail << "\",";
+
+        // 采集端热状态归因（机器可读）。
+        //
+        // 与 observer_attribution 同一个理由必须进这里：该字段写进
+        // NetworkExperience 后，本函数是 GetNetworkExperience 的唯一出口，
+        // 不序列化就是孤儿字段。两者刻意并列而非合并成一个字段——
+        // "CPU 被任务占满"与"CPU 被硬件限频"是不同成因，合并会丢信息。
+        json << "\"thermal_attribution\":\""
+             << thermalAttributionToString(exp.thermal_attribution) << "\",";
+        json << "\"thermal_attribution_detail\":"
+             << "\"" << exp.thermal_attribution_detail << "\",";
+        json << "\"thermal_issues\":[";
+        for (size_t i = 0; i < exp.thermal_issues.size(); ++i) {
+            json << "\"" << exp.thermal_issues[i] << "\"";
+            if (i + 1 < exp.thermal_issues.size()) json << ",";
+        }
+        json << "],";
+
+        // 视频 QoE 归因（业务侧体验）。
+        //
+        // 与前两个归因同一个理由必须进这里：本函数是 GetNetworkExperience
+        // 的唯一出口，不序列化就是孤儿字段。三者刻意并列而**不合并**：
+        //   observer_attribution → CPU 被任务占满
+        //   thermal_attribution  → CPU 被硬件限频
+        //   video_qoe_attribution→ 用户看到的画面卡不卡
+        // 这是三个不同成因，合并会丢信息。
+        //
+        // 默认 NONE（无摄像头 / 未启用帧源）。NONE 不是"坏"，是"没有结论"，
+        // 上层必须呈现为 unavailable，绝不能当成 healthy。
+        json << "\"video_qoe_attribution\":\""
+             << videoQoeAttributionToString(exp.video_qoe_attribution) << "\",";
+        json << "\"video_qoe_attribution_detail\":"
+             << "\"" << exp.video_qoe_attribution_detail << "\",";
+        json << "\"video_qoe_issues\":[";
+        for (size_t i = 0; i < exp.video_qoe_issues.size(); ++i) {
+            json << "\"" << exp.video_qoe_issues[i] << "\"";
+            if (i + 1 < exp.video_qoe_issues.size()) json << ",";
+        }
+        json << "],";
+
+        json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
+        json << "}";
+        return json.str();
+    }
+};
+
+} // namespace weaknet

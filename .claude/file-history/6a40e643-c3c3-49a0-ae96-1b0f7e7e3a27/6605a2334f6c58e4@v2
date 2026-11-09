@@ -1,0 +1,25 @@
+# Subagent Execution Ledger: VDA 5050 Fleet Protocol Adapter
+
+Plan: `docs/superpowers/plans/2026-10-20-vda5050-fleet-adapter.md`
+Spec: `docs/superpowers/specs/vda5050_fleet_adapter.md`
+Branch: `feat/vda5050-fleet-adapter`
+Started: 2026-10-20
+
+## Tasks Progress
+
+| Task | Description | Status | Commit | Review Status |
+|---|---|---|---|---|
+| Task 1 | 核心库抽象车队控制接口与数据模型 (IVehicleAdapter) | Completed | `0b6c84e` | PASSED (574 tests pass) |
+| Task 2 | 纯 C++ VDA 5050 报文序列化与反序列化引擎 | Completed | `080b488` + `6b30d8c` | PASSED (C1/I1/I2/I3 resolved, 584 tests) |
+| Task 3 | 拓扑折线转 VDA 5050 订单构建引擎 Vda5050OrderBuilder | Completed | `2e76b99` + `34c29d7` | PASSED (I1/I2 fixed, 591 tests) |
+| Task 4 | ROS 2 VDA 5050 MQTT 通信适配网关 vda5050_gateway_node | In Progress | - | - |
+| Task 5 | 逐段路权动态释放与断链安全守卫 | Pending | - | - |
+| Task 6 | Python 虚拟小车模拟器与端到端联合验收 | Pending | - | - |
+
+## Rulings & Decisions
+- 2026-10-20: 核心库保持零 ROS 依赖、零 MQTT 依赖，协议编解码与 Order 映射位于 `src/amr_dispatcher_core/src/fleet/`。
+- 2026-10-20: 遵循 TDD 规范，所有 Task 必须先写失败单测，验证红灯后再写实现。
+- 2026-10-20: 安全铁律：通信断链绝对不等于释放路权，防止后车物理追尾。
+- 2026-10-20: `ResourceTable::RouteEdgeId` 实际格式为 `route_edge:A__B`（词法序、双下划线），计划文案中的 `route_edge:A->B` 仅为示意，实现以 `ResourceTable` 静态方法为准。
+- 2026-10-20 (Task 3 评审 I3): `StationTransportRequest::traffic_intersection_locks_enabled` 默认 `false` 会导致 builder 全 Horizon 订单（小车不动）；Task 4/5 接线必须走 `PlanMissionRouteLocks`（强制 true）或显式置位。
+- 2026-10-20 (Task 3 评审 Observ.): VDA 5050 线上 `edgeId` 目前携带内部 `route_edge:...__...` 前缀，Task 4 需显式决策是否保留该形式（影响 Task 5 的 `ParseRouteEdge` 反解）。

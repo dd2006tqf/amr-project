@@ -1,0 +1,235 @@
+#include "sync/time_aligner.h"
+#include <algorithm>
+#include <cmath>
+
+namespace xgrids {
+
+TimeAligner::TimeAligner(Config cfg)
+    : cfg_(cfg),
+      cam_clock_{ClockModel(), ClockModel(), ClockModel(), ClockModel()},
+      lidar_clock_(), gnss_clock_() {}
+
+// 把传感器本地 ts 换算到公共时基
+// 真实设备：每路传感器有自己的时钟源（计数器/晶振），各自漂移。
+// ClockModel 通过 (local_ts, sys_ts) 样本对做最小二乘拟合：
+//   sys_ts = a * local_ts + b   (a ≈ 1 + drift_ppm/1e6)
+// 未收敛时直接返回本地 ts（回退策略）。
+int64_t TimeAligner::to_sys_ts(SensorType type, int ch,
+                               int64_t local_ts_us) const {
+    if (!cfg_.use_clock_model) return local_ts_us;
+    int64_t sys = local_ts_us;
+    switch (type) {
+    case SensorType::kCamera:
+        if (ch >= 0 && ch < 4 && cam_clock_[ch].estimate(local_ts_us, sys))
+            return sys;
+        return local_ts_us;
+    case SensorType::kLidar:
+        if (lidar_clock_.estimate(local_ts_us, sys)) return sys;
+        return local_ts_us;
+    case SensorType::kGnss:
+    case SensorType::kImu:
+        return local_ts_us;
+    }
+    return local_ts_us;
+}
+
+bool TimeAligner::on_event(const SensorEvent& e, AlignedSlice& out) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const int64_t sys_ts = to_sys_ts(e.type, e.channel_id, e.ts_us);
+
+    // 喂时钟模型样本：local -> sys
+    if (e.type == SensorType::kCamera && e.channel_id >= 0 && e.channel_id < 4)
+        cam_clock_[e.channel_id].add_sample(e.ts_us, sys_ts);
+    else if (e.type == SensorType::kLidar)
+        lidar_clock_.add_sample(e.ts_us, sys_ts);
+    else if (e.type == SensorType::kGnss)
+        gnss_clock_.add_sample(e.ts_us, sys_ts);
+
+    switch (e.type) {
+    case SensorType::kCamera: {
+        FrameMeta fm = e.image.meta;
+        fm.ts_us = sys_ts;   // 换算到公共时基后再对齐
+        int ch = fm.channel_id;
+        if (ch < 0 || ch >= 4) return false;
+
+        // 乱序/迟到帧：属于已关闭的窗口（比锚点早超过一个窗口）→ 丢弃
+        // 真实场景：多线程产帧入队后处理顺序≠时间顺序，不处理会让迟到帧
+        // 错占新窗口的槽位，导致后续窗口连锁不完整（本项目实测过这个 bug）
+        if (cam_anchor_ >= 0 &&
+            fm.ts_us < cam_anchor_ - cfg_.cam_window_us) {
+            stale_frames_++;
+            last_stale_ = fm;
+            has_stale_ = true;
+            return false;
+        }
+
+        if (cam_anchor_ >= 0 && fm.ts_us - cam_anchor_ > cfg_.cam_window_us) {
+            // 关闭旧窗口（不完整组）
+            out.t_us = cam_anchor_;
+            out.cams.anchor_ts_us = cam_anchor_;
+            out.cams.complete = false;
+            out.cams.group_seq = group_seq_++;
+            int64_t mn = -1, mx = -1;
+            for (int i = 0; i < 4; ++i) {
+                out.cams.valid[i] = cam_have_[i];
+                if (cam_have_[i]) {
+                    out.cams.frames[i] = cam_pending_[i];
+                    mn = (mn < 0) ? cam_pending_[i].ts_us
+                                  : std::min(mn, cam_pending_[i].ts_us);
+                    mx = std::max(mx, cam_pending_[i].ts_us);
+                }
+            }
+            out.cams.max_skew_us = (cam_cnt_ > 1) ? (mx - mn) : 0;
+            // 新窗口锚定当前帧
+            cam_anchor_ = fm.ts_us;
+            cam_have_.fill(false); cam_cnt_ = 0;
+            cam_pending_[ch] = fm; cam_have_[ch] = true; cam_cnt_ = 1;
+            fill_slice(out.t_us, out.t_us + cfg_.cam_window_us, out);
+            return true;
+        }
+
+        if (cam_anchor_ < 0) cam_anchor_ = fm.ts_us;
+        if (!cam_have_[ch]) {
+            cam_pending_[ch] = fm; cam_have_[ch] = true; cam_cnt_++;
+        }
+
+        if (cam_cnt_ == 4) {
+            out.t_us = cam_anchor_;
+            out.cams.anchor_ts_us = cam_anchor_;
+            out.cams.complete = true;
+            out.cams.group_seq = group_seq_++;
+            int64_t mn = cam_pending_[0].ts_us, mx = mn;
+            for (int i = 0; i < 4; ++i) {
+                out.cams.valid[i] = true;
+                out.cams.frames[i] = cam_pending_[i];
+                mn = std::min(mn, cam_pending_[i].ts_us);
+                mx = std::max(mx, cam_pending_[i].ts_us);
+            }
+            out.cams.max_skew_us = mx - mn;
+            cam_have_.fill(false); cam_cnt_ = 0;
+            int64_t anchor = out.t_us;
+            cam_anchor_ = -1;
+
+            fill_slice(anchor, anchor + cfg_.cam_window_us, out);
+            last_slice_t_ = anchor;
+            return true;
+        }
+        return false;
+    }
+    case SensorType::kLidar: {
+        LidarFrame lf = e.lidar;
+        lf.ts_us = sys_ts;
+        lidar_q_.push_back(lf);
+        return false;
+    }
+    case SensorType::kImu: {
+        ImuPacket p = e.imu;
+        p.ts_us = sys_ts;
+        imu_q_.push_back(p);
+        if (cfg_.use_imu_interp) imu_interp_.push(p);
+        return false;
+    }
+    case SensorType::kGnss: {
+        GnssFix g = e.gnss;
+        g.ts_us = sys_ts;
+        gnss_q_.push_back(g);
+        return false;
+    }
+    }
+    return false;
+}
+
+void TimeAligner::fill_slice(int64_t t0, int64_t t1, AlignedSlice& out) {
+    // ---- LiDAR：取时间最近一帧（slack 内），并把队列清到该帧 ----
+    int64_t best = -1; size_t bi = 0;
+    for (size_t i = 0; i < lidar_q_.size(); ++i) {
+        int64_t d = std::llabs(lidar_q_[i].ts_us - t0);
+        if (d <= cfg_.lidar_slack_us && (best < 0 || d < best)) {
+            best = d; bi = i;
+        }
+    }
+    if (best >= 0) {
+        out.lidar = lidar_q_[bi];
+        lidar_q_.erase(lidar_q_.begin(), lidar_q_.begin() + bi + 1);
+    } else {
+        // 没命中：清掉明显过期的 LiDAR
+        while (!lidar_q_.empty() &&
+               lidar_q_.front().ts_us < t0 - cfg_.lidar_slack_us)
+            lidar_q_.pop_front();
+    }
+
+    // ---- IMU：窗口内样本 + 中心时刻插值 ----
+    int64_t center = (t0 + t1) / 2;
+    for (const auto& p : imu_q_)
+        if (p.ts_us >= t0 - cfg_.cam_window_us &&
+            p.ts_us <= t1 + cfg_.cam_window_us)
+            out.imu_in_slice.push_back(p);
+    while (!imu_q_.empty() &&
+           imu_q_.front().ts_us < t0 - 300'000)
+        imu_q_.pop_front();
+
+    if (cfg_.use_imu_interp) {
+        out.has_imu_state = imu_interp_.estimate(center, out.imu_state);
+        // LiDAR 扫描区间的 IMU 预积分 -> 位姿估计
+        if (best >= 0) {
+            int64_t lt0 = out.lidar.ts_us - 50'000;  // 扫描周期 100ms
+            int64_t lt1 = out.lidar.ts_us + 50'000;
+            ImuState ist;
+            if (imu_interp_.integrate(lt0, lt1, ist)) {
+                out.pose.ts_us = center;
+                out.pose.rx = ist.rx; out.pose.ry = ist.ry; out.pose.rz = ist.rz;
+                out.pose.dx = ist.dx; out.pose.dy = ist.dy; out.pose.dz = ist.dz;
+                out.has_pose = true;
+            }
+        }
+    }
+
+    // ---- GNSS：最近一条 ----
+    for (const auto& g : gnss_q_)
+        if (!out.has_gnss ||
+            std::llabs(g.ts_us - t0) < std::llabs(out.nearest_gnss.ts_us - t0)) {
+            out.nearest_gnss = g;
+            out.has_gnss = true;
+        }
+    while (!gnss_q_.empty() &&
+           gnss_q_.front().ts_us < t0 - 1'000'000)
+        gnss_q_.pop_front();
+}
+
+bool TimeAligner::flush(AlignedSlice& out) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (cam_cnt_ == 0) return false;
+    out.t_us = cam_anchor_;
+    out.cams.anchor_ts_us = cam_anchor_;
+    out.cams.complete = false;
+    out.cams.group_seq = group_seq_++;
+    int64_t mn = -1, mx = -1;
+    for (int i = 0; i < 4; ++i) {
+        out.cams.valid[i] = cam_have_[i];
+        if (cam_have_[i]) {
+            out.cams.frames[i] = cam_pending_[i];
+            mn = (mn < 0) ? cam_pending_[i].ts_us
+                          : std::min(mn, cam_pending_[i].ts_us);
+            mx = std::max(mx, cam_pending_[i].ts_us);
+        }
+    }
+    out.cams.max_skew_us = (cam_cnt_ > 1) ? (mx - mn) : 0;
+    fill_slice(cam_anchor_, cam_anchor_ + cfg_.cam_window_us, out);
+    cam_have_.fill(false); cam_cnt_ = 0; cam_anchor_ = -1;
+    return true;
+}
+
+double TimeAligner::cam_drift_ppm(int ch) const {
+    if (ch < 0 || ch >= 4) return 0;
+    return cam_clock_[ch].drift_ppm();
+}
+double TimeAligner::lidar_drift_ppm() const {
+    return lidar_clock_.drift_ppm();
+}
+bool TimeAligner::clock_converged() const {
+    bool ok = true;
+    for (int i = 0; i < 4; ++i) ok &= cam_clock_[i].converged();
+    return ok && lidar_clock_.converged();
+}
+
+}  // namespace xgrids

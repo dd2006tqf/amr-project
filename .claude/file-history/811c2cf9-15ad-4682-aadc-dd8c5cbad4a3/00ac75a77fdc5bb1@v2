@@ -1,0 +1,438 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#pragma once
+
+#include <atomic>
+#include <cstdint>  // for int32_t
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "camera_config_interface.h"
+#include "camera_live_broadcast_interface.h"
+#include "camera_mediad_interface.h"
+#include "camera_netd_interface.h"
+#include "ins_base/msglooper.h"
+#include "ins_base/mutex.h"
+#include "ins_base/thread.h"
+#include "ins_base/threadpool.h"
+#include "ins_base/time/time_types.h"
+#include "ins_error_code/ins_errorcode.h"
+#include "service/live_broadcast_types.h"
+
+namespace ins {
+namespace live_broadcast {
+
+// 前向声明
+struct StartResultPayload;
+class RtmpPusher;
+class StreamController;
+class NetworkController;
+class ConfigManager;
+class ResumeManager;
+class StreamReader;
+class LiveMonitor;
+class DurationTimer;
+
+/**
+ * @brief 直播管理器
+ * @details 负责状态机协调、事件分发、资源管理和状态同步
+ *          参考ins_bla的PowerMgr设计
+ */
+class LiveBroadcastManager
+    : public std::enable_shared_from_this<LiveBroadcastManager> {
+ public:
+  /**
+   * @brief 构造函数
+   * @param main_msglooper 主消息循环器（用于ibus RPC接口）
+   * @param thread_pool 线程池
+   */
+  LiveBroadcastManager(
+      const std::shared_ptr<ins::base::MsgLooper>& main_msglooper,
+      std::shared_ptr<ins::base::ThreadPool> thread_pool);
+
+  ~LiveBroadcastManager() = default;
+
+  /**
+   * @brief 启动管理器
+   * @return 成功返回
+   * kInsErrorCode_Comm_Success；失败返回具体错误码，调用方不应对外宣称已启动
+   */
+  InsErrorCode StartLiveBroadcastManager();
+
+  /**
+   * @brief 停止管理器
+   */
+  void StopLiveBroadcastManager();
+
+  /**
+   * @brief 请求状态机回到 Idle 并等待（供 Shutdown 调用，避免并发）
+   * @details 若当前非 Idle 则投递 Stop 到工作线程，再轮询状态直至 Idle 或超时。
+   * @param timeout_ms 最大等待时长（毫秒），由调用方设定（如 main.cc
+   * kShutdownWaitIdleMilliseconds）
+   */
+  void RequestGoToIdleAndWait(uint32_t timeout_ms);
+
+  /**
+   * @brief 获取当前状态（线程安全，由 state_mutex_ 保护）
+   */
+  LiveBroadcastState GetCurrentState() const;
+
+  /**
+   * @brief 状态变化统一处理（由状态机Hook调用）
+   * @param state 新状态
+   */
+  void HandleStateChange(LiveBroadcastState state);
+  /**
+   * @brief 报告错误（由状态机调用）
+   * @param error_code 错误码
+   * @note 会发布错误码Topic
+   */
+  void ReportLiveBroadcastErrorCode(LiveBroadcastErrorCode error_code);
+
+  /**
+   * @brief 启动时长计时器（由Running状态调用）
+   */
+  void StartLiveBroadcastDurationTimer();
+
+  /**
+   * @brief 停止时长计时器（由Stopping状态调用）
+   */
+  void StopLiveBroadcastDurationTimer();
+
+  /**
+   * @brief 获取当前直播时长（秒，由DurationTimer维护）
+   * @return 当前时长；计时器尚未创建时返回0
+   * @note 时长仅在Running状态累计，进入Running前/离开Running后读到的是
+   *       上一次计时残留或0，调用方用于续播记录等场景即可
+   */
+  uint32_t GetLiveDuration() const;
+
+  /**
+   * @brief 启动直播监控（由Running状态调用）
+   */
+  void StartLiveBroadcastMonitor();
+
+  /**
+   * @brief 停止直播监控（由Stopping状态调用）
+   */
+  void StopLiveBroadcastMonitor();
+  /**
+   * @brief 获取工作MsgLooper（用于注册事件处理器）
+   */
+  std::shared_ptr<ins::base::MsgLooper> GetWorkMsgLooper() const {
+    return work_msg_looper_;
+  }
+  /**
+   * @brief 设置/获取 RTMP 推流器（由状态机在 Starting/Stopping 中管理生命周期）
+   */
+  void SetLiveBroadcastRtmpPusher(const std::shared_ptr<RtmpPusher>& pusher);
+  std::shared_ptr<RtmpPusher> GetLiveBroadcastRtmpPusher() const;
+
+  /**
+   * @brief 投递异步连接/开流结果到工作线程（可由连接线程调用）
+   * @param attempt_id 本次启动尝试的代次标识
+   * @param err 连接或开流错误码
+   * @param message 错误描述（失败时有效）
+   */
+  void PostStartResult(uint64_t attempt_id, InsErrorCode err,
+                       const std::string& message);
+
+  /**
+   * @brief 开始一次新的启动尝试，并返回本次 attempt_id
+   */
+  uint64_t BeginStartAttempt();
+
+  /**
+   * @brief 使用 ins::base::Thread 启动连接任务（由 Starting 状态调用）
+   * @details 禁止使用 detached 裸 std::thread；由 Manager
+   * 显式管理连接线程生命周期， Stopping 时可 JoinFor 等待后再清理
+   * pusher，避免与 Connect() 并发的 data race。
+   * @param task 无参无返回的可调用对象（内部执行 Connect 并 PostStartResult）
+   * @return true 启动成功；false 启动失败
+   */
+  bool StartConnectThread(std::function<void()> task);
+
+  /**
+   * @brief 等待连接线程结束（由 Stopping 状态在清理 pusher 前调用）
+   * @param timeout_ms 最大等待时间（毫秒）
+   * @return true 线程已 Join 并清空；false 超时或失败（已 Detach
+   * 并清空，不阻塞）
+   * @note 超时或失败时对 connect_thread_ 显式 Detach 后
+   * reset，不在局部对象析构时 隐式 Join，保证在给定 timeout_ms 内返回，避免
+   * Stop/Shutdown 死等。
+   */
+  bool WaitConnectThreadFinished(int64_t timeout_ms);
+
+  // ========== RPC 触发的接口（由 ibus 实现层调用） ==========
+
+  // TODO(lianxingwang|2026-03-17):
+  // 修改接口名，保证语义和实现一致，即LiveBroadcastPrepare 变更为
+  // LiveBroadcastRequestPrepare等名称，LiveBroadcastStart 变更为
+  // LiveBroadcastRequestStart 等名称
+
+  /**
+   * @brief 准备直播（RPC LiveBroadcastPrepare）
+   * @return kInsErrorCode_Comm_Success
+   * 仅表示请求已被工作线程接受并成功投递到状态机； 不保证调用返回时已经完成
+   * Prepare 相关动作。 非法状态返回
+   * kInsErrorCode_Comm_Einval；投递/超时失败返回对应错误码。
+   * @note 异步语义：通过 PostAndWaitResponse
+   * 投递到工作线程，在工作线程内做状态判定后返回。 返回 Success
+   * 的语义是“请求已受理(accepted)”，而不是“状态已切换完成”。 实际结果应通过
+   * StateChanged/Error topic 或 GetState() 观察。
+   */
+  InsErrorCode LiveBroadcastPrepare();
+
+  /**
+   * @brief 请求开始直播（RPC LiveBroadcastStart）
+   * @return kInsErrorCode_Comm_Success 仅表示 Start
+   * 请求已被工作线程接受并成功投递到状态机； 不保证调用返回时已经进入
+   * Starting/Running。 若当前状态非法，则返回 kInsErrorCode_Comm_Einval；
+   *         投递/超时失败返回对应错误码。
+   * @note 异步语义：通过 PostAndWaitResponse 在工作线程内完成“受理判定”并返回。
+   *       返回 Success 的语义是“请求已受理(accepted)”，而不是“直播已真正开始”。
+   *       即使返回 Success，状态机仍可能因为 WiFi、RTMP URL
+   * 等前置条件未满足而继续停留在 Prepare。 实际启动结果应通过
+   * StateChanged/Error topic 或 GetState() 观察。
+   */
+  InsErrorCode LiveBroadcastRequestStart();
+
+  /**
+   * @brief 停止直播（RPC LiveBroadcastStop）
+   * @param stop_reason 停止原因
+   * @return kInsErrorCode_Comm_Success 仅表示 Stop
+   * 请求已被工作线程接受并成功投递到状态机；
+   *         不保证调用返回时已经完成资源释放并回到 Idle。
+   *         Idle 返回 kInsErrorCode_Comm_Einval；已 Stopping 返回
+   * kInsErrorCode_Comm_Ealready； 投递/超时失败返回对应错误码。
+   * @note 实际停止完成结果应通过 StateChanged topic 或 GetState() 观察。
+   */
+  InsErrorCode LiveBroadcastRequestStop(LiveBroadcastStopReason stop_reason);
+
+  /**
+   * @brief 获取直播状态（RPC LiveBroadcastGetState）
+   * @param state_info 输出状态与错误码
+   */
+  void GetLiveBroadcastState(
+      ::ins::ibus::camera::live_broadcast::LiveBroadcastStateInfo& state_info)
+      const;
+
+  /**
+   * @brief 恢复续播（RPC LiveBroadcastResume）
+   * @return kInsErrorCode_Comm_Success 仅表示 Resume
+   * 请求已被工作线程接受并成功投递到状态机；
+   *         不保证调用返回时已经完成状态切换。非 Idle 返回
+   * kInsErrorCode_Comm_Einval； 投递/超时失败返回对应错误码。
+   * @note 实际结果应通过 StateChanged/Error topic 或 GetState() 观察。
+   */
+  InsErrorCode LiveBroadcastRequestResume();
+
+  /**
+   * @brief 丢弃续播（RPC LiveBroadcastDiscardResume）
+   * @return kInsErrorCode_Comm_Success 仅表示 DiscardResume
+   * 请求已被工作线程接受并成功投递到状态机；
+   *         不保证调用返回时已经完成状态切换。非 Idle 返回
+   * kInsErrorCode_Comm_Einval； 投递/超时失败返回对应错误码。
+   * @note 实际结果应通过 StateChanged/Error topic 或 GetState() 观察。
+   */
+  InsErrorCode LiveBroadcastRequestDiscardResume();
+
+  /**
+   * @brief 配置变更回调（Config Topic）
+   */
+  void OnConfigUpdate(
+      const std::vector<::ins::config::ConfigKey>& changed_configs);
+
+  /**
+   * @brief WIFI STA 开启回调（Netd Topic）
+   */
+  void OnWifiStaOn(::ins::ibus::common::netd::WifiConnectionResult error_code,
+                   const ::ins::ibus::common::netd::WifiInfo& wifi_info);
+
+  /**
+   * @brief WIFI STA 连接回调（Netd Topic）
+   */
+  void OnWifiStaConnect(int32_t error_code,
+                        const ::ins::ibus::common::netd::WifiInfo& wifi_info);
+
+  /**
+   * @brief 录像状态回调（Mediad Topic）
+   */
+  void OnRecordState(::ins::ibus::camera::mediad::RecordStatus record_status);
+
+  /**
+   * @brief 录像异常回调（Mediad Topic）
+   */
+  void OnRecordAbnormal(::ins::system::SysAbnormalType abnormal_reason);
+
+  /**
+   * @brief 保存连接的WIFI信息 SSID 到配置
+   */
+  void SaveConnectedWifiSsid();
+
+  /**
+   * @brief 在Running状态下发起一次RTMP网络重连（由状态机EventError调用）
+   * @details 复用启动管线：BeginStartAttempt()取新attempt_id →
+   * StartConnectThread执行
+   *          pusher->Disconnect() → pusher->Connect(url) →
+   *          PostStartResult回投工作线程；结果由OnDispatchStartResult的
+   *          Running分支消费（成功派发EventNetworkRecovered，失败派发
+   * EventError）。
+   * @return kInsErrorCode_Comm_Success 重连任务已提交；
+   *         kInsErrorCode_Comm_Einval 当前状态非Running或pusher/URL缺失；
+   *         其他错误码为线程启动失败
+   * @note 非阻塞：Connect在独立连接线程执行，不占用工作线程；
+   *       过期attempt结果由attempt_id机制丢弃
+   */
+  InsErrorCode RequestRtmpReconnect();
+
+ private:
+  /**
+   * @brief 状态机启动事件处理
+   */
+  void OnStateMachineStart(const int32_t& req);
+
+  /**
+   * @brief 在工作线程内判定状态并派发 EventPrepareRequest（仅 Idle/Prepare
+   * 合法）
+   * @return kInsErrorCode_Comm_Success 已派发；kInsErrorCode_Comm_Einval
+   * 非法状态
+   */
+  InsErrorCode OnDispatchPrepare(const int32_t& req);
+
+  /**
+   * @brief 在工作线程内判定状态并派发 EventStartRequest（仅 Prepare 合法）
+   * @return kInsErrorCode_Comm_Success 已派发；kInsErrorCode_Comm_Einval
+   * 非法状态
+   */
+  InsErrorCode OnDispatchStart(const int32_t& req);
+
+  /**
+   * @brief 在工作线程内判定状态并派发 EventStopRequest（Idle/Stopping
+   * 返回错误）
+   * @param req stop_reason 的 int32_t
+   * @return kInsErrorCode_Comm_Success
+   * 已派发；kInsErrorCode_Comm_Einval/kInsErrorCode_Comm_Ealready 非法状态
+   */
+  InsErrorCode OnDispatchStop(const int32_t& req);
+
+  /**
+   * @brief 在工作线程内判定状态并派发 EventResume（仅 Idle 合法）
+   * @return kInsErrorCode_Comm_Success 已派发；kInsErrorCode_Comm_Einval
+   * 非法状态
+   */
+  InsErrorCode OnDispatchResume(const int32_t& req);
+
+  /**
+   * @brief 在工作线程内判定状态并派发 EventDiscardResume（仅 Idle 合法）
+   * @return kInsErrorCode_Comm_Success 已派发；kInsErrorCode_Comm_Einval
+   * 非法状态
+   */
+  InsErrorCode OnDispatchDiscardResume(const int32_t& req);
+
+  /**
+   * @brief 派发 EventPrepareComplete 到状态机（WIFI 连接成功）
+   */
+  void OnDispatchPrepareComplete(const int32_t& req);
+
+  /**
+   * @brief 处理异步连接/开流结果
+   * @details Starting状态：派发 EventStartSuccess 或 EventStartFailed；
+   *          Running状态（重连结果）：成功派发 EventNetworkRecovered，
+   *          失败派发 EventError(kNetworkError)
+   */
+  void OnDispatchStartResult(StartResultPayload& payload);
+
+  /**
+   * @brief 初始化状态机依赖（stream/network/config/resume 等）
+   * @return 成功返回
+   * kInsErrorCode_Comm_Success；失败时已清理已创建资源并返回错误码
+   */
+  InsErrorCode InitStateMachineDependencies();
+
+  /**
+   * @brief 清空状态机内所有静态引用（Manager、各 Controller），用于 Stop 或
+   * Start 失败回滚，避免静态强引用阻止 Manager 析构与同进程重启
+   */
+  void ClearStateMachineStaticRefs();
+
+  /**
+   * @brief 更新ShareState
+   */
+  void UpdateShareState(LiveBroadcastState state);
+
+  /**
+   * @brief 发布状态变化Topic
+   */
+  void PublishStateChanged(LiveBroadcastState state);
+  /**
+   * @brief 发布错误码Topic
+   * @param error_code 错误码
+   */
+  void PublishError(LiveBroadcastErrorCode error_code);
+
+  /**
+   * @brief 发布时长更新Topic
+   * @param duration_seconds 直播时长（单位：秒）
+   */
+  void PublishDurationUpdate(uint32_t duration_seconds);
+
+  /**
+   * @brief 通知主线程状态变化
+   */
+  void NotifyMainLooper(LiveBroadcastState state);
+
+ private:
+  /// 主消息循环器（ibus RPC线程）
+  std::shared_ptr<ins::base::MsgLooper> main_msg_looper_;
+
+  /// 工作消息循环器（状态机专用线程）
+  std::shared_ptr<ins::base::MsgLooper> work_msg_looper_;
+
+  /// 线程池
+  std::shared_ptr<ins::base::ThreadPool> thread_pool_;
+
+  /// 保护状态快照（current_state_、current_error_）的读写，与框架约定一致使用
+  /// ins::base::Mutex
+  mutable ins::base::Mutex state_mutex_;
+
+  /// 当前状态（受 state_mutex_ 保护）
+  LiveBroadcastState current_state_;
+
+  /// 业务错误码（ReportLiveBroadcastErrorCode 更新，成功进入 Prepare/Running
+  /// 时重置；GetLiveBroadcastState
+  /// 返回此值以符合 IDL 契约；受 state_mutex_ 保护）
+  std::atomic<LiveBroadcastErrorCode> current_error_{
+      LiveBroadcastErrorCode::kNone};
+
+  // ========== 控制器 ==========
+  std::shared_ptr<StreamController> stream_controller_;
+  std::shared_ptr<NetworkController> network_controller_;
+  std::shared_ptr<ConfigManager> config_manager_;
+  std::shared_ptr<ResumeManager> resume_manager_;
+
+  /// 连接任务线程（StartConnectThread 创建并 Start；WaitConnectThreadFinished
+  /// JoinFor 成功则 reset，超时则 Detach 后 reset，由 Manager 单点管理）
+  std::shared_ptr<ins::base::Thread> connect_thread_;
+
+  /// 启动尝试序号生成器（单调递增）
+  std::atomic<uint64_t> start_attempt_seq_{0};
+
+  /// 当前有效的启动尝试代次；迟到结果必须与之匹配才允许处理
+  std::atomic<uint64_t> active_start_attempt_{0};
+
+  /// RequestRtmpReconnect 提交的重连任务是否在途；结果回投（含过期结果）
+  /// 时复位，防止并发错误事件重复提交导致两个连接线程同时操作 pusher
+  std::atomic<bool> reconnect_in_flight_{false};
+
+  // ========== 运行时模块（动态创建） ==========
+  std::shared_ptr<RtmpPusher> rtmp_pusher_;
+  std::shared_ptr<StreamReader> stream_reader_;
+  std::shared_ptr<LiveMonitor> live_monitor_;
+  std::shared_ptr<DurationTimer> duration_timer_;
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

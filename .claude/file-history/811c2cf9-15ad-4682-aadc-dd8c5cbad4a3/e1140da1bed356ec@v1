@@ -1,0 +1,62 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "controller/resume_manager.h"
+
+#include "ins_base/log.h"
+#include "ins_base/time/time_utility.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "ResumeManager"
+}  // namespace
+
+ResumeManager::ResumeManager() {
+  // TODO(yinjun|2025-12-30): 初始化成员变量
+}
+
+ResumeManager::~ResumeManager() {
+  // TODO(yinjun|2025-12-30): 清理资源
+}
+
+InsErrorCode ResumeManager::Initialize() {
+  // TODO(yinjun|2025-12-30): 创建ibus config client
+  return kInsErrorCode_Comm_Success;
+}
+
+bool ResumeManager::HasResumeRecord() {
+  // TODO(yinjun|2025-12-30): 从configd读取last_stop_reason
+  // 1. 调用config_client_->AccessReadConfig(ConfigKey::kLiveBroadcast)
+  // 2. 判断last_stop_reason != kUserStop
+  return false;
+}
+
+InsErrorCode ResumeManager::SaveResumeRecord(LiveBroadcastStopReason reason,
+                                             uint32_t duration_seconds) {
+  // TODO(yinjun|2025-12-30): 保存续播记录到configd
+  // 1. 读取当前配置
+  // 2. 更新续播字段：
+  //    - last_stop_reason = reason
+  //    - last_duration_seconds = duration_seconds
+  //    - last_stop_time = 当前 UTC 时间戳（单位: 秒）
+  // 3. 写回configd
+  ILOGS_I << "Save resume record: reason=" << static_cast<int32_t>(reason)
+          << ", duration=" << duration_seconds;
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode ResumeManager::ClearResumeRecord() {
+  // TODO(yinjun|2025-12-30): 清除续播记录
+  // 1. 读取当前配置
+  // 2. 设置last_stop_reason = kUserStop
+  // 3. 写回configd
+  ILOGS_I << "Clear resume record";
+  return kInsErrorCode_Comm_Success;
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

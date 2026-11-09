@@ -1,0 +1,58 @@
+#pragma once
+
+#include <cstdint>
+#include <array>
+#include <mutex>
+#include <functional>
+#include "sync/time_aligner.h"
+
+namespace xgrids {
+
+// ============================================================
+// 帧同步监控：对应简历
+//   "实时统计帧间隔抖动与帧号连续性，任一路同步误差超阈值即触发状态上报"
+// ============================================================
+
+struct ChannelStats {
+    uint64_t frame_count = 0;
+    int64_t last_ts_us = -1;
+    int64_t last_seq = -1;
+    double ema_interval_us = 0;
+    uint64_t dropped_seq = 0;      // 按 seq 检出的丢帧
+    uint64_t jitter_violations = 0;
+    uint64_t total_bytes = 0;
+};
+
+class SyncMonitor {
+public:
+    struct Config {
+        int64_t max_skew_us = 2000;       // 四路组内最大偏移
+        double jitter_sigma = 4.0;        // 间隔偏离 EMA 的倍数阈值
+        int64_t expected_interval_us = 50000;
+    };
+    using AlertCallback = std::function<void(int channel, const char* reason, int64_t ts_us)>;
+
+    SyncMonitor(Config cfg, AlertCallback on_alert);
+
+    // 采集线程每帧调用，必须 O(1) 且不阻塞
+    void on_frame(const FrameMeta& f);
+
+    // TimeAligner 出一个完整组后调用，做组内 skew 校验
+    void on_sync_group(const SyncGroup& g);
+
+    std::array<ChannelStats, 4> stats() const;
+    uint64_t sync_group_count() const { return group_cnt_; }
+    uint64_t skew_violations() const { return skew_violations_; }
+    uint64_t frame_gap_count() const { return gap_cnt_; }
+
+private:
+    Config cfg_;
+    AlertCallback on_alert_;
+    mutable std::mutex mu_;
+    std::array<ChannelStats, 4> ch_{};
+    uint64_t group_cnt_ = 0;
+    uint64_t skew_violations_ = 0;
+    uint64_t gap_cnt_ = 0;
+};
+
+}  // namespace xgrids

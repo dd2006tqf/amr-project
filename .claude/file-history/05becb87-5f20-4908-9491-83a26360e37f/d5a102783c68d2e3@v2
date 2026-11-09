@@ -1,0 +1,1185 @@
+/**
+ * @file edge_telemetry_exporter.cpp
+ * @brief 边缘遥测上报器实现（libcurl + OpenSSL Ed25519 + 固定容量环形缓冲）
+ *
+ * 设计约束与理由见头文件。实现要点：
+ *
+ *   1. **签名覆盖发送字节**：buildRecord() 先序列化 body，再对这段
+ *      std::string 直接签名；transmit() 原样发送。中间不做任何重新序列化。
+ *
+ *   2. **失败即保留**：HTTP 失败不丢弃记录，留在缓冲里等下一轮。弱网下
+ *      "上报失败"是常态，丢弃等于在故障最需要证据时丢掉证据。
+ *
+ *   3. **响应丢失也安全**：服务端按 (device, epoch, sequence) 幂等，
+ *      因此重发重复数据是安全的，不需要本端做去重确认。
+ *
+ *   4. **下行动作只走白名单**：服务端下发的配置变更交给既有
+ *      setMonitorParam()，复用其类型/范围校验；不 shell out，不绕过校验。
+ */
+
+#include "edge_telemetry_exporter.hpp"
+
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <random>
+#include <sstream>
+#include <utility>
+
+#ifdef WEAKNET_HAVE_CURL
+#include <curl/curl.h>
+#endif
+
+#include "assurance/edge_telemetry_serializer.hpp"
+#include "logger.hpp"
+#include "utils/json_escape.hpp"
+#include "weaknet_config.hpp"
+
+#ifdef WEAKNET_HAVE_TLS
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#endif
+#endif
+
+namespace weaknet {
+
+namespace {
+
+#ifdef WEAKNET_HAVE_CURL
+/// libcurl 写回调：把响应体追加到 std::string。
+size_t writeCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    const size_t total = size * nmemb;
+    static_cast<std::string*>(userdata)->append(ptr, total);
+    return total;
+}
+
+/// libcurl 全局初始化（进程内仅需一次，且需线程安全）。
+void ensureCurlGlobalInit() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+    });
+}
+#endif  // WEAKNET_HAVE_CURL
+
+/**
+ * @brief 从 PEM 文件读取 Ed25519 私钥。
+ *
+ * 支持 PEM 中的 PKCS#8（BEGIN PRIVATE KEY）与 OpenSSL 传统格式
+ * （BEGIN PRIVATE KEY 之外的封装由 OpenSSL 自行识别）。密钥类型不是
+ * Ed25519 时直接失败——绝不用错算法继续跑。
+ */
+#ifdef WEAKNET_HAVE_TLS
+EVP_PKEY* loadEd25519PrivateKey(const std::string& path, std::string* error) {
+    FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) {
+        *error = "无法打开私钥文件: " + path + " (" + std::strerror(errno) + ")";
+        return nullptr;
+    }
+    EVP_PKEY* key = PEM_read_PrivateKey(fp, nullptr, nullptr, nullptr);
+    std::fclose(fp);
+    if (!key) {
+        *error = "PEM 解析失败: " + path;
+        return nullptr;
+    }
+    if (EVP_PKEY_base_id(key) != EVP_PKEY_ED25519) {
+        EVP_PKEY_free(key);
+        *error = "私钥不是 Ed25519 类型: " + path;
+        return nullptr;
+    }
+    return key;
+}
+
+/// 把裸签名转成小写 hex（与 Python 端 bytes.hex() 一致）。
+std::string toHex(const unsigned char* data, size_t len) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        out.push_back(kHex[(data[i] >> 4) & 0x0F]);
+        out.push_back(kHex[data[i] & 0x0F]);
+    }
+    return out;
+}
+#endif  // WEAKNET_HAVE_TLS
+
+/// 把毫秒时间戳格式化为 RFC3339 UTC（服务端 Pydantic datetime 需要时区）。
+std::string formatRfc3339Utc(int64_t epoch_ms) {
+    const std::time_t seconds = static_cast<std::time_t>(epoch_ms / 1000);
+    // 负余数会得到负的毫秒位（1970 之前），归一到 [0,1000) 保证格式合法。
+    int millis = static_cast<int>(epoch_ms % 1000);
+    if (millis < 0) millis += 1000;
+    std::tm tm_utc{};
+    if (gmtime_r(&seconds, &tm_utc) == nullptr) {
+        return "1970-01-01T00:00:00.000Z";
+    }
+    // 最长形态 "YYYY-MM-DDTHH:MM:SS.mmmZ" = 24 字节；取 32 留足余量，
+    // 且截断在格式上不可能发生（年份被 %04d 限制在 4 位）。
+    char buf[32];
+    const int written = std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                                      tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                                      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, millis);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(buf)) {
+        return "1970-01-01T00:00:00.000Z";
+    }
+    return std::string(buf, static_cast<size_t>(written));
+}
+
+/// 生成 16 位小写 hex 随机串（本地变更回执的 action_id 后缀）。
+///
+/// 每次调用都是**新事件**：同一 key 后续再改要落成另一行 L1 事实，因此
+/// 不能用 (key,value) 派生——否则服务端的 (tenant, pending_action_id)
+/// 唯一约束会把"改两次同值"当成重发吞掉。
+std::string randomHex16() {
+    static thread_local std::mt19937_64 gen{std::random_device{}()};
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << gen();
+    return oss.str();
+}
+
+/// 极简 JSON 字段提取：取 `"key":` 之后的字符串字面量值。
+///
+/// 只用于读取**本端自己服务端**响应里的 pending_actions，不做通用解析。
+/// 拿不准的一律返回空/跳过，绝不猜测。
+bool extractStringField(const std::string& json, const std::string& key, size_t from,
+                        std::string* out, size_t* next) {
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle, from);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return false;
+    pos = json.find('"', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    std::string value;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) ++pos;
+        value.push_back(json[pos++]);
+    }
+    if (pos >= json.size()) return false;
+    *out = value;
+    if (next) *next = pos;
+    return true;
+}
+
+/// 从响应体中提取全部 pending_actions（动作对象数组，保序）。
+///
+/// 每个动作对象携带 {action_id, key, value, generation, nonce, claim_token}
+/// 六个字段。generation/nonce 是云端下发的防重放/防乱序元数据；缺失时
+/// 取 0/""（与 v1 schema 兼容）。
+struct PendingAction {
+    std::string action_id;
+    std::string key;
+    std::string value;
+    uint64_t generation{0};
+    bool generation_present{false};  ///< generation 字段是否在报文中真实出现且解析成功
+    std::string nonce;
+    std::string claim_token;
+};
+
+/// 提取 JSON 对象内的 uint64 字段；缺失或非法返回 false。
+bool extractUint64Field(const std::string& json, const std::string& key,
+                        uint64_t* out) {
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || !std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        return false;
+    }
+    uint64_t value = 0;
+    while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        const uint64_t digit = static_cast<uint64_t>(json[pos] - '0');
+        if (value > (UINT64_MAX - digit) / 10) {
+            return false; // 溢出防御：数字超出 uint64 范围直接拒绝，绝不猜测
+        }
+        value = value * 10 + digit;
+        ++pos;
+    }
+    *out = value;
+    return true;
+}
+
+std::vector<PendingAction> parsePendingActions(const std::string& body) {
+    std::vector<PendingAction> actions;
+    const std::string array_key = "\"pending_actions\"";
+    size_t pos = body.find(array_key);
+    if (pos == std::string::npos) return actions;
+
+    // 寻找 pending_actions 数组的开括号 '[' 与闭括号 ']'，限制解析范围在数组内，
+    // 避免误把响应体其它顶层对象或嵌套字段里的 action_id 误认为下行动作。
+    // 防御处理：忽略双引号字符串内部的 ']' 字符，保证数组边界准确。
+    const size_t array_start = body.find('[', pos + array_key.size());
+    if (array_start == std::string::npos) return actions;
+    size_t array_end = std::string::npos;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = array_start + 1; i < body.size(); ++i) {
+        char c = body[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (c == ']' && !in_string) {
+            array_end = i;
+            break;
+        }
+    }
+    if (array_end == std::string::npos) return actions;
+
+    pos = array_start + 1;
+    while (pos < array_end) {
+        PendingAction action;
+        size_t cursor = pos;
+        // 每个动作对象内同时含 action_id / key / value / generation /
+        // nonce / claim_token；用 action_id 作为分段锚点，避免跨对象误取。
+        if (!extractStringField(body, "action_id", cursor, &action.action_id, &cursor)) break;
+        if (cursor >= array_end) break;
+        // 该动作对象在本段内查找其它字段；边界取下一个 action_id 或数组闭括号之前。
+        const size_t next_action = body.find("\"action_id\"", cursor);
+        const size_t segment_end = (next_action == std::string::npos || next_action > array_end)
+                                       ? array_end
+                                       : next_action;
+        const std::string segment = body.substr(cursor, segment_end - cursor);
+        if (!extractStringField(segment, "key", 0, &action.key, nullptr)) { pos = segment_end; continue; }
+        if (!extractStringField(segment, "value", 0, &action.value, nullptr)) { pos = segment_end; continue; }
+        // v2 元数据可选：缺失视为 0/""（与 v1 兼容）。
+        // generation 必须**确实存在于本动作段**且解析成功才算携带了防重放元数据；
+        // 解析失败时保留 0 并靠 generation_present_ 区分"未提供"与"提供了 0"，
+        // 供 applyPendingActions 的 fail-closed 门禁使用。
+        if (extractUint64Field(segment, "generation", &action.generation)) {
+            action.generation_present = true;
+        } else {
+            action.generation = 0;
+        }
+        extractStringField(segment, "nonce", 0, &action.nonce, nullptr);
+        extractStringField(segment, "claim_token", 0, &action.claim_token, nullptr);
+        actions.push_back(std::move(action));
+        pos = segment_end;
+        if (next_action == std::string::npos || next_action >= array_end) break;
+    }
+    return actions;
+}
+
+}  // namespace
+
+EdgeTelemetryExporter::EdgeTelemetryExporter(
+    const weaknet_dbus::WeakNetConfig& config, std::string hostname,
+    std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn)
+    : config_(config), hostname_(std::move(hostname)),
+      config_txn_(std::move(config_txn)) {}
+
+EdgeTelemetryExporter::~EdgeTelemetryExporter() {
+    stop();
+#ifdef WEAKNET_HAVE_TLS
+    if (cloud_public_key_) {
+        EVP_PKEY_free(static_cast<EVP_PKEY*>(cloud_public_key_));
+        cloud_public_key_ = nullptr;
+    }
+#endif
+}
+
+bool EdgeTelemetryExporter::configComplete(std::string* error) const {
+    if (config_.edge.url.get().empty()) {
+        *error = "edge.url 未配置";
+        return false;
+    }
+    if (config_.edge.tenant.get().empty()) {
+        *error = "edge.tenant 未配置";
+        return false;
+    }
+    if (config_.edge.device_id.get().empty()) {
+        *error = "edge.device_id 未配置";
+        return false;
+    }
+    if (config_.edge.token.get().empty()) {
+        *error = "edge.token 未配置";
+        return false;
+    }
+    if (config_.edge.private_key_path.get().empty()) {
+        *error = "edge.private_key_path 未配置";
+        return false;
+    }
+    if (config_.edge.key_id.get().empty()) {
+        *error = "edge.key_id 未配置";
+        return false;
+    }
+    return true;
+}
+
+bool EdgeTelemetryExporter::start() {
+    if (running_.load()) return true;
+    if (!config_.edge.enabled.load()) {
+        LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报未启用（edge.enabled=false）");
+        return false;
+    }
+
+    std::string error;
+    if (!configComplete(&error)) {
+        // 半配置状态必须显式失败：否则会以空身份对外发数据。
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报配置不完整，已保持关闭: " << error);
+        return false;
+    }
+
+#ifndef WEAKNET_HAVE_TLS
+    LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+              "边缘遥测上报需要 Ed25519 签名，但本构建未编译 OpenSSL，已保持关闭");
+    return false;
+#else
+    // 启动即验证私钥可用：把"密钥配错"暴露在启动日志里，而不是每轮上报
+    // 都失败却只留下噪音。
+    {
+        std::string key_error;
+        EVP_PKEY* probe = loadEd25519PrivateKey(config_.edge.private_key_path.get(), &key_error);
+        if (!probe) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报私钥不可用，已保持关闭: " << key_error);
+            return false;
+        }
+        EVP_PKEY_free(probe);
+    }
+
+#ifndef WEAKNET_HAVE_CURL
+    // 没有 libcurl 就不能发请求。显式失败，绝不"签名了但发不出去还假装在跑"。
+    LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+              "边缘遥测上报需要 libcurl，但本构建未链接，已保持关闭");
+    return false;
+#else
+    ensureCurlGlobalInit();
+
+    stop_requested_.store(false);
+    running_.store(true);
+    thread_ = std::thread([this]() { run(); });
+    LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+             "边缘遥测上报已启动: device=" << config_.edge.device_id.get()
+             << " interval_ms=" << config_.edge.interval_ms.load()
+             << " buffer=" << EDGE_TELEMETRY_BUFFER_CAPACITY);
+    return true;
+#endif  // WEAKNET_HAVE_CURL
+#endif  // WEAKNET_HAVE_TLS
+}
+
+void EdgeTelemetryExporter::stop() {
+    if (!running_.load() && !thread_.joinable()) return;
+    stop_requested_.store(true);
+    cv_.notify_all();
+    if (thread_.joinable()) thread_.join();
+    running_.store(false);
+    LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报已停止");
+}
+
+void EdgeTelemetryExporter::injectLatestSnapshot(
+    std::shared_ptr<const AssessmentSnapshot> snap) {
+    std::lock_guard<std::mutex> lock(latest_snapshot_mutex_);
+    latest_snapshot_ = std::move(snap);
+}
+
+bool EdgeTelemetryExporter::enqueue(std::shared_ptr<const AssessmentSnapshot> snapshot) {
+    if (!running_.load()) return false;
+    if (!snapshot) return false;
+
+    // 同时刷新"当前设备健康"视图：TRIAL 到期时 evaluateTrialDeadline
+    // 用这份快照判断 commit/rollback，避免 exporter 反向依赖 ServerContext。
+    //
+    // 注入一份**共同持有**的 shared_ptr：exporter 与调用方共享所有权，
+    // 调用方随后释放自己的引用也不会让 latest_snapshot_ 变悬垂。
+    // 这里不能 move——本地仍需 *snapshot 构造记录，且成员只能经
+    // latest_snapshot_mutex_ 访问，无锁读成员会是数据竞争。
+    injectLatestSnapshot(snapshot);
+
+    EdgeTelemetryRecord record;
+    std::string error;
+    if (!buildRecord(*snapshot, &record, &error)) {
+        // 序列化/签名失败不应影响评估主循环，只记日志并跳过这一条。
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测记录构造失败: " << error);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
+            // 覆盖最旧：保留最近的状态比保留历史更符合"当前故障是什么"的用途。
+            buffer_.pop_front();
+            std::lock_guard<std::mutex> slock(stats_mutex_);
+            stats_.dropped_oldest++;
+        }
+        buffer_.push_back(std::move(record));
+        std::lock_guard<std::mutex> slock(stats_mutex_);
+        stats_.snapshots_enqueued++;
+        stats_.buffered = buffer_.size();
+    }
+    cv_.notify_one();
+    return true;
+}
+
+EdgeExporterStats EdgeTelemetryExporter::stats() const {
+    // 加锁顺序必须是 mutex_ → stats_mutex_，与 enqueue() 及 run() 的补发路径
+    // 保持一致。反过来先取 stats_mutex_ 再取 mutex_ 会与它们构成 ABBA 死锁：
+    // 本函数持 stats_mutex_ 等 mutex_，而 enqueue 持 mutex_ 等 stats_mutex_。
+    std::lock_guard<std::mutex> block(mutex_);
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    EdgeExporterStats copy = stats_;
+    copy.buffered = buffer_.size();
+    return copy;
+}
+
+void EdgeTelemetryExporter::enqueueHypothesis(EdgeAiHypothesisRecord hypothesis) {
+    if (!hypothesis.cloud_eligible) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pending_hypotheses_.size() >= 8) {
+        pending_hypotheses_.pop_front();
+    }
+    pending_hypotheses_.push_back(std::move(hypothesis));
+}
+
+bool EdgeTelemetryExporter::buildRecord(const AssessmentSnapshot& snapshot,
+                                       EdgeTelemetryRecord* out, std::string* error) {
+    const auto& exp = snapshot.experience;
+    const std::string dev_id = config_.edge.device_id.get();
+
+    std::ostringstream body;
+    body << "{\"schema_version\":\"network.edge.telemetry.v1\",\"snapshots\":[{";
+    body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(dev_id) << "\",";
+    body << "\"display_name\":\"" << weaknet_utils::escapeJsonString(hostname_) << "\",";
+    body << "\"sequence_id\":" << snapshot.sequence_id << ",";
+    body << "\"network_epoch\":" << snapshot.network_epoch << ",";
+    body << "\"config_generation\":" << snapshot.config_generation << ",";
+
+    const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        snapshot.wall_timestamp.time_since_epoch()).count();
+    body << "\"captured_at\":\"" << formatRfc3339Utc(wall_ms) << "\",";
+
+    // 专用序列化器：直接产出上报契约的嵌套形态。
+    // 不复用 toExperienceJsonV2 再改写形状——那等于对刚产出的 JSON 做字符串
+    // 手术，脆弱且会让两份契约互相污染（见 serializer 头文件说明）。
+    const auto* topo_ptr = snapshot.topology.has_value() ? &snapshot.topology.value() : nullptr;
+    body << "\"snapshot\":" << toEdgeTelemetrySnapshotJson(exp, topo_ptr) << "}]";
+
+    // 提取并绑定与当前快照上下文匹配的端侧 AI 初筛假设（L2 逻辑隔离，同一信封并列传输）
+    std::vector<EdgeAiHypothesisRecord> matched_hyps;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = pending_hypotheses_.begin();
+        while (it != pending_hypotheses_.end() && matched_hyps.size() < 4) {
+            if (it->interface_name == exp.iface) {
+                EdgeAiHypothesisRecord h = *it;
+                // 强制绑定当前真实可信快照身份，保证云端跨字段校验 100% 通过
+                h.device_id = dev_id;
+                h.network_epoch = snapshot.network_epoch;
+                h.sequence_id = snapshot.sequence_id;
+                matched_hyps.push_back(std::move(h));
+                it = pending_hypotheses_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (!matched_hyps.empty()) {
+        body << ",\"edge_ai_hypotheses\":[";
+        for (size_t i = 0; i < matched_hyps.size(); ++i) {
+            body << toEdgeAiHypothesisJson(matched_hyps[i]);
+            if (i + 1 < matched_hyps.size()) body << ",";
+        }
+        body << "]";
+    }
+    body << "}";
+
+    out->sequence_id = snapshot.sequence_id;
+    out->network_epoch = snapshot.network_epoch;
+    out->config_generation = snapshot.config_generation;
+    out->wall_timestamp_ms = wall_ms;
+    out->body = body.str();
+    out->signature = signBody(out->body, error);
+    return !out->signature.empty();
+}
+
+std::string EdgeTelemetryExporter::signBody(const std::string& body, std::string* error) {
+#ifdef WEAKNET_HAVE_TLS
+    EVP_PKEY* key = loadEd25519PrivateKey(config_.edge.private_key_path.get(), error);
+    if (!key) return {};
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        EVP_PKEY_free(key);
+        *error = "EVP_MD_CTX_new 失败";
+        return {};
+    }
+
+    // Ed25519 是"一次性签名"算法：必须用 EVP_DigestSign 的单次形式，
+    // 传 NULL 摘要，不能先 update 再 final。1.1.1 与 3.x 均支持此路径。
+    std::string signature_hex;
+    do {
+        if (EVP_DigestSignInit(ctx, nullptr, nullptr, nullptr, key) != 1) {
+            *error = "EVP_DigestSignInit 失败";
+            break;
+        }
+        size_t sig_len = 0;
+        if (EVP_DigestSign(ctx, nullptr, &sig_len,
+                           reinterpret_cast<const unsigned char*>(body.data()),
+                           body.size()) != 1) {
+            *error = "EVP_DigestSign(长度探测) 失败";
+            break;
+        }
+        std::vector<unsigned char> sig(sig_len);
+        if (EVP_DigestSign(ctx, sig.data(), &sig_len,
+                           reinterpret_cast<const unsigned char*>(body.data()),
+                           body.size()) != 1) {
+            *error = "EVP_DigestSign 失败";
+            break;
+        }
+        signature_hex = toHex(sig.data(), sig_len);
+    } while (false);
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(key);
+    return signature_hex;
+#else
+    *error = "本构建未编译 OpenSSL，无法签名";
+    return {};
+#endif
+}
+
+bool EdgeTelemetryExporter::postSigned(const std::string& url, const std::string& body,
+                                        const std::string& signature, std::string* response,
+                                        std::string* error) {
+#ifdef WEAKNET_HAVE_CURL
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        *error = "curl_easy_init 失败";
+        return false;
+    }
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    const std::string key_header = "X-Edge-Key-Id: " + config_.edge.key_id.get();
+    const std::string token_header = "X-Edge-Token: " + config_.edge.token.get();
+    const std::string tenant_header = "X-Edge-Tenant: " + config_.edge.tenant.get();
+    const std::string sig_header = "X-Edge-Signature: " + signature;
+    headers = curl_slist_append(headers, key_header.c_str());
+    headers = curl_slist_append(headers, token_header.c_str());
+    headers = curl_slist_append(headers, tenant_header.c_str());
+    headers = curl_slist_append(headers, sig_header.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.data());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+    // 显式超时：绝不允许上报线程因对端无响应而长时间挂起。
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
+                     static_cast<long>(config_.edge.timeout_ms.load()));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
+                     static_cast<long>(config_.edge.timeout_ms.load()));
+
+    const CURLcode code = curl_easy_perform(curl);
+    long http_status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (code != CURLE_OK || http_status < 200 || http_status >= 300) {
+        *error = std::string("上报失败: ") + curl_easy_strerror(code) +
+                 " http=" + std::to_string(http_status);
+        return false;
+    }
+    return true;
+#else
+    (void)url; (void)body; (void)signature; (void)response;
+    *error = "本构建未链接 libcurl，无法发送";
+    return false;
+#endif
+}
+
+bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& records,
+                                    std::string* error) {
+    if (records.empty()) return true;
+
+#ifdef WEAKNET_HAVE_CURL
+    // 批量补发时，body 取"最后一条"的签名对应的字节；因此批量场景下
+    // 每条记录单独发送，而不是拼成一个巨大请求——拼接会破坏
+    // "签名覆盖发送字节"这一不变式。
+    for (const auto& record : records) {
+        if (stop_requested_.load()) {
+            if (error) *error = "stop_requested";
+            return false;
+        }
+        std::string response;
+        if (!postSigned(config_.edge.url.get(), record.body, record.signature,
+                        &response, error)) {
+            return false;
+        }
+
+        if (stop_requested_.load()) {
+            return false;
+        }
+        applyPendingActions(response);
+
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.snapshots_sent++;
+        }
+    }
+    return true;
+#else
+    *error = "本构建未链接 libcurl，无法发送";
+    return false;
+#endif  // WEAKNET_HAVE_CURL
+}
+
+void EdgeTelemetryExporter::ensureDownlinkKeyLoaded() {
+    if (downlink_verify_enabled_) return;
+    const std::string key_path = config_.edge.cloud_public_key_path.get();
+    if (key_path.empty()) return;
+    downlink_verify_enabled_ = true;  // 先启用再加载：加载失败 = 一切拒绝
+    std::call_once(downlink_key_once_, [this, &key_path] {
+#ifdef WEAKNET_HAVE_TLS
+        FILE* fp = std::fopen(key_path.c_str(), "rb");
+        if (!fp) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "下行动作验签公钥无法打开，未签名响应将被整批拒绝: " << key_path);
+            return;
+        }
+        EVP_PKEY* key = PEM_read_PUBKEY(fp, nullptr, nullptr, nullptr);
+        std::fclose(fp);
+        if (!key || EVP_PKEY_base_id(key) != EVP_PKEY_ED25519) {
+            if (key) EVP_PKEY_free(key);
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "下行动作验签公钥无效（需 Ed25519 PEM），未签名响应将被整批拒绝: "
+                          << key_path);
+            return;
+        }
+        cloud_public_key_ = key;
+        LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                 "下行动作验签已启用: " << key_path);
+#else
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "本构建未编译 OpenSSL，下行动作验签不可用，未签名响应将被整批拒绝");
+#endif
+    });
+}
+
+bool EdgeTelemetryExporter::verifyPendingActionsSignature(const std::string& body) const {
+#ifdef WEAKNET_HAVE_TLS
+    if (!cloud_public_key_) return false;  // 公钥缺失/加载失败 → fail-closed
+
+    // 精确截取 pending_actions 数组原始字节（含 [ ]）——签名覆盖的就是
+    // 报文里这段字节，与上行"序列化一次→签这段字节→原样发送"同构。
+    const std::string array_key = "\"pending_actions\"";
+    const size_t key_pos = body.find(array_key);
+    if (key_pos == std::string::npos) return false;
+    const size_t array_start = body.find('[', key_pos + array_key.size());
+    if (array_start == std::string::npos) return false;
+    size_t array_end = std::string::npos;
+    bool in_string = false, escaped = false;
+    for (size_t i = array_start + 1; i < body.size(); ++i) {
+        const char c = body[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\') { escaped = true; continue; }
+        if (c == '"') { in_string = !in_string; continue; }
+        if (c == ']' && !in_string) { array_end = i; break; }
+    }
+    if (array_end == std::string::npos) return false;
+
+    std::string signature_hex, key_id;
+    if (!extractStringField(body, "pending_actions_signature", 0, &signature_hex, nullptr) ||
+        signature_hex.empty()) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "下行动作响应未携带 pending_actions_signature，整批拒绝");
+        return false;
+    }
+    extractStringField(body, "pending_actions_key_id", 0, &key_id, nullptr);
+
+    std::vector<unsigned char> signature;
+    signature.reserve(signature_hex.size() / 2);
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    if (signature_hex.size() % 2 != 0) return false;
+    for (size_t i = 0; i < signature_hex.size(); i += 2) {
+        const int hi = nibble(signature_hex[i]), lo = nibble(signature_hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        signature.push_back(static_cast<unsigned char>((hi << 4) | lo));
+    }
+    if (signature.size() != 64) return false;
+
+    bool ok = false;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (ctx) {
+        auto* key = static_cast<EVP_PKEY*>(const_cast<void*>(cloud_public_key_));
+        if (EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, key) == 1) {
+            const unsigned char* msg =
+                reinterpret_cast<const unsigned char*>(body.data()) + array_start;
+            const size_t msg_len = array_end - array_start + 1;
+            ok = EVP_DigestVerify(ctx, signature.data(), signature.size(), msg, msg_len) == 1;
+        }
+        EVP_MD_CTX_free(ctx);
+    }
+    if (!ok) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "下行动作响应验签失败（key_id=" << key_id << "），整批拒绝");
+    }
+    return ok;
+#else
+    (void)body;
+    return false;
+#endif
+}
+
+void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body) {
+    ensureDownlinkKeyLoaded();
+    const auto actions = parsePendingActions(response_body);
+    if (actions.empty()) return;
+
+    // S1#1：配置了验签公钥时，先验签后执行——签名失败/缺失整批拒绝，
+    // 不给"伪造响应改配置"留任何单条落地的机会。
+    if (downlink_verify_enabled_ && !verifyPendingActionsSignature(response_body)) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.unsigned_responses_rejected++;
+        return;
+    }
+
+    for (const auto& action : actions) {
+        std::string error;
+        bool ok = false;
+
+        const bool trialable = weaknet_dbus::isTrialableKey(action.key);
+
+        // 应答丢失→遥测重发→云端重放 pending_actions 是常态路径。
+        // 已执行过的 action_id 回执**首次的真实结果**，绝不重执行（重执行会重置
+        // TRIAL deadline、把看门狗无限续期，并泛洪 action-results）。
+        // 注意：不能固定回 APPLIED——首次被拒的动作若谎报成功，云端会把
+        // 未生效的配置记成已应用。
+        auto it = executed_action_ids_.find(action.action_id);
+        if (it != executed_action_ids_.end()) {
+            const bool first_ok = it->second;
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "云端动作已执行过，直接回执不重放: " << action.action_id
+                     << " (first=" << (first_ok ? "APPLIED" : "REJECTED") << ")");
+            queueActionResult(action.action_id, first_ok ? "APPLIED" : "REJECTED",
+                              first_ok ? "applied_duplicate" : "rejected_duplicate",
+                              action.claim_token, action.generation);
+            continue;
+        }
+
+        // fail-closed（S1#2：generation 全量强制）：**所有**云端下行动作必须
+        // 携带 generation_present 且 > 0——云端排队路径本就单调发放 generation，
+        // 缺失意味着报文不是合法 v2 下行（伪造或残缺），generation=0 会绕过
+        // stale 判定、且永远推进不了 last_applied。
+        if (!action.generation_present || action.generation == 0) {
+            error = "missing_or_invalid_generation";
+        } else {
+            const bool stale = action.generation > 0 &&
+                               config_txn_ &&
+                               action.generation <= config_txn_->lastAppliedGeneration();
+
+        if (stale) {
+            error = "stale_generation";
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "云端动作被拒绝（generation 过期）: " << action.key
+                      << " gen=" << action.generation
+                      << " last=" << config_txn_->lastAppliedGeneration());
+        } else if (trialable && config_txn_) {
+            // TRIAL 路径：先记账（含 prior_values 快照），再落值。
+            auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+            const auto state = config_txn_->state();
+            if (state == weaknet_dbus::ConfigState::TRIAL) {
+                ok = config_txn_->extendTrial(*cfg, action.key, action.value,
+                                              action.action_id, action.generation,
+                                              &error);
+            } else {
+                ok = config_txn_->startTrial(*cfg, action.key, action.value,
+                                             action.action_id, action.generation,
+                                             &error);
+            }
+            if (ok) {
+                ok = weaknet_dbus::setMonitorParam(cfg, action.key, action.value, &error);
+            }
+        } else {
+            // 直通道：非 trialable key 直接走 setMonitorParam。
+            ok = weaknet_dbus::setMonitorParam(
+                const_cast<weaknet_dbus::WeakNetConfig*>(&config_),
+                action.key, action.value, &error);
+        }
+        }
+
+        if (ok) {
+            // 两条应用路径（TRIAL 记账 / 直通道）都必须推进防重放高水位；
+            // 否则 last_applied 永远停在 confirmStable/forceRollback 之前，
+            // 云端因应答丢失重放同一代次时会被重新执行。
+            if (config_txn_ && action.generation > 0) {
+                config_txn_->markGenerationApplied(action.generation);
+            }
+            // 去重表只记录成功应用的 action：被拒动作允许重试，
+            // 重放时重新走完整执行路径（会再次被拒并回执 REJECTED）。
+            // 容量上限防无界增长：超过 1024 条时清空最旧的一批（直接 clear，
+            // 重启都会清空，云端已终态的历史动作即便偶发漏判重做也受 generation 门禁守卫）。
+            if (executed_action_ids_.size() >= 1024) {
+                executed_action_ids_.clear();
+            }
+            executed_action_ids_.emplace(action.action_id, true);
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "已应用服务端下发的配置: " << action.key << "=" << action.value
+                     << " (action=" << action.action_id
+                     << " gen=" << action.generation
+                     << (trialable && config_txn_ ? " [TRIAL]" : " [DIRECT]") << ")");
+        } else {
+            if (!error.empty() && error != "stale_generation" &&
+                error != "missing_or_invalid_generation") {
+                LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                          "服务端下发配置被拒绝: " << action.key << "=" << action.value
+                          << " (action=" << action.action_id << ", " << error << ")");
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            if (ok) {
+                stats_.actions_applied++;
+            } else {
+                stats_.actions_rejected++;
+            }
+        }
+
+        // 无论应用成功与否都必须回执：服务端靠它把 action 推进到
+        // APPLIED/REJECTED，缺了回执这条 action 会停在 DELIVERED 永远不完结。
+        queueActionResult(action.action_id, ok ? "APPLIED" : "REJECTED",
+                          ok ? "applied" : error,
+                          action.claim_token, action.generation);
+    }
+}
+
+void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, const char* status,
+                                               const std::string& detail,
+                                               const std::string& claim_token,
+                                               uint64_t generation,
+                                               const std::string& config_key,
+                                               const std::string& config_value) {
+    EdgeActionResultRecord rec;
+    rec.action_id = action_id;
+    rec.status = status;
+    rec.detail = detail;
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    std::ostringstream body;
+    body << "{\"schema_version\":\"network.edge.action-results.v2\",";
+    body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(config_.edge.device_id.get()) << "\",";
+    body << "\"results\":[{";
+    body << "\"action_id\":\"" << weaknet_utils::escapeJsonString(action_id) << "\",";
+    body << "\"status\":\"" << rec.status << "\",";
+    body << "\"detail\":\"" << weaknet_utils::escapeJsonString(detail) << "\",";
+    body << "\"claim_token\":\"" << weaknet_utils::escapeJsonString(claim_token) << "\",";
+    body << "\"generation\":" << generation << ",";
+    // 仅本地变更携带：云端下发的动作由服务端从 network_pending_actions 回读
+    // key/value，两处来源同时写会互相打架。空串 = 不写该字段。
+    if (!config_key.empty()) {
+        body << "\"config_key\":\"" << weaknet_utils::escapeJsonString(config_key) << "\",";
+        body << "\"config_value\":\"" << weaknet_utils::escapeJsonString(config_value) << "\",";
+    }
+    body << "\"reported_at\":\"" << formatRfc3339Utc(now_ms) << "\"}]}";
+    rec.body = body.str();
+
+    std::string sign_error;
+    rec.signature = signBody(rec.body, &sign_error);
+    if (rec.signature.empty()) {
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "动作结果签名失败，无法回执: action=" << action_id << " (" << sign_error << ")");
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_action_results_.push_back(std::move(rec));
+    }
+    cv_.notify_one();
+}
+
+void EdgeTelemetryExporter::emitLocalConfigChange(const std::string& key,
+                                                  const std::string& value,
+                                                  const std::string& detail,
+                                                  uint32_t config_generation) {
+    // 契约上限（与 service 端 NetworkPendingActionRecord 的 String(128)/
+    // String(512) 对齐）。超限的**整批** action-results 会被 422 拒掉，把
+    // 同批其它回执一起拖下水，所以宁可本端截断也不能让上游拒收。
+    static constexpr size_t kMaxKey = 128;
+    static constexpr size_t kMaxValue = 512;
+    std::string key_c = key.substr(0, kMaxKey);
+    std::string value_c = value.substr(0, kMaxValue);
+    if (key.size() > kMaxKey || value.size() > kMaxValue) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "本地调参回执超契约长度已截断: key=" << key_c
+                    << " (key_len=" << key.size() << " value_len=" << value.size() << ")");
+    }
+
+    queueActionResult("nlocal-" + randomHex16(), "APPLIED", detail, "",
+                      config_generation, key_c, value_c);
+}
+
+bool EdgeTelemetryExporter::tickWatchdog(std::chrono::steady_clock::time_point now) const {
+    return config_txn_ && config_txn_->deadlineExpired(now);
+}
+
+bool EdgeTelemetryExporter::evaluateTrialDeadline(const AssessmentSnapshot* latest_snapshot) {
+    if (!config_txn_) return false;
+    if (!tickWatchdog(std::chrono::steady_clock::now())) return false;
+
+    const auto trial = config_txn_->trial();
+    const auto generation = trial.generation;
+
+    // fail-safe：没有可用快照也按"未知健康"回滚，不赌设备状态。
+    if (!latest_snapshot) {
+        auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+        const std::string reason = "watchdog_timeout_no_snapshot";
+        if (config_txn_->forceRollback(cfg, reason)) {
+            LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                        "TRIAL 看门狗超时 + 无快照 → 已回滚到 prior_values");
+            emitRollbackReceipt(reason);
+        }
+        return true;
+    }
+
+    const auto overall = latest_snapshot->experience.overall;
+    const auto reach = latest_snapshot->experience.ip_reachability.state;
+    // S7：确认条件收紧——只有 overall 明确 GOOD 才算健康。旧判据
+    // "overall != BAD" 会把 UNKNOWN/DEGRADED 也当健康直接 confirmStable，
+    // 等于让"评估器没看懂"替配置变更背书。
+    const bool healthy = (overall == weaknet::HealthState::GOOD) &&
+                         (reach != weaknet::HealthState::BAD);
+
+    if (healthy) {
+        std::string err;
+        if (config_txn_->confirmStable(generation, &err)) {
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "TRIAL 看门狗超时 + 健康评估通过 → 已确认 STABLE (gen=" << generation << ")");
+            return true;
+        }
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "confirmStable 失败: " << err);
+        return false;
+    }
+
+    auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+
+    // 证据不足（UNKNOWN）≠ 证据不利：不确认也不立即回滚，延长一次窗口
+    // （至 2× deadline）再观察；延长配额耗尽仍非 GOOD → 下方保守回滚。
+    const bool unknown = overall == weaknet::HealthState::UNKNOWN ||
+                         reach == weaknet::HealthState::UNKNOWN;
+    if (unknown && config_txn_->extendDeadline()) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "TRIAL 看门狗超时 + 健康 UNKNOWN → 延长试用窗口一次 (gen="
+                        << generation << ", overall="
+                        << weaknet::healthStateToString(overall)
+                        << ", ip_reachability="
+                        << weaknet::healthStateToString(reach) << ")");
+        return false;
+    }
+
+    const std::string reason = unknown ? "watchdog_timeout_health_unknown"
+                                       : "watchdog_timeout_health_bad";
+    if (config_txn_->forceRollback(cfg, reason)) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "TRIAL 看门狗超时 + 非 GOOD → 已回滚 (overall=" << static_cast<int>(overall)
+                    << " ip_reachability=" << static_cast<int>(reach) << ")");
+        emitRollbackReceipt(reason);
+        return true;
+    }
+    return false;
+}
+
+void EdgeTelemetryExporter::emitRollbackReceipt(const std::string& reason) {
+    // ROLLBACK 回执：优先绑定触发本 trial 的云端 action_id，
+    // 使服务端把该动作记为终态 ROLLBACK；拿不到（异常路径）时退回
+    // sentinel 形式——sentinel 不在 network_pending_actions 中，服务端会
+    // 丢弃，但本地日志仍保留回滚事实。
+    const auto trial = config_txn_ ? config_txn_->trial() : weaknet_dbus::TrialWindow{};
+    const std::string& action_id = !trial.pending_action_id.empty()
+        ? trial.pending_action_id
+        : ("watchdog-" + std::to_string(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count()));
+    queueActionResult(action_id, "ROLLBACK", reason, "",
+                      config_txn_ ? config_txn_->lastAppliedGeneration() : 0);
+}
+
+std::string EdgeTelemetryExporter::actionResultsUrl() const {
+    std::string url = config_.edge.url.get();
+    const std::string suffix = "/telemetry";
+    if (url.size() >= suffix.size() &&
+        url.compare(url.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        url.replace(url.size() - suffix.size(), suffix.size(), "/action-results");
+    } else {
+        // URL 形态不符约定时显式失败，而不是把结果发到一个错误的端点。
+        url.clear();
+    }
+    return url;
+}
+
+bool EdgeTelemetryExporter::transmitActionResults(std::string* error) {
+    std::deque<EdgeActionResultRecord> pending;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending.swap(pending_action_results_);
+    }
+    if (pending.empty()) return true;
+
+    const std::string url = actionResultsUrl();
+    if (url.empty()) {
+        *error = "action-results URL 无法由 edge.url 派生";
+        // 把结果放回队列，避免丢弃。
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!pending.empty()) {
+            pending_action_results_.push_front(std::move(pending.back()));
+            pending.pop_back();
+        }
+        return false;
+    }
+
+    bool all_ok = true;
+    std::deque<EdgeActionResultRecord> unsent;
+    for (auto& rec : pending) {
+        std::string response;
+        std::string send_error;
+        if (postSigned(url, rec.body, rec.signature, &response, &send_error)) {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.action_results_sent++;
+        } else {
+            *error = send_error;
+            unsent.push_back(std::move(rec));
+            all_ok = false;
+        }
+    }
+
+    // 未送达的结果放回队列头部，等下一轮重试（服务端对未知 action_id 幂等）。
+    if (!unsent.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!unsent.empty()) {
+            pending_action_results_.push_front(std::move(unsent.back()));
+            unsent.pop_back();
+        }
+    }
+    return all_ok;
+}
+
+std::vector<EdgeTelemetryRecord> EdgeTelemetryExporter::drain() {
+    std::vector<EdgeTelemetryRecord> out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    out.reserve(buffer_.size());
+    while (!buffer_.empty()) {
+        out.push_back(std::move(buffer_.front()));
+        buffer_.pop_front();
+    }
+    std::lock_guard<std::mutex> slock(stats_mutex_);
+    stats_.buffered = 0;
+    return out;
+}
+
+void EdgeTelemetryExporter::run() {
+    LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报线程已启动");
+    while (!stop_requested_.load()) {
+        // 看门狗唤醒上限为 5 秒，避免 edge.interval_ms 调大（如设为 1h）时看门狗超时停摆
+        const uint32_t interval = config_.edge.interval_ms.load();
+        const auto wait_ms = std::chrono::milliseconds(std::min(interval, 5000u));
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, wait_ms,
+                     [this]() {
+                         return !buffer_.empty() || !pending_action_results_.empty() ||
+                                stop_requested_.load();
+                     });
+        lock.unlock();
+
+        if (stop_requested_.load()) break;
+
+        // 看门狗：TRIAL 到期即在此评估最新快照并做 commit/rollback。
+        // evaluateTrialDeadline 内部 fail-safe：无快照视作不健康。
+        if (config_txn_ && tickWatchdog(std::chrono::steady_clock::now())) {
+            std::shared_ptr<const AssessmentSnapshot> latest;
+            {
+                std::lock_guard<std::mutex> lock(latest_snapshot_mutex_);
+                latest = latest_snapshot_;
+            }
+            evaluateTrialDeadline(latest.get());
+        }
+
+        const bool has_action_results = [this]() {
+            std::lock_guard<std::mutex> guard(mutex_);
+            return !pending_action_results_.empty();
+        }();
+
+        auto records = drain();
+        if (records.empty() && !has_action_results) continue;
+
+        std::string error;
+        const bool telemetry_ok = records.empty() || transmit(records, &error);
+        if (!telemetry_ok) {
+            // 失败：把未送达的记录放回缓冲前面，保持时序。
+            // 遵循头文件声明的锁序约定：必须先获取 mutex_，再获取 stats_mutex_，
+            // 严禁在此出现 stats_mutex_ -> mutex_ 的反向加锁，杜绝与 enqueue/stats 的死锁面。
+            {
+                std::lock_guard<std::mutex> block(mutex_);
+                std::lock_guard<std::mutex> slock(stats_mutex_);
+                stats_.send_failures++;
+                for (auto it = records.rbegin(); it != records.rend(); ++it) {
+                    while (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
+                        // 与 enqueue() 同一淘汰策略：覆盖最旧记录，优先保住新数据。
+                        buffer_.pop_front();
+                        stats_.dropped_oldest++;
+                    }
+                    buffer_.push_front(std::move(*it));
+                }
+            }
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报失败（保留待补发）: " << error);
+
+            // 失败退避：避免网络不通或服务端离线时紧循环重试并打爆日志与 CPU。
+            // 休眠期间若收到 stop 请求则立即打断。
+            const uint32_t backoff_ms = std::min(std::max(config_.edge.interval_ms.load(), 1000u), 10000u);
+            std::unique_lock<std::mutex> wlock(mutex_);
+            cv_.wait_for(wlock, std::chrono::milliseconds(backoff_ms),
+                         [this]() { return stop_requested_.load(); });
+        }
+
+        // 动作结果与遥测共用同一轮唤醒：只要任一通道有积压就尝试回传，
+        // 让 APPLIED/REJECTED 尽快到达服务端而不是等下一个遥测周期。
+        std::string results_error;
+        if (!transmitActionResults(&results_error)) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "动作结果回传失败（保留待重发）: " << results_error);
+        }
+    }
+    LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报线程已退出");
+}
+
+void EdgeTelemetryExporter::initGlobal() {
+#ifdef WEAKNET_HAVE_CURL
+    ensureCurlGlobalInit();
+#endif
+}
+
+void EdgeTelemetryExporter::cleanupGlobal() {
+#ifdef WEAKNET_HAVE_CURL
+    curl_global_cleanup();
+#endif
+}
+
+}  // namespace weaknet

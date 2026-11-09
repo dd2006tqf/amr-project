@@ -1,0 +1,60 @@
+#pragma once
+
+#include <string>
+#include <queue>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <fstream>
+#include <vector>
+
+namespace xgrids {
+
+// 异步日志：
+//  - 业务线程只 enqueue（O(1)），写盘在独立低优先级线程
+//  - 支持按级别过滤、按 tag 过滤（便于 log_replay 解析帧事件）
+//  - 队列满时丢弃低级别日志保高级别（backpressure 不应再拖垮采集）
+class AsyncLogger {
+public:
+    enum class Level : int { kDebug = 0, kInfo, kWarn, kError };
+
+    struct Entry {
+        int64_t ts_us;
+        Level lvl;
+        std::string tag, msg;
+    };
+
+    static AsyncLogger& instance();
+
+    void init(const std::string& log_path, size_t queue_cap = 4096);
+    void shutdown();
+    void set_min_level(Level lvl) { min_level_.store(lvl); }
+
+    void log(Level lvl, const std::string& tag, const std::string& msg);
+
+    // 便捷宏级接口（避免分支在业务热点里）
+    void info (const std::string& t, const std::string& m) { log(Level::kInfo , t, m); }
+    void warn (const std::string& t, const std::string& m) { log(Level::kWarn , t, m); }
+    void error(const std::string& t, const std::string& m) { log(Level::kError, t, m); }
+
+    // 供调试：当前未落盘的条数
+    size_t pending() const;
+
+private:
+    AsyncLogger() = default;
+    ~AsyncLogger();
+    void writer_loop();
+
+    std::ofstream file_;
+    std::queue<Entry> queue_;
+    mutable std::mutex mu_;
+    std::condition_variable cv_;
+    std::thread writer_;
+    std::atomic<bool> running_{false};
+    std::atomic<Level> min_level_{Level::kDebug};
+    size_t queue_cap_ = 4096;
+    std::atomic<uint64_t> dropped_logs_{0};
+};
+
+}  // namespace xgrids

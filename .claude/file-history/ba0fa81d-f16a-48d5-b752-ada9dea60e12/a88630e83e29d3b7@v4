@@ -1,0 +1,39 @@
+# 2026-10-19 审查修复 Ledger
+
+计划：docs/superpowers/plans/2026-10-19-review-fixes.md
+
+## 状态（全部完成）
+
+| 任务 | 状态 | Commit |
+|---|---|---|
+| Workstream A（core A1–A10） | ✅ | 902190f（ctest 500/500） |
+| Workstream B（ROS B1–B8） | ✅ | e99d80a（colcon 5 包 + 冒烟） |
+| Workstream C（工程化 C1–C6） | ✅ | b39eb8b / 3192aad / e09f3dc |
+| 终审 Critical C1 + Important I1 | ✅ | 3e55626（core 501 / ROS 20；决定性冒烟三段全过） |
+| 终审 Minor M1–M7 | ✅ | 3a4b190（core 503 / ROS 20） |
+| 下一步 | ⏳ | 孤儿接口处置讨论（用户明确指示的最后一步） |
+
+## 决定性冒烟（3e55626 验证，预订阅采样脚本）
+
+- 阶段1 基线：raw x=0.8 放行（37 帧，allowed=True）
+- 阶段2 estop 按住 3s（> TTL 2s）：45 帧全零，allowed=False reason='estop'（C1 修复生效——修复前此窗口会放行 0.8）
+- 阶段3 释放：首帧 t=0.001s 即恢复 0.8，无残留锁存
+
+## Rulings
+
+- 不用 worktree；按工作流分批提交 main。
+- 孤儿接口删除决策推迟至全部修复完成后讨论（用户指示）。
+- L2 launch 契约测试本轮只做诚实化（SKIPPED），不建执行框架。
+- 四个 /v2 桩做真实现不删除。
+- A5：UDP 数据报原子语义单次 sendto；serial 部分写循环重试。
+- M3 连带：ExpiredTimeSpacePrunedOnNextReserveOrRelease 旧期望（插入过期条目计数保留）
+  按"入口即剪"新语义更新为 1。
+- 调试教训：ros2 topic echo 启动延迟数秒，冒烟必须用预订阅脚本采样；
+  容器内部署栈（entrypoint 拉起 full_system）调试时避免误杀。
+
+## 终审遗留（未做，属孤儿/后续讨论范围）
+
+- I2 备查项已核销（max_active_missions 热更真实生效；ReserveTimeSpace 无生产调用方）。
+- topology_projection.cpp 内第三份 route_edge 前缀解析副本（同域内聚，终审未列为必修）。
+- 孤儿接口清单见 2026-10-19 全仓审查报告（14 个无客户端 srv、5 棵孤儿 BT、
+  ~20 个孤儿 core 头、8 个无人读 yaml、2 个零引用 launch 等）。

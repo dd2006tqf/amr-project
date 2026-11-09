@@ -1,0 +1,552 @@
+=============== docs/ai/build.md ===============
+# Build and dependency rules
+
+Read the relevant Profile module, its `capability_status`, and the repository's actual adapter, build graph and dependency mechanisms before editing build metadata. Do not create a build target, graph entry, export/install/package surface or third-party dependency unless the approved design and Integration inventory allow it. Use reviewed Profile command IDs for configure, build, test, install, package, consumer, static-analysis and target-run capabilities; `absent`, `unavailable`, `not-applicable` or `needs-approval` must be reconciled with the current requirement by Planner, never treated as permission to guess a command. Validate clean configuration when build-graph inputs change. A distribution surface needs a representative downstream configure/build/link and any applicable host or target run, not only a successful main-project build. Inspect broad source collection, install, packaging and CI rules so governance files cannot enter product artifacts.
+=============== docs/ai/check-rules.md ===============
+# Repository check rules
+
+Rules here must be concrete and reusable. Each addition records a Trigger, Check and Source.
+
+## Built-in gates
+
+- Trigger: a change adds a helper, manager, parser, service, public type, dependency, build-graph entry or distribution surface. Check: prove an approved structural allowance and show why an existing extension point cannot serve it.
+- Trigger: implementation footprint exceeds an expected threshold. Check: stop at review/hard boundaries; `drift_warning` requires an explicit reason and independent evaluation.
+- Trigger: an external contract changes. Check: classification, affected consumers, migration/transition, rollback and representative caller verification are complete.
+- Trigger: task completion is requested. Check: `task_verify.sh --complete` proves a current RED/GREEN/REGRESSION closure or an approved alternative for every declared Verify kind; a checkbox edited by hand has no authority.
+- Trigger: archive is requested. Check: tasks, strict validation, planning/TDD/source fingerprints, footprint, both review stages, immutable Evaluation Pass and UTC destination all pass.
+=============== docs/ai/cpp.md ===============
+# C++ implementation rules
+
+Follow each Profile module's actual language level, toolchain, target platform, ownership model, error style and naming. Unknown or mixed C++ standards are valid project facts, not values for the Harness to guess. Prefer existing types and extension points. Public headers, ABI, build-graph entries, install/export/package rules and other distribution surfaces are production contracts, not bookkeeping. An internal method declared for cross-file use must have a real production caller; a test-only caller makes it an orphan product interface. Callbacks need registration plus dispatch, and overloads/templates/virtual declarations are distinct candidates when AST discovery is selected. Add focused observable tests for changed behavior and do not hide warnings or undefined behavior.
+=============== docs/ai/evaluation.md ===============
+# Independent Evaluation contract
+
+quick_brief: Begin a fresh attempt, run independent real commands, fill the exact closed shapes below, and finish through the checker; static-only evidence cannot Pass executable behavior.
+
+Evaluation lives at `openspec/changes/<change>/harness/evaluation.json`; there is no root evaluation file. Start with `scripts/evaluator_check.sh --begin`, run each independent command through `scripts/evaluator_check.sh --run --kind <kind> [--surface <id>] [--surface-role <id>=<role>] [--expect-exit <csv>] [--expected <text>] [--observed <text>] {--project-command <command-id> | -- <argv...>}`, copy the resulting closed command objects from `evaluation-command-ledger.json` into the candidate report without edits, and finish with `--finish`. The command-ID form is the normal route for a reviewed Project Profile operation and is recorded as `scripts/project_command.sh <command-id> --change <active-change> --json`; raw argv remains available only for an approved durable repository driver. The two forms are mutually exclusive. Use `--abort --reason ...` if the attempt cannot continue.
+
+One-off independent programs run only in a fresh managed verification workspace. `--begin` clears crash residue, every `--run` cleans after the command, and `--finish`/`--recheck` require the workspace to be empty. A Pass may preserve command metadata and output digests, but cannot cite a temporary source/binary path or depend on material that disappears after evidence is recorded.
+
+A valid report binds the evaluation ID, OpenSpec version, source/artifact/base-spec fingerprints, verification/budget/footprint digests, behavior criteria, real commands, implementation-economy assessments, blocking untested items and residual risks. Schema v3 additionally binds the frozen Integration plan, derived report and discovery identity, and assesses every candidate and every planned surface. IDs and references must close from delta scenario through task, surface and criterion to a real command. Static inspection alone cannot pass executable behavior.
+
+`Fail` has priority over `Blocked`; all behavior criteria, economy assessments and Integration assessments must pass for top-level `Pass`. A completed Fail or Blocked attempt is useful history but cannot be archived. Editing code, tasks, specs, verification, footprint, the surface report or the completed Evaluation makes the attempt stale.
+
+The candidate report is a closed JSON object. Its exact top-level keys are:
+
+```text
+schema_version, evaluation_id, change_name, verdict,
+evaluation_started_at, evaluated_at, openspec_version, evaluator_role,
+input_source_fingerprint, input_artifact_fingerprint, input_base_specs_fingerprint,
+source_fingerprint, artifact_fingerprint, base_specs_fingerprint,
+budget_block_sha256, change_footprint_json_sha256,
+review_input, change_review,
+implementation_economy, criteria, commands, blocking_untested, residual_risks
+```
+
+For schema v3, append the one additional key `integration_completeness`. A v3 command appends `surface_ids`, `surface_evidence_roles` and `surface_probe_bindings`; these fields must be copied exactly from ledger v2. Do not add those fields to the older v2 family.
+
+Use these exact closed shapes; arrays may be empty only where the checker permits:
+
+```text
+requirement_ref = {spec_path, operation, requirement, scenarios[, renamed_to]}
+command = {id, kind, argv, command, working_directory, started_at, finished_at,
+           expected_exit_codes, exit_code, expected, observed, result,
+           output_sha256}
+command_v3_extra = {surface_ids, surface_evidence_roles, surface_probe_bindings}
+surface_evidence_role = {surface_id, role}
+surface_probe_binding = {surface_id, role, probe_id}
+criterion = {id, description, requirement_refs, task_ids, status,
+             evidence_command_ids, blocking_untested_ids}
+blocking_untested = {id, requirement_refs, task_ids, reason, required_evidence}
+residual_risk = {id, impact, rationale}
+
+implementation_economy = {
+  footprint_status, drift_explanation,
+  classification_assessment, repository_impact_assessment,
+  reuse_assessments, structural_assessments,
+  obsolete_item_assessments, exception_assessments, result
+}
+assessment = {id, result, reason, evidence_paths[, evidence_command_ids]}
+classification_assessment = {result, reason, evidence_paths[, evidence_command_ids]}
+structural_assessment = {allowance_id, candidate_ids, result, reason,
+                         evidence_paths, evidence_command_ids}
+repository_impact_assessment = {result, surfaces}
+surface = {surface, applicability, result, reason, evidence_paths,
+           evidence_command_ids, not_applicable_reason}
+drift_explanation = null | {metric_keys, reason, why_no_replan}
+
+review_input = {
+  schema_version, implementation_base_commit, head_commit,
+  source_fingerprint, artifact_fingerprint, base_specs_fingerprint,
+  layers, review_paths, git_state_fingerprint, raw_diff_persisted
+}
+layers = {effective, committed, staged, unstaged, untracked, dirty_gitlinks}
+layer = {paths, state_fingerprint}
+change_review = {schema_version, git_state_fingerprint, stages, findings}
+review_stage = {name, started_at, completed_at, status, requirement_refs,
+                task_ids, reviewed_paths, dimensions, evidence_command_ids,
+                finding_ids, blocking_untested_ids, not_run_reason}
+finding = {id, stage, category, severity, status, summary, requirement_refs,
+           task_ids, evidence_paths, evidence_command_ids, return_to,
+           resolution, tracking}
+resolution = null | {summary, evidence_paths, evidence_command_ids}
+tracking = null | {kind, id}
+```
+
+For an integrated change, the additional closed object is:
+
+```text
+integration_completeness = {
+  planning_block_sha256, report_sha256, discovery_identity_sha256,
+  inventory_assessment, candidate_assessments, surface_assessments,
+  orphan_surfaces, result
+}
+inventory_assessment = {result, reason, evidence_paths, evidence_command_ids}
+candidate_assessment = {
+  candidate_id, source, disposition, surface_ids, surface_bindings,
+  reason, producer_paths, implementation_consumer,
+  evidence_paths, evidence_command_ids, orphan_ids
+}
+surface_assessment = {
+  surface_id, result, reason,
+  consumer_paths, old_consumer_paths, replacement_consumer_paths,
+  kind_evidence, role_evidence, evidence_command_ids,
+  blocking_untested_ids, orphan_ids
+}
+orphan_surface = {
+  id, type, reason_code, mismatch_kind, candidate_ids, surface_id,
+  kind, name, producer_paths, consumer_paths, reason,
+  finding_id, blocking_untested_ids, route
+}
+```
+
+Read candidate IDs and typed bindings only from the frozen `integration-surface-report.json`; do not invent, rename or drop them. Every report candidate has exactly one assessment. `mapped` binds the exact planned surface; `implementation_detail` requires a real production caller; `private_removal` and `non_semantic_change` need direct reviewed evidence; `orphan` must backlink to one orphan record. Every planned surface has exactly one assessment whose independent command IDs cover each planned Verify kind and each required evidence role.
+
+An unplanned candidate or a planned surface with wrong requirement, task, classification or scope is `Blocked -> Planner` and needs an open specification-compliance finding. A planned surface with a missing consumer, unrelated command or missing role is `Fail -> Generator`. A required unavailable environment is `Blocked -> Environment` and must reference `blocking_untested`; it cannot be written only as residual risk. `inventory_assessment` must cover every changed production path and Pass before finish.
+
+`operation` is `ADDED`, `MODIFIED`, `REMOVED`, or `RENAMED`; only RENAMED carries `renamed_to`. Command kind is `build`, `test`, `behavior`, or `static`, and command result is only `Pass` or `Fail`. Criterion/assessment/verdict values are `Pass`, `Fail`, or `Blocked`. Repository surfaces are exactly `product_targets`, `install`, `package`, and `ci`. An applicable surface needs evidence and a result; a not-applicable surface has null result, empty evidence, and a concrete `not_applicable_reason`. Every design allowance/reuse/obsolete/exception ID and every footprint structural candidate must be assessed exactly once.
+
+`classification_assessment.evidence_paths` must exactly cover every current non-managed implementation path relative to the frozen implementation base. A command can support the assessment but cannot replace a missing path entry.
+
+The command ledger is machine-written and bound to the active evaluation ID. Hand-written command strings, exit codes or timestamps cannot substitute for it: `--finish` and `--recheck` require `evaluation.commands` to equal the ledger exactly. Every terminal attempt is sealed once under `harness/evaluations/<evaluation_id>.json` as an envelope containing the terminal baseline, the terminal evaluation (or null for an aborted attempt), and canonical payload SHA-256 digests. Managed flows never overwrite a terminal envelope; this is a Harness contract, not an operating-system anti-tamper boundary.
+
+Evaluation attempts form a bounded-monotonic terminal chain. A new attempt starts strictly after the unique latest terminal envelope; the five-minute rollback tolerance never permits an ambiguous or farther-future predecessor. Finding carry-forward chooses the complete envelope with the greatest unique terminal time, not the report's wall-clock `evaluated_at`; duplicate terminal times, orphan history or a stale predecessor fail before new state is written.
+
+Within the same Evaluation attempt, review in two ordered stages named `specification_compliance` and `code_quality`. The first covers requirements, scenarios, scope, contracts and traceability. Only after it is non-blocking may the second cover correctness, safety, regression risk, reuse, complexity, test quality and repository impact. Each executed stage must cover the complete delta/task/review-path universe and cite independent command evidence. A blocking first stage makes the second `NotRun` with a reason.
+
+`review_input` is generated from the frozen implementation base and binds effective, committed, staged, unstaged, untracked and dirty-gitlink layers with state fingerprints. `raw_diff_persisted` is always false: the Evaluator reads actual diffs transiently but never copies raw content into evidence. A changed index/worktree state makes an attempt stale even when the ordinary source fingerprint happens to be unchanged.
+
+Findings use `Critical | Important | Minor` and `Open | Resolved | Deferred`. Specification findings cannot be Minor; Critical/Important cannot be Deferred. Open Critical/Important findings force their stage to Fail. A Deferred Minor must reference a real technical-debt or residual-risk ID. Prior Open/Deferred findings must remain with the same identity until explicitly resolved. Every completed v2 report is copied to immutable `harness/evaluations/<evaluation-id>.json`; the top-level Evaluation verdict remains the only final verdict.
+=============== docs/ai/implementation-economy.md ===============
+# Implementation Economy v2 contract
+
+quick_brief: Use this exact closed JSON shape in design.md, derive change-specific thresholds, and never copy the placeholder zeros as universal limits.
+
+Planner puts exactly one block with the following markers in `design.md`. Derive every threshold from the reviewed change; the numbers below are placeholders, not defaults. Object keys are closed: do not add fields.
+
+````markdown
+<!-- autoai:implementation-economy:v2 -->
+```json
+{
+  "schema_version": 2,
+  "profile": "small",
+  "rationale": "Explain the independently reviewable implementation boundary.",
+  "classification": {
+    "production": ["path/to/product/**"],
+    "tests": ["path/to/test-assets/**"],
+    "project_docs": ["path/to/product-docs/**"],
+    "project_tooling": ["path/to/project-tooling/**"],
+    "examples": ["path/to/examples/**"],
+    "generated": [
+      {"output": "path/to/generated/**", "inputs": ["path/to/generator-input/**"], "argv": ["./reviewed-generator"]}
+    ],
+    "vendor": ["path/to/vendor/**"]
+  },
+  "thresholds": {
+    "production": {
+      "added_lines": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "touched_files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    },
+    "tests": {
+      "added_lines": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "touched_files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    },
+    "project_support": {
+      "added_lines": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    },
+    "generated": {
+      "files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "bytes": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    }
+  },
+  "structural_allowances": {
+    "public_contracts": [{"id": "contract-001", "name": "ExactTypeOrContract", "reason": "Why it is needed"}],
+    "build_targets": [],
+    "build_graph_entries": [],
+    "distribution_surfaces": [],
+    "direct_dependencies": []
+  },
+  "reuse_decisions": [
+    {"id": "reuse-001", "path": "src/existing.cpp", "symbol": "ExistingType", "decision": "extend", "reason": "Why reuse/extend/reject is correct"}
+  ],
+  "obsolete_items": [
+    {"id": "obsolete-001", "path": "src/old.cpp", "symbol": "OldType", "disposition": "deprecate", "reason": "Why it remains temporarily", "exit_condition": "Exact removal condition", "task_or_debt": "2.3"}
+  ],
+  "exceptions": [
+    {"id": "exception-001", "metric": "binary", "paths": ["fixtures/input.bin"], "reason": "Why generic line accounting cannot apply", "requirement_refs": ["specs/capability/spec.md | ADDED | Requirement"], "task_ids": ["2.1"], "verification": "Exact specialized verification"}
+  ]
+}
+```
+<!-- /autoai:implementation-economy:v2 -->
+````
+
+Allowed profiles are `micro`, `small`, `medium`, and `large`; they do not supply implicit limits. Every path is derived from the reviewed repository and Project Profile—placeholder paths are illustrative and must be replaced. Classification patterns are safe repository-relative glob patterns. Generated entries require output, non-empty inputs, and a secret-free argv array. Structural entries use exactly `id`, `name`, and `reason`; build targets, graph entries and distribution surfaces are adapter-neutral. Reuse decisions are `reuse`, `extend`, or `reject`. Obsolete disposition is `delete`, `deprecate`, or `retain`; delete has no future-exit fields, while deprecate/retain require both. Exception IDs, paths, requirement references, task IDs, and specialized verification are mandatory. IDs are unique across all four groups.
+
+Existing changes containing the closed v1 block and `cmake_targets` remain read-only compatible. They are never silently rewritten; only newly reviewed or explicitly replanned changes use v2.
+
+Footprint treats NUL-containing and invalid-UTF-8 content as binary, reports binary file count, bytes and paths, and requires an explicit reviewed exception. An empty regular text file contributes zero added lines. Invalid UTF-8 in `design.md` is a contract error, not replacement-character-tolerant input.
+=============== docs/ai/rca.md ===============
+# RCA
+
+For every unexpected test, build or runtime failure, read the complete error and obtain a stable reproducer before changing code. For a complex or repeated issue, record this sequence:
+
+1. Evidence and boundary: inputs, exact reproducer, actual output, recent changes and the boundary where behavior first diverges.
+2. Pattern comparison: a working repository example and the concrete differences from the failing path.
+3. One hypothesis and one variable: state a single causal hypothesis and run the smallest experiment that can disprove it. A failed experiment creates a new hypothesis; it does not justify another patch on top.
+4. Direct fix and regression: preserve the reproducer, fix the root cause, run focused and related regression commands, and add a reusable Trigger/Check only when evidence supports it.
+
+Track validated fix attempts for the same problem. After three unsuccessful direct fixes, stop stacking patches and return to Planner and the user to recheck architecture, scope and assumptions. Any resulting contract, dependency, target, structural allowance or budget change requires revised OpenSpec planning, strict validation and renewed human approval.
+
+Classify an Integration failure before fixing it. A planned surface whose real consumer, dispatch, entrypoint or independent behavior is missing is an implementation failure and returns to Generator. An unplanned surface, wrong requirement/task link, wrong consumer classification or expanded scope is a planning failure and returns to Planner for renewed review. Do not hide either case with a test-only call, residual risk, implementation-detail label or another speculative interface.
+
+RCA stays change-local when it belongs to one change. Do not close with “be more careful”, and do not turn a one-off incident into a global rule without evidence. Archive requires the resulting task/surface/Evaluation evidence, but it does not infer the quality of every debugging step from prose alone.
+=============== docs/ai/testing.md ===============
+# Testing
+
+Use the test capability and stable command IDs recorded in `.ai-harness/project-profile.json` together with the project's actual fixtures. When recording managed evidence, select a Profile command with `task_verify.sh ... --project-command <command-id>` or `evaluator_check.sh --run ... --project-command <command-id>` so the wrapper owns execution and the ledger. OpenSpec describes what must hold; the Profile describes how this repository executes it. Cover normal, boundary and error scenarios named by the delta spec. A compile-only check is insufficient for changed runtime behavior; an incremental build is insufficient when a clean configure or representative consumer is relevant.
+
+Separate durable regression assets from one-off verification programs. A test, compatibility fixture or representative consumer with ongoing value remains under paths classified by the relevant Profile module and is reviewed, built and versioned normally. Exploratory probes, disposable consumer sources, temporary downstream projects, executables and outputs must be created only under the workspace supplied by `scripts/verification_workspace.sh`; they never enter Git, project build/install/package inputs or the archived change.
+
+Behavior changes default to four stages:
+
+1. RED: write a focused test or minimal reproducer first, run it directly and confirm it fails because the approved behavior is missing. A compile error, broken fixture or unrelated environment failure is not a valid RED.
+2. GREEN: add only the smallest production change that makes the focused test pass.
+3. REFACTOR: remove duplication or improve names only while the focused test remains green; do not expand behavior or introduce an unapproved abstraction.
+4. REGRESSION: run the relevant wider build, tests and representative behavior selected by the task and design.
+
+Planner must put exactly one closed TDD Policy block in `design.md`, including an empty `exceptions` array when every task uses normal TDD:
+
+````markdown
+<!-- autoai:tdd-policy:v1 -->
+```json
+{
+  "schema_version": 1,
+  "default": "required",
+  "exceptions": []
+}
+```
+<!-- /autoai:tdd-policy:v1 -->
+````
+
+Each exception has exactly `id`, `category`, `task_ids`, `paths`, `reason`, `alternative_verify_kinds`, and `exit_condition`. Categories are `generated_output`, `documentation_only`, `configuration_only`, `disposable_prototype`, `unavailable_hardware`, or `unavailable_external_service`. Its alternative kinds must exactly equal each covered task's declared Verify kinds. Exceptions are frozen with the planning baseline; Generator cannot add or widen one.
+
+Record normal behavior evidence with `task_verify.sh <task> --phase red|green|regression --cycle <id> ... {--project-command <command-id> | -- <argv>}`. Use the command-ID form for reviewed Project Profile operations and raw argv only for an approved durable repository driver; they are mutually exclusive. The wrapper records the command-ID form as `scripts/project_command.sh <command-id> --change <active-change> --json`. For a verification v3 task, bind closing consumer evidence with `--surface <id>` for role `current` or repeat `--surface-role <id>=current|old_consumer|replacement_consumer|absence_probe` exactly as assigned by its approved task obligation. RED additionally requires focused `--test-path`, nonzero `--expect-exit`, `--failure-class`, `--expected-failure`, `--match-output`, and `--observed`; it is stored only as `ExpectedFailure` or `InvalidRed`, never Pass. GREEN must reuse the same normalized argv and unchanged focused test after a real source change. REGRESSION must cover every declared Verify kind and surface role. Complete only through `task_verify.sh --complete <task>`.
+
+A temporary program cannot be a `--test-path`, `--path`, producer/consumer path or direct argv dependency. If a repeatable command needs one, keep a durable driver in the project and invoke it through `scripts/verification_workspace.sh run <change> -- ...`; the driver recreates the program beneath `AUTOAI_VERIFY_TMPDIR` from an empty directory. Command completion, task completion, Evaluation finish and archive verify that no temporary program remains.
+
+Managed evidence timestamps are logically monotonic and tolerate at most five minutes of host-clock rollback. Timestamps farther than five minutes in the future are rejected both when appending evidence and during task/Evaluation/archive rechecks; wall-clock timestamps do not replace command results, fingerprints or output digests.
+
+An approved exception uses `--phase alternative --exception-id <id>` and every declared alternative kind. A disposable prototype can never complete a task. Unavailable hardware or external service remains `blocking_untested` during Evaluation even after alternative evidence. Do not weaken assertions, narrow inputs or replace behavior with mock-only checks to manufacture GREEN.
+
+When user code already exists before a test, preserve it and establish a focused characterization or regression path with explicit review; do not delete the user's implementation merely to recreate textbook RED.
+=============== docs/ai/tooling.md ===============
+# Tooling
+
+- Run OpenSpec only through `scripts/openspec_cli.sh`; it pins 1.6.0 and disables telemetry for managed calls.
+- The npx cold start may access the npm registry and write the user npm cache. A pinned top-level package is reproducible at that level but is not a complete supply-chain lock.
+- Wrapper command evidence is data. Checkers never `eval` Markdown or stored command strings.
+- Run one-off validation programs only as the direct nested command `scripts/verification_workspace.sh run <change> -- <durable-driver...>` from a managed Generator/Evaluator command. The managed parent grants a one-shot capability; the driver writes under `AUTOAI_VERIFY_TMPDIR`, and the wrapper removes that fixed local directory after synchronous success or failure. `cleanup` and `assert-clean` are lifecycle helpers with separate write/read authorization, not arbitrary repository deletion commands.
+- Project paths are never classified from conventional names or bulk-deleted. A one-off downstream configure/build/install/consumer experiment must place all of its source and output below `AUTOAI_VERIFY_TMPDIR`; unmanaged tools, `SIGKILL` and detached background writers do not inherit an absolute zero-retention guarantee. Later task/report/Evaluation/archive gates safely clean or reject crash residue. This wrapper is a managed workspace protocol, not an operating-system sandbox.
+- Keep secrets out of argv and evidence. Use preconfigured environment variables and record names with redacted values.
+- `scripts/harness_lock.sh isolation-status [<change>]` is read-only. The linked-worktree pilot requires an existing user-created worktree plus explicit `isolation-acquire`, reviewed `isolation-baseline`, `isolation-activate`, clean `isolation-release`, and coordinator `isolation-disable`; use the confirmation values returned by status/lease. It never performs a Git lifecycle action.
+- Isolation timestamps are bounded logical evidence, not duration measurements: managed writes tolerate at most five minutes of wall-clock rollback, preserve baseline → activation → release order, and reject farther-future state. A new writer must contain every released writer HEAD for the change, regardless of timestamp order.
+- The shared lease serializes AutoAI-managed wrappers; it is not an operating-system ACL and cannot prevent a person or unmanaged shell command from editing files directly.
+=============== docs/ai/工作流使用指南.md ===============
+# AutoAI-Harness 工作流使用指南
+
+quick_brief: 提需求 → 审批 → 归档三步走；所有代码变更走 OpenSpec change 记录证据，工作流外任务必留 openspec/tasks/ 记录。
+
+本项目集成了 AutoAI-Harness 工作流，用于对大型变更进行结构化管理。
+本文档说明**你（项目作者）如何使用这套工作流**。
+
+---
+
+## 核心结论：全程与 AI 对话，不需要你敲命令
+
+整个工作流是**通过与我（AI agent）对话完成的**。
+
+- 你**不需要**在终端里敲任何命令
+- 我会在需要时自动调用 `scripts/` 下的脚本
+- 你只需要做三件事：**提需求 → 审批 → 归档**
+
+---
+
+## 什么时候用工作流？
+
+| 场景 | 是否用工作流 |
+|---|---|
+| 新功能开发（如新增 WiFi 分析模块） | ✅ 用 |
+| 重构核心架构（如改 D-Bus 通信层） | ✅ 用 |
+| 跨多文件的大改动（>300 行） | ✅ 用 |
+| 改 typo、改注释 | ❌ 不用 |
+| 单文件小 bug 修复 | ❌ 不用 |
+| 已完成的存量代码（如蓝牙监控） | ❌ 不用 |
+
+**判断标准**：改动大、需要追溯、影响核心功能 → 用工作流。
+
+**❌ 不用工作流的任务也必须留记录**：完成时在 `openspec/tasks/` 建
+`YYYY-MM-DD-<kebab-name>.md`，按其 `README.md` 的三节模板写构思、实现方式、结果
+（见 CLAUDE.md"规划与实现分离"节）。
+
+---
+
+## 完整流程（5 个阶段）
+
+```
+你提需求 → [1. Planner 规划] → 你审批 → [2. 冻结基线]
+→ [3. Generator TDD 实现] → [4. Evaluator 验收]
+→ 你说"归档" → [5. Archive 自动提交推送]
+```
+
+### 阶段 1：Planner 规划
+
+**你要做的**：告诉我以下信息（自然语言即可，没有格式要求）
+
+#### 必须提供
+
+1. **变更名称**（kebab-case 格式）
+   - 例：`wifi-analyzer`、`fix-dbus-leak`、`add-health-endpoint`
+
+2. **变更意图**（你想做什么？解决什么问题？）
+   - 例："我要加一个 WiFi 信号分析功能，能扫描周围 AP 并检测信道拥堵"
+   - 例："修复 D-Bus 服务端退出时卡住的问题"
+   - 例："给 API 加一个 /health 健康检查端点"
+
+#### 可选提供（建议提供，能让规划更精准）
+
+3. **约束条件**
+   - 性能要求：如"内存占用 <2MB"、"响应时间 <5ms"
+   - 兼容性要求：如"不能破坏现有 D-Bus 接口"、"要兼容 ARM64"
+   - 平台限制：如"要在 CentOS Stream 上跑"
+
+4. **相关文件**（你知道要改哪些文件就告诉我，不知道也没关系）
+   - 例："主要改 server/src/weak_netmgr.cpp 和 server/include/common.hpp"
+   - 如果不知道，我会自己去探索代码库
+
+#### 怎么给我？
+
+直接在对话里用自然语言说就行，例如：
+
+> 帮我开一个工作流变更，名称叫 wifi-analyzer。
+> 我想加一个 WiFi 信号分析功能，扫描周围 AP 并检测信道拥堵。
+> 约束：内存占用 <2MB，不能破坏现有 D-Bus 接口。
+> 相关文件我不太清楚，你自己看。
+
+**我做什么**：
+1. 探索代码库，理解现有架构
+2. 执行 `bash scripts/change_new.sh <name>` 创建变更目录
+3. 写 4 个规划文档：
+   - `proposal.md` — 目标、范围、影响
+   - `design.md` — 技术方案 + TDD 策略 + 集成完备性
+   - `tasks.md` — 任务拆分（每个 task 有 Verify 种类）
+   - `specs/<模块>/spec.md` — 需求规格（MUST 关键词 + WHEN/THEN 场景）
+4. 运行校验：`openspec validate --strict` + `integration_surface_check.sh --plan-check`
+5. 把文档内容展示给你 review
+
+---
+
+### 阶段 2：审批
+
+**你要做的**：review 我写的 4 个文档，然后回复：
+
+- 通过 → 回复"**审批通过**"
+- 要改 → 回复"design.md 第 X 段改成 XXX"
+
+**我做什么**：冻结规划基线（`planning_fingerprint`），进入实现阶段。
+
+---
+
+### 阶段 3：Generator TDD 实现
+
+**你要做的**：通常**什么都不用做**。
+
+两种情况需要你：
+- **环境信息**：如果测试需要特殊硬件（如 eBPF、蓝牙设备），告诉我环境限制
+- **决策点**：如果实现中遇到多个方案，我会问你选哪个
+
+**我做什么**：对 `tasks.md` 里的每个 task，严格按 TDD 顺序：
+
+```
+RED          → 先写一个会失败的测试
+GREEN        → 实现代码让测试通过
+REGRESSION   → 跑全量测试确保没破坏其他功能
+```
+
+每步通过 `scripts/task_verify.sh` 记录证据到 `harness/verification.json`。
+
+---
+
+### 阶段 4：Evaluator 验收
+
+**你要做的**：**什么都不用做**。这是独立验收环节。
+
+**我做什么**：执行 `scripts/evaluator_check.sh --run`，独立验证：
+- TDD 闭环是否完整
+- 规划文档与实现是否一致
+- 代码质量
+- 无遗漏测试
+
+产出 `evaluation.json`（Pass / Fail）。
+
+- 如果 **Fail**，我回到阶段 3 补证据或修问题
+- 如果 **Pass**，进入阶段 5
+
+---
+
+### 阶段 5：Archive 归档
+
+**你要做的**：回复"**归档**"。
+
+**我做什么**：执行 `scripts/change_archive.sh <name>`，自动完成：
+1. 变更从 `openspec/changes/<name>/` 移到 `openspec/changes/archive/<日期>-<name>/`
+2. 主 spec 更新，active-change selector 清空
+3. 归档成功后把全部改动提交到 git（确保工作区干净）
+
+> 归档**只能**走 `scripts/change_archive.sh`（见 CLAUDE.md 铁律）。
+> 该包装器会重新校验任务、strict 校验、指纹、footprint、surface 报告与
+> Evaluation Pass，任一不通过即拒绝归档。
+
+---
+
+## 你需要做的事汇总
+
+| 阶段 | 你要做什么 | 怎么做 |
+|---|---|---|
+| 阶段 1 | 提供变更名称 + 意图 + （可选）约束/文件 | 对话里用自然语言告诉我 |
+| 阶段 2 | review 文档，回复"审批通过"或修改意见 | 对话里回复 |
+| 阶段 3 | 通常无需操作；特殊环境/决策点会问你 | 对话里回复 |
+| 阶段 4 | 无需操作 | — |
+| 阶段 5 | 回复"归档" | 对话里回复 |
+
+**全程在对话里完成，不需要你敲终端命令。**
+
+---
+
+## 示例：一次完整对话
+
+**你**：帮我开一个工作流变更，名称叫 add-health-endpoint。
+我想给 API 加一个 /health 健康检查端点，返回服务状态。
+约束：响应时间 <5ms，不能破坏现有接口。
+
+**我**：（探索代码库，创建变更，写 4 个文档，展示给你）
+> 规划文档已写好，请 review：
+> - proposal.md：目标是新增 /health 端点...
+> - tasks.md：拆成 3 个 task...
+> - specs/：需求规格...
+
+**你**：审批通过
+
+**我**：（按 TDD 实现 3 个 task，每个跑 RED→GREEN→REGRESSION）
+> T1 完成，T2 完成，T3 完成。进入验收。
+
+**我**：（跑 Evaluator）
+> 验收 Pass。
+
+**你**：归档
+
+**我**：（执行 change_archive.sh）
+> 已归档并提交。完成。
+
+---
+
+## 命令速查（供参考，通常不需要你手动执行）
+
+| 步骤 | 命令 |
+|---|---|
+| 创建变更 | `bash scripts/change_new.sh <name>` |
+| 查看变更状态 | `bash scripts/change_status.sh <name>` |
+| 记录 TDD 证据 | `bash scripts/task_verify.sh <id> --phase <p> --kind <k> --project-command test-all --expect-exit <0\|1>` |
+| Evaluator 验收 | `bash scripts/evaluator_check.sh --run` |
+| 归档 | `bash scripts/change_archive.sh <name>` |
+| 规划校验 | `openspec validate --strict` |
+| 集成完备性检查 | `bash scripts/integration_surface_check.sh --plan-check` |
+| 审计汇总 | `bash scripts/audit_summary.sh <name>` |
+| 中止变更（逃生舱） | `bash scripts/change_abort.sh <name> [--purge]` |
+
+---
+
+## 逃生舱：中止变更
+
+如果变更卡住或需要放弃，用 `change_abort.sh` 优雅退出：
+
+```bash
+# 仅清理 harness 产物，保留规划文档和工作区代码
+bash scripts/change_abort.sh <name>
+
+# 彻底删除 change 目录（含规划文档），保留工作区代码
+bash scripts/change_abort.sh <name> --purge
+```
+
+中止后：
+- 工作区源码改动保留（你可以手动 `git commit` 或 `git checkout`）
+- harness 产物（verification.json、证据文件等）已清理
+- active-change selector 已清理
+
+---
+
+## 审计汇总：生成人类可读报告
+
+```bash
+bash scripts/audit_summary.sh <name>
+```
+
+读取 `verification.json`，在 `harness/audit-summary.md` 生成汇总：每个任务的 TDD 闭环状态、RED/GREEN/REGRESSION 数量、是否闭环。
+
+---
+
+## 文档导航
+
+`docs/ai/` 下文档定位（按阅读顺序）：
+
+| 文档 | 定位 | 谁看 |
+|---|---|---|
+| **工作流使用指南.md**（本文件） | 入口：使用流程与协作方式 | 项目作者 |
+| `openspec.md` | OpenSpec 在 harness 中的角色 | 了解规划数据平面 |
+| `workflow.md` | 工作流绑定规则（内部契约） | 了解角色分离约束 |
+| `implementation-economy.md` | 实现经济契约（预算/分类） | 写 design.md 时参考 |
+| `evaluation.md` | 独立验收契约 | Evaluator 阶段参考 |
+| `check-rules.md` | 仓库检查规则 | 了解校验项 |
+| `quick-brief.md` | Quick Brief 策略 | 长文档精简策略 |
+| `tooling.md` | 工具使用约束 | 了解脚本调用规范 |
+| `cpp.md` | C++ 实现规则 | 写 C++ 代码时参考 |
+| `testing.md` | 测试规则 | 写测试时参考 |
+| `build.md` | 构建规则 | 改 CMake 构建元数据时参考 |
+| `golden-principles.md` | 黄金原则 | 通用原则 |
+| `rca.md` | 根因分析 | 调试失败时参考 |
+
+**一般只需读本文件即可**；其他文档是 harness 内部契约，按需查阅。
+
+---
+
+## 注意事项
+
+1. **已完成的存量代码不走工作流**（如蓝牙监控）
+2. **审计记录不提交远程**（已配置 .gitignore 忽略 `project-command-evidence/`）
+3. **一个工作目录只有一个 writer**，不要同时开两个变更
+4. **变更名称用 kebab-case**（小写字母 + 连字符，如 `wifi-analyzer`）
+5. **文档命名均用中文**（项目文档使用中文文件名，如 `测试结果.md`、`架构设计-模块与代码结构.md`；harness 框架文件如 `AGENTS.md`、`CLAUDE.md`、`docs/ai/` 下模板、`prompts/` 下提示词因被 `manifest_policy.js` 硬编码引用，保持原名不改）
+6. **改 design.md 非字段不破坏 TDD 证据**（planning_fingerprint 只哈希 TDD Policy 块，改 Implementation Economy 或 Integration Completeness 不会让证据失效）
+7. **卡住时用逃生舱**（`bash scripts/change_abort.sh <name>` 优雅中止，保留代码改动）

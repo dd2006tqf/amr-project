@@ -1,0 +1,128 @@
+#include "backend/uploader.h"
+#include "common/async_logger.h"
+#include "common/monotonic_clock.h"
+#include <fstream>
+#include <thread>
+#include <chrono>
+#include <sys/stat.h>
+
+namespace xgrids {
+
+Uploader::Uploader(Config cfg, ProgressCb cb)
+    : cfg_(std::move(cfg)), cb_(std::move(cb)) {}
+
+void Uploader::start() {
+    running_.store(true);
+    worker_ = std::thread(&Uploader::loop, this);
+}
+
+void Uploader::stop() {
+    running_.store(false);
+    cv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void Uploader::enqueue(const UploadTask& t) {
+    { std::lock_guard<std::mutex> lk(mu_); q_.push(t); }
+    cv_.notify_one();
+}
+
+bool Uploader::resume_task(UploadTask& t) {
+    // 断电恢复：从 data_sent_bytes 继续
+    AsyncLogger::instance().info("uploader",
+        "resume " + t.scan_id + " from " +
+        std::to_string(t.data_sent_bytes));
+    return true;
+}
+
+void Uploader::inject_disconnect(int ms) {
+    disconnect_until_us_.store(MonotonicClock::now_us() + ms * 1000LL);
+}
+
+bool Uploader::is_disconnected() const {
+    return MonotonicClock::now_us() < disconnect_until_us_.load();
+}
+
+void Uploader::sleep_retry(int retry) {
+    int64_t us = cfg_.retry_base_us << std::min(retry, 6);
+    us = std::min(us, cfg_.retry_max_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+
+size_t Uploader::pending() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return q_.size();
+}
+
+// 分片发送（模拟）：按当前带宽限速
+bool Uploader::send_chunk(const std::string&, int64_t offset, int64_t len) {
+    double bw_bps = cfg_.max_bw_mbps * 1e6 / 8.0;
+    int64_t us = bw_bps > 0 ? (int64_t)(len / bw_bps * 1e6) : 50'000;
+    std::this_thread::sleep_for(std::chrono::microseconds(us));
+    uploaded_bytes_.fetch_add(len);
+    return !is_disconnected();
+}
+
+bool Uploader::upload_manifest(UploadTask& t) {
+    std::string path = t.scan_dir + "/manifest.json";
+    std::ifstream f(path, std::ios::ate | std::ios::binary);
+    if (!f) return false;
+    int64_t sz = f.tellg();
+    if (!send_chunk(path, 0, sz)) return false;
+    t.manifest_sent_bytes = sz;
+    t.state = UploadTask::kManifestSent;
+    AsyncLogger::instance().info("uploader",
+        t.scan_id + " manifest sent (" + std::to_string(sz) + "B)");
+    return true;
+}
+
+bool Uploader::upload_data(UploadTask& t) {
+    uint64_t total = t.info.total_bytes;
+    const uint64_t chunk = 4 << 20;  // 4MB
+    while (t.data_sent_bytes < total && running_.load()) {
+        if (is_disconnected()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        uint64_t n = std::min(chunk, total - t.data_sent_bytes);
+        // 模拟发送：实际会读文件 + socket；这里直接限速 sleep
+        double bw_bps = cfg_.max_bw_mbps * 1e6 / 8.0;
+        int64_t us = bw_bps > 0 ? (int64_t)(n / bw_bps * 1e6) : 50'000;
+        std::this_thread::sleep_for(std::chrono::microseconds(us));
+        t.data_sent_bytes += n;
+        uploaded_bytes_.fetch_add(n);
+        if (cb_) cb_(t, 100.0 * (t.manifest_sent_bytes + t.data_sent_bytes) /
+                       (t.info.total_bytes + t.manifest_sent_bytes));
+    }
+    return t.data_sent_bytes >= total;
+}
+
+void Uploader::loop() {
+    while (running_.load()) {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return !q_.empty() || !running_.load(); });
+        if (q_.empty()) continue;
+        UploadTask t = q_.front();
+        lk.unlock();
+
+        t.state = UploadTask::kUploading;
+        bool ok = false;
+        for (t.retry = 0; t.retry <= cfg_.max_retry && running_.load();
+             ++t.retry) {
+            if (t.retry > 0) sleep_retry(t.retry - 1);
+            // 先 manifest 后数据（manifest 优先是断点续传的关键设计）
+            if (t.state != UploadTask::kManifestSent &&
+                !upload_manifest(t)) continue;
+            if (upload_data(t)) { ok = true; break; }
+            AsyncLogger::instance().warn("uploader",
+                t.scan_id + " data retry " + std::to_string(t.retry));
+        }
+        t.state = ok ? UploadTask::kDone : UploadTask::kFailed;
+        AsyncLogger::instance().info("uploader",
+            t.scan_id + (ok ? " done" : " FAILED"));
+        lk.lock();
+        q_.pop();
+    }
+}
+
+}  // namespace xgrids

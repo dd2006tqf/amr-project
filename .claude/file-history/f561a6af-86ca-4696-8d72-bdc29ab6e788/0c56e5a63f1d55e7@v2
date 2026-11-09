@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""把 PNG 降采样成 ASCII 图，肉眼确认布局与折线。用完即删。"""
+import sys
+
+sys.path.insert(0, "/tmp")
+from inspect_png import read_png  # noqa: E402
+
+
+def main(path, cols=128, rows=46):
+    w, h, ch, px = read_png(path)
+    print(f"尺寸 {w}x{h}  采样网格 {cols}x{rows}")
+
+    def rgb(x, y):
+        o = (y * w + x) * ch
+        return px[o], px[o + 1], px[o + 2]
+
+    cw, chh = w / cols, h / rows
+    for ry in range(rows):
+        line = []
+        for rx in range(cols):
+            x0, x1 = int(rx * cw), max(int(rx * cw) + 1, int((rx + 1) * cw))
+            y0, y1 = int(ry * chh), max(int(ry * chh) + 1, int((ry + 1) * chh))
+            ng = nr = ny = nd = 0
+            tot = 0
+            for y in range(y0, min(y1, h)):
+                for x in range(x0, min(x1, w)):
+                    r, g, b = rgb(x, y)
+                    tot += 1
+                    if abs(r - 0x2E) < 45 and abs(g - 0x7D) < 45 and abs(b - 0x32) < 45:
+                        ng += 1
+                    elif abs(r - 0xC6) < 45 and abs(g - 0x28) < 45 and abs(b - 0x28) < 45:
+                        nr += 1
+                    elif abs(r - 0xF9) < 45 and abs(g - 0xA8) < 45 and abs(b - 0x25) < 45:
+                        ny += 1
+                    elif r < 130 and g < 130 and b < 130:
+                        nd += 1
+            if ng >= 2:
+                line.append("G")
+            elif nr >= 2:
+                line.append("R")
+            elif ny >= 2:
+                line.append("Y")
+            elif ng:
+                line.append("g")
+            elif nd > tot * 0.25:
+                line.append("#")
+            elif nd:
+                line.append(".")
+            else:
+                line.append(" ")
+        print(f"{int(ry * chh):4d} |{''.join(line)}|")
+    print("      x: 0" + " " * (cols - 8) + f"{w}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "/tmp/verify.png")

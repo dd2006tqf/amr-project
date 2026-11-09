@@ -1,0 +1,29 @@
+- [Planning fingerprint immutability](planning-fingerprint-immutability.md) — 一旦开始记录 evidence 就不能修改 design.md，否则所有 evidence 失效
+- [Board network access](board-network-access.md) — 本机是云端服务器，板子走 127.0.0.1:2222 反向隧道（ssh board），不要用板子 IP；edge 上行同隧道、断隧道=停遥测；板端无 sqlite3 CLI
+- [Board D-Bus service issue](board-dbus-service-issue.md) — 已解决：系统总线迁移+CAP_BPF+looper 修复；mDNS .local 跨网段不可达是拓扑限制
+- [ARM64 container binfmt reset](arm64-container-binfmt-reset.md) — 宿主重启后容器 exec format error，需重跑 qemu-user-static --reset 再 start
+- [Resume style rules](resume-style-rules.md) — 中文技术简历四条硬要求：无装饰标点、两行上限、禁用项目内部术语、简洁保守
+- [User learning profile](user-learning-profile.md) — 用户 C++ 基础薄弱，以本仓库为教材学系统编程，讲解按 code-explainer 六维规范
+- [Phase 2A DNS implementation](phase2a-dns-implementation.md) — raw_syscall 探针需显式 attach；板端 resolver 走 sendmsg/recvmsg；capture counters 诊断链路已建成；PARTIAL 噪声是已知边界
+- [Single-source capture principle](single-source-capture-principle.md) — eBPF 捕获必须单一来源，禁用跨探针 join；可用/已证伪挂点清单与内存域陷阱
+- [ARM64 build environment](arm64-build-environment.md) — dev 容器本就是 Bullseye，不能换 Bookworm；glibc 2.31 是硬约束
+- [OpenSSL sysroot facts](openssl-sysroot-facts.md) — deb 只能从 snapshot bullseye/main 取；需两条 include 路径；现有脚本与 CMake 各有缺陷
+- [Passive provenance coverage](passive-provenance-coverage.md) — 自流量排除只覆盖 DNS/TCP，HTTP 与 retransmit 未覆盖
+- [v1 soak campaign](v1-soak-campaign.md) — 24h 长稳的起止时间、判据与当前 Freeze Candidate 定级；probe 目标故障域核对教训
+- [v1 frozen](v1-frozen.md) — v1 已于 2026-09-15 升级 FROZEN；跨午夜回绕与劣化轮耗时两处判据误报修正教训
+- [Edge uplink epoch collision](edge-uplink-epoch-collision.md) — 板端重启后上行遥测被静默去重丢弃；根因与修法（network_epoch 持久化）
+- [Edge downlink rehearsal](edge-downlink-rehearsal.md) — 下行 pending_actions 闭环已跑通；跨网段用 ssh -R 反向隧道
+- [Project profile CMake migration](project-profile-cmake-migration.md) — 2026-09-24 把 make 时代 profile 修正为 CMake（含 configure-x86）；profile_sha256 变为 802da63a...，归档证据无需迁移
+- [Workflow harness snapshot bug](workflow-harness-snapshot-bug.md) — change_abort.sh 曾 delete active_change 自杀式写坏快照；已修为显式置 null
+- [Board Bluetooth no tracepoint](board-bluetooth-no-tracepoint.md) — 板端无 bluetooth tracepoint 只能 kprobe；vmlinux.h 无蓝牙结构；bdaddr 反序存储；l2cap_chan.dst=33（现有 a2dp 硬编码 24 是错的）
+- [Wireless event model Phase 1](wireless-event-model-phase1.md) — 工业无线诊断网关定位；WHAT/WHY 分离、RawBtObservation→Normalizer→Canonical Event 五条硬约束；音频路径标 legacy
+- [LMA attribution MIT](lma-attribution-mit.md) — LMA 署名/许可已统一为 tanqf/MIT（0c90c45），勿把 cpp辅导的阿甘/Proprietary 写回
+- [Cloud integration division of labor](cloud-integration-division-of-labor.md) — 并行会话做 Phase 4b 实现、本会话只规划+评审；本机 Python 工具链实测可用（pip 走腾讯镜像、LMA .venv 有 pytest、pnpm 已激活）
+- [Cloud rehearsal harness](cloud-rehearsal-harness.md) — 板↔云排练可复用手法（最小排练服务 + 板端 ssh -L；edge.url 必须留 telemetry）；迁移与模型列对齐的盲区教训
+- [Knowledge double bridge design](knowledge-double-bridge-design.md) — S8 知识双向三段分离（窄动作创建/人审/人发版）、知识只做背景不进证据、LLM 报告不入库
+- [Rehearsal remote leg fixture](rehearsal-remote-leg-fixture.md) — 2026-10-09 真实 REMOTE 腿已跑通、TRACE OK；旧“远端腿只能 fixture”结论作废，入口是签名注入非物理断连
+- [LMA network route prefix and trace CLI](lma-network-route-prefix-and-trace-cli.md) — 路由全在 /api/v1/network/* 下；trace reporter 的 --incident-id 只吃 sqlite 且上限 PARTIAL
+- [LMA nested workflow dormant](lma-nested-workflow-dormant.md) — 嵌套 .github/workflows 未被 GitHub 注册；2026-10-09 已把 OpenAPI/前端门禁迁入根 ci.yml（contract-and-web 作业），嵌套文件仅留归档头注
+- [Concurrent claude sessions same repo](concurrent-claude-sessions-same-repo.md) — 本机 6 个会话共用同一 worktree，工作区会出现他人改动；提交前逐项核对、用 git add <路径>
+- [Council model schema/timeout fixes](council-model-schema-timeout-fixes.md) — response_schema 缺 minItems=1 与 90s 超时是 Council 409 的两大真因，改完必须重启服务
+- [Deploy credential ordering](deploy-credential-ordering.md) — 凭据注入必须先于服务重启；部署验证窗口只能算部署完成之后的流量，否则假绿灯

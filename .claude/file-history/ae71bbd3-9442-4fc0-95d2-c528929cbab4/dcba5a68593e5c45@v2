@@ -1,0 +1,116 @@
+// 采集主程序：模拟 PortalCam 四相机 + LiDAR 设备端的应用层。
+// 结构：4 个模拟相机线程 -> RingBuffer -> 写盘线程
+//      每帧同时喂 SyncMonitor（同步监控）与 ManifestRecorder（完整性）
+//      QualityFeedback 周期性汇总提示给用户
+
+#include <atomic>
+#include <thread>
+#include <vector>
+#include <random>
+#include <iostream>
+
+#include "common/monotonic_clock.h"
+#include "common/ring_buffer.h"
+#include "common/async_logger.h"
+#include "sync/sync_monitor.h"
+#include "manifest/manifest_recorder.h"
+#include "manifest/manifest_writer.h"
+#include "quality/quality_feedback.h"
+
+using namespace xgrids;
+
+// 模拟单路相机：以固定帧率产生 FrameMeta，偶发丢帧
+void camera_thread(int ch, std::atomic<bool>& running,
+                   SyncMonitor& monitor, ManifestRecorder& manifest,
+                   RingBuffer<FrameMeta>& q)
+{
+    std::mt19937 rng(ch + 1);
+    std::uniform_int_distribution<int> jitter_us(-1500, 1500);
+    std::uniform_real_distribution<double> drop_prob(0.0, 1.0);
+
+    uint32_t seq = 0;
+    const int64_t interval_us = 50'000;  // 20 fps
+
+    while (running.load()) {
+        FrameMeta f{ch, MonotonicClock::now_us(), seq++, 1u << 20};
+
+        // 模拟偶发丢帧（如发热降频/总线拥塞）
+        if (drop_prob(rng) < 0.005) {
+            manifest.record_gap(ch, f.ts_us, "frame_drop", seq - 1, seq - 1);
+            std::this_thread::sleep_for(std::chrono::microseconds(interval_us));
+            continue;
+        }
+
+        monitor.on_frame(f);
+        manifest.on_frame(f);
+        q.push(std::move(f), RingBuffer<FrameMeta>::Priority::kHigh);
+
+        std::this_thread::sleep_for(
+            std::chrono::microseconds(interval_us + jitter_us(rng)));
+    }
+}
+
+int main() {
+    AsyncLogger::instance().init("/tmp/capture.log");
+    AsyncLogger::instance().log(AsyncLogger::Level::kInfo, "main", "capture start");
+
+    RingBuffer<FrameMeta> write_queue(512);
+
+    SyncMonitor monitor(
+        SyncMonitor::Config{},
+        [](int ch, const char* reason) {
+            AsyncLogger::instance().log(
+                AsyncLogger::Level::kWarn, "sync",
+                "ch=" + std::to_string(ch) + " alert=" + reason);
+        });
+
+    ManifestRecorder manifest;
+    QualityFeedback quality([](const QualityReport& r) {
+        std::cout << "[quality] lvl=" << (int)r.level
+                  << " msg=" << r.message
+                  << " area=" << r.scanned_area_m2 << "m2\n";
+    });
+
+    std::atomic<bool> running{true};
+    std::vector<std::thread> cams;
+    for (int c = 0; c < 4; ++c)
+        cams.emplace_back(camera_thread, c, std::ref(running),
+                          std::ref(monitor), std::ref(manifest),
+                          std::ref(write_queue));
+
+    // 写盘线程：消费缓冲，模拟磁盘 I/O
+    std::thread writer([&] {
+        while (running.load() || write_queue.size() > 0) {
+            auto f = write_queue.pop();
+            if (!f) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+            // TODO: 实际写盘 / 编码 / 拼接
+        }
+    });
+
+    // 质量反馈线程：2Hz 汇总
+    std::thread qthread([&] {
+        while (running.load()) {
+            QualityFeedback::Input in{
+                /*motion*/ 1.0, /*lux*/ 300.0,
+                /*storage_free_gb*/ 128.0, /*rate_gbps*/ 0.25,
+                /*temp*/ 620, /*sync_violations*/ monitor.violation_count()
+            };
+            quality.update(in);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    running.store(false);
+    for (auto& t : cams) t.join();
+    writer.join();
+    qthread.join();
+
+    // 扫描结束：生成 manifest 并"随包上传"
+    auto path = ManifestWriter::write(manifest, "/tmp/scan_001");
+    std::cout << "manifest written: " << path
+              << " clean=" << manifest.is_clean() << "\n";
+
+    AsyncLogger::instance().shutdown();
+    return 0;
+}

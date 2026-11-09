@@ -1,0 +1,30 @@
+---
+name: bluetooth-stack-architecture
+description: "弱网项目中蓝牙协议栈的真实架构——BlueZ 用户态控制面 + Linux 内核原生 net/bluetooth 传输层 + 博通硬件 Controller，纠正\"博通私有协议栈\"误解"
+metadata: 
+  node_type: memory
+  type: reference
+  originSessionId: 530b10c6-9158-49e3-b9d9-9fffc9b6b305
+  modified: 2026-10-10T14:52:05.601Z
+---
+
+在 WeakNet 弱网诊断项目中，蓝牙模块并非使用博通（Broadcom）私有闭源协议栈，而是标准的 **开源 Linux 双层蓝牙架构**：
+
+1. **用户态控制面（Upper Host Stack）— BlueZ 5.x (`bluetoothd`)**：
+   - 职责：负责 GAP、GATT（BLE）、SDP、Profile 连接管理（A2DP 等）。
+   - 交互方式：WeakNet 服务端（`bt_monitor.cpp`）作为 D-Bus 客户端，通过系统总线 `org.bluez` 接口监听属性变更与事件，完成双模（经典蓝牙 BR/EDR 与 BLE）设备发现、配对态维护以及平滑 RSSI 的周期性采集。
+
+2. **内核态传输面（Lower Host Stack）— Linux 原生内核蓝牙子系统 (`net/bluetooth/`)**：
+   - 职责：负责 L2CAP 逻辑链路分片/重组/流控、HCI 核心数据分发与超时状态机调度。
+   - 交互方式：项目中的 eBPF 探针（`bt_events.bpf.c`、`a2dp_media.bpf.c`）直接挂载在内核层（kprobe 挂载 `mgmt_device_disconnected`、`hci_disconnect`、`l2cap_sock_sendmsg` 等），用于无侵入抽取微秒级断连 Reason Code 与传输时延。
+
+3. **底层硬件层（Controller 栈）— 博通（Broadcom）射频模组**：
+   - 职责：仅作为标准的蓝牙 Controller（硬件射频 RF、基带 Baseband、LMP/LL）。
+   - 交互方式：通过板载串口与 Linux 主机连接，Linux 内核通过 `btbcm` 和 `hci_uart` 驱动载入博通补丁固件后，芯片完全向上暴露标准的 **HCI 接口规范**。
+
+**面试与对外表达核心纪律**：
+- 避免说“物理链路层基于博通协议栈”或“BCC 走了博通那套”；
+- 协议栈 Host 侧完全是标准 Linux 内核 + BlueZ，博通只是提供标准 HCI 接口的硬件 Controller；
+- eBPF 挂钩的是通用的 Linux 内核符号，与射频芯片厂商完全解耦。
+
+相关：[[board-bluetooth-no-tracepoint]]、[[wireless-event-model-phase1]]

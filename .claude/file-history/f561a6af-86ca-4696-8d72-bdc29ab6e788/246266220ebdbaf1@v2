@@ -1,0 +1,82 @@
+// 一次性探针：dump 看板实际调用的 GetHistory 返回，检查分数分布
+// 用完即删，不属于仓库
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "weaknet_client.h"
+
+int main(int argc, char** argv) {
+    const char* iface = (argc > 1) ? argv[1] : "";
+    int limit = (argc > 2) ? atoi(argv[2]) : 120;
+
+    if (!weaknet_init()) {
+        fprintf(stderr, "weaknet_init failed\n");
+        return 1;
+    }
+
+    char err[512] = {0};
+    size_t cap = 4 * 1024 * 1024;
+    char* buf = (char*)calloc(cap, 1);
+    if (!buf) return 1;
+
+    if (!weaknet_get_history(iface, "", "", limit, buf, cap, err, sizeof(err))) {
+        fprintf(stderr, "call failed: %s\n", err);
+        free(buf);
+        weaknet_cleanup();
+        return 2;
+    }
+
+    // 只 dump 关键字段：iface / ts / score，避免刷屏
+    printf("RAW_LEN=%zu\n", strlen(buf));
+    // 粗略扫描：找 "iface" 和相邻 "score"
+    const char* p = buf;
+    int n = 0;
+    while ((p = strstr(p, "\"score\"")) != NULL) {
+        const char* q = p + 7;
+        while (*q == ' ' || *q == ':' || *q == '\t') ++q;
+        double score = atof(q);
+        // 往回找 iface
+        char iface_val[64] = "?";
+        const char* back = p;
+        int steps = 0;
+        while (back > buf && steps < 400) { --back; ++steps;
+            if (strncmp(back, "\"iface\"", 7) == 0) {
+                const char* r = back + 7;
+                while (*r == ' ' || *r == ':' || *r == '\t') ++r;
+                if (*r == '"') {
+                    ++r;
+                    int k = 0;
+                    while (*r && *r != '"' && k < 63) iface_val[k++] = *r++;
+                    iface_val[k] = 0;
+                }
+                break;
+            }
+        }
+        // 往回找 ts
+        char ts_val[64] = "?";
+        back = p;
+        steps = 0;
+        while (back > buf && steps < 600) { --back; ++steps;
+            if (strncmp(back, "\"ts\"", 4) == 0) {
+                const char* r = back + 4;
+                while (*r == ' ' || *r == ':' || *r == '\t') ++r;
+                if (*r == '"') {
+                    ++r;
+                    int k = 0;
+                    while (*r && *r != '"' && k < 63) ts_val[k++] = *r++;
+                    ts_val[k] = 0;
+                }
+                break;
+            }
+        }
+        printf("%3d  iface=%-8s ts=%-20s score=%g\n", n, iface_val, ts_val, score);
+        ++n;
+        p += 7;
+    }
+    printf("TOTAL_POINTS=%d\n", n);
+
+    free(buf);
+    weaknet_cleanup();
+    return 0;
+}

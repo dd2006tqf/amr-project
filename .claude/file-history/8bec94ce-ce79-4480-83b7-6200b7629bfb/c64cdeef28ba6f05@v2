@@ -1,0 +1,155 @@
+"""`ros2 amr echo` —— 解析 protobuf 编码的 ROS 话题。
+
+为什么需要这个命令
+------------------
+`ros2 topic echo` 无法解析 protobuf 话题，原因是它的实现路径：
+
+    echo.py
+      → ros2topic.api.get_msg_class()
+        → rosidl_runtime_py.utilities.get_message(type_name)
+          → import_message_from_namespaced_type(...)   # 按类型名 import Python 模块
+            → is_message(interface) 判据是 hasattr(interface, 'SLOT_TYPES')
+
+protobuf 类型没有 rosidl 的 Python 生成包，因此 import 必然失败。
+这是**架构性**的，不是配置问题，写插件也绕不过去。
+
+本命令的做法是绕开整条 Python 消息类链路：
+    1. 用 rclpy 的 raw 订阅（`raw=True`）直接拿原始 DDS 载荷 bytes
+    2. 用 protobuf 的 Python 描述符池动态构建消息类
+    3. 用 ParseFromString 解析
+
+字节布局（与 C++ 侧 protobuf_typesupport.hpp 严格对齐）：
+    [uint32 长度前缀 (CDR, 小端)] [protobuf 序列化字节]
+    → 解析时跳过前 4 字节
+"""
+
+from __future__ import annotations
+
+import struct
+from typing import Optional
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import QoSReliabilityPolicy
+
+from .descriptor_pool import ProtoSchemaError
+from .descriptor_pool import registry
+
+
+class ProtoEchoNode(Node):
+    """订阅 protobuf 话题并按收到顺序打印。"""
+
+    def __init__(self, topic: str, type_name: str, count: int, qos: QoSProfile) -> None:
+        super().__init__('proto_echo')
+        self._count_limit = count
+        self._received = 0
+        self._msg_cls = registry.get_class(type_name)
+        self._type_name = type_name
+
+        # raw=True 是这里的核心：rclpy 不尝试构造 Python 消息对象，
+        # 直接把 DDS 载荷以 bytes 形式交给回调。
+        self._sub = self.create_subscription(
+            # raw=True 时 msg_type 传什么都行，rclpy 不会用它构造对象；
+            # 但为可读性仍传 bytes。
+            bytes,
+            topic,
+            self._on_raw,
+            qos,
+            raw=True,
+        )
+
+    def _on_raw(self, raw: bytes) -> None:
+        self._received += 1
+
+        payload = self._strip_length_prefix(raw)
+        if payload is None:
+            self.get_logger().error(
+                f'载荷过短（{len(raw)} 字节），无法解析长度前缀'
+            )
+            return
+
+        msg = self._msg_cls()
+        try:
+            msg.ParseFromString(payload)
+        except Exception as exc:  # noqa: BLE001 - protobuf 解析错误类型较多
+            self.get_logger().error(f'protobuf 解析失败: {exc}')
+            return
+
+        # 用 protobuf 自带的文本格式输出，字段名与 .proto 完全一致，
+        # 比 YAML 更贴近开发者对 protobuf 的预期。
+        from google.protobuf import text_format
+        print(f'--- [{self._received}] {self._type_name} ---')
+        print(text_format.MessageToString(msg), end='')
+        print()
+
+        if self._count_limit and self._received >= self._count_limit:
+            self.get_logger().info(f'已收到 {self._received} 条，达到 --once/--count 上限，退出')
+            rclpy.shutdown()
+
+    @staticmethod
+    def _strip_length_prefix(raw: bytes) -> Optional[bytes]:
+        """剥离 CDR 的 uint32 长度前缀。
+
+        与 C++ 侧 cdr_serialize 的对应关系（protobuf_typesupport.hpp）：
+            const auto n = static_cast<uint32_t>(buf.size());
+            cdr << n;                                    // 这 4 字节
+            cdr.serialize_array(..., n);                 // 这 n 字节
+
+        `<< uint32_t` 在 Fast CDR 下是小端，所以用 '<I'。
+        若未来支持大端平台，需要从端点信息判断，这里先按小端处理并显式校验。
+        """
+        if len(raw) < 4:
+            return None
+
+        (declared,) = struct.unpack_from('<I', raw, 0)
+        body = raw[4:]
+
+        # 长度前缀与实际剩余长度应当一致。不一致说明不是本方案发出的数据，
+        # 或者 CDR 对齐/端点有问题——直接报错比静默解析出垃圾更安全。
+        if declared != len(body):
+            # 容忍尾部 padding：某些 DDS 实现会补齐到 4 字节边界。
+            if declared > len(body):
+                return None
+        return body[:declared] if declared <= len(body) else body
+
+
+def build_qos(reliability: str, durability: str, depth: int) -> QoSProfile:
+    """按命令行参数构造 QoS。默认可靠+易失，与大多数话题匹配。"""
+    rel = {
+        'reliable': QoSReliabilityPolicy.RELIABLE,
+        'best_effort': QoSReliabilityPolicy.BEST_EFFORT,
+    }[reliability]
+    dur = {
+        'volatile': QoSDurabilityPolicy.VOLATILE,
+        'transient_local': QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    }[durability]
+    return QoSProfile(depth=depth, reliability=rel, durability=dur)
+
+
+def echo_topic(topic: str, type_name: str, count: int,
+               reliability: str = 'reliable',
+               durability: str = 'volatile',
+               depth: int = 10) -> int:
+    """命令入口。返回进程退出码。"""
+    try:
+        # 提前构建描述符池：在起订阅之前失败，能给出更清晰的报错。
+        registry.get_class(type_name)
+    except ProtoSchemaError as exc:
+        print(f'错误: {exc}')
+        return 2
+
+    qos = build_qos(reliability, durability, depth)
+
+    rclpy.init()
+    node = ProtoEchoNode(topic, type_name, count, qos)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return 0

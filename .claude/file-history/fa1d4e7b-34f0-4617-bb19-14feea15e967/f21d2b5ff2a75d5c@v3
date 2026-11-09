@@ -1,0 +1,97 @@
+#include "amr_dispatcher_core/chassis/battery_state_tracker.hpp"
+
+#include <gtest/gtest.h>
+
+#include "amr_dispatcher_core/chassis/battery_voltage.hpp"
+
+using amr_dispatcher_core::chassis::BatteryStateTracker;
+using amr_dispatcher_core::chassis::BatteryVoltageToPercent;
+
+namespace {
+BatteryStateTracker::Config MakeConfig() {
+  BatteryStateTracker::Config c;
+  c.full_voltage = 12.6;
+  c.empty_voltage = 11.0;
+  c.max_age_ms = 3000;
+  return c;
+}
+}  // namespace
+
+TEST(BatteryStateTrackerTest, NoMeasurementIsNotFullBattery) {
+  BatteryStateTracker t(MakeConfig());
+  // 核心断言：未知电量绝不能报 100，否则低电量保护静默失效。
+  EXPECT_FALSE(t.has_measurement());
+  EXPECT_DOUBLE_EQ(t.Percent(), 0.0);
+  EXPECT_FALSE(t.IsFresh(1000));
+}
+
+TEST(BatteryStateTrackerTest, VoltageMapsToPercent) {
+  BatteryStateTracker t(MakeConfig());
+  t.OnVoltage(12.6, 1000);
+  EXPECT_TRUE(t.has_measurement());
+  EXPECT_DOUBLE_EQ(t.Percent(), 100.0);
+
+  t.OnVoltage(11.0, 2000);
+  EXPECT_DOUBLE_EQ(t.Percent(), 0.0);
+
+  t.OnVoltage(11.8, 3000);  // (11.8-11.0)/(12.6-11.0) = 50%
+  EXPECT_NEAR(t.Percent(), 50.0, 1e-9);
+}
+
+TEST(BatteryStateTrackerTest, ZeroAndNegativeVoltageAreIgnored) {
+  BatteryStateTracker t(MakeConfig());
+  t.OnVoltage(12.0, 1000);
+  const double before = t.Percent();
+  // ADC 读到 0（未接电池）不能当成 0%：那会立刻触发充电单。
+  t.OnVoltage(0.0, 2000);
+  t.OnVoltage(-1.0, 3000);
+  EXPECT_DOUBLE_EQ(t.Percent(), before);
+  EXPECT_DOUBLE_EQ(t.LastVoltage(), 12.0);
+}
+
+TEST(BatteryStateTrackerTest, StaleSampleIsNotFresh) {
+  BatteryStateTracker t(MakeConfig());
+  t.OnVoltage(12.0, 1000);
+  EXPECT_TRUE(t.IsFresh(1000));
+  EXPECT_TRUE(t.IsFresh(3999));   // 2999ms 后
+  EXPECT_FALSE(t.IsFresh(4001));  // 超过 3000ms
+}
+
+TEST(BatteryStateTrackerTest, ClockGoingBackwardsKeepsSampleFresh) {
+  BatteryStateTracker t(MakeConfig());
+  t.OnVoltage(12.0, 5000);
+  // 时钟回退不能让整车电量瞬间变成"未知"，否则一次异常时间戳就会让派单抖动。
+  EXPECT_TRUE(t.IsFresh(1000));
+}
+
+TEST(BatteryStateTrackerTest, InvertedEndpointsDegradeNotCrash) {
+  BatteryStateTracker::Config c = MakeConfig();
+  c.full_voltage = 11.0;
+  c.empty_voltage = 12.6;  // 写反
+  BatteryStateTracker t(c);
+  t.OnVoltage(13.0, 1000);
+  // 退化语义与 BatteryVoltageToPercent 一致：够高就算满
+  EXPECT_DOUBLE_EQ(t.Percent(), 100.0);
+  t.OnVoltage(10.0, 2000);
+  EXPECT_DOUBLE_EQ(t.Percent(), 0.0);
+}
+
+TEST(BatteryStateTrackerTest, ResetClearsMeasurement) {
+  BatteryStateTracker t(MakeConfig());
+  t.OnVoltage(12.3, 1000);
+  ASSERT_TRUE(t.has_measurement());
+  t.Reset();
+  EXPECT_FALSE(t.has_measurement());
+  EXPECT_DOUBLE_EQ(t.Percent(), 0.0);
+  EXPECT_FALSE(t.IsFresh(1000));
+}
+
+TEST(BatteryStateTrackerTest, MatchesPublishSidePercentage) {
+  // 同一电压在 /battery_state.percentage 与调度侧必须算出同一个数，
+  // 否则 Web 上看到的电量和实际派单依据会对不上。
+  BatteryStateTracker t(MakeConfig());
+  for (const double v : {12.6, 12.0, 11.8, 11.2, 11.0}) {
+    t.OnVoltage(v, 1000);
+    EXPECT_DOUBLE_EQ(t.Percent(), BatteryVoltageToPercent(v, 12.6, 11.0)) << "v=" << v;
+  }
+}

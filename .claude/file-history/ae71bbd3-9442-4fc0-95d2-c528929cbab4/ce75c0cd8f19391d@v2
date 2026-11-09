@@ -1,0 +1,84 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <thread>
+#include <atomic>
+#include <random>
+#include "sensors/sensor_frame.h"
+#include "common/monotonic_clock.h"
+
+namespace xgrids {
+
+// ============================================================
+// 驱动仿真：按真实设备的行为产帧，注入可控故障
+// 用来验证上层（同步/manifest/质量）在没有真机时也能闭环
+// ============================================================
+
+// 单路相机驱动仿真
+class CameraSim {
+public:
+    struct Params {
+        int channel_id;
+        int fps = 20;                      // 20fps -> 50ms
+        int64_t exposure_jitter_us = 1500; // 曝光时刻抖动（默认对齐窗口内）
+        double drop_prob = 0.005;          // 偶发丢帧
+        int64_t latency_us = 3000;         // 曝光到读出延迟
+        uint32_t width = 1920, height = 1080;
+    };
+
+    using Output = std::function<void(const ImageFrame&)>;
+
+    CameraSim(Params p, Output out) : p_(p), out_(std::move(out)) {}
+
+    void start(std::atomic<bool>& running);
+
+    // 故障注入
+    void inject_drop_burst(int n) { drop_burst_ = n; }
+    void inject_slowdown(double factor) { fps_scale_ = factor; }
+    void inject_jitter_us(int64_t jitter_us) { jitter_us_.store(jitter_us); }
+
+private:
+    Params p_;
+    Output out_;
+    std::mt19937 rng_{};
+    std::atomic<int> drop_burst_{0};
+    std::atomic<double> fps_scale_{1.0};
+    std::atomic<int64_t> jitter_us_{0};   // 覆盖 Params 用，-1 表示未设
+};
+
+// LiDAR 驱动仿真（10Hz 扫描周期）
+class LidarSim {
+public:
+    using Output = std::function<void(const LidarFrame&)>;
+    LidarSim(Output out, int points_per_scan = 60000)
+        : out_(std::move(out)), points_(points_per_scan) {}
+    void start(std::atomic<bool>& running);
+private:
+    Output out_;
+    int points_;
+};
+
+// IMU 驱动仿真（200Hz）
+class ImuSim {
+public:
+    using Output = std::function<void(const ImuPacket&)>;
+    explicit ImuSim(Output out) : out_(std::move(out)) {}
+    void start(std::atomic<bool>& running);
+private:
+    Output out_;
+};
+
+// RTK/GNSS 仿真（1Hz，可模拟失锁）
+class GnssSim {
+public:
+    using Output = std::function<void(const GnssFix&)>;
+    GnssSim(Output out) : out_(std::move(out)) {}
+    void start(std::atomic<bool>& running);
+    void inject_loss_lock(bool loss) { loss_lock_ = loss; }
+private:
+    Output out_;
+    std::atomic<bool> loss_lock_{false};
+};
+
+}  // namespace xgrids

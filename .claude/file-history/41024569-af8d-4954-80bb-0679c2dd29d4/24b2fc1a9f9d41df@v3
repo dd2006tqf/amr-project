@@ -1,0 +1,148 @@
+# Qt 看板代码骨架
+
+> 日期：2026-11-05
+> 分类：探索 / 工作流外实施
+> 结果：部分完成（数据层已验证，UI 层未编译）
+
+## 构思
+
+### 要解决什么问题
+
+开发板接 HDMI 显示器时，能在板端本地查看 WeakNet 的诊断状态，不依赖
+远程 SSH 或云端。这是根目录 `内核模块技术栈引入讨论.md` 方向一（路径 A1）。
+
+### 为什么不走 OpenSpec change
+
+1. 这是**探索性代码骨架**，不是已批准的产品表面。按 CLAUDE.md 铁律，
+   没有 approved requirement、真实消费者和可观测命令的接口属于 orphan，
+   不该走正式变更流程。
+2. 用户明确指示「不用新开工作流。直接开始实现基本的代码结构」。
+3. 代码放在独立目录 `qt_dashboard/`，不接入根构建，不修改任何现有文件，
+   对主项目零影响。
+
+### 备选方案与取舍
+
+| 方案 | 取舍 |
+|------|------|
+| 复用 `client/weaknet_client.h` C API | **选它**。29KB 封装已就绪，50+ 只读函数，返回 JSON |
+| 自己实现 D-Bus 客户端 | 弃。`weaknet_cli` 之外再写一套是重复 |
+| 引入 nlohmann/json | 弃。全仓不用第三方 JSON，`net_info.cpp:15` 记录了该决定 |
+| 引入 Qt Charts | 弃。板端无 `libqt5charts5`；且无法脱离显示器测试 |
+| QPainter 自绘 + 渲染到 QImage | **选它**。可像素级单测，无显示器也能验证 |
+| 接入根 CMakeLists.txt | 弃。看板是可选界面，不该拖累主部署产物构建 |
+
+## 实现方式
+
+### 新增文件（全部在独立目录，未改动任何既有文件）
+
+```
+qt_dashboard/
+├── README.md                  设计决定与验证状态
+├── CMakeLists.txt             独立 project，默认不带 UI
+├── data/
+│   ├── json_reader.hpp        轻量 JSON 读取器（路径式查找）
+│   ├── json_reader.cpp        422 行，15 个方法
+│   ├── dashboard_data.hpp     POD 结构体 + 解析函数声明
+│   └── dashboard_data.cpp     234 行，JSON → POD
+├── ui/
+│   ├── line_chart_widget.hpp  QPainter 自绘折线图
+│   └── line_chart_widget.cpp  绘制与控件解耦，可渲染到 QImage
+└── tests/
+    └── test_json_reader.cpp   30 个用例
+```
+
+### 关键决策
+
+**1. JSON 样本逐字取自服务端代码**
+
+测试里的每一段 JSON 都来自真实序列化代码，不是臆造：
+
+| 样本 | 来源 |
+|------|------|
+| 完整快照 | `server/include/assurance/legacy_adapter.hpp:162-227` |
+| 无快照 | `server/src/dbus_service.cpp:916-917` |
+| 快照过期 | `server/src/dbus_service.cpp:919-921` |
+| 历史数组 | `server/src/database_manager.cpp:703-740` |
+| 历史不可用 | `server/src/dbus_service.cpp:1530` |
+| 诊断事实 | `server/include/assurance/diagnosis_engine.hpp:44-85` |
+
+这样服务端改字段名时测试会红，而不是等接上显示器才发现界面空白。
+
+**2. 核对真实 JSON 形状时纠正了两处臆断**
+
+- `HistoryPoint` 原本按 `timestamp_ms`（数字）设计，实际服务端 `ts` 是
+  **字符串**（`"2026-11-06 10:23:10"`），分数字段是 `score` / `overall_score`
+  而非 `display_score`。已改。
+- `DiagnosisSnapshot::confidence` 原本按 `double [0,1]` 设计，实际是
+  **字符串枚举** `HIGH` / `MEDIUM` / `LOW`。已改。
+- `excluded_causes` 是对象数组（`{cause,reason}`），不是字符串数组。已改。
+
+**3. schema v2 的降级形状需要单独处理**
+
+服务端在无快照 / 快照过期时返回**顶层** `state`/`coverage`/`reason`，
+没有 `overall` 对象。`parse_experience()` 先检测 `overall.state` 是否存在，
+不存在就按降级形状解析，并置 `unavailable_reason`。看板据此显示
+「等待评估」而不是 0 分。
+
+**4. 服务端按 `ts DESC` 返回，解析时翻转为正序**
+
+`queryHistory()` 的 SQL 是 `ORDER BY ts DESC LIMIT ?`，最新在前。
+`parse_history()` 在末尾 `std::reverse`，让图表从左到右是时间正序。
+
+**5. `JsonReader` 增加根数组支持**
+
+原设计只从 `{` 开始查找，但 `GetHistory` 返回顶层数组。补了
+`rootIsArray()` / `getRootObjectArray()` / `rootArraySize()` 三个方法。
+
+### 验证手段
+
+```bash
+# 数据层独立编译（零警告）
+cd qt_dashboard
+g++ -std=c++17 -Wall -Wextra -c data/json_reader.cpp -o /tmp/json_reader.o
+g++ -std=c++17 -Wall -Wextra -c data/dashboard_data.cpp -o /tmp/dashboard_data.o
+
+# 单元测试
+g++ -std=c++17 -Wall -Wextra -I. tests/test_json_reader.cpp \
+    data/json_reader.cpp data/dashboard_data.cpp \
+    -lgtest -lgtest_main -lpthread -o /tmp/qt_dashboard_tests
+/tmp/qt_dashboard_tests
+
+# CMake 全流程
+cmake -S qt_dashboard -B /tmp/build-qt-dash -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/build-qt-dash -j$(nproc)
+ctest --test-dir /tmp/build-qt-dash --output-on-failure
+```
+
+## 结果
+
+### 已完成
+
+| 项 | 状态 |
+|----|------|
+| 数据层编译 | ✅ 零警告 |
+| 数据层单测 | ✅ 30/30 通过 |
+| CMake 配置 + 构建 + ctest | ✅ 全流程跑通 |
+| 服务端 JSON 形状核对 | ✅ 逐字段对照真实序列化代码 |
+
+### 未完成（明确边界）
+
+| 项 | 原因 |
+|----|------|
+| UI 层编译验证 | 本机无 Qt 开发包；板端装 `qtbase5-dev` 会级联移除 200+ KDE 包（11-05 板端复测确认：`Remv` 仅 1 条但连坐 200+，且无 gles 版 dev 包可替代） |
+| 上板运行 | 无 HDMI 显示器 |
+| `MainWindow` | 骨架阶段未写，只做了数据层 + 一个图表控件 |
+
+**`ui/line_chart_widget.cpp` 从未被编译器检查过。** 这是当前最大的不确定性：
+代码可能有语法错误或 Qt API 误用。接入真实构建前必须先在有 Qt 开发包的
+机器上编译一次。
+
+### 后续
+
+1. 找一台有 Qt 开发包的环境编译 UI 层（板端直装已被 11-05 实测排除，
+   只剩宿主机 sysroot 交叉编译或 Docker 容器）
+2. 写 `MainWindow`，串起 D-Bus → 解析 → 控件
+3. 接显示器后做 EGLFS / X11 实机验证
+
+是否升格为正式 OpenSpec change：**待显示器到位、UI 层跑通后再评估**。
+现在代码尚未验证，没有资格谈验收。

@@ -1,0 +1,18 @@
+#include "manifest/manifest_writer.h"
+#include <fstream>
+#include <cstdio>
+#include <sys/stat.h>
+
+namespace xgrids {
+
+std::string ManifestWriter::write(const ManifestRecorder& rec,
+                                  const std::string& scan_dir) {
+    // 建数据目录（真实场景里会落在 /data/scan_xxx/）
+    mkdir(scan_dir.c_str(), 0755);
+    std::string path = scan_dir + "/manifest.json";
+    std::ofstream f(path);
+    if (f) f << rec.serialize();
+    return path;
+}
+
+}  // namespace xgrids

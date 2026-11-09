@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.16)
+project(xgrids_capture_sim CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+add_compile_options(-Wall -Wextra -pthread)
+
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# 公共库：环形缓冲 / 时钟 / 异步日志
+add_library(capture_common STATIC
+    src/common/ring_buffer.cpp
+    src/common/monotonic_clock.cpp
+    src/common/async_logger.cpp
+)
+
+# sync: 帧同步监控
+add_library(capture_sync STATIC
+    src/sync/frame_timestamp.cpp
+    src/sync/sync_monitor.cpp
+)
+
+# manifest: 数据完整性清单
+add_library(capture_manifest STATIC
+    src/manifest/manifest_recorder.cpp
+    src/manifest/manifest_writer.cpp
+)
+
+# quality: 实时质量反馈
+add_library(capture_quality STATIC
+    src/quality/quality_feedback.cpp
+)
+
+# 采集主程序（设备端应用层模拟）
+add_executable(capture_app src/main.cpp)
+target_link_libraries(capture_app
+    capture_common capture_sync capture_manifest capture_quality pthread
+)
+
+# 维测工具：日志回放 / 帧间隔可视化
+add_executable(log_replay tools_src/log_replay.cpp)
+target_link_libraries(log_replay capture_common)
+
+enable_testing()
+add_subdirectory(tests)

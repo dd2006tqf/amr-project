@@ -1,0 +1,125 @@
+// 运行时拓扑叠加层（Runtime Topology Overlay）。
+//
+// 现场问题
+// --------
+// 地图与站点目前只能靠改文件 + mtime 热重载生效。现场要临时封一条通道（施工）、
+// 把某条走廊改单向、或加一个临时站点，就得进容器 `vim stations.yaml`；
+// 而且 `map_ingest` / Web 地图上传会**整份覆盖**那个文件，手改的施工区会被静默抹掉。
+//
+// 解法
+// ----
+// 叠加层是一份**独立的、可持久化的临时交通管制清单**，叠加在基础目录（base catalog）
+// 之上得到"生效目录"（effective catalog）：
+//
+//   生效目录 = ApplyTopologyOverlay(基础目录, 叠加层)
+//
+// 三条不可让渡的设计决策
+// ----------------------
+// 1. **封路 = enabled=false；单向 = bidirectional=false**（就地改目录副本），
+//    而不是维护一份"禁用边键"的运行态。
+//    理由：`FindRoutePath/FindRoutePathAvoiding` 已经同时尊重这两个字段，于是
+//    规划、骨架折线展开、距离估算、时空窗/CBS 全自动一致；而 `FindRoutePathAvoiding`
+//    的键是**无序**的（`route_edge:A__B` 与 B/A 同键），根本表达不了"只许 A→B"。
+// 2. **单向反转必须交换 from/to**。若基础目录里存的是 `from=B,to=A`，要表达"只许 A→B"
+//    就必须交换端点，否则方向被静默翻转（`FindRoutePathImpl` 只沿 from→to 松弛）。
+// 3. **被禁的边保留在 vector 里**（不 erase），只置 enabled=false：这样站点/路由列表
+//    与控制台仍能看到"这条边存在但被封"，运维不会以为边凭空消失了。
+//
+// 叠加层**不是**新地图版本：`map_hash` / `graph_version` 原样从基础目录拷贝。
+// 这样状态快照恢复的门禁（map_hash 比对）不会被一次施工区变更误伤。
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "amr_dispatcher_core/catalog/station_catalog.hpp"
+
+namespace amr_dispatcher_core::catalog {
+
+struct OverlayEdge {
+  std::string from;
+  std::string to;
+  std::string reason;
+  std::string operator_id;
+  std::string created_at;  // ISO-8601 UTC，仅供审计阅读
+};
+
+struct OverlayMarker {
+  std::string id;
+  std::string type = "normal";  // pickup / dropoff / charge / normal
+  double x = 0.0;
+  double y = 0.0;
+  double yaw = 0.0;
+  std::string reason;
+  std::string operator_id;
+  std::string created_at;
+};
+
+struct TopologyOverlay {
+  int overlay_version = 1;
+  // 生成这份叠加层时的基础目录 map_hash。基础地图重新出图后它就对不上了，
+  // 此时叠加层必须**整体失效**（不能把施工区带到新地图上）。
+  std::string base_map_hash;
+  std::uint64_t revision = 0;  // 每次成功提交 +1；0 = 从未提交
+  std::string updated_at;
+  std::vector<OverlayEdge> blocked_edges;
+  std::vector<OverlayEdge> one_way_edges;  // 方向 = from → to
+  std::vector<OverlayMarker> added_markers;
+
+  bool Empty() const {
+    return blocked_edges.empty() && one_way_edges.empty() && added_markers.empty();
+  }
+};
+
+struct OverlayValidation {
+  bool ok = false;
+  std::string message;               // 首个错误（给人看）
+  std::vector<std::string> errors;   // 全部错误（给 409 明细 / 控制台展示）
+  std::vector<std::string> warnings; // 不阻断：如 base_map_hash 不匹配交由调用方决定
+};
+
+// 校验叠加层与基础目录的一致性（端点存在、无自环、无重复、无"既封又单向"冲突、
+// marker 坐标有限且 id 不与站点/路网节点冲突、审计字段非空）。
+// base_map_hash 不匹配只进 warnings：dry-run 预览要能展示"这份叠加层对不上新地图"。
+OverlayValidation ValidateTopologyOverlay(const StationCatalog& base,
+                                          const TopologyOverlay& overlay);
+
+// 纯函数：不写盘、不读盘。空叠加层时返回值与 base **逐字段等价**。
+StationCatalog ApplyTopologyOverlay(const StationCatalog& base, const TopologyOverlay& overlay);
+
+// 确定性序列化（固定字段顺序与浮点格式），保证同一叠加层总是产出同一份字节，
+// 便于 diff、便于 e2e 断言"拒绝时文件没被改写"。
+std::string SerializeTopologyOverlay(const TopologyOverlay& overlay);
+
+// 严格解析：沿用 station_catalog.cpp 的手写行式风格（Trim/ValueAfterColon），
+// 未知章节、半截条目、缺少 base_map_hash 一律失败（返回 nullopt）。
+//
+// require_base_hash=false 供**在线提交**路径使用：操作员在控制台里只写
+// `blocked_edges:` 就够了，基线哈希由提交管线盖章（客户端不可能预先知道
+// 服务器当前的地图指纹，要求它填只会逼出"复制上一次的旧值"这种更坏的用法）。
+// 落盘文件仍由 SerializeTopologyOverlay 写出完整字段，所以磁盘上的叠加层始终
+// 带 base_map_hash —— 严格模式（默认值）用于读回，不可放宽。
+std::optional<TopologyOverlay> DeserializeTopologyOverlay(const std::string& text,
+                                                          std::string* message,
+                                                          bool require_base_hash = true);
+std::optional<TopologyOverlay> LoadTopologyOverlay(const std::filesystem::path& path,
+                                                   std::string* message);
+
+// 原子落盘：tmp -> flush -> 回读校验 -> rename；旧文件保留为 `<path>.bak`。
+// 写前持久化是提交管线的第一个动作：文件是恢复的唯一真相源。
+bool PersistTopologyOverlay(const std::filesystem::path& path, const TopologyOverlay& overlay,
+                            std::string* message);
+
+// 把叠加层文件改名归档（`<path>.<suffix>.<epoch>`），用于"基础地图变更导致失效"。
+// 不删除用户数据：现场可能要靠它追溯昨天封了哪条路。
+bool InvalidateOverlayFile(const std::filesystem::path& path, const std::string& suffix,
+                           std::string* relocated_path, std::string* message);
+
+// ---- 供提交管线做"幂等判定"：忽略 revision/时间戳/审计字段后的语义签名 ----
+// 两份叠加层的签名相同 = 语义上没有任何变化，提交应返回 no_change 且不写盘。
+std::string TopologyOverlaySignature(const TopologyOverlay& overlay);
+
+}  // namespace amr_dispatcher_core::catalog

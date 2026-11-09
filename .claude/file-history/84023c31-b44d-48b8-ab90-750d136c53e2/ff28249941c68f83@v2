@@ -1,0 +1,22 @@
+# Tier 1 执行台账
+
+计划：`2026-10-11-tier1-nav-adapter-reservation-topology.md`
+工作区：直接在 main 上（用户 2026-10-11 明确授权，不建分支/worktree）
+基线：`bash scripts/build.sh` 461/461 通过（2026-10-11）
+
+## 任务状态
+
+| Task | 状态 | Commit | 审查 | 备注 |
+|---|---|---|---|---|
+| 1 NavigateSequence 桥接 + Action 接线 | 实现完成，审查中 | `364f88b` | 审查代理已派出 | build 461/461、容器构建 5 包零失败、冒烟 3 次 PASSED；实现者自报 concerns 见 /tmp/amr-tier1-task1-report.md（批量取消不终结 goal、Nav2 分支未编译、取消降级为 abort 等） |
+| 2 派发预留路网锁 + WFG 数据上环 | 待办 | — | — | brief 已备：briefs/task2.md |
+| 3 topology 发布 | 待办 | — | — | brief 已备：briefs/task3.md |
+
+## Rulings（执行期裁决，均有据可查）
+
+- R1: 工作区不隔离，直接 main 提交（用户选择）。
+- R2: 基线实测 461 用例，README/check_all.sh 中"453"为过时数字，Task 3 统一修正。
+
+## 审查记录
+
+（按 轮次/结论/遗留 填写）

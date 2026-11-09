@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+
+echo "=== 1. 后台拉起探针监控 (采样 12 秒) ==="
+LD_LIBRARY_PATH=/usr/local/lib /tmp/bt_probe_runner 12 > /tmp/probe_output.txt 2>&1 &
+RUNNER_PID=$!
+sleep 2
+
+echo "=== 2. 发起真实 ACL 探测 (l2ping B0:F0:0C:42:85:51) ==="
+l2ping -i hci0 -c 3 -t 3 B0:F0:0C:42:85:51 2>&1 || true
+
+echo "=== 3. 检查 hcitool con 瞬态句柄 ==="
+hcitool con || true
+
+echo "=== 4. 等待探针完成并回收 ==="
+wait $RUNNER_PID 2>/dev/null || true
+
+echo "=== 5. 探针统计产出结果 ==="
+cat /tmp/probe_output.txt

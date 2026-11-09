@@ -1,0 +1,15 @@
+---
+name: claude-code-default-model
+description: 用户要求每次启动 Claude Code 都用 /model 里的 default 行，禁止用 ANTHROPIC_MODEL 环境变量 pin 主模型
+metadata: 
+  node_type: memory
+  type: feedback
+  originSessionId: 0156e006-6ff3-4d05-9497-dea89245026a
+  modified: 2026-10-30T14:54:12.273Z
+---
+
+用户要求每次打开 Claude Code 时使用 `/model` 里的 **Default** 模型（当前经 laneai.dev 网关解析为 `deepseek-v4.1-flash[1m]`）。
+
+**Why:** 只要 `ANTHROPIC_MODEL` 存在（无论在 `~/.bashrc` 还是 `~/.claude/settings.json` 的 `env` 段），Claude Code 就会用它压过 `/model` 保存的默认值，并在 `/model` 输出里打印「ANTHROPIC_MODEL is set to `...` — new sessions use that while it is set」。用户希望模型选择由 `/model` 单一来源管理，而不是被 shell 环境偷偷接管。
+
+**How to apply:** 修改模型相关配置时，保留 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_DEFAULT_OPUS|SONNET|HAIKU_MODEL`（这些只定义别名解析，不 pin 主模型），但不要设置 `ANTHROPIC_MODEL`。若要改默认模型，引导用户用 `/model`（会写入 `~/.claude/settings.json` 的 `model` 键）。网关模型名靠 `settings.json` 的 `modelOverrides` 映射。改动 shell 变量后需新开终端或重启 IDE 终端才生效。

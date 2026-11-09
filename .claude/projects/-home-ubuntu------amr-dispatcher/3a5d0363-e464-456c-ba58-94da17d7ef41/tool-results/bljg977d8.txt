@@ -1,0 +1,993 @@
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  None  ->  None
+
+===  SafetyPublishDecision.EStopForcesZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.EStopForcesZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.EStopForcesZero
+[       OK ] SafetyPublishDecision.EStopForcesZero (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.BumperForcesZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.BumperForcesZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.BumperForcesZero
+[       OK ] SafetyPublishDecision.BumperForcesZero (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.CriticalDecisionForcesZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.CriticalDecisionForcesZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.CriticalDecisionForcesZero
+[       OK ] SafetyPublishDecision.CriticalDecisionForcesZero (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (2 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.StaleRawForcesZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.StaleRawForcesZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.StaleRawForcesZero
+[       OK ] SafetyPublishDecision.StaleRawForcesZero (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.BoundaryTimeoutNotStale  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.BoundaryTimeoutNotStale
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.BoundaryTimeoutNotStale
+[       OK ] SafetyPublishDecision.BoundaryTimeoutNotStale (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.ReplaysLastDecision  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.ReplaysLastDecision
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.ReplaysLastDecision
+[       OK ] SafetyPublishDecision.ReplaysLastDecision (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  SafetyPublishDecision.NeverReceivedSkips  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = SafetyPublishDecision.NeverReceivedSkips
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SafetyPublishDecision
+[ RUN      ] SafetyPublishDecision.NeverReceivedSkips
+[       OK ] SafetyPublishDecision.NeverReceivedSkips (0 ms)
+[----------] 1 test from SafetyPublishDecision (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  LatchedBlocks.EstopLatchedOverridesToZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = LatchedBlocks.EstopLatchedOverridesToZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LatchedBlocks
+[ RUN      ] LatchedBlocks.EstopLatchedOverridesToZero
+[       OK ] LatchedBlocks.EstopLatchedOverridesToZero (0 ms)
+[----------] 1 test from LatchedBlocks (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  LatchedBlocks.BumperLatchedOverridesToZero  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = LatchedBlocks.BumperLatchedOverridesToZero
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LatchedBlocks
+[ RUN      ] LatchedBlocks.BumperLatchedOverridesToZero
+[       OK ] LatchedBlocks.BumperLatchedOverridesToZero (0 ms)
+[----------] 1 test from LatchedBlocks (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  LatchedBlocks.NoLatchKeepsDecisionUnchanged  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = LatchedBlocks.NoLatchKeepsDecisionUnchanged
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LatchedBlocks
+[ RUN      ] LatchedBlocks.NoLatchKeepsDecisionUnchanged
+[       OK ] LatchedBlocks.NoLatchKeepsDecisionUnchanged (0 ms)
+[----------] 1 test from LatchedBlocks (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  NavPoseBuilder.SingleWaypointPreservesOrientation  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = NavPoseBuilder.SingleWaypointPreservesOrientation
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from NavPoseBuilder
+[ RUN      ] NavPoseBuilder.SingleWaypointPreservesOrientation
+[       OK ] NavPoseBuilder.SingleWaypointPreservesOrientation (0 ms)
+[----------] 1 test from NavPoseBuilder (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  NavPoseBuilder.MultiWaypointOverwritesOrientation  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = NavPoseBuilder.MultiWaypointOverwritesOrientation
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from NavPoseBuilder
+[ RUN      ] NavPoseBuilder.MultiWaypointOverwritesOrientation
+[       OK ] NavPoseBuilder.MultiWaypointOverwritesOrientation (0 ms)
+[----------] 1 test from NavPoseBuilder (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  NavPoseBuilder.EmptyInputReturnsEmpty  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = NavPoseBuilder.EmptyInputReturnsEmpty
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from NavPoseBuilder
+[ RUN      ] NavPoseBuilder.EmptyInputReturnsEmpty
+[       OK ] NavPoseBuilder.EmptyInputReturnsEmpty (0 ms)
+[----------] 1 test from NavPoseBuilder (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  MissionIdentity.IdMatchesSequence  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = MissionIdentity.IdMatchesSequence
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from MissionIdentity
+[ RUN      ] MissionIdentity.IdMatchesSequence
+[       OK ] MissionIdentity.IdMatchesSequence (0 ms)
+[----------] 1 test from MissionIdentity (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  MissionIdentity.SequenceIncrementsMonotonically  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = MissionIdentity.SequenceIncrementsMonotonically
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from MissionIdentity
+[ RUN      ] MissionIdentity.SequenceIncrementsMonotonically
+[       OK ] MissionIdentity.SequenceIncrementsMonotonically (0 ms)
+[----------] 1 test from MissionIdentity (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  MissionIdentity.CustomPrefix  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = MissionIdentity.CustomPrefix
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from MissionIdentity
+[ RUN      ] MissionIdentity.CustomPrefix
+[       OK ] MissionIdentity.CustomPrefix (0 ms)
+[----------] 1 test from MissionIdentity (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ReportFreshness.RecentArrivalIsFresh  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ReportFreshness.RecentArrivalIsFresh
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ReportFreshness
+[ RUN      ] ReportFreshness.RecentArrivalIsFresh
+[       OK ] ReportFreshness.RecentArrivalIsFresh (0 ms)
+[----------] 1 test from ReportFreshness (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ReportFreshness.StaleArrivalIsNotFresh  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ReportFreshness.StaleArrivalIsNotFresh
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ReportFreshness
+[ RUN      ] ReportFreshness.StaleArrivalIsNotFresh
+[       OK ] ReportFreshness.StaleArrivalIsNotFresh (0 ms)
+[----------] 1 test from ReportFreshness (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ReportFreshness.NeverArrivedIsNotFresh  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ReportFreshness.NeverArrivedIsNotFresh
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ReportFreshness
+[ RUN      ] ReportFreshness.NeverArrivedIsNotFresh
+[       OK ] ReportFreshness.NeverArrivedIsNotFresh (0 ms)
+[----------] 1 test from ReportFreshness (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ReportFreshness.BoundaryWindowIsStillFresh  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ReportFreshness.BoundaryWindowIsStillFresh
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ReportFreshness
+[ RUN      ] ReportFreshness.BoundaryWindowIsStillFresh
+[       OK ] ReportFreshness.BoundaryWindowIsStillFresh (0 ms)
+[----------] 1 test from ReportFreshness (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  AssignmentDispatchDecisionTest.AssignedDispatches  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = AssignmentDispatchDecisionTest.AssignedDispatches
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AssignmentDispatchDecisionTest
+[ RUN      ] AssignmentDispatchDecisionTest.AssignedDispatches
+[       OK ] AssignmentDispatchDecisionTest.AssignedDispatches (0 ms)
+[----------] 1 test from AssignmentDispatchDecisionTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  AssignmentDispatchDecisionTest.DeferredStaysQueuedAndKeepsReason  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = AssignmentDispatchDecisionTest.DeferredStaysQueuedAndKeepsReason
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AssignmentDispatchDecisionTest
+[ RUN      ] AssignmentDispatchDecisionTest.DeferredStaysQueuedAndKeepsReason
+[       OK ] AssignmentDispatchDecisionTest.DeferredStaysQueuedAndKeepsReason (0 ms)
+[----------] 1 test from AssignmentDispatchDecisionTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  AssignmentDispatchDecisionTest.IndeterminatePausesAutoAssignment  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = AssignmentDispatchDecisionTest.IndeterminatePausesAutoAssignment
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AssignmentDispatchDecisionTest
+[ RUN      ] AssignmentDispatchDecisionTest.IndeterminatePausesAutoAssignment
+[       OK ] AssignmentDispatchDecisionTest.IndeterminatePausesAutoAssignment (0 ms)
+[----------] 1 test from AssignmentDispatchDecisionTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  AssignmentDispatchDecisionTest.RejectedFailsPermanentlyWithReason  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = AssignmentDispatchDecisionTest.RejectedFailsPermanentlyWithReason
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AssignmentDispatchDecisionTest
+[ RUN      ] AssignmentDispatchDecisionTest.RejectedFailsPermanentlyWithReason
+[       OK ] AssignmentDispatchDecisionTest.RejectedFailsPermanentlyWithReason (0 ms)
+[----------] 1 test from AssignmentDispatchDecisionTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  AssignmentDispatchDecisionTest.DeferredAndRejectedAreDistinctActions  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = AssignmentDispatchDecisionTest.DeferredAndRejectedAreDistinctActions
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AssignmentDispatchDecisionTest
+[ RUN      ] AssignmentDispatchDecisionTest.DeferredAndRejectedAreDistinctActions
+[       OK ] AssignmentDispatchDecisionTest.DeferredAndRejectedAreDistinctActions (0 ms)
+[----------] 1 test from AssignmentDispatchDecisionTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ChassisFaultTest.CleanFlagsAreNotFault  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ChassisFaultTest.CleanFlagsAreNotFault
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ChassisFaultTest
+[ RUN      ] ChassisFaultTest.CleanFlagsAreNotFault
+[       OK ] ChassisFaultTest.CleanFlagsAreNotFault (0 ms)
+[----------] 1 test from ChassisFaultTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ChassisFaultTest.EachFaultBitIsRecognized  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ChassisFaultTest.EachFaultBitIsRecognized
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ChassisFaultTest
+[ RUN      ] ChassisFaultTest.EachFaultBitIsRecognized
+[       OK ] ChassisFaultTest.EachFaultBitIsRecognized (0 ms)
+[----------] 1 test from ChassisFaultTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ChassisFaultTest.CombinedBitsStillFault  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ChassisFaultTest.CombinedBitsStillFault
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ChassisFaultTest
+[ RUN      ] ChassisFaultTest.CombinedBitsStillFault
+[       OK ] ChassisFaultTest.CombinedBitsStillFault (0 ms)
+[----------] 1 test from ChassisFaultTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ChassisFaultTest.UnusedBitsDoNotFalselyTrip  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ChassisFaultTest.UnusedBitsDoNotFalselyTrip
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ChassisFaultTest
+[ RUN      ] ChassisFaultTest.UnusedBitsDoNotFalselyTrip
+[       OK ] ChassisFaultTest.UnusedBitsDoNotFalselyTrip (0 ms)
+[----------] 1 test from ChassisFaultTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ChassisFaultTest.StatePacketFaultFlagMapsToFault  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ChassisFaultTest.StatePacketFaultFlagMapsToFault
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ChassisFaultTest
+[ RUN      ] ChassisFaultTest.StatePacketFaultFlagMapsToFault
+[       OK ] ChassisFaultTest.StatePacketFaultFlagMapsToFault (0 ms)
+[----------] 1 test from ChassisFaultTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.ChassisLinkHealthAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.ChassisLinkHealthAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.ChassisLinkHealthAllFields
+[       OK ] ProtoProjection.ChassisLinkHealthAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.ChassisLinkHealthDeliveryRateSentinel  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.ChassisLinkHealthDeliveryRateSentinel
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.ChassisLinkHealthDeliveryRateSentinel
+[       OK ] ProtoProjection.ChassisLinkHealthDeliveryRateSentinel (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.ChassisLinkHealthUnknownTierKeepsText  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.ChassisLinkHealthUnknownTierKeepsText
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.ChassisLinkHealthUnknownTierKeepsText
+[       OK ] ProtoProjection.ChassisLinkHealthUnknownTierKeepsText (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.TrackingErrorAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.TrackingErrorAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.TrackingErrorAllFields
+[       OK ] ProtoProjection.TrackingErrorAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.SafetyStateAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.SafetyStateAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.SafetyStateAllFields
+[       OK ] ProtoProjection.SafetyStateAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.SafetyStateKnownSeverityHasNoText  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.SafetyStateKnownSeverityHasNoText
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.SafetyStateKnownSeverityHasNoText
+[       OK ] ProtoProjection.SafetyStateKnownSeverityHasNoText (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.SafetyStateUnknownSeverityKeepsText  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.SafetyStateUnknownSeverityKeepsText
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.SafetyStateUnknownSeverityKeepsText
+[       OK ] ProtoProjection.SafetyStateUnknownSeverityKeepsText (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.SafetyStateEmptyActiveSources  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.SafetyStateEmptyActiveSources
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.SafetyStateEmptyActiveSources
+[       OK ] ProtoProjection.SafetyStateEmptyActiveSources (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.TopologyStateAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.TopologyStateAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.TopologyStateAllFields
+[       OK ] ProtoProjection.TopologyStateAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.TopologyStateRepeatedDoesNotAccumulateAfterClear  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.TopologyStateRepeatedDoesNotAccumulateAfterClear
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.TopologyStateRepeatedDoesNotAccumulateAfterClear
+[       OK ] ProtoProjection.TopologyStateRepeatedDoesNotAccumulateAfterClear (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.MissionEventAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.MissionEventAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.MissionEventAllFields
+[       OK ] ProtoProjection.MissionEventAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.VehicleLinkStateAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.VehicleLinkStateAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.VehicleLinkStateAllFields
+[       OK ] ProtoProjection.VehicleLinkStateAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.VehicleLinkStateNegativeAgeSentinel  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.VehicleLinkStateNegativeAgeSentinel
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.VehicleLinkStateNegativeAgeSentinel
+[       OK ] ProtoProjection.VehicleLinkStateNegativeAgeSentinel (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (2 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.DispatcherStateAllFields  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.DispatcherStateAllFields
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.DispatcherStateAllFields
+[       OK ] ProtoProjection.DispatcherStateAllFields (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoProjection.DispatcherStateEmptyVehicleLinks  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoProjection.DispatcherStateEmptyVehicleLinks
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoProjection
+[ RUN      ] ProtoProjection.DispatcherStateEmptyVehicleLinks
+[       OK ] ProtoProjection.DispatcherStateEmptyVehicleLinks (0 ms)
+[----------] 1 test from ProtoProjection (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoTopicName.AppendsSuffix  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoTopicName.AppendsSuffix
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoTopicName
+[ RUN      ] ProtoTopicName.AppendsSuffix
+[       OK ] ProtoTopicName.AppendsSuffix (0 ms)
+[----------] 1 test from ProtoTopicName (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  ProtoTopicName.LegacyNamesStayByteIdentical  ->  None
+Running main() from ./googletest/src/gtest_main.cc
+Note: Google Test filter = ProtoTopicName.LegacyNamesStayByteIdentical
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ProtoTopicName
+[ RUN      ] ProtoTopicName.LegacyNamesStayByteIdentical
+[       OK ] ProtoTopicName.LegacyNamesStayByteIdentical (0 ms)
+[----------] 1 test from ProtoTopicName (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.ChassisLinkHealth  ->  None
+Note: Google Test filter = RoundTrip.ChassisLinkHealth
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.ChassisLinkHealth
+[       OK ] RoundTrip.ChassisLinkHealth (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.ChassisLinkHealthDeliveryRateApplicable  ->  None
+Note: Google Test filter = RoundTrip.ChassisLinkHealthDeliveryRateApplicable
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.ChassisLinkHealthDeliveryRateApplicable
+[       OK ] RoundTrip.ChassisLinkHealthDeliveryRateApplicable (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.ChassisLinkHealthUnknownTierKeepsText  ->  None
+Note: Google Test filter = RoundTrip.ChassisLinkHealthUnknownTierKeepsText
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.ChassisLinkHealthUnknownTierKeepsText
+[       OK ] RoundTrip.ChassisLinkHealthUnknownTierKeepsText (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.TrackingError  ->  None
+Note: Google Test filter = RoundTrip.TrackingError
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.TrackingError
+[       OK ] RoundTrip.TrackingError (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.VehicleLinkState  ->  None
+Note: Google Test filter = RoundTrip.VehicleLinkState
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.VehicleLinkState
+[       OK ] RoundTrip.VehicleLinkState (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.DispatcherState  ->  None
+Note: Google Test filter = RoundTrip.DispatcherState
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.DispatcherState
+[       OK ] RoundTrip.DispatcherState (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.SafetyState  ->  None
+Note: Google Test filter = RoundTrip.SafetyState
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.SafetyState
+[       OK ] RoundTrip.SafetyState (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.SafetyStateUnknownSeverityKeepsText  ->  None
+Note: Google Test filter = RoundTrip.SafetyStateUnknownSeverityKeepsText
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.SafetyStateUnknownSeverityKeepsText
+[       OK ] RoundTrip.SafetyStateUnknownSeverityKeepsText (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.TopologyState  ->  None
+Note: Google Test filter = RoundTrip.TopologyState
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.TopologyState
+[       OK ] RoundTrip.TopologyState (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.MissionEvent  ->  None
+Note: Google Test filter = RoundTrip.MissionEvent
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.MissionEvent
+[       OK ] RoundTrip.MissionEvent (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  RoundTrip.ProtoTopicNameParityAcrossPackages  ->  None
+Note: Google Test filter = RoundTrip.ProtoTopicNameParityAcrossPackages
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RoundTrip
+[ RUN      ] RoundTrip.ProtoTopicNameParityAcrossPackages
+[       OK ] RoundTrip.ProtoTopicNameParityAcrossPackages (0 ms)
+[----------] 1 test from RoundTrip (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+
+
+===  test_lifecycle_contracts  ->  None
+Traceback (most recent call last):
+  File "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py", line 19, in <module>
+    import ament_cmake_test
+ModuleNotFoundError: No module named 'ament_cmake_test'
+
+
+===  test_supervision_contracts  ->  None
+Traceback (most recent call last):
+  File "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py", line 19, in <module>
+    import ament_cmake_test
+ModuleNotFoundError: No module named 'ament_cmake_test'
+
+

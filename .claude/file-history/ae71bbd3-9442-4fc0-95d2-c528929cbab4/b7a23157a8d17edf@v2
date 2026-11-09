@@ -1,0 +1,101 @@
+#include "backend/storage_backend.h"
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <cstring>
+#include "common/monotonic_clock.h"
+
+namespace xgrids {
+
+StorageBackend::StorageBackend(const std::string& root) : root_(root) {
+    mkdir(root_.c_str(), 0755);
+}
+
+bool StorageBackend::begin_scan(const std::string& scan_id, int64_t start_us) {
+    cur_dir_ = root_ + "/" + scan_id;
+    if (mkdir(cur_dir_.c_str(), 0755) != 0) return false;
+    for (int i = 0; i < 4; ++i) {
+        cam_files_[i] = cur_dir_ + "/ch" + std::to_string(i) + ".bin";
+        std::ofstream f(cam_files_[i]);   // 建空文件
+    }
+    lidar_file_ = cur_dir_ + "/lidar.bin";
+    imu_file_ = cur_dir_ + "/imu.bin";
+    { std::ofstream lf(lidar_file_); } { std::ofstream inf(imu_file_); }
+    scan_start_us_ = start_us;
+    bytes_written_ = 0;
+    last_rate_ts_us_ = start_us;
+    last_rate_bytes_ = 0;
+    return true;
+}
+
+int64_t StorageBackend::write(const ImageFrame& f) {
+    if (f.meta.channel_id < 0 || f.meta.channel_id > 3) return -1;
+    std::ofstream o(cam_files_[f.meta.channel_id], std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+    // 头部：ts(8) + seq(4) + w(2) + h(2) + len(4) = 20B
+    o.write(reinterpret_cast<const char*>(&f.meta.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&f.meta.seq), 4);
+    o.write(reinterpret_cast<const char*>(&f.meta.width), 2);
+    o.write(reinterpret_cast<const char*>(&f.meta.height), 2);
+    uint32_t len = f.yuv.size();
+    o.write(reinterpret_cast<const char*>(&len), 4);
+    o.write(reinterpret_cast<const char*>(f.yuv.data()), len);
+    bytes_written_ += 20 + len;
+    return off;
+}
+
+int64_t StorageBackend::write(const LidarFrame& f) {
+    std::ofstream o(lidar_file_, std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+    o.write(reinterpret_cast<const char*>(&f.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&f.seq), 4);
+    o.write(reinterpret_cast<const char*>(&f.point_count), 4);
+    uint64_t bytes = f.point_count * 12 + f.intensity.size();
+    o.write(reinterpret_cast<const char*>(f.xyz.data()), f.point_count * 12);
+    o.write(reinterpret_cast<const char*>(f.intensity.data()), f.intensity.size());
+    bytes_written_ += 16 + bytes;
+    return off;
+}
+
+int64_t StorageBackend::write(const ImuPacket& p) {
+    std::ofstream o(imu_file_, std::ios::app | std::ios::binary);
+    int64_t off = (int64_t)o.tellp();
+    o.write(reinterpret_cast<const char*>(&p.ts_us), 8);
+    o.write(reinterpret_cast<const char*>(&p.ax), 24);
+    bytes_written_ += 32;
+    return off;
+}
+
+DataPacketInfo StorageBackend::finish_scan(int64_t end_ts_us,
+                                           const std::string& manifest_json) {
+    DataPacketInfo info;
+    info.scan_dir = cur_dir_;
+    info.start_ts_us = scan_start_us_;
+    info.end_ts_us = end_ts_us;
+    info.total_bytes = bytes_written_;
+
+    std::ofstream f(cur_dir_ + "/manifest.json");
+    f << manifest_json;
+    return info;
+}
+
+double StorageBackend::free_gb() const {
+    struct statvfs vfs;
+    if (statvfs(root_.c_str(), &vfs) != 0) return 0;
+    return (double)vfs.f_bavail * vfs.f_frsize / (1 << 30);
+}
+
+double StorageBackend::current_write_rate_gbps() const {
+    std::lock_guard<std::mutex> lk(rate_mu_);
+    int64_t now = MonotonicClock::now_us();
+    if (last_rate_ts_us_ < 0 || now - last_rate_ts_us_ < 500'000) return rate_gbps_;
+    double dt = (now - last_rate_ts_us_) / 1e6;
+    double gb = (bytes_written_ - last_rate_bytes_) / 1e9;
+    rate_gbps_ = gb / dt;
+    last_rate_ts_us_ = now;
+    last_rate_bytes_ = bytes_written_;
+    return rate_gbps_;
+}
+
+}  // namespace xgrids

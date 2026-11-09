@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# 验证两个开关相互独立：
+#   A. proto_dual_publish:=false + proto_rosidl_publish:=true（默认）
+#      -> 只有 rosidl 侧，没有 *_proto
+#   B. proto_dual_publish:=false + proto_rosidl_publish:=false
+#      -> 两侧都没有（只用于测试）
+set +u
+source /opt/ros/jazzy/setup.bash
+source /workspace/install/setup.bash
+set -u
+
+PKG=$(ros2 pkg prefix amr_dispatcher_ros)
+LH="$PKG/lib/amr_dispatcher_ros/link_health_publisher"
+
+run_case () {
+  local name="$1"; shift
+  echo "=== $name ==="
+  "$LH" --ros-args -r __node:="$name" "$@" > "/tmp/${name}.log" 2>&1 &
+  local pid=$!
+  sleep 5
+  local r p
+  r=$(ros2 topic info /system/aggregated_link_health -v 2>/dev/null | grep -c "$name" || true)
+  p=$(ros2 topic info /system/aggregated_link_health_proto -v 2>/dev/null | grep -c "$name" || true)
+  echo "  rosidl writer=$r  proto writer=$p"
+  grep -E "rosidl 侧已关闭|proto dual-publish enabled" "/tmp/${name}.log" | sed 's/^/  /' || true
+  kill "$pid" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+
+run_case lh_only_rosidl -p proto_dual_publish:=false
+run_case lh_neither     -p proto_dual_publish:=false -p proto_rosidl_publish:=false

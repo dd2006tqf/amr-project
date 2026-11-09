@@ -1,0 +1,59 @@
+#include "common/ring_buffer.h"
+#include "sync/frame_timestamp.h"
+
+namespace xgrids {
+
+template <typename T>
+bool RingBuffer<T>::push(const T& item, Priority prio) {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (size_.load() >= buf_.size()) {
+        if (prio == Priority::kLow) {
+            dropped_.fetch_add(1);
+            return false;           // 可丢项直接丢
+        }
+        // 高优先级：阻塞等待（生产环境会加超时，避免采集线程卡死）
+        not_full_.wait(lk, [&] { return size_.load() < buf_.size(); });
+    }
+    buf_[tail_.load() % buf_.size()] = item;
+    tail_.fetch_add(1);
+    size_.fetch_add(1);
+    lk.unlock();
+    not_empty_.notify_one();
+    return true;
+}
+
+template <typename T>
+bool RingBuffer<T>::push(T&& item, Priority prio) {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (size_.load() >= buf_.size()) {
+        if (prio == Priority::kLow) {
+            dropped_.fetch_add(1);
+            return false;
+        }
+        not_full_.wait(lk, [&] { return size_.load() < buf_.size(); });
+    }
+    buf_[tail_.load() % buf_.size()] = std::move(item);
+    tail_.fetch_add(1);
+    size_.fetch_add(1);
+    lk.unlock();
+    not_empty_.notify_one();
+    return true;
+}
+
+template <typename T>
+std::optional<T> RingBuffer<T>::pop() {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (size_.load() == 0) return std::nullopt;
+    T item = std::move(buf_[head_.load() % buf_.size()]);
+    head_.fetch_add(1);
+    size_.fetch_sub(1);
+    lk.unlock();
+    not_full_.notify_one();
+    return item;
+}
+
+// 显式实例化（框架只用到 FrameMeta，如需再扩）
+struct FrameMeta;
+template class RingBuffer<FrameMeta>;
+
+}  // namespace xgrids

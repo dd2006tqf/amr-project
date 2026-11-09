@@ -1,0 +1,66 @@
+// 一次扫描的端到端演示：
+//   拉会话 -> 采集 8s（注入丢帧+过热+RTK失锁） -> 收尾 -> 上传队列
+// 输出：manifest.json + 控制台质量提示 + 上传进度
+#include "capture_session.h"
+#include <thread>
+#include <iostream>
+#include <iomanip>
+
+using namespace xgrids;
+
+int main() {
+    AsyncLogger::instance().init("/tmp/xgrids_device.log");
+    AsyncLogger::instance().set_min_level(AsyncLogger::Level::kInfo);
+
+    // 清理上次的演示数据（每轮 ~2GB，避免占满磁盘）
+    system("rm -rf /tmp/xgrids_data/scan_demo_001");
+
+    CaptureSession::Config cfg;
+    cfg.data_root = "/tmp/xgrids_data";
+    cfg.cam_fps = 20;
+    cfg.frame_width = 1280;     // 演示分辨率（1080p 一轮 2GB+，磁盘吃紧）
+    cfg.frame_height = 720;
+
+    CaptureSession session(
+        cfg,
+        [](const QualityReport& r) {
+            const char* lvl[] = {"OK ", "WRN", "ERR"};
+            std::cout << "[" << lvl[(int)r.level] << "] " << r.headline
+                      << "  area=" << std::fixed << std::setprecision(1)
+                      << r.scanned_area_m2 << "m2"
+                      << " remain=" << r.remain_minutes << "min";
+            for (auto& d : r.details) std::cout << " | " << d;
+            std::cout << "\n";
+        },
+        [](const SessionReport& rep) {
+            std::cout << "\n=== scan done ===\n"
+                      << "scan_id  = " << rep.scan_id << "\n"
+                      << "clean    = " << rep.manifest.clean << "\n"
+                      << "quality  = " << (int)rep.quality << "\n"
+                      << "rescan windows = " << rep.manifest.rescan_windows.size() << "\n"
+                      << "uploaded = " << rep.uploaded_bytes << " bytes\n";
+        });
+
+    if (!session.start("scan_demo_001")) {
+        std::fprintf(stderr, "start failed\n");
+        return 1;
+    }
+
+    // 采集 8 秒，期间注入各类故障模拟现场
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    session.inject_camera_drop(1, 3);          // ch1 连丢3帧
+    session.inject_camera_drop(2, 1);
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    session.inject_cpu_heat(820);              // 过热
+    session.inject_rtk_loss(1500);             // RTK 失锁 1.5s
+
+    std::this_thread::sleep_for(std::chrono::seconds(4));
+    session.inject_cpu_heat(400);              // 降温恢复
+
+    auto rep = session.stop();
+
+    std::cout << "\nmanifest @ /tmp/xgrids_data/scan_demo_001/manifest.json\n"
+              << "device log @ /tmp/xgrids_device.log\n";
+    return rep.manifest.clean ? 0 : 2;
+}

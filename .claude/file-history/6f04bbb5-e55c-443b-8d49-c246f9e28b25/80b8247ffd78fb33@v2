@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# P0-C2 真机重启收敛验证 —— 持久沙盒搭建（v3）
+#
+# 目标：验证「真实 reboot 之后，TRIAL 事务的尝试计数与收敛判定是否仍正确」
+#       —— 这是 P0-C2 唯一剩下的、离线无法证明的一行。
+#
+# v1/v2 两次都不可用，原因记录在这里，避免再踩：
+#   * v1 建在 /tmp：板端 /usr/lib/tmpfiles.d/tmp.conf 有 `D /tmp`，
+#     开机时整个目录被清空 → 重启后沙盒不存在，验证对象消失。
+#   * v2 装了 gate/biz：沙盒 gate 会去读沙盒 state，本无害；但真正的问题是
+#     **健康探测复用生产 D-Bus**，而生产 GetUpdateStatus 报 installed_version=1.1.0，
+#     与沙盒 to_version 相同 → 恢复器一启动就判定"健康"并 commit，
+#     TRIAL 阶段在重启之前就结束了，验证不到"重启后仍在 TRIAL"。
+#
+# v3 的取舍：
+#   * 持久目录 /var/lib/p0c2-sb（开机不清理）
+#   * `--service weaknet-p0c2-absent`（**不存在的服务名**）
+#       → systemctl is-active 恒为 inactive（实测 rc=3）
+#       → 健康判定恒为 False，事务稳定停在 TRIAL，不会提前 commit
+#       这是刻意的：本项要验的是**计数与收敛**，不是健康路径
+#       （健康路径已由 P0-B/P0-C1 的离线矩阵与 11-01 真机演练覆盖）
+#   * 只装一个开机自启单元：恢复器本身。不装 gate/biz ——
+#     本次不验门禁接线（那已由 P0-C1 真机覆盖），少一个变量少一份风险。
+set -eu
+
+SB=/var/lib/p0c2-sb
+LIB=/usr/local/lib/p0c2-sb
+UNIT=/etc/systemd/system
+REC=weaknet-p0c2-recover
+ABSENT=weaknet-p0c2-absent   # 刻意不存在
+
+echo "=== 1. 清理旧沙盒（/tmp 版与 v2 单元）==="
+for u in weaknet-p0c2-probe weaknet-p0c2-gate weaknet-p0c2-biz "$REC"; do
+    sudo systemctl stop "$u.service" 2>/dev/null || true
+    sudo systemctl disable "$u.service" 2>/dev/null || true
+    sudo rm -f "$UNIT/$u.service"
+done
+sudo rm -rf /tmp/p0c2-sb /tmp/p0c2-sandbox-setup.sh
+sudo rm -rf "$SB" "$LIB"
+sudo systemctl daemon-reload
+
+echo "=== 2. 造两个版本目录（持久）==="
+sudo install -d -m 0755 "$SB" "$SB/state"
+for v in 1.0.0 1.1.0; do
+    sudo install -d -m 0755 "$SB/root/releases/$v/server/bin"
+    printf '%s\n' "$v" | sudo tee "$SB/root/releases/$v/VERSION" >/dev/null
+    printf '#!/bin/sh\necho p0c2-sandbox-%s\n' "$v" \
+        | sudo tee "$SB/root/releases/$v/server/bin/weaknet-dbus-server" >/dev/null
+    sudo chmod +x "$SB/root/releases/$v/server/bin/weaknet-dbus-server"
+done
+sudo ln -sfn releases/1.0.0 "$SB/root/current"
+echo "  current -> $(readlink -f "$SB/root/current")"
+
+echo "=== 3. 复制控制器 / 恢复器到持久位置 ==="
+sudo install -d -m 0755 "$LIB"
+sudo install -m 0755 /usr/local/lib/weaknet/weaknet-ota-ctl     "$LIB/ctl"
+sudo install -m 0755 /usr/local/lib/weaknet/weaknet-ota-recover "$LIB/recover"
+ls -l "$LIB"
+
+echo "=== 4. 安装恢复器单元（开机自启，读沙盒路径）==="
+sudo tee "$UNIT/$REC.service" >/dev/null <<UNIT
+[Unit]
+Description=P0-C2 sandbox OTA recovery (restart-convergence probe)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 $LIB/recover --root $SB/root --state-dir $SB/state --ctl $LIB/ctl --service $ABSENT
+Restart=on-failure
+RestartSec=5
+# 与生产同语义：75 = 窗口耗尽但还有剩余次数，强制重启开新窗口
+RestartForceExitStatus=75
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable "$REC.service"
+echo "  enabled: $(systemctl is-enabled $REC.service 2>&1)"
+
+echo "=== 5. 造 TRIAL 事务（短窗口，便于观察）==="
+# policy 里塞 health_timeout 缩短窗口（默认 120s 太长）。但**不能太短**：
+# 恢复器一启动就会撞上窗口耗尽 → return 75 → systemd 重启 → 又是一轮，
+# 重启前事务就被推进了。60s 足够我们完成"重启前快照"。
+sudo python3 "$LIB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    begin --from 1.0.0 --to 1.1.0 --rollback-target 1.0.0 \
+    --policy '{"health_timeout": 60, "health_poll_s": 5}' 2>&1 | tail -2
+sudo python3 "$LIB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    materialize 2>&1 | tail -1
+sudo python3 "$LIB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    arm-switch 2>&1 | tail -1
+sudo python3 "$LIB/ctl" --root "$SB/root" --state-dir "$SB/state" \
+    do-switch 2>&1 | tail -1
+
+echo "=== 6. 沙盒初始状态（重启前基线）==="
+sudo python3 "$LIB/ctl" --root "$SB/root" --state-dir "$SB/state" status 2>&1
+echo "  sandbox current -> $(readlink -f $SB/root/current)"
+echo "  real boot_id    -> $(cat /proc/sys/kernel/random/boot_id)"
+echo "  recover unit    -> $(systemctl is-active $REC.service 2>&1)"
+echo
+echo "注意：恢复器此刻**未启动**。start 之后它会立刻 bump-boot-attempt"
+echo "      并开始健康轮询；健康恒失败（$ABSENT 不存在），60s 后窗口耗尽。"

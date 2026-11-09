@@ -1,0 +1,564 @@
+81:     GUIc -.-> Comm
+82:     Media --> Comm
+83:     Comm <--> UCDc
+84:     UCDc <--> BT
+85:   end
+86: 
+87:   LLM -.->|"HTTPS"| AppBiz
+88:   AppConn <-->|"射频链路\nBLE(iOS)/SPP(Android)"| BT
+89: ```
+90: 
+91: **拓扑要点**
+92: 
+93: - **UCD** 为 **通信应用层协议**：位于 **业务编排 ↔ BLE/SPP 链路** 之间；相机端 **UCD 协议实现** 与 App 端 **UCD 协议实现** 经空口对称互通。**图、模板 ID、例图等** 的语义与分片均在 **UCD 协议**中定义，**不由蓝牙链路层**解析业务。
+94: - **HTTPS** 仅存在于 **App ↔ 云端**；**相机不直连云端**（4 月基础版主路径以 App 为中继）。
+95: 
+96: 
+97: **与主路径的对应关系（简表）**
+98: 
+99: | 顺序 | 环节 | 主要参与方 |
+100: |------|------|------------|
+101: | 0 | **App ↔ 相机连接链路建立**（前置） | 见 **§4.1**：iBeacon → BLE 建链 →（Android 独有）BLE 指令打开经典蓝牙可发现/可连接 → 经典建链；完成后才进入 UCD/业务通信 |
+102: | 1 | 开机后蓝牙连接、首次引导 | 固件：蓝牙 + GUI + 通信；App：连接 |
+103: | 2 | 进入 AI 修图、未连蓝牙则引导 | 固件：GUI ← 通信（连接态） |
+104: | 3 | 媒体生成 256×256 并上行 | 固件：媒体 → 通信编排 → **UCD 通信协议** → BLE/SPP →（空口）→ App：**UCD 通信协议** → 业务 |
+105: | 4 | 模板 ID + 例图回相机并展示 | App 业务 → **UCD 通信协议** → BLE/SPP → **UCD 通信协议** → 通信 → GUI |
+106: | 5 | 选模板、拍照 | GUI ↔ 媒体 ↔ 通信（不经 UCD 的纯本地路径；若需上报状态仍可按产品定义走 UCD） |
+107: | 6 | 拍照缩略图上传、修图回传、相册展示 | 媒体广播 → 通信 → **UCD 通信协议** → … → 云 → App → **UCD 通信协议** → 通信 → GUI（+ 存储/互传约束） |
+108: 
+109: ### 4.1 App 与相机连接链路建立（分平台）
+110: 
+111: 本节描述 **业务数据（UCD / 蓝牙通信协议）之前的** 物理连接与可发现性建立顺序；与 §1「iOS：BLE / Android：SPP」一致：**Android 需在 BLE 之上再打开经典蓝牙并完成经典建链，以便 SPP 等承载 UCD；iOS 以 BLE 为主链路**。
+112: 
+113: **已知状态（联调）**：**App 端经蓝牙向相机下行传输图片** 所依赖的完整链路与 UCD 分片仍可能 **未完全调通**，需在详细设计与联调清单中单独立项；**连接流程**按下列产品约定先文档化。
+114: 
+115: #### 4.1.1 相机侧（共性）
+116: 
+117: | 步骤 | 行为 | 说明 |
+118: |------|------|------|
+119: | C0 | 相机 **开机** | 进入正常工作状态 |
+120: | C1 | **iBeacon 广播约 1s** | 用于 App 发现/唤醒；具体时长、UUID  major/minor 以工程与 iBeacon 表为准 |
+121: | C2 | 后续 BLE 广播/连接行为 | 与固件蓝牙策略一致，保证可被已配对或扫描到的 App 连接 |
+122: | C3 | 接收 App **经 BLE 下发的控制指令** | **Android 路径**：在 **BLE 已连接** 后，相机需响应指令，将 **经典蓝牙** 置为 **可被发现、可被连接**（discoverable & connectable），为后续经典建链与 SPP 做准备 |
+123: 
+124: #### 4.1.2 Android 手机
+125: 
+126: | 顺序 | 行为 | 说明 |
+127: |------|------|------|
+128: | A1 | **后台持续扫描** 蓝牙设备 | 扫描 BLE 广播，用于发现相机 |
+129: | A2 | 与相机建立 **BLE 连接** | 连接成功后，BLE 作为 **控制面**，可下发指令 |
+130: | A3 | App **经 BLE 发送指令** | 指令语义：**开启相机端经典蓝牙可被发现、可被连接** |
+131: | A4 | 相机侧完成 C3 后，App 与相机建立 **经典蓝牙连接** | 为 **SPP** 等数据通道建链；**UCD / 业务数据** 在本阶段之后的 **蓝牙通信协议** 上传输 |
+132: | A5 | **连接链路建立完成** | 认为具备 **Android：SPP（经典）** 承载条件，进入 UCD 会话与数据传输 |
+133: 
+134: ```mermaid
+135: sequenceDiagram
+136:   autonumber
+137:   participant Cam as 相机
+138:   participant BLE as BLE（控制+后续数据策略）
+139:   participant BTCla as 经典蓝牙（可发现/连接）
+140:   participant App as Android App
+141: 
+142:   Cam->>Cam: 开机 → iBeacon ~1s
+143:   App->>App: 后台持续扫描 BLE
+144:   App->>BLE: 建立 BLE 连接
+145:   BLE->>Cam: 已连接
+146:   App->>BLE: BLE 指令：打开经典蓝牙可发现/可连接
+147:   BLE->>Cam: 解析并执行（C3）
+148:   Cam->>BTCla: 经典蓝牙可被发现、可连接
+149:   App->>BTCla: 发起经典蓝牙连接（SPP 前提）
+150:   BTCla->>App: 经典链路就绪
+151:   Note over Cam,App: 连接链路建立完成 → 蓝牙通信协议（UCD）承载数据传输
+152: ```
+153: 
+154: #### 4.1.3 iOS 手机
+155: 
+156: | 顺序 | 行为 | 说明 |
+157: |------|------|------|
+158: | I1 | 相机 **iBeacon 广播** | 与 C1 一致 |
+159: | I2 | **唤醒 App**（系统/用户策略） | iBeacon 触发 App 进入前台或后台扫描/连接流程（以 iOS 能力与产品为准） |
+160: | I3 | App **主动与相机建立 BLE 连接** | 数据面以 **BLE** 为主（与 §1 一致） |
+161: | I4 | **连接链路建立完成** | 无需 Android 侧「先 BLE 再开经典」的扩展步骤；进入 **蓝牙通信协议（UCD）** |
+162: 
+163: ```mermaid
+164: sequenceDiagram
+165:   autonumber
+166:   participant Cam as 相机
+167:   participant iB as iBeacon 广播
+168:   participant App as iOS App
+169:   participant BLE as BLE 链路
+170: 
+171:   Cam->>Cam: 开机 → iBeacon ~1s
+172:   Cam-->>App: iBeacon 可被系统/App 感知
+173:   App->>App: 被唤醒/拉起后发起连接
+174:   App->>BLE: 主动建立 BLE 连接（对相机）
+175:   BLE->>Cam: BLE 已连接
+176:   Note over Cam,App: 连接链路建立完成 → 蓝牙通信协议（UCD）经 BLE 承载
+177: ```
+178: 
+179: #### 4.1.4 与后续「蓝牙通信协议」的边界
+180: 
+181: - **连接链路建立完成** 仅表示：**BLE（双端）+ Android 下额外经典蓝牙/SPP 就绪**；**业务 PDU、图片分片、模板下行** 仍全部由 **UCD / 统一蓝牙通信协议** 定义，**不**在链路层解析。
+182: - §5 **阶段 A** 的 **N1「连接就绪」** 应对齐本节的 **A5 / I4** 之后，再允许进入 AI 修图业务页（若产品要求「先连上再进功能」）。
+183: 
+184: ---
+185: 
+186: ## 5. 模块交互流程设计（4 月基础版）
+187: 
+188: 本节在 §4 拓扑与主路径表基础上，按**时间顺序**与**模块边界**给出可评审的交互流程。**相机侧（IAC3）** 图中箭头文字已落实为 **§7 约定之接口与通知名**（含建议新增项）；编排层在图中记为 **AI 修图编排**（建议 `app/` 下独立模块）。App/云端仍用逻辑名（非 IAC3 仓库）。
+189: 
+190: ### 5.1 总体主路径时序（端到端，IAC3 接口标注）
+191: 
+192: ```mermaid
+193: sequenceDiagram
+194:   autonumber
+195:   participant U as 用户
+196:   participant G as GUI
+197:   participant O as AI修图编排
+198:   participant M as 媒体
+199:   participant UCD as UCD编解码
+200:   participant MW as InsApp_Middleware_Bt
+201:   participant Rx as BT接收队列
+202:   participant Ua as UCD(App)
+203:   participant Ap as App业务
+204:   participant AG as App GUI
+205:   participant CL as 云端HTTPS
+206: 
+207:   Note over U,CL: 阶段 A：建链与引导
+208:   U->>G: 进入 AI 修图 / 唤醒
+209:   G->>O: InsGui_PostSetCameraMsg(INS_GUI_CMD_SET_CAMERA + GUI_DEVICE_ID)
+210:   O->>O: InsApp_Bt_Get_Gps_Preview_Remote_Connect_Status()
+211:   O->>O: InsApp_Bt_SPP_Is_Open()
+212:   O->>G: Ins_App_GuiMiddleware_PushAiRetouchConnState(N1)
+213:   MW<<->>Ua: 射频（iOS:Ble Write_Data 路径需已连手机）
+214:   MW<<->>Ua: 射频（Android:Write_Spp_Data 路径需 SPP 已开）
+215: 
+216:   Note over U,CL: 阶段 B：预览 256×256 上行 + 模板例图/ID 下行
+217:   G->>O: InsGui_PostSetCameraMsg(请求预览缩略图)
+218:   O->>M: InsApp_Media_AiRetouch_RequestPreviewThumb256(request_id)
+219:   M->>M: 生成 256×256 JPEG
+220:   M->>O: INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY(N2)
+221:   O->>UCD: UCD PDU 封装/分片
+222:   O->>MW: InsApp_Middleware_Bt_Write_Data(remote_type, ucd_bytes, len)（iOS BLE）
+223:   O->>MW: InsApp_Middleware_Bt_Write_Spp_Data(handle, ucd_bytes, len)（Android SPP）
+224:   MW->>Ua: 空口上行
+225:   Ua->>Ap: UCD 解包
+226:   Ap->>CL: HTTPS 送图请求模板
+227:   CL-->>Ap: 模板 ID + 例图
+228:   Ap->>Ua: UCD 封装下行
+229:   Ua->>MW: 空口下行
+230:   MW->>Rx: INSDEV_BT_RCV_MSG_CLIENT_RECV 或 INSDEV_BT_RCV_MSG_BVC2_SPP
+231:   Rx->>O: InsBt_Rcv_Msg_t(rcv_data) → UCD 重组解码
+232:   O->>G: Ins_App_GuiMiddleware_PushAiRetouchTemplateReady(N4)
+233:   O->>G: Ins_App_GuiMiddleware_SendU32Arr / SendU8Arr(模板数据)
+234:   G->>U: 展示可选模板
+235: 
+236:   Note over U,CL: 阶段 C：选模板、拍照（本地为主）
+237:   U->>G: 选择模板 / 触发拍照
+238:   G->>G: Ins_App_GuiMiddleware_SendInt(GUI_DEVICE_ID_选中模板)
+239:   G->>M: 既有拍照入口 + 文件尾写入模板 ID
+240:   M->>M: 原图 JPEG + WebP/缩略图（产品规格）
+241: 
+242:   Note over U,CL: 阶段 D：拍照后上行 → 云修图 → 回传 → 相册
+243:   M->>O: INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY(N5)
+244:   O->>UCD: UCD PDU 封装
+245:   O->>MW: Write_Data / Write_Spp_Data（同阶段 B）
+246:   MW<<->>Ua: 空口
+247:   Ua->>Ap: 上行完成
+248:   Ap->>CL: HTTPS 修图请求
+249:   CL-->>Ap: 修后资源
+250:   Ap->>Ua: UCD 下行修后缩略图
+251:   Ua->>MW: 空口
+252:   MW->>Rx: 接收队列回调
+253:   Rx->>O: InsBt_Rcv_Msg_t → UCD 解码
+254:   O->>G: Ins_App_GuiMiddleware_PushAiRetouchRetouchThumbReady(N6)
+255:   O->>G: Ins_App_GuiMiddleware_SendStr / SendU8Arr(相册路径/句柄)
+256:   Note over G: 不上云/MTA 不可见：存储模块另表标志位（非本文蓝牙 API）
+257: ```
+258: 
+259: ### 5.2 阶段 A：建链、连接态与引导
+260: 
+261: **目标**：蓝牙未连接时不误入核心业务；连接态对 GUI 单一真相来源。
+262: 
+263: ```mermaid
+264: flowchart LR
+265:   subgraph Entry["入口"]
+266:     E[进入 AI 修图]
+267:   end
+268:   subgraph Cam["IAC3 相机 app"]
+269:     G[GUI]
+270:     O[AI修图编排]
+271:     MW[InsApp_Middleware_Bt]
+272:     UCD[UCD编解码]
+273:     IQ[InsApp_Bt 状态查询]
+274:   end
+275:   subgraph Phone["手机"]
+276:     AppC[BLE/SPP 主机]
+277:     Ua[UCD App]
+278:     AppC <--> Ua
+279:   end
+280:   E -->|InsGui_PostSetCameraMsg| G
+281:   G -->|同上| O
+282:   O -->|InsApp_Bt_Get_Gps_Preview_Remote_Connect_Status| IQ
+283:   O -->|InsApp_Bt_SPP_Is_Open| IQ
+284:   O -->|InsApp_Bt_Connect_Device / InsApp_Middleware_Bt_Connect| MW
+285:   O <-->|UCD 字节流仅经编排| UCD
+286:   UCD <-->|Write_Data / Write_Spp_Data| MW
+287:   MW <-->|射频| AppC
+288:   O -->|Ins_App_GuiMiddleware_PushAiRetouchConnState(N1)| G
+289:   G -->|N1=未就绪| Guide[引导页]
+290:   G -->|N1=就绪| Biz[InsGui_PostSetCameraMsg 进业务页]
+291: ```
+292: 
+293: **交互要点（IAC3 接口）**
+294: 
+295: | 步骤 | 发起方 | 接收方 | 接口/通知 |
+296: |------|--------|--------|-----------|
+297: | A1 | GUI | 编排 | `InsGui_PostSetCameraMsg`（`INS_GUI_CMD_SET_CAMERA` + `GUI_DEVICE_ID`） |
+298: | A2 | 编排 | 蓝牙查询 | `InsApp_Bt_Get_Gps_Preview_Remote_Connect_Status`、`InsApp_Bt_SPP_Is_Open`；必要时 `InsApp_Bt_Connect_Device` |
+299: | A3 | 编排 | GUI | `Ins_App_GuiMiddleware_PushAiRetouchConnState`（§7.5 **N1**） |
+300: | A4 | 编排 ↔ Middleware | 空口 | iOS：`InsApp_Middleware_Bt_Write_Data` 前置连接；Android：`InsApp_Middleware_Bt_Write_Spp_Data` 前置 `InsApp_Middleware_Bt_SPP_Connect_addr` / handle |
+301: 
+302: ### 5.3 阶段 B：预览缩略图上行与模板下行（UCD 闭环）
+303: 
+304: **目标**：媒体只负责生成图与就绪信号；**经 UCD 的收发**由协议实现 + **AI 修图编排**完成，语义不进链路层。
+305: 
+306: ```mermaid
+307: flowchart TB
+308:   M[媒体：预览→256×256 JPEG]
+309:   M -->|INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY(N2)| O[AI修图编排]
+310:   O -->|UCD_Encode/分片| UCD[UCD编解码]
+311:   UCD -->|InsApp_Middleware_Bt_Write_Data 或 Write_Spp_Data| MW[InsApp_Middleware_Bt]
+312:   MW -->|空口| Ua[UCD App]
+313:   Ua --> Ap[App 业务]
+314:   Ap --> CL[HTTPS 云端]
+315:   CL --> Ap
+316:   Ap --> Ua
+317:   Ua --> MW
+318:   MW -->|InsBt_Rcv_Msg_t| Rx[INSDEV_BT_RCV_MSG_CLIENT_RECV / BVC2_SPP]
+319:   Rx -->|rcv_data| O
+320:   O -->|UCD_Decode 重组| UCD
+321:   O -->|Ins_App_GuiMiddleware_PushAiRetouchTemplateReady(N4)| G[GUI]
+322:   O -->|Ins_App_GuiMiddleware_SendU32Arr/SendU8Arr| G
+323:   O -.->|失败| N3[Ins_App_GuiMiddleware_PushAiRetouchUcdSendResult(N3)]
+324:   N3 --> G
+325: ```
+326: 
+327: **交互要点（IAC3 接口）**
+328: 
+329: | 步骤 | 接口/通知 |
+330: |------|-----------|
+331: | B1 | 编排 → 媒体：`InsApp_Media_AiRetouch_RequestPreviewThumb256`；媒体 → 编排：`INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY`（**唯一订阅**，见 §6） |
+332: | B2 | 编排 → Middleware：`InsApp_Middleware_Bt_Write_Data` / `InsApp_Middleware_Bt_Write_Spp_Data`；失败 → GUI：`PushAiRetouchUcdSendResult`（**N3**） |
+333: | B3 | App：`HTTPS`；相机仅经 **Rx + UCD** 收模板下行 |
+334: | B4 | GUI：`PushAiRetouchTemplateReady`（**N4**）+ `Send*`，**不**直接读 `InsBt_Rcv_Msg_t` |
+335: 
+336: ### 5.4 阶段 C：选模板与拍照（相机域内）
+337: 
+338: **目标**：选模板、按快门以 **GUI ↔ 媒体** 为主；若需向 App 同步状态，按产品定义走 UCD，不强制占用本基础版主路径。
+339: 
+340: ```mermaid
+341: sequenceDiagram
+342:   participant U as 用户
+343:   participant G as GUI
+344:   participant O as AI修图编排
+345:   participant M as 媒体
+346:   U->>G: 选择模板
+347:   G->>G: Ins_App_GuiMiddleware_SendInt(GUI_DEVICE_ID_选中模板)
+348:   G->>O: （可选）InsGui_PostSetCameraMsg(同步模板变更)
+349:   U->>G: 拍照
+350:   G->>M: 既有 InsApp/拍照 API + 文件尾模板 ID
+351:   M->>M: 原图 JPEG + WebP/缩略图 + 文件尾
+352:   Note over G,M: 就绪后：INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY(N5)→编排→§5.5
+353: ```
+354: 
+355: ### 5.5 阶段 D：拍照后上行、云端修图、回传与相册
+356: 
+357: **目标**：**相机不直连云端**；App 为中继；回传图进入相册且满足**不上云、不被 MTA 互传发现**等约束（与媒体/存储策略打标）。
+358: 
+359: ```mermaid
+360: flowchart LR
+361:   M[媒体]
+362:   O[AI修图编排]
+363:   UCD[UCD编解码]
+364:   MW[InsApp_Middleware_Bt]
+365:   Rx[InsBt_Rcv_Msg队列]
+366:   Ap[App业务]
+367:   CL[HTTPS云端]
+368:   G[GUI]
+369:   St[存储策略另表]
+370:   M -->|INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY(N5)| O
+371:   O -->|UCD_Encode| UCD
+372:   O -->|Write_Data/Write_Spp_Data| MW
+373:   MW <--> Ap
+374:   Ap <--> CL
+375:   Ap --> MW
+376:   MW --> Rx
+377:   Rx -->|InsBt_Rcv_Msg_t| O
+378:   O -->|UCD_Decode| UCD
+379:   O -->|PushAiRetouchRetouchThumbReady(N6)| G
+380:   O -->|SendStr/SendU8Arr 路径句柄| G
+381:   G --> St
+382: ```
+383: 
+384: ### 5.6 相机固件侧纵向切片（单端，IAC3）
+385: 
+386: 便于实现分工：**谁订阅媒体、谁调 UCD、谁更新 GUI**。
+387: 
+388: ```mermaid
+389: flowchart TB
+390:   subgraph UI["GUI + middleware"]
+391:     GUI[GUI 页面]
+392:   end
+393:   subgraph O["AI修图编排"]
+394:     OR[注册 INS_MEDIA_NOTIFY_*]
+395:     OR2[UCD 编解码]
+396:     OR3[InsBt_Rcv_Msg 分发]
+397:   end
+398:   subgraph MW["InsApp_Middleware_Bt"]
+399:     W[Write_Data / Write_Spp_Data]
+400:   end
+401:   subgraph Med["媒体"]
+402:     MED[InsApp_Media_AiRetouch_* + 就绪通知]
+403:   end
+404:   GUI -->|InsGui_PostSetCameraMsg| OR
+405:   OR -->|Ins_App_GuiMiddleware_Send* / Push*| SM
+406:   SM --> GUI
+407:   OR -->|InsApp_Media_AiRetouch_RequestPreviewThumb256| MED
+408:   MED -->|INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY| OR
+409:   MED -->|INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY| OR
+410:   OR <--> OR2
+411:   OR2 <--> W
+412:   W -->|下行字节流| OR3
+413:   OR3 -->|InsBt_Rcv_Msg_t.rcv_data| OR2
+414:   W <-->|空口| PH[手机App]
+415: ```
+416: 
+417: ### 5.7 App 侧纵向切片（单端；非 IAC3 仓库，接口为逻辑名）
+418: 
+419: 与相机侧 **InsApp_Middleware_Bt_*** 对称：App 端为 **主机** BLE/SPP + UCD，具体符号依 iOS/Android SDK，不在 `sportcamera` 固件内定义。
+420: 
+421: ```mermaid
+422: flowchart TB
+423:   subgraph AppUI["App GUI（原生）"]
+424:     AG[界面与引导文案]
+425:   end
+426:   subgraph AppBiz["App 业务编排"]
+427:     BIZ[HTTPS 客户端 / 模板与修图任务队列]
+428:   end
+429:   subgraph AppProto["UCD（App 端实现）"]
+430:     UCDa[UCD_Encode / UCD_Decode / 分片]
+431:   end
+432:   subgraph AppLink["主机蓝牙栈（平台 API）"]
+433:     BLE[iOS: CoreBluetooth 写特征值]
+434:     SPP[Android: SPP 发送 API]
+435:   end
+436:   subgraph Cloud["云端"]
+437:     API[大模型 HTTPS API]
+438:   end
+439:   AG -.->|交互事件| BIZ
+440:   BIZ <--> UCDa
+441:   UCDa <--> BLE
+442:   UCDa <--> SPP
+443:   BIZ <--> API
+444: ```
+445: 
+446: ### 5.8 异常路径（基础版约定 + IAC3 相机侧动作）
+447: 
+448: | 场景 | 参与模块 | 行为方向 | IAC3 相机侧接口/通知 |
+449: |------|----------|----------|----------------------|
+450: | 蓝牙发送失败 | Middleware、UCD、编排 | 提示用户检查与 App 连接；UCD 内重试 | `InsApp_Middleware_Bt_Write_*` 返回失败 → `Ins_App_GuiMiddleware_PushAiRetouchUcdSendResult`（**N3**） |
+451: | 分片超时或会话不一致 | UCD（双端） | 与 App 协同：重传、降级 | 编排内 UCD 状态机；可选 `PushAiRetouchUcdSendResult(N3)` |
+452: | 链路断开 | 蓝牙 → 编排 → GUI | 中断修图、回引导 | 接收路径停止投递 `InsBt_Rcv_Msg_t`；`PushAiRetouchConnState(N7)`（与 §7.5 **N7** 对齐） |
+453: | 云端不可用 | App 业务、相机 GUI | 相机可提示失败 | 无 HTTPS；相机仅收 **下行失败** 时经 **N3** 或专用 Push 提示 |
+454: 
+455: ---
+456: 
+457: ## 6. 风险与待澄清（保留原文意图）
+458: 
+459: - **传输失败**：蓝牙链路或 **UCD 协议内会话/分片** 失败时需 **提示用户连接 App**，并在通信/App 及 **UCD 协议实现** 中定义重试、重同步与降级。
+460: - **双路径表述**：「通信模块 OR 应用」接收缩略图通知再发送 —— **需在详细设计中收敛为单一责任**，避免重复发送或遗漏。
+461: - **App 下行传图未完全调通**：在 **§4.1** 连接链路建立完成后，**App → 相机** 的大图/图片下行仍依赖 **UCD 分片 + 承载层（BLE/SPP）** 与两端实现；需在联调中单独跟踪，并与 **N3/N4/N6** 等 UI 提示策略对齐。
+462: - **速率与丢包**：**BLE** 侧可通过 **降低连接间隔** 改善吞吐；**SPP** 无同类 BLE interval 问题；**丢包与文件不完整** 须在 **UCD** 层做 **检测、超时、重传** 与完整性校验，见 **§8**。
+463: 
+464: ---
+465: 
+466: ## 7. IAC3 软件接口约定（媒体 / UI / 蓝牙）
+467: 
+468: 本节面向 **IAC3 先行落地**（代码树：`sportcamera`，相机侧应用主体在 `rtos/cortex_a/Insta360AIP/app/`，工程宏常见 **`CONFIG_PROJECT_IAC3`**）。在 §1～§5 需求不变的前提下，将 **媒体、UI、蓝牙** 三模块之间的**调用接口、通知与数据方向**固化为可开发、可联调的约定；**UCD 编解码与分片** 建议在 **独立模块或 App 层编排内** 实现，对下仅产生 **待发送字节流** / 对上消费 **已接收字节流**，不放在裸链路层解析业务。
+469: 
+470: **分层与定责（IAC3）**
+471: 
+472: | 角色 | 建议落点（目录级） | 职责 |
+473: |------|-------------------|------|
+474: | **UI** | `app/gui/`、`app/gui/middleware/` | 页面、引导、模板展示、相册；经 **GUI 消息** 与 middleware 交互 |
+475: | **媒体** | `istreamer/`、`app/record_ist/` 等与拍照/预览相关的服务 | 256×256 预览缩略图、拍照后原图/WebP/缩略图、**就绪通知（唯一订阅点）** |
+476: | **蓝牙（链路 + App 封装）** | `app/app_devicetx_manager/`、`app/app_middleware/`、`app/msg_handle/bt/` | 连接/扫描/状态；**BLE 写** / **SPP 写**；**接收队列** 按类型分发 |
+477: | **AI 修图业务编排（建议新增）** | `app/` 下独立子模块或 `msg_handle` 扩展 | **唯一**订阅媒体通知、调用 UCD、调用 `InsApp_Middleware_Bt_*` 发送、向 UI **Push** 状态与模板数据；**禁止** UI 与媒体同时直连蓝牙发图 |
+478: 
+479: ---
+480: 
+481: ### 7.1 UI 模块
+482: 
+483: **对外（本特性需要依赖的接口）**
+484: 
+485: | 接口/机制 | 说明 | 与需求对应 |
+486: |-----------|------|------------|
+487: | `InsGui_PostSetCameraMsg(INS_GUI_MSG_DATA_STRU_t *pCmd)` | GUI → **middleware**：下发 `INS_GUI_CMD_SET_CAMERA`，通过 `GUI_DEVICE_ID_e` + 参数类型携带命令 | 进入/退出 AI 修图页、选模板、触发「请求预览缩略图」等 |
+488: | `Ins_App_GuiMiddleware_SendInt` / `SendStr` / `SendU32Arr` / `SendU8Arr` 等 | Middleware → **GUI**：按 `GUI_DEVICE_ID_e` 更新控件 | 模板 ID、列表索引、简单状态枚举 |
+489: | 新增 **Push** 类接口（命名示例，与 §5 流程图一致） | `Ins_App_GuiMiddleware_PushAiRetouchConnState`（**N1**）、`PushAiRetouchTemplateReady`（**N4**）、`PushAiRetouchUcdSendResult`（**N3**）、`PushAiRetouchRetouchThumbReady`（**N6**）、`PushAiRetouchLinkLost`（**N7**，或与 N1 共用枚举区分） | 连接态、模板就绪、发送失败、修后图就绪、断链（见 §7.5） |
+490: 
+491: **对内（需在工程中补齐的枚举/类型）**
+492: 
+493: | 项 | 说明 |
+494: |----|------|
+495: | `ins_gui_device_id_def.h` 中 **新增 `GUI_DEVICE_ID_*`** | 仅允许在 **`GUI_DEVICE_ID_SIZE` 之前追加**（文件头 CAUTION 要求）；为 AI 修图单独定义 notify 项，注明 **参数类型**（`int32` / `INS_MSG_PARAMETER_UINT8_ARRAY_t` / 字符串等） |
+496: | `ins_app_gui_def.h` | 若需传图块/大数组，优先走 **`INS_MSG_PARAMETER_TYPE_UINT8_ARRAY`** 或扩展 `INS_MSG_PARAMETER_TYPE_*`（与现有 GUI 能力一致） |
+497: 
+498: **UI 禁止事项**
+499: 
+500: - 不直接调用 **`InsApp_Middleware_Bt_Write_Data` / `InsApp_Middleware_Bt_Write_Spp_Data`** 发送 UCD 业务；统一经 **编排层**。
+501: - 连接态展示可调用 **只读查询**（见 §7.3）或由编排 **Push**，避免 UI 与蓝牙层双份逻辑。
+502: 
+503: ---
+504: 
+505: ### 7.2 媒体模块
+506: 
+507: **对外（建议由媒体侧提供的 C 接口，名称可在详细设计中最终确定）**
+508: 
+509: | 接口（建议名） | 方向 | 参数/返回值要点 | 与需求对应 |
+510: |----------------|------|-----------------|------------|
+511: | `InsApp_Media_AiRetouch_RequestPreviewThumb256`（示例） | UI/编排 → 媒体 | 指定预览源、输出 **256×256 JPEG** 缓冲区或路径、异步 **request_id** | §2 预览缩略图上行 |
+512: | `InsApp_Media_AiRetouch_CancelPreviewThumb`（可选） | 同上 | 取消异步任务 | 切页/退出 |
+513: | 拍照链路既有入口 + **扩展** | UI/编排 → 媒体 | 保持与 IAC3 现有拍照一致；增加 **写文件尾模板 ID**（与《技术拆解》文件尾规格一致） | §2 拍照、§3 WebP/文件尾 |
+514: 
+515: **通知（媒体 → 唯一订阅方：AI 修图编排）**
+516: 
+517: | 通知名（建议） | 载荷要点 | 触发时机 |
+518: |----------------|----------|----------|
+519: | `INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY`（示例） | `request_id`、JPEG **路径或 buffer+长度**、错误码 | 256×256 生成完成 |
+520: | `INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY`（示例） | 拍照会话 id、压缩图/缩略图路径、原图路径、错误码 | 拍照后缩略图/WebP 就绪 |
+521: 
+522: **约束**
+523: 
+524: - 上述通知 **只允许注册一个消费者**（编排模块），避免与「蓝牙模块重复发送」冲突（对齐 §6 风险）。
+525: - 媒体 **不**解析 UCD、**不**调蓝牙发送。
+526: 
+527: ---
+528: 
+529: ### 7.3 蓝牙模块（链路 + App 层封装）
+530: 
+531: **状态查询（供 UI 或编排只读）**
+532: 
+533: | 接口（现有或封装） | 说明 |
+534: |--------------------|------|
+535: | `InsApp_Bt_Init` / `InsApp_Bt_GetBtState` 等 | 协议栈生命周期 |
+536: | `InsApp_Bt_Get_Gps_Preview_Remote_Connect_Status` | 与 **图传/BVC 类** 手机连接相关状态（按产品映射到「可与 App 传业务数据」） |
+537: | `InsApp_Bt_SPP_Is_Open` | Android **SPP** 路径是否可用（与四月「Android：SPP」对齐） |
+538: | `InsApp_Bt_Connect_Device` / `InsApp_Bt_Disconnect_Device` | 用户显式连接/断开 **手机类** 设备 |
+539: | `InsApp_Middleware_Bt_Connect` / `InsApp_Middleware_Bt_Write_Data` | **BLE（HOGP）** 连接与 **GATT 写** 发数据（iOS 侧承载 UCD 字节流） |
+540: | `InsApp_Middleware_Bt_Write_Spp_Data` / `InsApp_Middleware_Bt_SPP_Connect_addr` 等 | **SPP** 发数据与连接（Android 侧承载 UCD） |
+541: 
+542: **发送（仅编排层调用）**
+543: 
+544: | 路径 | API | 载荷 |
+545: |------|-----|------|
+546: | iOS / BLE | `InsApp_Middleware_Bt_Write_Data(remote_type, value, value_len)` | **UCD 封装后的字节流** |
+547: | Android / SPP | `InsApp_Middleware_Bt_Write_Spp_Data(handle, value, value_len)` | 同上（`handle` 由 `InsApp_Middleware_Bt_Get_SPP_Connect_handle_By_Mac` 等获取） |
+548: 
+549: **接收（蓝牙 → 编排 → UCD 解码 → UI）**
+550: 
+551: | 机制 | 说明 |
+552: |------|------|
+553: | `InsDev_Bt_Rcv_MsgType_e`（`ins_app_bt_msg.h`） | 含 `INSDEV_BT_RCV_MSG_CLIENT_RECV`（BLE）、`INSDEV_BT_RCV_MSG_BVC2_SPP`（SPP）等；**AI 修图 UCD 下行** 应在对应类型的 **接收回调/队列处理** 中把 `rcv_data` 交给 **UCD 解析**，再通知编排 |
+554: | `InsBt_Rcv_Msg_t` | `type` / `length` / `rcv_data`；编排负责 **分片重组**（UCD 语义） |
+555: 
+556: **蓝牙模块不负责**
+557: 
+558: - 不解析 **模板 ID / 图片语义**（仅传字节）；业务归属 **UCD + 编排**。
+559: 
+560: ---
+561: 
+562: ### 7.4 编排层与 UCD 的边界（IAC3）
+563: 
+564: | 边界 | 约定 |
+565: |------|------|
+566: | 对上（UI） | 提供 **连接态枚举**、**模板列表/例图句柄**、**修图进度**、**错误码**（可映射为弹窗文案 ID） |
+567: | 对下（媒体） | 注册 **唯一** `INS_MEDIA_NOTIFY_AI_RETOUCH_*` 回调 |
+568: | 对下（蓝牙） | 组 **UCD PDU** → `Write_Data` / `Write_Spp_Data`；订阅接收队列 → **UCD 解包** → 更新 UI 数据 |
+569: | 与 §1 对齐 | **HTTPS 不在相机侧**；编排 **不**发起云端请求 |
+570: 
+571: ---
+572: 
+573: ### 7.5 跨模块通知一览（须实现/对齐）
+574: 
+575: | 序号 | 通知/事件（逻辑名） | 方向 | 载荷摘要 | 消费方 |
+576: |------|---------------------|------|----------|--------|
+577: | N1 | 蓝牙与 App **业务链路就绪**（布尔或枚举：仅 BLE / 仅 SPP / 双不可用） | 编排 → UI | `GUI_DEVICE_ID` + int/枚举 | 是否可进业务页、是否弹「请连接 App」 |
+578: | N2 | **预览缩略图已生成** | 媒体 → **仅编排** | `request_id`、buffer/路径、错误码 | 编排发起 UCD 上行 |
+579: | N3 | **UCD 发送结果**（成功/失败/重试耗尽） | 编排 → UI | 错误码、可选重试次数 | 提示用户 |
+580: | N4 | **模板与例图下行完成**（可多条） | 编排 → UI | 模板 ID、例图缩略图数据或路径、顺序号 | 模板墙展示 |
+581: | N5 | **拍照缩略图/压缩图就绪** | 媒体 → **仅编排** | 会话 id、路径 | 编排 UCD 上行 → 云侧由 App 处理 |
+582: | N6 | **修后缩略图下行完成** | 编排 → UI + 存储策略 | 路径/句柄、是否写入相册 DB | 相册页；**不上云/MTA 不可见** 由存储模块按标志处理（与媒体/存储另表） |
+583: | N7 | **链路断开** | 蓝牙 → 编排 → UI | 断链原因枚举 | 中断修图、回引导 |
+584: 
+585: ---
+586: 
+587: ### 7.6 与 AIPL（`aipl` 仓库）后续对齐说明
+588: 
+589: IAC3 以 **Embedded RTOS + 上述 App 层 API** 为主；若后续在 **AIPL** 上复用同一产品需求，对应关系一般为：**GUI middleware / BT middleware** ↔ `ins_gui` + `ins_acc` + ibus Topic；本文 **§7 通知表** 仍可作为 **语义对齐清单**，在 AIPL 侧映射为 **IDL 消息或 RPC**。
+590: 
+591: ---
+592: 
+593: ## 8. 文件传输速率与可靠性（数据通信）
+594: 
+595: 相机与 App 在 **蓝牙承载层** 之上通过 **UCD / 统一蓝牙通信协议** 传输文件类数据时，常见两类问题：**传输速率不够**、**传输可靠性不足（易丢包、文件不完整）**。下列为产品级对策；**具体参数、序号空间与状态机** 须在 **UCD 通信协议规格** 中单独立项，双端对称实现。
+596: 
+597: ### 8.1 问题归纳
+598: 
+599: | 问题 | 表现 | 归属 |
+600: |------|------|------|
+601: | **速率不足** | 大图/多分片传输耗时过长，影响体验 | 与 **承载方式**（BLE vs SPP）、**连接参数**、**分片大小** 等相关 |
+602: | **可靠性不足** | 丢包、重复、乱序导致 **文件不完整或无法重组** | 须在 **协议层**（UCD）解决，**不能**仅靠链路层「尽力而为」 |
+603: 
+604: ### 8.2 传输速率 — 对策
+605: 
+606: | 承载 | 对策 | 说明 |
+607: |------|------|------|
+608: | **BLE** | **降低 BLE 连接间隔**（Connection Interval） | 在射频与功耗允许范围内，通过主机/从机协商 **更短的 conn interval**（及必要时 **连接参数更新** 流程），提高有效吞吐、缩短文件传输时间；具体数值与边界以蓝牙栈、产品功耗策略为准。 |
+609: | **SPP（经典蓝牙）** | **无「降间隔」同类问题** | SPP 走 ACL/经典数据通路，**不**使用与 BLE GATT 相同的「连接间隔」概念；通常 **吞吐相对 BLE 更宽裕**，速率瓶颈更多来自 **应用层分片与流控**，而非 BLE 式 interval 调优。 |
+610: 
+611: **说明**：速率优化与 **§1「iOS：BLE / Android：SPP」** 一致 —— **iOS 侧** 重点关注 **BLE 连接参数**；**Android 侧** 以 **SPP** 为主时按上表区分处理。
+612: 
+613: ### 8.3 传输可靠性 — 丢包检测与超时重传
+614: 
+615: 须建立 **相对完善** 的机制，至少覆盖：
+616: 
+617: | 机制 | 要求 |
+618: |------|------|
+619: | **丢包检测** | 对 **分片/帧** 编号（如序号、滑动窗口）；接收侧能发现 **缺序、重复**；与 UCD 会话、文件对象 ID 绑定，避免跨会话串包。 |
+620: | **超时** | 发送侧对 **未确认** 的分片设 **超时定时器**；超时即视为丢失或链路异常，进入重传或失败路径。 |
+621: | **重传** | 仅重传 **缺失或确认失败** 的分片；限制 **最大重传次数** 与 **总时长**，避免无限阻塞；与 **§5.8 / §6** 用户提示（如 N3）衔接。 |
+622: | **完整性校验** | 文件级 **长度、哈希或 CRC**（按 UCD 规格选）在 **重组完成后** 校验，避免「静默坏文件」。 |
+623: 
+624: 上述逻辑应在 **UCD 通信协议** 中定义，相机端与 App 端 **同一套规则**；承载层（BLE/SPP）只提供字节流，**不**替代协议层 ACK/重传语义。
+625: 
+626: ### 8.4 与本文其他章节的关系
+627: 
+628: - **§5.8**（分片超时、发送失败）与 **§6**（传输失败、下行传图联调）需与本章 **重传/超时策略** 一致。
+629: - **§7.3** 中 **BLE 连接间隔更新** 若在 IAC3 已封装为独立 API（如 middleware 的 `UpdateConnInterval` 类接口），实现时与 **§8.2** 对齐。
+630: 
+631: ---
+632: 
+633: ## 9. 修订记录
+634: 
+635: | 版本 | 日期 | 说明 |
+636: |------|------|------|
+637: | 结构化版 | - | 由非结构化段落改为固件/App 拆分 + 依赖拓扑；业务含义与原文对齐 |
+638: | UCD 补充 | - | 明确相机—App 蓝牙业务走 **UCD 通信协议**（通信应用层）；拓扑中增加 UCD 与分层表 |
+639: | 术语修正 | - | 明确 UCD 为 **通信应用层协议**，非独立「协议栈」；图示改为「端侧协议实现」 |
+640: | 流程设计 | - | 新增 §5：按阶段给出端到端时序、相机/App 纵向切片与异常表，与 4 月基础版主路径对齐 |
+641: | IAC3 接口 | - | 新增 §7：基于 `Insta360AIP` 目录与现有 `ins_app_bt` / `gui middleware` 模式，约定媒体/UI/蓝牙接口与通知表 |
+642: | 流程图接口化 | - | §5 全部 Mermaid 图箭头落实为 §7 IAC3 接口名（`InsGui_PostSetCameraMsg`、`InsApp_Middleware_Bt_*`、`INS_MEDIA_NOTIFY_*`、`Push*` 等） |
+643: | App↔相机连接流程 | - | 新增 §4.1：开机 1s iBeacon、Android 后台扫 BLE → BLE 建链 → BLE 指令开经典可发现 → 经典建链；iOS iBeacon 唤醒后 BLE 建链；再进入 UCD；并注明 App 下行传图联调中 |
+644: | 速率与可靠性 | - | 新增 §8：BLE 降连接间隔提速率；SPP 无 BLE interval 类问题；UCD 层丢包检测、超时与重传及完整性校验 |

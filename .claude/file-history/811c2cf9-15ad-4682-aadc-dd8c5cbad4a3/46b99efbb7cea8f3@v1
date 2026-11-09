@@ -1,0 +1,218 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#pragma once
+
+#include <functional>  // for std::function
+#include <memory>      // for std::shared_ptr
+#include <string>      // for std::string
+
+#include "ins_base/fsm.hpp"
+#include "ins_base/mutex.h"  // for ins::base::Mutex
+#include "service/live_broadcast_types.h"
+
+namespace ins {
+namespace live_broadcast {
+
+// 前向声明
+class StreamController;
+class NetworkController;
+class ConfigManager;
+class ResumeManager;
+class RtmpPusher;
+class StreamReader;
+class LiveMonitor;
+class DurationTimer;
+class LiveBroadcastManager;
+/**
+ * @brief 直播状态机基类
+ * @details 所有直播状态类的基类，定义统一的事件处理接口
+ */
+class LiveStateMachine : public ins::base::tinyfsm::Fsm<LiveStateMachine> {
+ public:
+  using BaseFsm = ins::base::tinyfsm::Fsm<LiveStateMachine>;
+
+  /**
+   * @brief 构造函数
+   * @param state 状态ID
+   */
+  explicit LiveStateMachine(LiveBroadcastState state);
+
+  virtual ~LiveStateMachine() = default;
+
+  /**
+   * @brief 获取状态名称
+   * @return 状态名称字符串
+   */
+  [[nodiscard]] std::string Name() const;
+
+  /**
+   * @brief 进入状态时的操作
+   */
+  virtual void OnEntry() = 0;
+
+  /**
+   * @brief 退出状态时的操作
+   */
+  virtual void OnExit() = 0;
+
+  // ========== 事件处理接口 ==========
+
+  /**
+   * @brief 处理准备请求事件
+   * @param event 准备请求事件
+   */
+  virtual void OnEvent(const EventPrepareRequest& event);
+
+  /**
+   * @brief 处理准备完成事件
+   * @param event 准备完成事件
+   */
+  virtual void OnEvent(const EventPrepareComplete& event);
+
+  /**
+   * @brief 处理启动请求事件
+   * @param event 启动请求事件
+   */
+  virtual void OnEvent(const EventStartRequest& event);
+
+  /**
+   * @brief 处理启动成功事件
+   * @param event 启动成功事件
+   */
+  virtual void OnEvent(const EventStartSuccess& event);
+
+  /**
+   * @brief 处理启动失败事件
+   * @param event 启动失败事件
+   */
+  virtual void OnEvent(const EventStartFailed& event);
+
+  /**
+   * @brief 处理停止请求事件
+   * @param event 停止请求事件
+   */
+  virtual void OnEvent(const EventStopRequest& event);
+
+  /**
+   * @brief 处理停止完成事件
+   * @param event 停止完成事件
+   */
+  virtual void OnEvent(const EventStopComplete& event);
+
+  /**
+   * @brief 处理取消操作事件
+   * @param event 取消操作事件
+   */
+  virtual void OnEvent(const EventCancel& event);
+
+  /**
+   * @brief 处理错误事件
+   * @param event 错误事件
+   */
+  virtual void OnEvent(const EventError& event);
+
+  /**
+   * @brief 处理恢复续播事件
+   * @param event 恢复续播事件
+   */
+  virtual void OnEvent(const EventResume& event);
+
+  /**
+   * @brief 处理丢弃续播事件
+   * @param event 丢弃续播事件
+   */
+  virtual void OnEvent(const EventDiscardResume& event);
+
+  // ========== 状态回调（状态转换时触发） ==========
+
+  /**
+   * @brief 状态变化回调（由tinyfsm框架调用）
+   */
+  void OnStateChange();
+
+  // ========== 静态接口（用于设置依赖） ==========
+
+  /**
+   * @brief 设置状态变化Hook（由Manager调用）
+   * @param hook Hook函数，状态变化时调用；传nullptr清空Hook
+   * @note 线程安全：使用互斥锁保护读写，可在任意线程调用
+   * @note 生命周期约束：
+   *       - Start前设置Hook
+   *       - Stop时先停止状态机事件源，再清空Hook
+   *       - Hook内部应使用weak_ptr避免循环引用
+   */
+  static void SetStateChangeHook(
+      const std::function<void(LiveBroadcastState)>& hook);
+
+  /**
+   * @brief 设置StreamController
+   * @param controller StreamController指针
+   */
+  static void SetStreamController(
+      const std::shared_ptr<StreamController>& controller);
+
+  /**
+   * @brief 设置NetworkController
+   * @param controller NetworkController指针
+   */
+  static void SetNetworkController(
+      const std::shared_ptr<NetworkController>& controller);
+
+  /**
+   * @brief 设置ConfigManager
+   * @param manager ConfigManager指针
+   */
+  static void SetConfigManager(const std::shared_ptr<ConfigManager>& manager);
+
+  /**
+   * @brief 设置ResumeManager
+   * @param manager ResumeManager指针
+   */
+  static void SetResumeManager(const std::shared_ptr<ResumeManager>& manager);
+
+  /**
+   * @brief 设置LiveBroadcastManager
+   * @param manager LiveBroadcastManager指针
+   */
+  static void SetManager(const std::shared_ptr<LiveBroadcastManager>& manager);
+
+ protected:
+  /// 当前状态ID
+  LiveBroadcastState state_;
+
+  /// 控制器（静态，所有状态共享）
+  static std::shared_ptr<StreamController> stream_controller_;
+  static std::shared_ptr<NetworkController> network_controller_;
+  static std::shared_ptr<ConfigManager> config_manager_;
+  static std::shared_ptr<ResumeManager> resume_manager_;
+  static std::shared_ptr<LiveBroadcastManager> manager_;
+
+ private:
+  // ========== 状态变化Hook（线程安全） ==========
+  //
+  // 线程安全语义：
+  // - 使用 ins::base::Mutex 保护读写操作（符合项目并发规范）
+  // - 使用 shared_ptr 包装不可变回调对象，支持安全拷贝后调用
+  //
+  // 设计说明：
+  // - 写入端（SetStateChangeHook）：加锁后替换shared_ptr
+  // - 读取端（OnStateChange）：加锁后拷贝shared_ptr，解锁后调用
+  // - 这样可以避免在持有锁时调用用户回调，防止死锁
+  //
+  // 生命周期约束：
+  // - Start前设置Hook（先复位再设置，保证幂等性）
+  // - Stop时先停止状态机（事件源），再清空Hook
+  // - Hook内部应使用weak_ptr捕获，避免循环引用和悬垂指针
+
+  /// Hook回调类型（使用shared_ptr包装以支持原子拷贝）
+  using StateChangeCallback = std::function<void(LiveBroadcastState)>;
+
+  /// 状态变化Hook（由Manager设置，线程安全）
+  static std::shared_ptr<StateChangeCallback> state_change_hook_;
+
+  /// Hook读写保护锁（使用项目标准互斥锁）
+  static ins::base::Mutex hook_mutex_;
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

@@ -1,0 +1,83 @@
+// 安全状态、拓扑状态、任务事件。
+//
+// 迁移来源：
+//   amr_dispatcher_interfaces/msg/SafetyState.msg
+//   amr_dispatcher_interfaces/msg/TopologyState.msg
+//   amr_dispatcher_interfaces/msg/MissionEvent.msg
+syntax = "proto3";
+
+package amr_dispatcher.proto;
+
+import "common.proto";
+
+// 对应 amr_dispatcher_interfaces/msg/SafetyState。
+//
+// 安全相关消息有个额外好处：proto3 的字段编号一旦发布就冻结，
+// 且删除字段必须显式 reserved。这比 rosidl 只能"追加字段"更严格，
+// 对安全语义是加分项。
+message SafetyState {
+  Header header = 1;
+
+  // INFO / WARN / CRITICAL
+  enum Severity {
+    SEVERITY_UNKNOWN = 0;
+    SEVERITY_INFO = 1;
+    SEVERITY_WARN = 2;
+    SEVERITY_CRITICAL = 3;
+  }
+  Severity severity = 2;
+
+  // 兼容字段：原 .msg 的 severity 是 string。
+  // 若上游写了枚举外的值，放进这里而非丢弃。
+  string severity_text = 3;
+
+  bool motion_allowed = 4;
+
+  // 1.0 = normal, 0.3 = warn reduced, 0.0 = stopped
+  double speed_scale = 5;
+
+  string active_stop_source = 6;
+  string reason = 7;
+
+  // 对应 string[] active_sources
+  repeated string active_sources = 8;
+}
+
+// 对应 amr_dispatcher_interfaces/msg/TopologyState。
+message TopologyState {
+  Time stamp = 1;
+
+  // 这四组平行数组在 rosidl 里靠下标对齐，一旦某一组长度不一致就错位。
+  // protobuf 保持相同结构以兼容桥接，但推荐后续改成
+  // repeated EdgeState 的结构化形式（见文件末尾注释）。
+  repeated string active_edges = 2;
+  repeated string locked_edges = 3;
+  repeated string edge_owners = 4;
+  repeated string deadlocked_nodes = 5;
+
+  bool deadlock_detected = 6;
+
+  // 演进建议（暂不实施，避免破坏桥接）：
+  //   message EdgeState {
+  //     string edge_id = 1;
+  //     bool active = 2;
+  //     bool locked = 3;
+  //     string owner = 4;
+  //   }
+  //   repeated EdgeState edges = 7;
+}
+
+// 对应 amr_dispatcher_interfaces/msg/MissionEvent。
+message MissionEvent {
+  Time stamp = 1;
+  string mission_id = 2;
+  string order_id = 3;
+
+  // queued / active / paused / finished / canceled / deadlock
+  // 保留 string：事件名是开放的，未来可能新增，不适合固化成 enum。
+  string event = 4;
+
+  string from_state = 5;
+  string to_state = 6;
+  string reason = 7;
+}

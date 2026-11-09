@@ -1,0 +1,105 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "service/live_broadcast_service.h"
+
+#include "ibus/live_broadcast_ibus_impl.h"
+#include "ins_base/log.h"
+#include "ins_base/threadpool.h"
+#include "ins_error_code_string.h"
+#include "manager/live_broadcast_manager.h"
+#include "service/live_broadcast_config_constants.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveBroadcastService"
+}  // namespace
+
+InsErrorCode LiveBroadcastService::Init() {
+  ILOGS_I << "Initializing LiveBroadcastService";
+
+  // 创建主MsgLooper
+  msg_looper_ = std::make_shared<ins::base::MsgLooper>("LiveBroadcastMain");
+  if (!msg_looper_) {
+    ILOGS_E << "Failed to create main MsgLooper";
+    return kInsErrorCode_Comm_Enomem;
+  }
+
+  // TODO(yinjun|2025-12-30): 创建线程池
+  auto thread_pool = std::make_shared<ins::base::ThreadPool>(
+      "LiveBroadcastPool", config::kThreadPoolSize);
+
+  // 创建Manager
+  live_broadcast_manager_ =
+      std::make_shared<LiveBroadcastManager>(msg_looper_, thread_pool);
+  if (!live_broadcast_manager_) {
+    ILOGS_E << "Failed to create LiveBroadcastManager";
+    return kInsErrorCode_Comm_Enomem;
+  }
+
+  // 初始化ibus RPC接口
+  InsErrorCode ret = InitIbusInterface();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to initialize ibus interface: "
+            << ins::errc::GetInsErrorCodeString(ret) << " ("
+            << static_cast<int32_t>(ret) << ")";
+    return ret;
+  }
+
+  ILOGS_I << "LiveBroadcastService initialized successfully";
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode LiveBroadcastService::Start() {
+  ILOGS_I << "Starting LiveBroadcastService";
+
+  // 启动Manager（含状态机依赖初始化）；失败则直接返回，不对外宣称已启动
+  InsErrorCode ret = live_broadcast_manager_->StartLiveBroadcastManager();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to start LiveBroadcastManager: "
+            << ins::errc::GetInsErrorCodeString(ret) << " ("
+            << static_cast<int32_t>(ret) << ")";
+    return ret;
+  }
+
+  // 启动主 MsgLooper（非阻塞，仅启动内部线程；main 注册 TerminateSignal 并轮询
+  // running 标志，收到信号后退出主循环并调用 Shutdown）
+  ret = msg_looper_->Start();
+  if (ret != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "Failed to start main MsgLooper: "
+            << ins::errc::GetInsErrorCodeString(ret) << " ("
+            << static_cast<int32_t>(ret) << ")";
+    return ret;
+  }
+
+  ILOGS_I << "LiveBroadcastService started";
+  return kInsErrorCode_Comm_Success;
+}
+
+void LiveBroadcastService::Shutdown(uint32_t wait_idle_ms) {
+  ILOGS_I << "Shutting down LiveBroadcastService";
+
+  // 先请求状态机回到 Idle 并等待，避免主线程与工作线程并发操作
+  // connect_thread_/pusher
+  if (live_broadcast_manager_) {
+    live_broadcast_manager_->RequestGoToIdleAndWait(wait_idle_ms);
+    live_broadcast_manager_->StopLiveBroadcastManager();
+  }
+  if (msg_looper_) {
+    (void)msg_looper_->Stop();
+  }
+
+  ILOGS_I << "LiveBroadcastService shutdown complete";
+}
+
+InsErrorCode LiveBroadcastService::InitIbusInterface() {
+  ILOGS_I << "Ibus interface initialized (services registered in main.cc)";
+  return kInsErrorCode_Comm_Success;
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

@@ -1,0 +1,447 @@
+// 拓扑叠加层的纯函数验收。
+//
+// 三条必须锁死的语义（写错任何一条都会造成现场事故）：
+//   1. 封路 = enabled=false，且边**保留**在目录里（不 erase）——否则控制台会以为
+//      边凭空消失，运维也就无法"解封"一条他看不到的边。
+//   2. 单向 = bidirectional=false；若基础目录存的是反向朝向，**必须交换 from/to**，
+//      否则规划器会沿着被禁止的方向松弛（方向被静默翻转）。
+//   3. 空叠加层必须与基础目录逐字段等价（兼容红线：未启用叠加层时行为不变）。
+#include "amr_dispatcher_core/catalog/topology_overlay.hpp"
+
+#include <gtest/gtest.h>
+
+namespace amr_dispatcher_core::catalog {
+namespace {
+
+// a -- b -- c 直链，外加 a--c 的绕行通道（经 n1），便于构造"封路后仍可绕行"
+StationCatalog MakeLinearCatalog() {
+  StationCatalog catalog;
+  catalog.map_hash = "fnv1a64_deadbeef";
+  catalog.graph_version = "v1";
+  catalog.stations.push_back(Station{"a", "map", 0.0, 0.0, 0.0});
+  catalog.stations.push_back(Station{"b", "map", 2.0, 0.0, 0.0});
+  catalog.stations.push_back(Station{"c", "map", 4.0, 0.0, 0.0});
+  catalog.road_nodes.push_back(RoadNode{"n1", "map", 2.0, 3.0, 0.0});
+  catalog.edges.push_back(CatalogStationEdge{"a", "b", 2.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"b", "c", 2.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"a", "n1", 3.0, true, true});
+  catalog.edges.push_back(CatalogStationEdge{"n1", "c", 3.0, true, true});
+  return catalog;
+}
+
+OverlayEdge MakeEdge(const std::string& from, const std::string& to,
+                     const std::string& reason = "construction") {
+  OverlayEdge edge;
+  edge.from = from;
+  edge.to = to;
+  edge.reason = reason;
+  edge.operator_id = "op_1";
+  edge.created_at = "2026-10-28T10:00:00Z";
+  return edge;
+}
+
+TopologyOverlay MakeOverlay(const std::string& base_hash) {
+  TopologyOverlay overlay;
+  overlay.base_map_hash = base_hash;
+  return overlay;
+}
+
+const CatalogStationEdge* FindEdge(const StationCatalog& catalog, const std::string& from,
+                                   const std::string& to) {
+  for (const auto& edge : catalog.edges) {
+    if (edge.from == from && edge.to == to) {
+      return &edge;
+    }
+  }
+  return nullptr;
+}
+
+// ---------------------------------------------------------------- 应用语义
+
+TEST(TopologyOverlayApplyTest, BlocksEdgeInBothDirectionsAndKeepsItVisible) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+
+  const auto effective = ApplyTopologyOverlay(base, overlay);
+
+  // 边仍在目录里（可见 / 可解封），但不可通行
+  ASSERT_EQ(effective.edges.size(), base.edges.size());
+  const auto* edge = FindEdge(effective, "a", "b");
+  ASSERT_NE(edge, nullptr);
+  EXPECT_FALSE(edge->enabled);
+  // 未涉及的边不受影响
+  const auto* other = FindEdge(effective, "b", "c");
+  ASSERT_NE(other, nullptr);
+  EXPECT_TRUE(other->enabled);
+}
+
+TEST(TopologyOverlayApplyTest, BlockingReverseOrientationWorksToo) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  // 基础目录存的是 a->b，这里按 b->a 封：键是无序的，两个方向都该被禁
+  overlay.blocked_edges.push_back(MakeEdge("b", "a"));
+
+  const auto effective = ApplyTopologyOverlay(base, overlay);
+  const auto* edge = FindEdge(effective, "a", "b");
+  ASSERT_NE(edge, nullptr);
+  EXPECT_FALSE(edge->enabled);
+}
+
+TEST(TopologyOverlayApplyTest, OneWayKeepsForwardDirection) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.one_way_edges.push_back(MakeEdge("a", "b"));
+
+  const auto effective = ApplyTopologyOverlay(base, overlay);
+  const auto* edge = FindEdge(effective, "a", "b");
+  ASSERT_NE(edge, nullptr);
+  EXPECT_FALSE(edge->bidirectional);
+  EXPECT_TRUE(edge->enabled);  // 单向 ≠ 封路
+
+  // 路由方向断言要用"只有这一条边"的拓扑：MakeLinearCatalog 里 b 经 c/n1 还能绕回 a，
+  // 那样 b->a 依然可达，断言就会误判成"单向没生效"。
+  StationCatalog linear;
+  linear.map_hash = base.map_hash;
+  linear.stations.push_back(Station{"a", "map", 0.0, 0.0, 0.0});
+  linear.stations.push_back(Station{"b", "map", 1.0, 0.0, 0.0});
+  linear.edges.push_back(CatalogStationEdge{"a", "b", 1.0, true, true});
+  auto linear_overlay = MakeOverlay(linear.map_hash);
+  linear_overlay.one_way_edges.push_back(MakeEdge("a", "b"));
+  const auto linear_effective = ApplyTopologyOverlay(linear, linear_overlay);
+
+  ASSERT_TRUE(FindRoutePath(linear_effective, "a", "b").has_value());
+  EXPECT_FALSE(FindRoutePath(linear_effective, "b", "a").has_value());
+}
+
+// 最容易写错的一条：基础目录里边的朝向与"要禁止的方向"相反时，必须交换端点。
+// 不交换 = 单向被静默反过来，现场会看到车绕过反方向进场。
+TEST(TopologyOverlayApplyTest, OneWaySwapsReversedBaseOrientation) {
+  StationCatalog base;
+  base.map_hash = "h";
+  base.stations.push_back(Station{"a", "map", 0.0, 0.0, 0.0});
+  base.stations.push_back(Station{"b", "map", 1.0, 0.0, 0.0});
+  // 目录里存成 b -> a
+  base.edges.push_back(CatalogStationEdge{"b", "a", 1.0, true, true});
+
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.one_way_edges.push_back(MakeEdge("a", "b"));  // 只许 a -> b
+
+  const auto effective = ApplyTopologyOverlay(base, overlay);
+  ASSERT_EQ(effective.edges.size(), 1u);
+  EXPECT_EQ(effective.edges.front().from, "a");
+  EXPECT_EQ(effective.edges.front().to, "b");
+  EXPECT_FALSE(effective.edges.front().bidirectional);
+
+  ASSERT_TRUE(FindRoutePath(effective, "a", "b").has_value());
+  EXPECT_FALSE(FindRoutePath(effective, "b", "a").has_value());
+}
+
+TEST(TopologyOverlayApplyTest, AddsMarkerStation) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  OverlayMarker marker;
+  marker.id = "temp_pick_1";
+  marker.type = "pickup";
+  marker.x = 1.5;
+  marker.y = 0.5;
+  marker.yaw = 0.25;
+  marker.operator_id = "op_1";
+  overlay.added_markers.push_back(marker);
+
+  const auto effective = ApplyTopologyOverlay(base, overlay);
+  ASSERT_EQ(effective.stations.size(), base.stations.size() + 1);
+  const auto* station = FindStation(effective, "temp_pick_1");
+  ASSERT_NE(station, nullptr);
+  EXPECT_EQ(station->type, "pickup");
+  EXPECT_DOUBLE_EQ(station->x, 1.5);
+  // 叠加层不是新地图版本：哈希必须原样保留
+  EXPECT_EQ(effective.map_hash, base.map_hash);
+  EXPECT_EQ(effective.graph_version, base.graph_version);
+}
+
+TEST(TopologyOverlayApplyTest, EmptyOverlayIsFieldIdenticalToBase) {
+  const auto base = MakeLinearCatalog();
+  const auto effective = ApplyTopologyOverlay(base, TopologyOverlay{});
+
+  ASSERT_EQ(effective.stations.size(), base.stations.size());
+  ASSERT_EQ(effective.road_nodes.size(), base.road_nodes.size());
+  ASSERT_EQ(effective.edges.size(), base.edges.size());
+  for (std::size_t i = 0; i < base.edges.size(); ++i) {
+    EXPECT_EQ(effective.edges[i].from, base.edges[i].from);
+    EXPECT_EQ(effective.edges[i].to, base.edges[i].to);
+    EXPECT_EQ(effective.edges[i].enabled, base.edges[i].enabled);
+    EXPECT_EQ(effective.edges[i].bidirectional, base.edges[i].bidirectional);
+    EXPECT_EQ(effective.edges[i].distance_m, base.edges[i].distance_m);
+  }
+  EXPECT_EQ(effective.map_hash, base.map_hash);
+}
+
+// ---------------------------------------------------------------- 校验
+
+TEST(TopologyOverlayValidateTest, AcceptsWellFormedOverlay) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+  overlay.one_way_edges.push_back(MakeEdge("b", "c"));
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_TRUE(validation.ok) << validation.message;
+  EXPECT_TRUE(validation.errors.empty());
+}
+
+TEST(TopologyOverlayValidateTest, WarnsOnBaseHashMismatchButStaysOk) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay("fnv1a64_other");
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  // 不是错误：dry-run 预览要能展示"这份叠加层对不上新地图"
+  EXPECT_TRUE(validation.ok);
+  ASSERT_FALSE(validation.warnings.empty());
+  EXPECT_TRUE(validation.warnings.front().find("base_map_hash") != std::string::npos);
+}
+
+TEST(TopologyOverlayValidateTest, RejectsMissingBaseHash) {
+  const auto base = MakeLinearCatalog();
+  const auto validation = ValidateTopologyOverlay(base, TopologyOverlay{});
+  EXPECT_FALSE(validation.ok);
+  EXPECT_EQ(validation.errors.front(), "overlay is missing base_map_hash");
+}
+
+TEST(TopologyOverlayValidateTest, RejectsUnknownEndpoint) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "nowhere"));
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("unknown endpoint") != std::string::npos)
+      << validation.message;
+}
+
+TEST(TopologyOverlayValidateTest, RejectsSelfLoop) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "a"));
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("self loop") != std::string::npos);
+}
+
+TEST(TopologyOverlayValidateTest, RejectsDuplicateBlockedEdge) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+  overlay.blocked_edges.push_back(MakeEdge("b", "a"));  // 同一对端点的另一种写法
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("duplicate blocked edge") != std::string::npos);
+}
+
+// 同一条边既封又单向：语义自相矛盾，提交顺序会决定结果 —— 必须拒绝
+TEST(TopologyOverlayValidateTest, RejectsBlockAndOneWayConflict) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+  overlay.one_way_edges.push_back(MakeEdge("a", "b"));
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("both blocked and one-way") != std::string::npos);
+}
+
+TEST(TopologyOverlayValidateTest, RejectsMissingAuditFields) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  OverlayEdge edge;
+  edge.from = "a";
+  edge.to = "b";
+  // 无 reason / operator_id
+  overlay.blocked_edges.push_back(edge);
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_GE(validation.errors.size(), 2u);
+}
+
+TEST(TopologyOverlayValidateTest, RejectsNonFiniteMarker) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  OverlayMarker marker;
+  marker.id = "m1";
+  marker.x = std::numeric_limits<double>::quiet_NaN();
+  marker.operator_id = "op";
+  overlay.added_markers.push_back(marker);
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("not finite") != std::string::npos);
+}
+
+// marker id 与既有站点/路网节点同 id 会让 FindStation 命中错的那一个
+TEST(TopologyOverlayValidateTest, RejectsMarkerIdCollidingWithExistingNode) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  OverlayMarker marker;
+  marker.id = "n1";  // 已存在的路网节点
+  marker.operator_id = "op";
+  overlay.added_markers.push_back(marker);
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("collides") != std::string::npos);
+}
+
+TEST(TopologyOverlayValidateTest, RejectsDuplicateMarkerId) {
+  const auto base = MakeLinearCatalog();
+  auto overlay = MakeOverlay(base.map_hash);
+  OverlayMarker marker;
+  marker.id = "m1";
+  marker.operator_id = "op";
+  overlay.added_markers.push_back(marker);
+  overlay.added_markers.push_back(marker);
+
+  const auto validation = ValidateTopologyOverlay(base, overlay);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_TRUE(validation.message.find("duplicate added marker") != std::string::npos);
+}
+
+// ---------------------------------------------------------------- 序列化
+
+TEST(TopologyOverlaySerializeTest, RoundTripsAllFields) {
+  auto overlay = MakeOverlay("fnv1a64_cafe");
+  overlay.revision = 7;
+  overlay.updated_at = "2026-10-28T12:00:00Z";
+  overlay.blocked_edges.push_back(MakeEdge("a", "b", "水管施工"));
+  overlay.one_way_edges.push_back(MakeEdge("b", "c", "单向走廊"));
+  OverlayMarker marker;
+  marker.id = "temp_1";
+  marker.type = "dropoff";
+  marker.x = 3.25;
+  marker.y = -1.5;
+  marker.yaw = 0.75;
+  marker.reason = "临时卸货点";
+  marker.operator_id = "op_2";
+  marker.created_at = "2026-10-28T12:00:00Z";
+  overlay.added_markers.push_back(marker);
+
+  const std::string text = SerializeTopologyOverlay(overlay);
+  std::string message;
+  const auto parsed = DeserializeTopologyOverlay(text, &message);
+  ASSERT_TRUE(parsed.has_value()) << message;
+
+  EXPECT_EQ(parsed->base_map_hash, overlay.base_map_hash);
+  EXPECT_EQ(parsed->revision, overlay.revision);
+  EXPECT_EQ(parsed->updated_at, overlay.updated_at);
+  ASSERT_EQ(parsed->blocked_edges.size(), 1u);
+  EXPECT_EQ(parsed->blocked_edges.front().reason, "水管施工");
+  ASSERT_EQ(parsed->one_way_edges.size(), 1u);
+  EXPECT_EQ(parsed->one_way_edges.front().from, "b");
+  ASSERT_EQ(parsed->added_markers.size(), 1u);
+  EXPECT_DOUBLE_EQ(parsed->added_markers.front().x, 3.25);
+  EXPECT_DOUBLE_EQ(parsed->added_markers.front().yaw, 0.75);
+  EXPECT_EQ(parsed->added_markers.front().type, "dropoff");
+}
+
+TEST(TopologyOverlaySerializeTest, IsDeterministic) {
+  auto overlay = MakeOverlay("h");
+  overlay.blocked_edges.push_back(MakeEdge("a", "b"));
+  OverlayMarker marker;
+  marker.id = "m";
+  marker.x = 1.0 / 3.0;
+  marker.operator_id = "op";
+  overlay.added_markers.push_back(marker);
+
+  // 同一份数据序列化两次必须字节相同（否则 e2e 的"拒绝时文件未改写"断言无法成立）
+  EXPECT_EQ(SerializeTopologyOverlay(overlay), SerializeTopologyOverlay(overlay));
+}
+
+TEST(TopologyOverlaySerializeTest, RejectsCorruptText) {
+  std::string message;
+  EXPECT_FALSE(DeserializeTopologyOverlay("this is not an overlay\n", &message).has_value());
+  EXPECT_FALSE(message.empty());
+}
+
+TEST(TopologyOverlaySerializeTest, RejectsUnknownTopLevelKey) {
+  std::string message;
+  const std::string text =
+      "base_map_hash: \"h\"\n"
+      "blocked_edges:\n"
+      "bogus_key: 1\n";
+  EXPECT_FALSE(DeserializeTopologyOverlay(text, &message).has_value());
+  EXPECT_TRUE(message.find("unknown top-level key") != std::string::npos) << message;
+}
+
+TEST(TopologyOverlaySerializeTest, RejectsMissingBaseHash) {
+  std::string message;
+  const std::string text = "blocked_edges:\n  - from: \"a\"\n    to: \"b\"\n";
+  EXPECT_FALSE(DeserializeTopologyOverlay(text, &message).has_value());
+  EXPECT_TRUE(message.find("base_map_hash") != std::string::npos) << message;
+}
+
+TEST(TopologyOverlaySerializeTest, AcceptsCommentsAndBlankLines) {
+  std::string message;
+  const std::string text =
+      "# 现场施工区\n"
+      "\n"
+      "base_map_hash: \"h\"\n"
+      "blocked_edges:\n"
+      "  # A 段水管爆裂\n"
+      "  - from: \"a\"\n"
+      "    to: \"b\"\n"
+      "    reason: \"water main\"\n"
+      "    operator_id: \"op\"\n";
+  const auto parsed = DeserializeTopologyOverlay(text, &message);
+  ASSERT_TRUE(parsed.has_value()) << message;
+  ASSERT_EQ(parsed->blocked_edges.size(), 1u);
+  EXPECT_EQ(parsed->blocked_edges.front().reason, "water main");
+}
+
+// ---------------------------------------------------------------- 语义签名
+
+TEST(TopologyOverlaySignatureTest, IgnoresRevisionAndAuditFields) {
+  auto first = MakeOverlay("h");
+  first.revision = 1;
+  first.updated_at = "2026-10-28T10:00:00Z";
+  first.blocked_edges.push_back(MakeEdge("a", "b", "reason A"));
+
+  auto second = MakeOverlay("h");
+  second.revision = 9;
+  second.updated_at = "2026-10-29T10:00:00Z";
+  second.blocked_edges.push_back(MakeEdge("a", "b", "reason B"));
+
+  // 幂等判定的依据：语义相同 -> 提交返回 no_change、不写盘
+  EXPECT_EQ(TopologyOverlaySignature(first), TopologyOverlaySignature(second));
+}
+
+TEST(TopologyOverlaySignatureTest, IgnoresEntryOrderButNotDirection) {
+  auto first = MakeOverlay("h");
+  first.blocked_edges.push_back(MakeEdge("a", "b"));
+  first.blocked_edges.push_back(MakeEdge("b", "c"));
+
+  auto reordered = MakeOverlay("h");
+  reordered.blocked_edges.push_back(MakeEdge("b", "c"));
+  reordered.blocked_edges.push_back(MakeEdge("a", "b"));
+  EXPECT_EQ(TopologyOverlaySignature(first), TopologyOverlaySignature(reordered));
+
+  // 单向是**有方向**的：a->b 与 b->a 不是同一个变更
+  auto one_way_ab = MakeOverlay("h");
+  one_way_ab.one_way_edges.push_back(MakeEdge("a", "b"));
+  auto one_way_ba = MakeOverlay("h");
+  one_way_ba.one_way_edges.push_back(MakeEdge("b", "a"));
+  EXPECT_NE(TopologyOverlaySignature(one_way_ab), TopologyOverlaySignature(one_way_ba));
+}
+
+TEST(TopologyOverlaySignatureTest, DistinguishesBlockFromOneWay) {
+  auto blocked = MakeOverlay("h");
+  blocked.blocked_edges.push_back(MakeEdge("a", "b"));
+  auto one_way = MakeOverlay("h");
+  one_way.one_way_edges.push_back(MakeEdge("a", "b"));
+  EXPECT_NE(TopologyOverlaySignature(blocked), TopologyOverlaySignature(one_way));
+}
+
+}  // namespace
+}  // namespace amr_dispatcher_core::catalog

@@ -1,0 +1,204 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "stream/stream_reader.h"
+
+#include <cstdint>
+#include <cstring>
+
+#include "camera_mediad_common.h"
+#include "ins_base/log.h"
+#include "ins_error_code/ins_errorcode.h"
+#include "ins_error_code_string.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "StreamReader"
+}  // namespace
+
+StreamReader::StreamReader() : queue_("StreamReaderQueue") {
+  ILOGS_I << "StreamReader created";
+}
+
+StreamReader::~StreamReader() {
+  ILOGS_I << "StreamReader destroyed";
+  Stop();
+  queue_.Stop();
+}
+
+InsErrorCode StreamReader::Start() {
+  if (is_running_.exchange(true)) {
+    ILOGS_W << "StreamReader::Start: already started";
+    return kInsErrorCode_LiveBroadcast_AlreadyStarted;
+  }
+
+  // 初始化状态
+  first_frame_timestamp_ = 0;
+  last_timestamp_ms_ = 0;
+
+  // 创建并启动节点流媒体处理器
+  InsErrorCode result = kInsErrorCode_Comm_Success;
+  live_streamer_ = std::make_unique<nodestreamer::NodeStreamer>(
+      this, &StreamReader::Run, &StreamReader::RunErrorCallback,
+      nodestreamer::StreamType::kWifiStream);
+  result = live_streamer_->StartNodeStreamer();
+  if (result != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "StreamReader::Start: failed to start node streamer, error: "
+            << result;
+    is_running_.store(false);
+    return result;
+  }
+  return result;
+}
+
+InsErrorCode StreamReader::Stop() {
+  if (!is_running_.exchange(false)) {
+    return kInsErrorCode_Comm_Success;
+  }
+
+  // 停止节点流媒体处理器
+  InsErrorCode result = kInsErrorCode_Comm_Success;
+  if (live_streamer_) {
+    result = live_streamer_->StopNodeStreamer();
+    if (result != kInsErrorCode_Comm_Success) {
+      ILOGS_E << "StreamReader::Stop: failed to stop node streamer, error: "
+              << result;
+    }
+    live_streamer_.reset();
+  }
+  return result;
+}
+
+InsErrorCode StreamReader::GetFrame(StreamDataPacket& packet) {
+  StreamDataPacket local;
+  if (!queue_.GetMessage(local)) {
+    return kInsErrorCode_LiveBroadcast_NoReadableData;
+  }
+  packet = std::move(local);
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode StreamReader::GetFrameBlocking(StreamDataPacket& packet,
+                                            int timeout_ms) {
+  // 复用调用方变量时，先清空上一次内容，保持失败路径输出为“空包”。
+  packet.payload.clear();
+  bool result = queue_.WaitForMessageTimeout(packet, timeout_ms);
+  if (!result) {
+    if (queue_.IsEmpty()) {
+      // 无数据，超时返回NoReadableData
+      return kInsErrorCode_LiveBroadcast_NoReadableData;
+    }
+    ILOGS_E << "MessageQueue is Stopped";
+    // 队列停止，返回GetFrameFailed
+    return kInsErrorCode_LiveBroadcast_GetFrameFailed;
+  }
+  return kInsErrorCode_Comm_Success;
+}
+
+InsErrorCode StreamReader::Run(uint8_t* stream_data, int32_t size,
+                               ins::base::StreamFrameInfo* frame_info) {
+  if (stream_data == nullptr || size <= 0 || frame_info == nullptr) {
+    ILOGS_E << "StreamReader::Run: stream data is nullptr or invalid size or "
+               "frame info is nullptr";
+    return kInsErrorCode_LiveBroadcast_InvalidStreamData;
+  }
+
+  // 临时：动态跟拍开启后链路上会多一路 kDataTypeTrack，本路径不消费，避免误入
+  // NaluReader
+  // TODO(lianxingwang|2026-05-13): 添加音频流支持
+  if (static_cast<ins::ibus::camera::mediad::MediaDataType>(
+          frame_info->data_type) !=
+      ins::ibus::camera::mediad::MediaDataType::kDataTypeVideo) {
+    return kInsErrorCode_Comm_Success;
+  }
+
+  std::vector<Nalu> nalu;
+  InsErrorCode result = reader_.ReadNalu(stream_data, size, nalu);
+  if (result == kInsErrorCode_LiveBroadcast_NoStartCodeFound ||
+      result == kInsErrorCode_LiveBroadcast_NoNextStartCodeFound) {
+    // 没有找到预期的NALU起始码，等待下一轮数据
+    ILOGS_I_FRQ(1000)
+        << "StreamReader::Run: no start code found, waiting for next round";
+    return kInsErrorCode_Comm_Success;
+  }
+
+  if (result != kInsErrorCode_Comm_Success) {
+    ILOGS_E << "StreamReader::Run: failed to read nalu, error: " << result;
+    return result;
+  }
+
+  // first_frame_timestamp_初始化为0，第一次读到帧时，将帧的pts(非零时间戳)赋值给first_frame_timestamp_
+  if (first_frame_timestamp_ == 0) {
+    first_frame_timestamp_ = frame_info->pts;
+  }
+
+  // pts单位为ms
+  // 检查 pts 是否回退或异常
+  if (frame_info->pts < first_frame_timestamp_) {
+    ILOGS_W_FRQ(1000)
+        << "StreamReader::Run: pts rollback detected, reset base ts. pts: "
+        << frame_info->pts << " first_ts: " << first_frame_timestamp_;
+    first_frame_timestamp_ = frame_info->pts;
+    // 保持单调递增，使用上一帧的时间戳
+  }
+
+  // 内部统一使用 64 位时间表示，避免长期运行回绕（2^32 ms ≈ 49.7 天）
+  uint64_t timestamp_ms = frame_info->pts - first_frame_timestamp_;
+
+  // 确保单调递增
+  if (timestamp_ms < last_timestamp_ms_) {
+    ILOGS_W_FRQ(1000) << "StreamReader::Run: timestamp rollback detected. cur: "
+                      << timestamp_ms << " last: " << last_timestamp_ms_;
+    timestamp_ms = last_timestamp_ms_;
+  }
+  last_timestamp_ms_ = timestamp_ms;
+
+  ILOGS_D_FRQ(ins::base::s2ms(5)) << "Read nalu pts: " << frame_info->pts
+                                  << " timestamp_ms: " << timestamp_ms;
+
+  // FlvMuxer 需要 uint32_t 时间戳，这里做截断处理。
+  // RTMP 协议要求 32 位时间戳，长期运行（>49.7天）会导致时间戳回绕，
+  // 播放器通常能处理回绕，但需要确保内部逻辑不混乱。
+  // 如果需要支持 >49.7 天的推流，可能需要更复杂的重连/重置策略。
+  auto flv_tags = muxer_.OnNalu(nalu);
+
+  if (!flv_tags.empty()) {
+    const uint32_t ts32 = static_cast<uint32_t>(timestamp_ms);
+    for (auto& tag : flv_tags) {
+      if (tag.empty()) {
+        continue;
+      }
+
+      // stream 模块只产出传输无关的数据包；由 rtmp 模块决定如何组装底层
+      // RTMPPacket。
+      StreamDataPacket packet(std::move(tag), ts32, StreamPacketType::kVideo);
+
+      if (!queue_.PostMessage(std::move(packet))) {
+        StreamDataPacket drop_packet;
+        if (queue_.GetMessage(drop_packet)) {
+          ILOGS_W << "StreamReader::Run: queue full, dropped head ts="
+                  << drop_packet.timestamp_ms;
+        } else {
+          // 拿不到头部却又入队失败：状态异常（如已 Stop）
+          ILOGS_E << "StreamReader::Run: queue full but no head to drop, ts="
+                  << ts32;
+        }
+        if (!queue_.PostMessage(std::move(packet))) {
+          ILOGS_E << "StreamReader::Run: retry post failed, ts=" << ts32;
+        }
+      }
+    }
+  }
+  return kInsErrorCode_Comm_Success;
+}
+
+void StreamReader::RunErrorCallback(InsErrorCode error_code) {
+  ILOGS_E << "StreamReader::RunErrorCallback: error code: "
+          << ins::errc::GetInsErrorCodeString(error_code);
+}
+}  // namespace live_broadcast
+}  // namespace ins

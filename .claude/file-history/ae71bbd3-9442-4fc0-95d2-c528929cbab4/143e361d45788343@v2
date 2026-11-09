@@ -1,0 +1,107 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+
+#include "manifest/manifest_recorder.h"
+
+namespace xgrids {
+
+// ============================================================
+// 故障注入剧本：声明式描述"扫描过程中何时发生什么故障"
+//   测试驱动化：同一剧本跑两次，manifest 快照必须一致
+// ============================================================
+
+struct FaultAction {
+    double t_s;                    // 相对扫描开始的时刻（秒）
+    std::string action;            // cam_drop / cpu_heat / rtk_loss / slowdown / jitter
+    int channel = -1;
+    int count = 0;
+    int temp_x10 = 0;
+    int duration_ms = 0;
+    double factor = 1.0;
+    int64_t jitter_us = 0;
+};
+
+// manifest 快照：对扫描结果做结构性指纹，用于回归比对
+struct ManifestSnapshot {
+    uint64_t frames[5] = {};
+    uint64_t lost[5] = {};
+    int gap_count[5] = {};
+    uint64_t imu_samples = 0;
+    int rescan_windows = 0;
+    bool clean = false;
+
+    static ManifestSnapshot from(const ScanManifest& m) {
+        ManifestSnapshot s;
+        for (int i = 0; i < 5; ++i) {
+            s.frames[i] = m.channels[i].frames;
+            s.lost[i] = m.channels[i].lost;
+            s.gap_count[i] = (int)m.channels[i].gaps.size();
+        }
+        s.imu_samples = m.total_imu_samples;
+        s.rescan_windows = (int)m.rescan_windows.size();
+        s.clean = m.clean;
+        return s;
+    }
+
+    // 返回差异说明（空串 = 一致）
+    std::string diff(const ManifestSnapshot& o) const {
+        std::string d;
+        const char* names[] = {"cam0","cam1","cam2","cam3","lidar"};
+        for (int i = 0; i < 5; ++i) {
+            if (frames[i] != o.frames[i])
+                d += names[i] + std::string(".frames ") +
+                     std::to_string(frames[i]) + " vs " +
+                     std::to_string(o.frames[i]) + "; ";
+            if (lost[i] != o.lost[i])
+                d += names[i] + std::string(".lost ") +
+                     std::to_string(lost[i]) + " vs " +
+                     std::to_string(o.lost[i]) + "; ";
+            if (gap_count[i] != o.gap_count[i])
+                d += names[i] + std::string(".gaps ") +
+                     std::to_string(gap_count[i]) + " vs " +
+                     std::to_string(o.gap_count[i]) + "; ";
+        }
+        if (rescan_windows != o.rescan_windows)
+            d += "rescan " + std::to_string(rescan_windows) +
+                 " vs " + std::to_string(o.rescan_windows) + "; ";
+        return d;
+    }
+};
+
+class FaultScenario {
+public:
+    // 从文本加载剧本（简化 YAML-like 解析，每行一条 action）
+    static FaultScenario parse(const std::string& text);
+
+    const std::vector<FaultAction>& actions() const { return actions_; }
+
+    // 单步推进：elapsed_s 为已过去的秒数，执行所有 <= elapsed 的动作
+    template <typename Session>
+    void step(Session& s, double elapsed_s) {
+        while (idx_ < actions_.size() && actions_[idx_].t_s <= elapsed_s) {
+            apply(s, actions_[idx_]);
+            ++idx_;
+        }
+    }
+    bool done() const { return idx_ >= actions_.size(); }
+    size_t idx() const { return idx_; }
+
+private:
+    std::vector<FaultAction> actions_;
+    size_t idx_ = 0;
+
+    template <typename Session>
+    void apply(Session& s, const FaultAction& a) const {
+        if (a.action == "cam_drop")        s.inject_camera_drop(a.channel, a.count);
+        else if (a.action == "cpu_heat")   s.inject_cpu_heat(a.temp_x10);
+        else if (a.action == "rtk_loss")   s.inject_rtk_loss(a.duration_ms);
+        else if (a.action == "slowdown")   s.inject_slowdown(a.channel, a.factor);
+        else if (a.action == "jitter")     s.inject_camera_jitter(a.channel, a.jitter_us);
+    }
+};
+
+}  // namespace xgrids

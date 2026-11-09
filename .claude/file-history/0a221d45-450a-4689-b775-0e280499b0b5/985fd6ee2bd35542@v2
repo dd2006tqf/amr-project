@@ -1,0 +1,49 @@
+import json, urllib.request
+
+def get(url, timeout=90):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def jget(url):
+    try:
+        return json.loads(get(url))
+    except Exception as e:
+        return {'__err__': str(e)}
+
+BR = 'allwinner-aiot-linux-5.15'
+
+print('=== A) hwspinlock Kconfig 是否有 SUNXI ===')
+try:
+    s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/drivers/hwspinlock/Kconfig')
+    lines = [l for l in s.splitlines() if 'SUN' in l.upper() or 'sunxi' in l.lower()]
+    print('sunxi Kconfig lines:', lines if lines else '(NONE)')
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== B) sun6i_hwspinlock.c 支持的 compatible ===')
+try:
+    s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/drivers/hwspinlock/sun6i_hwspinlock.c')
+    idx = s.find('of_device_id')
+    print(s[idx-100: idx+400] if idx > 0 else s[:500])
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== C) 是否有 sunxi 专属 remoteproc / arisc 驱动 ===')
+for path in ['drivers/remoteproc', 'drivers/soc/sunxi', 'drivers/misc/sunxi']:
+    d = jget(f'https://api.github.com/repos/radxa/kernel/contents/{path}?ref={BR}')
+    if isinstance(d, dict):
+        print(path, '->', d.get('message'))
+    else:
+        names = [x['name'] for x in d]
+        print(path, '->', len(names))
+        print('   sunxi-ish:', [n for n in names if any(k in n.lower() for k in ('sun','allwin','arisc','rproc','riscv','e902'))] or '(none)')
+
+print('\n=== D) 全仓 grep sunxi-msgbox / sunxi-rproc 关键字 ===')
+for f, kw in [(f'drivers/mailbox/sun6i-msgbox.c', 'sun60'),
+              (f'drivers/hwspinlock/sun6i_hwspinlock.c', 'sun60')]:
+    try:
+        s = get(f'https://raw.githubusercontent.com/radxa/kernel/{BR}/{f}')
+        print(f, '| contains sun60:', kw in s.lower(), '| size', len(s))
+    except Exception as e:
+        print(f, 'ERR', e)

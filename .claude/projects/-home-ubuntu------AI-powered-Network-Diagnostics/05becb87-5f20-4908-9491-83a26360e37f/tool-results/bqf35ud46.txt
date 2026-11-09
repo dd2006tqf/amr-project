@@ -1,0 +1,720 @@
+### O2 | 4
+---at 1637961
+O2 | Important | test-only caller | **15 个 D-Bus 观测方法 + 19 个 C API 包装**（`GetDnsStats`/`GetHistory`/`GetBluetooth*`/订阅族等，分发表 `dbus_service.cpp:94-211`）：唯一调用方是 `test_client.cpp` 与 3 个不打包的 example 二进制；发布的 `weaknet-cli` 0 调用；`libweaknet.so` 却照常分发——README「C/C++ 二次集成」承诺的公共面约一半无任何真实消费者 | replan：为值得保留的子集造真实消费者（如 `weaknet-cli stats`），或收缩导出面 |
+| O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 e
+
+---at 8658687
+O2 | Important | test-only caller | **15 个 D-Bus 观测方法 + 19 个 C API 包装**（`GetDnsStats`/`GetHistory`/`GetBluetooth*`/订阅族等，分发表 `dbus_service.cpp:94-211`）：唯一调用方是 `test_client.cpp` 与 3 个不打包的 example 二进制；发布的 `weaknet-cli` 0 调用；`libweaknet.so` 却照常分发——README「C/C++ 二次集成」承诺的公共面约一半无任何真实消费者 | replan：为值得保留的子集造真实消费者（如 `weaknet-cli stats`），或收缩导出面 |
+| O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 e
+
+---at 8665728
+O2 | Important | test-only caller | **15 个 D-Bus 观测方法 + 19 个 C API 包装**（`GetDnsStats`/`GetHistory`/`GetBluetooth*`/订阅族等，分发表 `dbus_service.cpp:94-211`）：唯一调用方是 `test_client.cpp` 与 3 个不打包的 example 二进制；发布的 `weaknet-cli` 0 调用；`libweaknet.so` 却照常分发——README「C/C++ 二次集成」承诺的公共面约一半无任何真实消费者 | replan：为值得保留的子集造真实消费者（如 `weaknet-cli stats`），或收缩导出面 |
+| O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 e
+
+---at 9347198
+O2 | 15 个 D-Bus 方法＋19 个 C API 只有测试在调，`weaknet-cli` 零调用 | 代码未动 | A. 给保留子集造 `weaknet-cli stats` 真消费者；B. 收缩导出面 |
+| O3 | 7 个 D-Bus 信号零生产订阅者 | 代码未动 | A. 建 `--watch` 消费者；B. 停发 |
+| O11–O16 | 云端孤儿：4 个无调用端点、14 个零引用脚本、15 个零调用 console 入口、7 个零引用 Dockerfile 等 | 代码未动 | 逐项 remove / replan |
+| K4 | 遥测 5 个字段云端单侧定义、板端恒空（`hardware_arch` 等） | 未动 | 板端补采还是云端删字段 |
+| K3 | 架构文档方法表 28 vs 代码 31 个 `kMethod`；`weaknet_client.h` 注释称 11 函数实 42 导出 | 未动 | 文档同步（纯文档） |
+
+## 二、可直接做的（约 10 项小修，无需决策）
+
+- **S4**：OPA 无认证监听（`compose.lite.yaml` 加 `--authentication=token`＋`opa.py` 带 Bearer）
+- **S6**：compose 本地默认口令改必填 fail-fast（Grafana/Marquez）
+- **S9 残留**：`ci.sh --commit` 的 `git add -A` 改为 `git add -u`＋显式路径；`/metrics` 公网暴露注记
+- **O4/O7/O8/O9**：删除 `verify_v1_contract.sh` 包装、`consumeLostEvents` 等死函数、`bt_hci_probe_test.bpf.c`、`init.sh`（4 个文件确认零引用）
+- **O5/O6/O10**：README 启动路径修正、legacy 音频退出条件、AI-assisted README 点名 2 个活文件
+- **CI**：gitleaks 门禁迁入根 `ci.yml`；**CMake GLOB** 改显式清单
+
+你先定第一类（O1/O2/O3、O11–O16、K4 要 A 还是 B），第二类我可以直接开工，做完后重新 `ci.sh --local-only`＋全量测试，最后等板子在线一次上板验证。你看怎么定？"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"80e6922c-e370-4dbf-8695-f1c9d1efb1f5","timestamp":"2026-10-19T01:10:59.272Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"parentUuid":"80e6922c-e370-4dbf-8695-f1c9d1efb1f5","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":82044,"messageCount":2806,"timestamp":"2026-10-19T01:10:59.335Z","uuid":"b18c78e4-2147-4b7b-887e-dea24dc70fe1","isMeta":false,"u
+
+### O3 | 4
+---at 1638300
+O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assuranc
+
+---at 8659026
+O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assuranc
+
+---at 8666067
+O3 | Important | dead dispatch | **7 个 D-Bus 信号**（`Changed`/`EbpfMonitorStats` 等，`common.hpp:65-72`）生产端全在发射，零生产订阅者；`server.cpp:1062` 注释宣称「信号替代轮询」的替代消费者从未被建出来 | replan：建 `weaknet-cli stats --watch` 类消费者，或停发 |
+| O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assuranc
+
+---at 9347311
+O3 | 7 个 D-Bus 信号零生产订阅者 | 代码未动 | A. 建 `--watch` 消费者；B. 停发 |
+| O11–O16 | 云端孤儿：4 个无调用端点、14 个零引用脚本、15 个零调用 console 入口、7 个零引用 Dockerfile 等 | 代码未动 | 逐项 remove / replan |
+| K4 | 遥测 5 个字段云端单侧定义、板端恒空（`hardware_arch` 等） | 未动 | 板端补采还是云端删字段 |
+| K3 | 架构文档方法表 28 vs 代码 31 个 `kMethod`；`weaknet_client.h` 注释称 11 函数实 42 导出 | 未动 | 文档同步（纯文档） |
+
+## 二、可直接做的（约 10 项小修，无需决策）
+
+- **S4**：OPA 无认证监听（`compose.lite.yaml` 加 `--authentication=token`＋`opa.py` 带 Bearer）
+- **S6**：compose 本地默认口令改必填 fail-fast（Grafana/Marquez）
+- **S9 残留**：`ci.sh --commit` 的 `git add -A` 改为 `git add -u`＋显式路径；`/metrics` 公网暴露注记
+- **O4/O7/O8/O9**：删除 `verify_v1_contract.sh` 包装、`consumeLostEvents` 等死函数、`bt_hci_probe_test.bpf.c`、`init.sh`（4 个文件确认零引用）
+- **O5/O6/O10**：README 启动路径修正、legacy 音频退出条件、AI-assisted README 点名 2 个活文件
+- **CI**：gitleaks 门禁迁入根 `ci.yml`；**CMake GLOB** 改显式清单
+
+你先定第一类（O1/O2/O3、O11–O16、K4 要 A 还是 B），第二类我可以直接开工，做完后重新 `ci.sh --local-only`＋全量测试，最后等板子在线一次上板验证。你看怎么定？"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"80e6922c-e370-4dbf-8695-f1c9d1efb1f5","timestamp":"2026-10-19T01:10:59.272Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"parentUuid":"80e6922c-e370-4dbf-8695-f1c9d1efb1f5","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":82044,"messageCount":2806,"timestamp":"2026-10-19T01:10:59.335Z","uuid":"b18c78e4-2147-4b7b-887e-dea24dc70fe1","isMeta":false,"userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05be
+
+### O4 | 4
+---at 1638511
+O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程
+
+---at 1681141
+O4 | 删除 `tools/verify_v1_contract.sh`（保留其内部引用、文档已收录的 `dns-assurance-acceptance.sh`）；在 `openspec/tasks/` 记录删除理由 |
+| O7 | 删除 `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics` 声明与实现、`impl_->dead lost_events` 计数（注意与活计数 `drain_stats.loast_events` 区分，别删错）；跑 `test_tcp_connect_evaluator_gtest` 回归 |
+| O8 | 删除 `tools/bt_hci_probe_test.bpf.c` |
+| O9 | 删除根 `init.sh`（三个被串联的 harness 脚本各有文档化入口） |
+
+### 云端侧（建议打包为一个 `cloud-orphan-cleanup` OpenSpec change，删除量 ~2000 行）
+| # | 方案 |
+|---|---|
+| O11① close defect | 优先接线：`ProductionAssurancePanel.tsx` 加\"关闭缺陷\"动作（带 If-Match + evidence digest，复用面板既有乐观锁模式）；若 M6 流程确认不需要人工关缺，则删路由 |
+| O11② telemetry/events | 删路由 + schema（真实摄取面是 `/telemetry/windows`） |
+| O11③ experiments/results | 删 HTTP 路由，保留 `ExperimentRegistryService.complete` 进程内 API |
+| O11④ drills/complete | 二选一：`RecoveryGovernancePanel` 加 complete 动作，或 `report_cli` 镜像 `assurance/report_cli.py:78` 的消费模式——推荐后者（已有同类先例，成本低） |
+| O12 | 14 个脚本逐个分类：与 `PLATFORM_OPERATION_GUIDE.md`/runbook 相关的保留并挂 `Makefile verify-*` 目标（给出引用即活）；其余删除。保留清单建议先含 `real_model_*` 三件套（真机排练在用） |
+| O13 | `pyproject.toml [project.scripts]` 删 14 个 lab/staging 条目（模块保留，改 `python -m` 调用——`dev_lite.sh` 已是此模式）；`industrial-ops-security-exercise-report` 保留并在 ops 文档登记为手动工具 |
+| O15 | 确认无 compose/env 引用 `IOAP_DATABASE_HOST` 后删除 `config.py:107` 字段 |
+| O16 | 删 7 个零引用 Dockerfile；3 个 lab-CLI-only 的随 O12/O13 决策联动（CLI 删则 Dockerfile 同删） |
+
+## 七、执行编排建议（按依赖与收益排序）
+
+| 批次 | 内容 | 通道 | 预估量级 |
+|---|---|---|---|
+| **P0-a** | C1+C5+C6（UAF + 注释 + 停机） | OpenSpec change `fix-bt-events-pointer-lifecycle` | ~150 行 + 测试 |
+| **P0-b** | C2（上行水位三游标） | OpenSpec change `fix-wireless-uplink-watermark` | ~200 行 + 测试 |
+| **P1-a** | S1+S7（下行签名 + generation 全量 + URL 校验 + 看门狗） | OpenSpec change `edge-downlink-trust-hardening`（跨端，含迁移） | ~40
+
+---at 8659237
+O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程
+
+---at 8666278
+O4 | Important | superseded-entrypoint | `tools/verify_v1_contract.sh` 自称强制 v1 契约门禁，全仓 grep 仅命中自身——**保证从未被执行**，虚假安全信号 | remove 包装（保留其引用的 `dns-assurance-acceptance.sh`） |
+| O5 | Important | unreachable-as-documented | README 快速上手方式一：`cd Large-Model-Application && ./start_platform.sh`——脚本只存在于仓库根且自适应 cd，照抄必失败（已复核路径） | fix doc |
+| O6 | Minor | test-only + 已文档化 legacy | `a2dp_media`/`bt_audio_fusion`/`GetBluetoothAudioQuality`：默认 `a2dp_fusion_enabled=false`，无生产消费者；README/产品定位已标 legacy，但**无退出条件** | document：补「bt_hci_traffic 替代稳定 N 个版本后删除」的 exit condition |
+| O7 | Minor | no caller | `TcpConnectMonitor::consumeLostEvents`/`getCaptureDiagnostics`（`tcp_connect_monitor.cpp:387-394`）：含测试在内零调用；`impl_->lost_events` 只写不读（真正的活计数是另一条 `drain_stats` 路径） | remove |
+| O8 | Minor | unreachable-artifact | `tools/bt_hci_probe_test.bpf.c`：无构建、无引用、无文档——会随 vmlinux/布局漂移静默腐烂 | remove |
+| O9 | Minor | superseded-entrypoint | 根 `init.sh`（串联 3 个 harness 脚本）零引用，被文档化命令取代 | remove |
+| O10 | Minor | doc-vs-code | `AI-assisted analysis/README.md` 整目录「DEPRECATED」声明**对 2 个文件为假**：`edge_network_rag.py`、`network_knowledge_base.py` 被 `ci.sh:144-145` 打包、被 `edge_ai_scheduler`（默认路径）与 `weaknet-cli diagnosis --ai` 实际执行（其余 12 个原型确属废弃） | fix doc：点名 2 个活文件 |
+
+已核查放行：12 个 eBPF 中其余 10 个均有真实消费出口（SLE/metrics/上行/DB/事件库）；config.yaml 全键有读者；`WEAKNET_DATA_DIR` 真实；C API 42 个导出均有 ≥1 调用（其中 19 个仅测试，见 O2）；history_query_tool 全链路被 ci.sh/文档消费。
+
+### 云端 Large-Model-Application
+
+| # | 严重度 | 分类 | 发现与证据 | 处置建议 |
+|---|---|---|---|---|
+| O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程
+
+### O11 | 5
+---at 1640014
+O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程内）④ `POST /recovery/drills/{id}/complete`（`recovery.py:253`，start 有前端消费、complete 无——HTTP 生命周期半建成） | ①④ replan 接消费者；②③ remove |
+| O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 
+
+---at 8660740
+O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程内）④ `POST /recovery/drills/{id}/complete`（`recovery.py:253`，start 有前端消费、complete 无——HTTP 生命周期半建成） | ①④ replan 接消费者；②③ remove |
+| O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 
+
+---at 8667781
+O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作，tests 亦无）② `POST /telemetry/events`（`predictive_maintenance.py:384`，与真实在用的 `/telemetry/windows` 并存的第二条无人走的摄取面）③ `POST /experiments/{id}/results`（`experiments.py:482`，完成逻辑全在进程内）④ `POST /recovery/drills/{id}/complete`（`recovery.py:253`，start 有前端消费、complete 无——HTTP 生命周期半建成） | ①④ replan 接消费者；②③ remove |
+| O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 
+
+---at 10522366
+O11 | Important | no caller（×4 端点） | ① `POST /production-defects/{id}/close`（`assurance.py:319`，前端面板只显示 open_defects 无关闭动作
+O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.
+O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/stagi
+O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain
+O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DA
+O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |\
+\
+已核查放行（覆盖
+O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；\
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` +
+O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；\
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。\
+\
+评审到此结束——所有发现均只读
+O1-O16). Per project rules, solutions that change product behavior/contracts would go through OpenSpec change or openspec/
+O1–O16). For each: 方案 (concrete fix design), 建议通道 (OpenSpec change / openspec/tasks记录 / 直接文档修改), 验收方式 (how to verify).\
+\
+
+O1 tcp_retrans/tcp_conn: decision options: (i) wire aggregates into history persistence + GetHistory JSON columns (schema 
+O10: fix AI-assisted analysis/README: name edge_network_rag.py + network_knowledge_base.py as live shipped components with
+O11: close/complete endpoints: ① wire close action into ProductionAssurancePanel (If-Match + evidence digest) — or remove 
+O12: triage 14 scripts: classify each keep (link from runbook/Makefile target) vs delete; recommended: keep `real_model_bu
+O13: edit pyproject [project.scripts]: remove 14 lab ent
+
+### O12 | 6
+---at 1640441
+O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec cha
+
+---at 1682080
+O12 | 14 个脚本逐个分类：与 `PLATFORM_OPERATION_GUIDE.md`/runbook 相关的保留并挂 `Makefile verify-*` 目标（给出引用即活）；其余删除。保留清单建议先含 `real_model_*` 三件套（真机排练在用） |
+| O13 | `pyproject.toml [project.scripts]` 删 14 个 lab/staging 条目（模块保留，改 `python -m` 调用——`dev_lite.sh` 已是此模式）；`industrial-ops-security-exercise-report` 保留并在 ops 文档登记为手动工具 |
+| O15 | 确认无 compose/env 引用 `IOAP_DATABASE_HOST` 后删除 `config.py:107` 字段 |
+| O16 | 删 7 个零引用 Dockerfile；3 个 lab-CLI-only 的随 O12/O13 决策联动（CLI 删则 Dockerfile 同删） |
+
+## 七、执行编排建议（按依赖与收益排序）
+
+| 批次 | 内容 | 通道 | 预估量级 |
+|---|---|---|---|
+| **P0-a** | C1+C5+C6（UAF + 注释 + 停机） | OpenSpec change `fix-bt-events-pointer-lifecycle` | ~150 行 + 测试 |
+| **P0-b** | C2（上行水位三游标） | OpenSpec change `fix-wireless-uplink-watermark` | ~200 行 + 测试 |
+| **P1-a** | S1+S7（下行签名 + generation 全量 + URL 校验 + 看门狗） | OpenSpec change `edge-downlink-trust-hardening`（跨端，含迁移） | ~400 行 |
+| **P1-b** | S2+S3(+S4) | OpenSpec change `cloud-action-pipeline-closure` | ~200 行 |
+| **P1-c** | O1①默认停用 + O2/O3 建 `weaknet-cli stats` + K1 | OpenSpec change `edge-stats-cli-consumer` | ~300 行 |
+| **P2-a** | K2 止血 + O14①gitleaks + supply-chain 头注 | `openspec/tasks/` 记录 | 半天 |
+| **P2-b** | 文档批量同步（§五.1 全表）+ O4/O7/O8/O9/删除类 | `openspec/tasks/` 记录 | 半天 |
+| **P2-c** | Harness 修复（manifest_sync + contract + index + quick_brief） | 直接维护（无活动 change 窗口内） | 1 小时 |
+| **P2-d** | 云端清理包（O11–O16）+ O12 三件套回溯记录 | OpenSpec change `cloud-orphan-cleanup` | ~2000 行删除 |
+| **P3** | S5/S8/S9 杂项、C3/C4、K4 板端填充、O1②决策、嵌套 CI 剩余迁移、CMake 显式化 | 各自快修记录或并入上述 change | 零散 |
+
+两点执行纪律提醒（来自项目铁律）：① 每个 change 严格\"先 `freeze-implementation-base` 再改代码\"，design.md 冻结后不动；② 文档类修改虽不受 fingerprint 约束，但也应在对应代码 change 归档的**同一批**提交里完成（文档与代码同步规则），不要攒成第三批漂移。
+
+你确认从哪一批开始，我就按对应通道立项（P0-a/P0-b 可并行开两个 change，但同工作区仍须串行执行）。"}],"stop_reason":"end_turn","stop_details":null},
+
+---at 8661167
+O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec cha
+
+---at 8668208
+O12 | Important | superseded-entrypoint | `scripts/` 下 **14 个零调用验证/验收脚本**（~1400 行，含 `project_staging_model_runtime_verify.sh` 520 行等），无 CI/helm/runbook 引用 | document incubation + 一个发布周期内无引用即删 |
+| O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec cha
+
+### O13 | 6
+---at 1640638
+O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","timestamp":"2026-10-18T02
+
+---at 1682222
+O13 | `pyproject.toml [project.scripts]` 删 14 个 lab/staging 条目（模块保留，改 `python -m` 调用——`dev_lite.sh` 已是此模式）；`industrial-ops-security-exercise-report` 保留并在 ops 文档登记为手动工具 |
+| O15 | 确认无 compose/env 引用 `IOAP_DATABASE_HOST` 后删除 `config.py:107` 字段 |
+| O16 | 删 7 个零引用 Dockerfile；3 个 lab-CLI-only 的随 O12/O13 决策联动（CLI 删则 Dockerfile 同删） |
+
+## 七、执行编排建议（按依赖与收益排序）
+
+| 批次 | 内容 | 通道 | 预估量级 |
+|---|---|---|---|
+| **P0-a** | C1+C5+C6（UAF + 注释 + 停机） | OpenSpec change `fix-bt-events-pointer-lifecycle` | ~150 行 + 测试 |
+| **P0-b** | C2（上行水位三游标） | OpenSpec change `fix-wireless-uplink-watermark` | ~200 行 + 测试 |
+| **P1-a** | S1+S7（下行签名 + generation 全量 + URL 校验 + 看门狗） | OpenSpec change `edge-downlink-trust-hardening`（跨端，含迁移） | ~400 行 |
+| **P1-b** | S2+S3(+S4) | OpenSpec change `cloud-action-pipeline-closure` | ~200 行 |
+| **P1-c** | O1①默认停用 + O2/O3 建 `weaknet-cli stats` + K1 | OpenSpec change `edge-stats-cli-consumer` | ~300 行 |
+| **P2-a** | K2 止血 + O14①gitleaks + supply-chain 头注 | `openspec/tasks/` 记录 | 半天 |
+| **P2-b** | 文档批量同步（§五.1 全表）+ O4/O7/O8/O9/删除类 | `openspec/tasks/` 记录 | 半天 |
+| **P2-c** | Harness 修复（manifest_sync + contract + index + quick_brief） | 直接维护（无活动 change 窗口内） | 1 小时 |
+| **P2-d** | 云端清理包（O11–O16）+ O12 三件套回溯记录 | OpenSpec change `cloud-orphan-cleanup` | ~2000 行删除 |
+| **P3** | S5/S8/S9 杂项、C3/C4、K4 板端填充、O1②决策、嵌套 CI 剩余迁移、CMake 显式化 | 各自快修记录或并入上述 change | 零散 |
+
+两点执行纪律提醒（来自项目铁律）：① 每个 change 严格\"先 `freeze-implementation-base` 再改代码\"，design.md 冻结后不动；② 文档类修改虽不受 fingerprint 约束，但也应在对应代码 change 归档的**同一批**提交里完成（文档与代码同步规则），不要攒成第三批漂移。
+
+你确认从哪一批开始，我就按对应通道立项（P0-a/P0-b 可并行开两个 change，但同工作区仍须串行执行）。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"ed43adee-c737-46e7-a71e-0efd1dcc24db","timestamp":"2026-10-18T02:55:53.992Z","effort":"max","perT
+
+---at 8661364
+O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","is_error":false}]},"uuid":"067c772f-62bf-4025-a177-3dfd80b72afc","timestamp":"2026-10-18T15:33:11.838Z","toolUseResult":{"stdout":"K2 | Important | `build-a
+
+---at 8668405
+O13 | Important | superseded-entrypoint | `pyproject.toml [project.scripts]` **15 个零调用入口**（39 个中 24 个已验证在用）；14 个 lab/staging 建议从脚本表移除（模块保留 `python -m` 调用），`industrial-ops-security-exercise-report` 作为手动运维工具保留并文档化 | remove/retain 分开处置 |
+| O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false},"sourceToolAssistantUUID":"4fff2753-a713-42af-b680-d600254caf73","session_id":"05be
+
+### O14 | 5
+---at 1640876
+O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","timestamp":"2026-10-18T02:36:50.568Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83
+
+---at 8661602
+O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","is_error":false}]},"uuid":"067c772f-62bf-4025-a177-3dfd80b72afc","timestamp":"2026-10-18T15:33:11.838Z","toolUseResult":{"stdout":"K2 | Important | `build-and-deploy.yml`（发布工作流）仍走 QEMU 容器 `-j1` 构建，且打包清单（`:80`）**漏打 `weaknet-cli`、`weaknet-offline-diag`、`edge_network_rag.py`**（已复核）——经 Release 触发的部署将缺调参 CLI 与端侧 AI 链路 |
+| K3 | Minor | 架构文档 §5.3 方法表 28 项 vs 代码 31 个 `kMethod`（已复核）：缺 `GetTcpRttStat
+
+---at 8668643
+O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain_statement.py` + `docker/model-runtime.Dockerfile` 整链不可达且无休眠头注 | document + exit condition：迁 gitleaks/mypy 入根 ci.yml 后删 |
+| O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false},"sourceToolAssistantUUID":"4fff2753-a713-42af-b680-d600254caf73","session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"p
+
+---at 10522738
+O14 | Important | dead dispatch | 嵌套 `LMA/.github/workflows/ci.yml` 休眠门禁链（见 §五）；`supply-chain.yml` 连带 `create_supply_chain
+O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DA
+O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |\
+\
+已核查放行（覆盖
+O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；\
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` +
+O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；\
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。\
+\
+评审到此结束——所有发现均只读
+O1-O16). Per project rules, solutions that change product behavior/contracts would go through OpenSpec change or openspec/
+O1–O16). For each: 方案 (concrete fix design), 建议通道 (OpenSpec change / openspec/tasks记录 / 直接文档修改), 验收方式 (how to verify).\
+\
+
+O1 tcp_retrans/tcp_conn: decision options: (i) wire aggregates into history persistence + GetHistory JSON columns (schema 
+O10: fix AI-assisted analysis/README: name edge_network_rag.py + network_knowledge_base.py as live shipped components with
+O11: close/complete endpoints: ① wire close action into ProductionAssurancePanel (If-Match + evidence digest) — or remove 
+O12: triage 14 scripts: classify each keep (link from runbook/Makefile target) vs delete; recommended: keep `real_model_bu
+O13: edit pyproject [project.scripts]: remove 14 lab entries (modules remain importable), keep security-exercise-report wi
+O14: dormancy migration as §五; add header to supply-chain.yml immediately (cheap).\
+- O15: delete database_host field (che
+O16: delete 7 zero-ref Dockerfiles; lab-CLI-only 3 follow O13 decision.\
+\
+Also mention execution channel summary table: w
+O1 default-disable + O2/O3 weaknet-cli stats + K1 REA
+
+### O15 | 6
+---at 1641123
+O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","timestamp":"2026-10-18T02:36:50.568Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"parentUuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":279604,"messageCount":30
+
+---at 1682395
+O15 | 确认无 compose/env 引用 `IOAP_DATABASE_HOST` 后删除 `config.py:107` 字段 |
+| O16 | 删 7 个零引用 Dockerfile；3 个 lab-CLI-only 的随 O12/O13 决策联动（CLI 删则 Dockerfile 同删） |
+
+## 七、执行编排建议（按依赖与收益排序）
+
+| 批次 | 内容 | 通道 | 预估量级 |
+|---|---|---|---|
+| **P0-a** | C1+C5+C6（UAF + 注释 + 停机） | OpenSpec change `fix-bt-events-pointer-lifecycle` | ~150 行 + 测试 |
+| **P0-b** | C2（上行水位三游标） | OpenSpec change `fix-wireless-uplink-watermark` | ~200 行 + 测试 |
+| **P1-a** | S1+S7（下行签名 + generation 全量 + URL 校验 + 看门狗） | OpenSpec change `edge-downlink-trust-hardening`（跨端，含迁移） | ~400 行 |
+| **P1-b** | S2+S3(+S4) | OpenSpec change `cloud-action-pipeline-closure` | ~200 行 |
+| **P1-c** | O1①默认停用 + O2/O3 建 `weaknet-cli stats` + K1 | OpenSpec change `edge-stats-cli-consumer` | ~300 行 |
+| **P2-a** | K2 止血 + O14①gitleaks + supply-chain 头注 | `openspec/tasks/` 记录 | 半天 |
+| **P2-b** | 文档批量同步（§五.1 全表）+ O4/O7/O8/O9/删除类 | `openspec/tasks/` 记录 | 半天 |
+| **P2-c** | Harness 修复（manifest_sync + contract + index + quick_brief） | 直接维护（无活动 change 窗口内） | 1 小时 |
+| **P2-d** | 云端清理包（O11–O16）+ O12 三件套回溯记录 | OpenSpec change `cloud-orphan-cleanup` | ~2000 行删除 |
+| **P3** | S5/S8/S9 杂项、C3/C4、K4 板端填充、O1②决策、嵌套 CI 剩余迁移、CMake 显式化 | 各自快修记录或并入上述 change | 零散 |
+
+两点执行纪律提醒（来自项目铁律）：① 每个 change 严格\"先 `freeze-implementation-base` 再改代码\"，design.md 冻结后不动；② 文档类修改虽不受 fingerprint 约束，但也应在对应代码 change 归档的**同一批**提交里完成（文档与代码同步规则），不要攒成第三批漂移。
+
+你确认从哪一批开始，我就按对应通道立项（P0-a/P0-b 可并行开两个 change，但同工作区仍须串行执行）。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"ed43adee-c737-46e7-a71e-0efd1dcc24db","timestamp":"2026-10-18T02:55:53.992Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessio
+
+---at 8661849
+O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","is_error":false}]},"uuid":"067c772f-62bf-4025-a177-3dfd80b72afc","timestamp":"2026-10-18T15:33:11.838Z","toolUseResult":{"stdout":"K2 | Important | `build-and-deploy.yml`（发布工作流）仍走 QEMU 容器 `-j1` 构建，且打包清单（`:80`）**漏打 `weaknet-cli`、`weaknet-offline-diag`、`edge_network_rag.py`**（已复核）——经 Release 触发的部署将缺调参 CLI 与端侧 AI 链路 |
+| K3 | Minor | 架构文档 §5.3 方法表 28 项 vs 代码 31 个 `kMethod`（已复核）：缺 `GetTcpRttStats`、`QueryBtDataPath` 等；`weaknet_client.h` 顶部注释声称 11 函数 vs 实际 42 导出 |
+| K4 | Minor | 遥测契约 5 个字段云端单侧定义、板端永不输出（`hardware_arch`/`os_kernel`/`location`/`rtt_interval_seconds`/`rtt_probe_targets`，均有默认值故不 422，但上游读到恒空） |
+
+## 五、构建/安装/打包泄漏与 CI
+
+- **无安装
+
+---at 8668890
+O15 | Minor | parsed-never-read | `config.py:107` `database_host`（180 个 Settings 字段中唯一孤儿；真实连接走 database URL）——运维设 `IOAP_DATABASE_HOST` 静默无效 | remove |
+| O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false},"sourceToolAssistantUUID":"4fff2753-a713-42af-b680-d600254caf73","session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"type":"last-prompt","lastPrompt":"不用走工作流","leafUuid":"067c772f-62bf-4025-a177-3dfd80b72afc","sessionId":"05becb87-5f20-4908-9491-83a26360e37f"}
+{"type":"ai-title","aiTitle":"一批问题的完整修复","sessionId":"05becb87-5f20-4908-
+
+### O16 | 7
+---at 1641277
+O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","timestamp":"2026-10-18T02:36:50.568Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"parentUuid":"8cd0e565-b23b-479a-8039-12acb88b8f3c","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":279604,"messageCount":303,"timestamp":"2026-10-18T02:36:50.741Z","uuid":"674c0692-20f6-4fc6-b209-cf49308e29e2","isMeta":false,"userType":"external","entrypoint":"cli","cwd":"/hom
+
+---at 1682469
+O16 | 删 7 个零引用 Dockerfile；3 个 lab-CLI-only 的随 O12/O13 决策联动（CLI 删则 Dockerfile 同删） |
+
+## 七、执行编排建议（按依赖与收益排序）
+
+| 批次 | 内容 | 通道 | 预估量级 |
+|---|---|---|---|
+| **P0-a** | C1+C5+C6（UAF + 注释 + 停机） | OpenSpec change `fix-bt-events-pointer-lifecycle` | ~150 行 + 测试 |
+| **P0-b** | C2（上行水位三游标） | OpenSpec change `fix-wireless-uplink-watermark` | ~200 行 + 测试 |
+| **P1-a** | S1+S7（下行签名 + generation 全量 + URL 校验 + 看门狗） | OpenSpec change `edge-downlink-trust-hardening`（跨端，含迁移） | ~400 行 |
+| **P1-b** | S2+S3(+S4) | OpenSpec change `cloud-action-pipeline-closure` | ~200 行 |
+| **P1-c** | O1①默认停用 + O2/O3 建 `weaknet-cli stats` + K1 | OpenSpec change `edge-stats-cli-consumer` | ~300 行 |
+| **P2-a** | K2 止血 + O14①gitleaks + supply-chain 头注 | `openspec/tasks/` 记录 | 半天 |
+| **P2-b** | 文档批量同步（§五.1 全表）+ O4/O7/O8/O9/删除类 | `openspec/tasks/` 记录 | 半天 |
+| **P2-c** | Harness 修复（manifest_sync + contract + index + quick_brief） | 直接维护（无活动 change 窗口内） | 1 小时 |
+| **P2-d** | 云端清理包（O11–O16）+ O12 三件套回溯记录 | OpenSpec change `cloud-orphan-cleanup` | ~2000 行删除 |
+| **P3** | S5/S8/S9 杂项、C3/C4、K4 板端填充、O1②决策、嵌套 CI 剩余迁移、CMake 显式化 | 各自快修记录或并入上述 change | 零散 |
+
+两点执行纪律提醒（来自项目铁律）：① 每个 change 严格\"先 `freeze-implementation-base` 再改代码\"，design.md 冻结后不动；② 文档类修改虽不受 fingerprint 约束，但也应在对应代码 change 归档的**同一批**提交里完成（文档与代码同步规则），不要攒成第三批漂移。
+
+你确认从哪一批开始，我就按对应通道立项（P0-a/P0-b 可并行开两个 change，但同工作区仍须串行执行）。"}],"stop_reason":"end_turn","stop_details":null},"apiBlockIndex":1,"type":"assistant","uuid":"ed43adee-c737-46e7-a71e-0efd1dcc24db","timestamp":"2026-10-18T02:55:53.992Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch
+
+---at 8662003
+O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","is_error":false}]},"uuid":"067c772f-62bf-4025-a177-3dfd80b72afc","timestamp":"2026-10-18T15:33:11.838Z","toolUseResult":{"stdout":"K2 | Important | `build-and-deploy.yml`（发布工作流）仍走 QEMU 容器 `-j1` 构建，且打包清单（`:80`）**漏打 `weaknet-cli`、`weaknet-offline-diag`、`edge_network_rag.py`**（已复核）——经 Release 触发的部署将缺调参 CLI 与端侧 AI 链路 |
+| K3 | Minor | 架构文档 §5.3 方法表 28 项 vs 代码 31 个 `kMethod`（已复核）：缺 `GetTcpRttStats`、`QueryBtDataPath` 等；`weaknet_client.h` 顶部注释声称 11 函数 vs 实际 42 导出 |
+| K4 | Minor | 遥测契约 5 个字段云端单侧定义、板端永不输出（`hardware_arch`/`os_kernel`/`location`/`rtt_interval_seconds`/`rtt_probe_targets`，均有默认值故不 422，但上游读到恒空） |
+
+## 五、构建/安装/打包泄漏与 CI
+
+- **无安装泄漏**：全仓库无 CMake `install()` 规则，分发仅经 `tools/ci.sh` → `dist-arm64/`，治理文件/密钥不会进产物（`secrets/` 已 gitignore 且未跟踪）。
+- **CMake GLOB**（`server/CMakeLists.txt:4`，`
+
+---at 8669044
+O16 | Minor | unreachable-artifact | `docker/` 下 **7 个零引用 Dockerfile** + 3 个仅被 lab-CLI 引用（随 O13 处置） | remove |
+
+已核查放行（覆盖面广，值得记录）：54 个路由模块全部挂载；17 个可疑 OpenAPI 路径二轮复核全部有真实前端/CLI 消费；98 个迁移 = 185 表 = 185 模型零孤儿表（附带卫生注记：11 个迁移文件名前缀 ≠ 内部 revision id，仅需文档化）；50 个前端页面全部导航可达；6 个 compose 全部有消费者；24/39 console 脚本、6 个 prompt pack、4 个 Council 角色全部在用；edge 协议两端均已接线。
+
+## 八、修复优先级建议（不实施，供决策）
+
+1. **P0**：C1 锁纪律（UAF）——把 3 个指针纳入 `monitor_pointers_mutex` 纪律；
+2. **P0**：C2 上行水位——回归「只按已发事件 ts 推进」或三域独立游标（否则事实静默丢失，伤产品根基）；
+3. **P1**：S1+S2 下行信任模型闭环——响应动作签名 + 全动作强制 generation + 直连口纳入审批/catalog；
+4. **P1**：O1/O2/O3 收缩或接线边缘「无消费者却常驻」的管线与 API 面（省资源、消虚假特性承诺）；K2 发布工作流打包清单对齐 `ci.sh`；
+5. **P2**：Harness 2 个 error（`manifest_sync.sh` + workflow contract）、`openspec/tasks/` 补档机制落地、文档批量同步（51 套件 / 12 探针 / cli 手册 / ci 指南）、O4/O7/O8/O9/O15/O16 等 remove 类清理、嵌套 CI 休眠门禁迁移；
+6. **简化机会**：CMake GLOB → 显式清单；`ci.sh` 令牌经 stdin 传递；`safeExec` 杀进程组。
+
+评审到此结束——所有发现均只读取证、未改动仓库任何文件；如需按上述优先级立项（走 OpenSpec change 或 `openspec/tasks/` 记录），告诉我从哪一项开始。","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false},"sourceToolAssistantUUID":"4fff2753-a713-42af-b680-d600254caf73","session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature","slug":"polished-cuddling-thompson"}
+{"type":"last-prompt","lastPrompt":"不用走工作流","leafUuid":"067c772f-62bf-4025-a177-3dfd80b72afc","sessionId":"05becb87-5f20-4908-9491-83a26360e37f"}
+{"type":"ai-title","aiTitle":"一批问题的完整修复","sessionId":"05becb87-5f20-4908-9491-83a26360e37f"}
+{"type":"mode","mode":"normal","sessionId":"05becb87-5f20-4908-9491-83a26360e37f"}
+{"type":"permission-mode","permissionMode":"bypassP
+
+### K4 7
+---at 448696
+K4","content":[{"type":"thinking","thinking":"Now let me read the remaining prompts: resume.md, handoff.md, rca.md, debt-fix.md, debt-scan.md, archive.md. full-code-review.md already read.","signature":""}]},"apiBlockIndex":0,"attributionSkill":"full-code-review","type":"assistant","uuid":"0e7115c6-3956-4e54-85fc-4a1d8673b2d7","timestamp":"2026-10-17T06:15:35.294Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature"}
+{"parentUuid":"0e7115c6-3956-4e54-85fc-4a1d8673b2d7","isSidechain":false,"message":{"type":"message","model":"deepseek-v4-pro-0813","usage":{"input_tokens":59492,"cache_creation_input_tokens":0,"cache_read_input_tokens":38336,"output_tokens":173,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"role":"assistant","id":"gen-1792217727-Lf0uWjiMHGEUxmw43VK4","content":[{"type":"tool_use","id":"call_1479f71d8b914e119209c801","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/resume.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":1,"attributionSkill":"full-code-review","type":"assistant","uuid":"9659c608-bc72-4bff-a1a6-3d95029dbc68","timestamp":"2026-10-17T06:15:52.688Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","
+
+---at 449925
+K4","content":[{"type":"tool_use","id":"call_1479f71d8b914e119209c801","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/resume.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":1,"attributionSkill":"full-code-review","type":"assistant","uuid":"9659c608-bc72-4bff-a1a6-3d95029dbc68","timestamp":"2026-10-17T06:15:52.688Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature"}
+{"parentUuid":"9659c608-bc72-4bff-a1a6-3d95029dbc68","isSidechain":false,"message":{"type":"message","model":"deepseek-v4-pro-0813","usage":{"input_tokens":59492,"cache_creation_input_tokens":0,"cache_read_input_tokens":38336,"output_tokens":173,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"role":"assistant","id":"gen-1792217727-Lf0uWjiMHGEUxmw43VK4","content":[{"type":"tool_use","id":"call_f8955093cb684bee99bda5c8","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/handoff.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":2,"attributionSkill":"full-code-review","type":"assistant","uuid":"c3616f25-8a54-4b57-9a82-660148d77ef3","timestamp":"2026-10-17T06:15:52.694Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Netwo
+
+---at 451170
+K4","content":[{"type":"tool_use","id":"call_f8955093cb684bee99bda5c8","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/handoff.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":2,"attributionSkill":"full-code-review","type":"assistant","uuid":"c3616f25-8a54-4b57-9a82-660148d77ef3","timestamp":"2026-10-17T06:15:52.694Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature"}
+{"parentUuid":"c3616f25-8a54-4b57-9a82-660148d77ef3","isSidechain":false,"message":{"type":"message","model":"deepseek-v4-pro-0813","usage":{"input_tokens":59492,"cache_creation_input_tokens":0,"cache_read_input_tokens":38336,"output_tokens":173,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"role":"assistant","id":"gen-1792217727-Lf0uWjiMHGEUxmw43VK4","content":[{"type":"tool_use","id":"call_561acfe40ac64b1390fd5aeb","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/rca.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":3,"attributionSkill":"full-code-review","type":"assistant","uuid":"e6c9691d-cb64-46ef-9266-ef65fb1efcef","timestamp":"2026-10-17T06:15:52.700Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-
+
+---at 452416
+K4","content":[{"type":"tool_use","id":"call_561acfe40ac64b1390fd5aeb","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/rca.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":3,"attributionSkill":"full-code-review","type":"assistant","uuid":"e6c9691d-cb64-46ef-9266-ef65fb1efcef","timestamp":"2026-10-17T06:15:52.700Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics","sessionId":"05becb87-5f20-4908-9491-83a26360e37f","version":"2.1.276","gitBranch":"dev/feature"}
+{"parentUuid":"e6c9691d-cb64-46ef-9266-ef65fb1efcef","isSidechain":false,"message":{"type":"message","model":"deepseek-v4-pro-0813","usage":{"input_tokens":59492,"cache_creation_input_tokens":0,"cache_read_input_tokens":38336,"output_tokens":173,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"role":"assistant","id":"gen-1792217727-Lf0uWjiMHGEUxmw43VK4","content":[{"type":"tool_use","id":"call_333c3381d598465489a1f052","name":"Read","input":{"file_path":"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/prompts/archive.md"}}],"stop_reason":"tool_use","stop_details":null},"apiBlockIndex":4,"attributionSkill":"full-code-review","type":"assistant","uuid":"03ace89d-63c7-4398-94c4-146ae2354a3b","timestamp":"2026-10-17T06:15:52.704Z","effort":"max","perTurnEffort":null,"session_id":"05becb87-5f20-4908-9491-83a26360e37f","userType":"external","entrypoint":"cli","cwd":"/home/ubuntu/个人学习/AI-powered-Network-
+

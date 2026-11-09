@@ -1,0 +1,21 @@
+#pragma once
+
+#include <cstdint>
+#include <chrono>
+
+namespace xgrids {
+
+// 设备端统一时间戳来源。四路相机必须用同一个时钟打戳，
+// 否则各路系统时钟漂移会让同步判定失效。
+class MonotonicClock {
+public:
+    static int64_t now_ns() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
+    static int64_t now_us() { return now_ns() / 1000; }
+    static int64_t now_ms() { return now_ns() / 1000000; }
+};
+
+}  // namespace xgrids

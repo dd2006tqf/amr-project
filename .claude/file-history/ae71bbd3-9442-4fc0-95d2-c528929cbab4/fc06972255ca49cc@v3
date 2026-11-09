@@ -1,0 +1,26 @@
+#include "common/ring_buffer.h"
+#include "sensors/sensor_frame.h"
+#include "sync/time_aligner.h"
+
+namespace xgrids {
+
+template <typename T>
+std::optional<T> RingBuffer<T>::pop_for(int64_t timeout_us) {
+    std::unique_lock<std::mutex> lk(mu_);
+    bool ok = not_empty_.wait_for(lk, std::chrono::microseconds(timeout_us),
+                                  [&] { return size_.load() > 0; });
+    if (!ok) return std::nullopt;
+    T item = std::move(buf_[head_.load() % buf_.size()]);
+    head_.fetch_add(1);
+    size_.fetch_sub(1);
+    lk.unlock();
+    not_full_.notify_one();
+    return item;
+}
+
+// 显式实例化本工程用到的类型
+template class RingBuffer<SensorEvent>;
+template class RingBuffer<AlignedSlice>;
+template class RingBuffer<ImageFrame>;
+
+}  // namespace xgrids

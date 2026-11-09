@@ -1,0 +1,275 @@
+/**
+ * @file test_theme.cpp
+ * @brief 主题与状态着色的像素级测试
+ *
+ * ## 这些测试防的是什么回归
+ *
+ * 本轮改版把三处散落的颜色字面量收敛到 `ThemeColors`，并新增了
+ * 「维度圆点跟随状态着色」这个行为。这两件事都可能被后续改动无声破坏：
+ *
+ * 1. `apply_theme()` 设置全局 QSS 后，`state_color()` 若退回字面量，
+ *    颜色仍然"看起来对"，只有精确比色才能发现它不再来自主题；
+ * 2. 圆点着色依赖 `make_status_row()` 把 dot 指针交出去。一旦
+ *    `update_status_label()` 的第三个参数被漏传或传 null，圆点会静默
+ *    退回默认灰——界面上仍有圆点，但失去语义。
+ *
+ * ## 为什么能脱离显示器
+ *
+ * 与 `test_line_chart_widget.cpp` 同一套路：`widget.grab()` 走完整
+ * 绘制路径，产物是 `QPixmap`，可以逐像素断言。offscreen 平台即可。
+ *
+ * ## 判据为什么锚定精确色值
+ *
+ * 上一轮踩过「非白像素」这种宽松判据的坑（图表灰底被当成内容）。
+ * 这里所有断言都要求**精确 RGB**，因为 QSS/palette 设置的颜色
+ * 不经过抗锯齿混合：
+ *  - 圆点文字是实心字形，中心像素就是纯前景色；
+ *  - 只有文字边缘才会混入抗锯齿，所以取一小块区域找"是否存在该色"，
+ *    而不是要求整块都是。
+ */
+
+#include <gtest/gtest.h>
+
+#include <QApplication>
+#include <QColor>
+#include <QGroupBox>
+#include <QImage>
+#include <QLabel>
+#include <QPixmap>
+#include <QString>
+#include <QWidget>
+
+#include <string>
+
+#include "data/dashboard_data.hpp"
+#include "ui/main_window.hpp"
+#include "ui/theme.hpp"
+
+namespace {
+
+using weaknet::dashboard::MainWindow;
+using weaknet::dashboard::ThemeColors;
+
+/// `QWidget` 要求进程内有 `QApplication`（`QGuiApplication` 不够）
+class QtAppEnvironment : public ::testing::Environment {
+public:
+    void SetUp() override {
+        static int argc = 1;
+        static char arg0[] = "test_theme";
+        static char* argv[] = {arg0, nullptr};
+
+        if (!QApplication::instance()) {
+            app_ = new QApplication(argc, argv);
+        }
+    }
+
+    void TearDown() override {
+        delete app_;
+        app_ = nullptr;
+    }
+
+private:
+    QApplication* app_ = nullptr;
+};
+
+[[maybe_unused]] const ::testing::Environment* const g_qt_env =
+    ::testing::AddGlobalTestEnvironment(new QtAppEnvironment);
+
+/// 与服务端 legacy_adapter.hpp 输出形状一致的样本。
+///
+/// 刻意让 4 个维度各处于一种状态（GOOD/DEGRADED/BAD/NOT_APPLICABLE），
+/// 这样一次渲染就能覆盖全部分支。
+const char* kMixedSnapshot = R"({
+  "schema_version":2,
+  "interface":"wlan0",
+  "assessment_profile":"FULL",
+  "overall":{"state":"DEGRADED","coverage":"FULL_FOR_PROFILE","display_score":72.5},
+  "network_health":{
+    "ip_reachability":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "responsiveness":{"state":"DEGRADED","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"rtt_high","evidence":[]},
+    "reliability":{"state":"BAD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"loss_high","evidence":[]},
+    "rf_health":{"state":"UNKNOWN","coverage":"NONE","applicability":"NOT_APPLICABLE","reason":"wired_link","evidence":[]}
+  },
+  "service_health":{
+    "dns":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "tcp_connect":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "tcp_rtt":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "http_access":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "captive_portal":{"state":"UNKNOWN","coverage":"NONE","applicability":"NOT_APPLICABLE","reason":"","evidence":[]},
+    "active_dns":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "active_tcp":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "active_https":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"","evidence":[]},
+    "active_portal":{"state":"UNKNOWN","coverage":"NONE","applicability":"NOT_APPLICABLE","reason":"","evidence":[]}
+  },
+  "warnings":[],
+  "primary_issue":"rtt_high"
+})";
+
+QColor theme_qcolor(const char* hex) {
+    return QColor(QString::fromLatin1(hex));
+}
+
+/// 统计整张图中出现该精确色的像素数
+int count_exact(const QImage& img, const QColor& target) {
+    const QRgb want = target.rgb();
+    int n = 0;
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = 0; x < img.width(); ++x) {
+            if (img.pixel(x, y) == want) {
+                ++n;
+            }
+        }
+    }
+    return n;
+}
+
+/// 在指定矩形里找精确色
+int count_exact_in(const QImage& img, const QRect& box, const QColor& target) {
+    const QRgb want = target.rgb();
+    int n = 0;
+    const QRect r = box.intersected(img.rect());
+    for (int y = r.top(); y <= r.bottom(); ++y) {
+        for (int x = r.left(); x <= r.right(); ++x) {
+            if (img.pixel(x, y) == want) {
+                ++n;
+            }
+        }
+    }
+    return n;
+}
+
+/// 渲染整个主窗口
+QImage render_window(MainWindow& w) {
+    w.setInterface(QString());
+    w.resize(1024, 700);
+    w.show();
+    QApplication::processEvents();
+    const QPixmap pm = w.grab();
+    return pm.toImage().convertToFormat(QImage::Format_RGB32);
+}
+
+/// 通过真实信号槽喂入快照（走 QMetaObject，不新增测试专用接口）
+void feed_experience(MainWindow& w, const char* json) {
+    QMetaObject::invokeMethod(&w, "onExperienceReady",
+                              Qt::DirectConnection,
+                              Q_ARG(QByteArray, QByteArray(json)));
+}
+
+// ---------------------------------------------------------------------------
+// 主题本身
+// ---------------------------------------------------------------------------
+
+TEST(ThemeTest, ApplyThemeReturnsFusionStyle) {
+    // Fusion 是跨平台一致的基底样式。eglfs/offscreen 下原生样式会退化，
+    // 因此返回 "(platform default)" 就意味着主题降级了，需要知道。
+    const QString style = weaknet::dashboard::apply_theme();
+    EXPECT_EQ(style, QStringLiteral("Fusion"))
+        << "Fusion 不可用会退化到平台默认样式，QSS 细节将不受控";
+}
+
+TEST(ThemeTest, ThemeColorsAreDistinct) {
+    // 四个状态色必须互不相同，否则界面上分不出状态。
+    // 这不是形式主义：曾出现过 DEGRADED 与 UNKNOWN 取了近似灰的情况。
+    const QColor good = theme_qcolor(ThemeColors::kGood);
+    const QColor degraded = theme_qcolor(ThemeColors::kDegraded);
+    const QColor bad = theme_qcolor(ThemeColors::kBad);
+    const QColor unknown = theme_qcolor(ThemeColors::kUnknown);
+
+    EXPECT_TRUE(good.isValid());
+    EXPECT_TRUE(degraded.isValid());
+    EXPECT_TRUE(bad.isValid());
+    EXPECT_TRUE(unknown.isValid());
+
+    EXPECT_NE(good, degraded);
+    EXPECT_NE(good, bad);
+    EXPECT_NE(good, unknown);
+    EXPECT_NE(degraded, bad);
+    EXPECT_NE(degraded, unknown);
+    EXPECT_NE(bad, unknown);
+}
+
+TEST(ThemeTest, WindowBackgroundComesFromTheme) {
+    // 全局 QSS 真的生效了吗？窗口背景必须正是 ThemeColors::kBackground。
+    // 改进前没有全局样式表，这里是系统默认灰 (239,239,239)。
+    weaknet::dashboard::apply_theme();
+    MainWindow w;
+    const QImage img = render_window(w);
+
+    const int n = count_exact(img, theme_qcolor(ThemeColors::kBackground));
+    EXPECT_GT(n, img.width() * img.height() / 4)
+        << "页面底色应大面积来自 ThemeColors::kBackground";
+
+    // 反证：系统默认灰不应再是大头
+    const QColor sys_gray(0xEF, 0xEF, 0xEF);
+    const int sys_n = count_exact(img, sys_gray);
+    EXPECT_LT(sys_n, n / 4)
+        << "若系统默认灰仍占多数，说明 QSS 没有真正接管背景";
+}
+
+// ---------------------------------------------------------------------------
+// 状态着色（本轮新增行为的核心断言）
+// ---------------------------------------------------------------------------
+
+TEST(ThemeTest, StatusDotsAreColoredByState) {
+    // 这是本轮最关键的断言：圆点必须跟随状态着色。
+    // 改进前 `make_status_row()` 创建的圆点再没被引用过，永远默认灰。
+    weaknet::dashboard::apply_theme();
+    MainWindow w;
+    render_window(w);
+    feed_experience(w, kMixedSnapshot);
+    QApplication::processEvents();
+
+    const QImage img = w.grab().toImage().convertToFormat(QImage::Format_RGB32);
+
+    // 样本里 4 种状态各有一个维度，因此 4 种主题色都应出现在图里
+    const int good = count_exact(img, theme_qcolor(ThemeColors::kGood));
+    const int degraded = count_exact(img, theme_qcolor(ThemeColors::kDegraded));
+    const int bad = count_exact(img, theme_qcolor(ThemeColors::kBad));
+    const int unknown = count_exact(img, theme_qcolor(ThemeColors::kUnknown));
+
+    EXPECT_GT(good, 0) << "GOOD 状态色未出现在界面上";
+    EXPECT_GT(degraded, 0) << "DEGRADED 状态色未出现在界面上";
+    EXPECT_GT(bad, 0) << "BAD 状态色未出现在界面上";
+    EXPECT_GT(unknown, 0) << "UNKNOWN/不适用 状态色未出现在界面上";
+}
+
+TEST(ThemeTest, WithoutDataNoStateColorsBeyondUnknown) {
+    // 对照组：没有喂数据时，除了 UNKNOWN 灰（"--"/"未知"），
+    // 不应出现 GOOD/DEGRADED/BAD 三色。
+    // 这条能区分「颜色来自真实状态」还是「颜色是构造时就写死的装饰」。
+    weaknet::dashboard::apply_theme();
+    MainWindow w;
+    const QImage img = render_window(w);
+
+    EXPECT_EQ(count_exact(img, theme_qcolor(ThemeColors::kGood)), 0)
+        << "空数据下不应出现 GOOD 绿";
+    EXPECT_EQ(count_exact(img, theme_qcolor(ThemeColors::kDegraded)), 0)
+        << "空数据下不应出现 DEGRADED 黄";
+    EXPECT_EQ(count_exact(img, theme_qcolor(ThemeColors::kBad)), 0)
+        << "空数据下不应出现 BAD 红";
+}
+
+TEST(ThemeTest, GroupBoxSurfaceIsWhite) {
+    // QGroupBox 的卡片底色来自主题。改进前它跟窗口同色，
+    // 两个分组看起来像悬空的文字块，没有卡片边界。
+    weaknet::dashboard::apply_theme();
+    MainWindow w;
+    const QImage img = render_window(w);
+
+    const int white = count_exact(img, theme_qcolor(ThemeColors::kSurface));
+    EXPECT_GT(white, 20000)
+        << "两张卡片应有可观的白底面积；若接近 0 说明 QSS 的 QGroupBox 规则没生效";
+}
+
+TEST(ThemeTest, DividerColorDrawnAsCardBorder) {
+    // 卡片必须有 1px 边框，否则浅底上的白卡片几乎看不出边界。
+    weaknet::dashboard::apply_theme();
+    MainWindow w;
+    const QImage img = render_window(w);
+
+    const int divider = count_exact(img, theme_qcolor(ThemeColors::kDivider));
+    EXPECT_GT(divider, 1000)
+        << "分隔线色应出现在卡片边框上；过少说明边框没画出来";
+}
+
+} // namespace

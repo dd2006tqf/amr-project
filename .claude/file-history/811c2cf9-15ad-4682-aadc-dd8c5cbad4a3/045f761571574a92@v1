@@ -1,0 +1,114 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 流读取器
+
+#pragma once
+#include <atomic>
+#include <cstdint>
+#include <vector>
+
+#include "ins_base/message_queue.h"
+#include "ins_error_code/ins_errorcode.h"
+#include "ins_proto/media/ins_proto_media_streamer.h"
+#include "muxer/flv_muxer.h"
+#include "nalu_reader.h"
+
+namespace ins {
+namespace live_broadcast {
+
+enum class StreamPacketType : uint8_t {
+  kVideo = 0,
+  kAudio = 1,
+};
+
+struct StreamDataPacket {
+  StreamDataPacket() = default;
+
+  StreamDataPacket(std::vector<uint8_t>&& in_payload, uint32_t in_timestamp_ms,
+                   StreamPacketType in_packet_type)
+      : payload(std::move(in_payload)),
+        timestamp_ms(in_timestamp_ms),
+        packet_type(in_packet_type) {}
+
+  std::vector<uint8_t> payload;
+  uint32_t timestamp_ms{};
+  StreamPacketType packet_type{StreamPacketType::kVideo};
+};
+
+/**
+ * @brief 流读取器
+ * @details 从IpcFrameBuf读取音视频流
+ * @note 不可复制、不可移动（管理读取线程和IpcFrameBuf资源）
+ */
+class StreamReader {
+ public:
+  StreamReader();
+  ~StreamReader();
+
+  // 禁止拷贝
+  StreamReader(const StreamReader&) = delete;
+  StreamReader& operator=(const StreamReader&) = delete;
+
+  // 禁止移动（因 ins::base::MessageQueue 不可移动）
+  StreamReader(StreamReader&&) = delete;
+  StreamReader& operator=(StreamReader&&) = delete;
+
+  /**
+   * @brief 启动读取线程
+   */
+  InsErrorCode Start();
+
+  /**
+   * @brief 停止读取线程
+   */
+  InsErrorCode Stop();
+
+  /**
+   * @brief 获取帧数据
+   * @param packet 输出：传输无关的数据包，成功时被填入队首消息（move 自队列）。
+   * @return 错误码
+   */
+  InsErrorCode GetFrame(StreamDataPacket& packet);
+
+  /**
+   * @brief
+   * 获取帧数据
+   * @param packet 输出：成功时被填入队首消息（move 自队列）
+   * @param timeout_ms 超时时间
+   * @return
+   * kInsErrorCode_Comm_Success: 成功获取数据
+   * kInsErrorCode_LiveBroadcast_NoReadableData: 无数据，超时返回
+   * kInsErrorCode_LiveBroadcast_GetFrameFailed: 队列停止，返回
+   */
+  InsErrorCode GetFrameBlocking(StreamDataPacket& packet, int timeout_ms);
+
+  /**
+   * @brief 读取数据
+   * @param stream_data 媒体数据输入
+   * @param size 媒体数据大小
+   * @param frame_info 帧信息
+   * @return 错误码
+   */
+  InsErrorCode Run(uint8_t* stream_data, int32_t size,
+                   ins::base::StreamFrameInfo* frame_info);
+
+  /**
+   * @brief 运行出错回调
+   * @param error_code
+   * 错误码
+   */
+  void RunErrorCallback(InsErrorCode error_code);
+
+ private:
+  // 统一承载传输无关的数据包；由上层发送模块决定如何映射到具体协议。
+  ins::base::MessageQueue<StreamDataPacket> queue_;
+  uint64_t first_frame_timestamp_ = 0;
+  uint64_t last_timestamp_ms_ = 0;
+  std::atomic<bool> is_running_{false};
+
+  NaluReader reader_;
+  FlvMuxer muxer_;
+  std::unique_ptr<nodestreamer::NodeStreamer> live_streamer_;
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

@@ -1,0 +1,107 @@
+import io
+
+P = "/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/client/example_usage.cpp"
+s = io.open(P, encoding="utf-8").read()
+
+# ---- 1) 文件头说明改成真实能力清单 ----
+old_head = ''' *   1. weaknet_init()            初始化库并连接 D-Bus
+ *   2. weaknet_is_connected()    检查连接状态
+ *   3. weaknet_get_version()     获取库版本
+ *   4. weaknet_get_interfaces()  获取当前网络接口（D-Bus Method: GetInterfaces）
+ *   5. weaknet_health_check()    网络健康检查（D-Bus Method: HealthCheck）
+ *   6. weaknet_subscribe_event() 订阅 InterfaceChanged / ConnectionModeChanged 信号
+ *   7. weaknet_check_events()    非阻塞轮询 D-Bus 信号队列
+ *   8. weaknet_unsubscribe_event() 取消订阅
+ *   9. weaknet_cleanup()         释放资源
+ *
+ * 依赖：
+ *   - WeakNet 服务端必须已启动并在 D-Bus Session 总线上注册
+ *   - weaknet_client.h + libweaknet_client.so
+ *
+ * 运行方式：
+ *   LD_LIBRARY_PATH=. ./example_usage
+ */'''
+
+new_head = ''' *   1. weaknet_init()            初始化库并连接 D-Bus
+ *   2. weaknet_is_connected()    检查连接状态
+ *   3. weaknet_get_version()     获取库版本
+ *   4. weaknet_get_interfaces()  获取当前网络接口（D-Bus Method: GetInterfaces）
+ *   5. weaknet_health_check()    网络健康检查（D-Bus Method: HealthCheck）
+ *   6. 按需的 get_* 查询       （这是当前唯一有效的数据路径）
+ *   7. weaknet_cleanup()         释放资源
+ *
+ * ⚠️ 本示例**不再演示事件订阅**（2026-11-01）：
+ *   服务端自 2026-10-19 起停发了全部 D-Bus 信号——停发时它们没有任何生产
+ *   订阅者（决策与证据见 openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md）。
+ *   于是 weaknet_subscribe_event() / weaknet_check_events() 这类 API 成了空转：
+ *   订阅会成功（本地加了 match 规则），但**永远等不到事件**。
+ *   示例程序若继续演示它，等于把"抄这个就能用"的错误信号传给集成方——
+ *   而这正是当初那条"信号替代轮询"的消费路径从未建出来的原因之一。
+ *   要拿当前状态请直接调用对应的 get_* / *_stats 查询方法。
+ *
+ * 依赖：
+ *   - WeakNet 服务端必须已启动并在 D-Bus Session 总线上注册
+ *   - weaknet_client.h + libweaknet_client.so
+ *
+ * 运行方式：
+ *   LD_LIBRARY_PATH=. ./example_usage
+ */'''
+assert old_head in s, "文件头未找到"
+s = s.replace(old_head, new_head, 1)
+
+# ---- 2) 替换步骤 6..9（事件订阅 + 30 秒轮询 + 取消订阅）为真实查询 ----
+start_marker = '''    // ===== 步骤 6：获取支持的事件类型 ====='''
+end_marker = '''    // ===== 步骤 10：清理资源 ====='''
+i = s.index(start_marker)
+j = s.index(end_marker)
+
+new_body = '''    // ===== 步骤 6：查询当前状态（事件订阅的替代路径） =====
+    //
+    // 这里刻意演示**查询**而不是订阅：服务端已停发全部 D-Bus 信号
+    // （2026-10-19），weaknet_subscribe_event() / weaknet_check_events()
+    // 现在订得上但永远等不到事件。生产集成应当按需轮询 get_* 方法。
+    std::cout << "\\n6. 查询当前网络状态..." << std::endl;
+
+    char query_buffer[2048];
+
+    // 6.1 TCP 重传统计（真实数据源：eBPF tcp_retrans 探针）
+    if (weaknet_get_tcp_retrans_stats(query_buffer, sizeof(query_buffer),
+                                   error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ TCP 统计: " << query_buffer << std::endl;
+    } else {
+        std::cout << "⚠️  TCP 统计暂不可用: " << error_buffer << std::endl;
+    }
+
+    // 6.2 TCP RTT 与抖动（真实数据源：tcp_connect / tcp_conn 探针）
+    if (weaknet_get_tcp_rtt_stats(query_buffer, sizeof(query_buffer),
+                              error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ RTT 统计: " << query_buffer << std::endl;
+    } else {
+        std::cout << "⚠️  RTT 统计暂不可用: " << error_buffer << std::endl;
+    }
+
+    // 6.3 网络体验评分（Assurance v2 / SLE）
+    if (weaknet_get_network_experience(query_buffer, sizeof(query_buffer),
+                                    error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ 网络体验: " << query_buffer << std::endl;
+    } else {
+        std::cout << "⚠️  网络体验暂不可用: " << error_buffer << std::endl;
+    }
+
+    // 若需要"持续监测"，正确做法是按固定周期重复上面的查询，
+    // 而不是订阅一个永远不来的信号。
+    std::cout << "\\n   提示：持续监测请按周期轮询上述查询方法；"
+                 "事件订阅族当前无效（见 weaknet_client.h 文件头）。" << std::endl;
+
+'''
+
+s = s[:i] + new_body + s[j:]
+
+# ---- 3) 修正后续步骤编号 ----
+s = s.replace("    // ===== 步骤 10：清理资源 =====",
+              "    // ===== 步骤 7：清理资源 =====", 1)
+s = s.replace('std::cout << "\\n9. 清理资源..." << std::endl;',
+              'std::cout << "\\n7. 清理资源..." << std::endl;', 1)
+
+io.open(P, "w", encoding="utf-8").write(s)
+print("example_usage.cpp rewritten")

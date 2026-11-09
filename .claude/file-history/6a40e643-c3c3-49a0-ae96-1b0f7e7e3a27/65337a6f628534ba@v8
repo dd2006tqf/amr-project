@@ -1,0 +1,335 @@
+# 多车车队化实施计划 v2（评审修订版）
+
+> 修订依据：评审提出的 6 个关键问题 + 5 个实施坑。**P0 先冻结接口契约**，再 A → C → B。
+> 相对 v1 的核心变化：**执行后端分离**（local_sim vs vda5050）、**选车三态结果**、**强清改隔离而非摘除**、**结构化车辆状态消息**。
+
+## Context
+
+VDA 5050 车队适配 Epic（Tasks 1–7）已合并 main 并推送。核心 612/612 单测绿、e2e 8 阶段全 PASS。
+剩余缺口决定"多车车队"能否真正落地：真多车并发、显式绑定选车、时空窗交通协调、Web 强清入口。
+
+**评审否决项（必须先修正）**：
+1. VDA 5050 车辆与本地模拟车辆的执行模型混同 → 必须**执行后端分离**
+2. `Mission.fleet_id` 语义被挪用 → 必须**新增** `assigned_vehicle_id`
+3. 选车输入数据源未闭合 → 静态配置 + 动态状态**分离**，位置不可用即**不合格**
+4. 选车失败 vs 排队矛盾 → 结果必须**三态**
+5. 时空窗安全模型不完整 → 逐边进出时刻 + 全有或全无 + 延期扩窗
+6. 强清把"通信失联"直接等同于"可释放路权" → 必须**隔离态 + 审计 + 服务端复验**
+
+---
+
+## P0：接口契约冻结（先做，产出设计文档 + 核心类型）
+
+产出 `docs/superpowers/specs/multi_vehicle_fleet.md`（契约文档），并落地以下核心类型（零 ROS）：
+
+### P0.1 车辆执行后端分离（评审问题 1）
+```cpp
+enum class VehicleExecutionBackend {
+  kLocalSim,   // 本地模拟车：调度发 /plan/{vid}，path_tracker 算 cmd_vel，chassis 执行
+  kVda5050,    // 外部 VDA 5050 车：调度只发 MQTT order，车辆自带控制器执行
+};
+```
+- **铁律**：`kVda5050` 车辆**不启动** path_tracker / safety_gate / chassis 三件套，也**不订阅** `/plan/{vid}`、不产生 `/cmd_vel_raw/{vid}`。
+- 两者**共用**：任务队列、选车、路权锁、动态解锁、断链守卫、订单构建。
+- 两者**不共用**：底层运动控制链。
+- VDA 5050 车辆的"完成"判定 = state 报文 `lastNodeId` 推进到订单终点（`/fleet/{vid}/state`），**不是** `/tracking/error` 的 arrived。
+- 车辆清单来源：`config/fleet.yaml` 的 `robots[]` 增加 `backend: local_sim|vda5050` 字段（默认 `local_sim`），`id` 即 vehicle_id。
+
+### P0.2 车辆身份语义分离（评审问题 2）
+| 概念 | 载体 | 说明 |
+|---|---|---|
+| 车队归属 | `Mission.fleet_id` | **保持原义**（"V1.2 多机预留"），不挪用 |
+| 承接车辆 | `Mission.assigned_vehicle_id` | **新增字段**，空 = 待选车 |
+| 车辆 | `VehicleRuntimeState.vehicle_id` | 对应 `fleet.yaml` 的 `robots[].id` / VDA 5050 serialNumber |
+
+- `SubmitOrder.srv` / `EnqueueMission.srv` **末尾追加** `string assigned_vehicle_id`（不复用 `vehicle_id` 命名，避免与"车队/机器人 id"混读）。
+- **兼容性不假设**：ROS 2 srv 变更后旧客户端行为需**实测**（用仓库内现有客户端/脚本），不靠推断。验证方式：e2e 现有 8 阶段 + 现有 REST 提单链路（它们就是旧客户端）。
+
+### P0.3 选车输入数据源闭合 + 三态结果（评审问题 3、4）
+```cpp
+struct VehicleRuntimeState {
+  std::string vehicle_id;
+  VehicleExecutionBackend backend = VehicleExecutionBackend::kLocalSim;
+  // —— 静态（来自 fleet.yaml）——
+  bool enabled = true;
+  std::vector<std::string> capabilities;   // 空 = 未声明限制
+  // —— 动态（来自最新状态报文，带时间戳）——
+  bool online = true;
+  bool busy = false;
+  double battery_percent = 100.0;
+  bool position_valid = false;             // 位置是否可信
+  std::string current_station_id;          // 有效位置对应的站点
+  std::chrono::steady_clock::time_point state_time{};  // 状态新鲜度
+  bool quarantined = false;                // 隔离态（强清后）——不合格但可恢复
+};
+
+enum class AssignmentOutcome {
+  kAssigned,        // 已选车
+  kDeferred,        // 暂时不可用（车忙/位置陈旧/状态未到）→ 任务留队等待
+  kIndeterminate,   // 状态不确定（无该车状态报文）→ 暂停自动分配，等状态恢复
+  kRejected,        // 永久不满足（显式指定车不存在/禁用/能力不符/隔离）→ 拒绝
+};
+```
+**硬约束**（`kAssigned` 必须全部满足，显式指定同样适用）：
+`online ∧ enabled ∧ !busy ∧ !quarantined ∧ 具备能力 ∧ battery ≥ 阈值 ∧ position_valid ∧ 状态新鲜`
+
+**距离**：优先**路网路径成本**（`PlanMissionRouteLocks` / `FindRoutePath` 同源的 `RouteOrEuclideanDistance`），欧氏距离仅在路径不可算时作为**次级**度量；**位置无效或状态陈旧 → 该车不合格**（不再"first_available"兜底派单）。
+
+**去重既有能力**：`core/fleet/fleet_catalog.cpp` 已有 `SelectFleetRobotForStationTask`（路网距离 + 电池 tiebreak），**复用其距离计算**，不重复造。
+
+### P0.4 车辆状态结构化消息（评审坑 5）
+- 新增 `msg/VehicleLinkState.msg`（**不用平行数组**）：
+  ```
+  string vehicle_id
+  string backend            # local_sim | vda5050
+  bool online
+  bool busy
+  bool quarantined
+  bool position_valid
+  string current_station_id
+  double battery_percent
+  int64 state_age_ms
+  string last_error
+  ```
+- `DispatcherState.msg` 末尾追加 `VehicleLinkState[] vda5050_vehicle_links`（替代评审否决的平行数组方案）。
+
+### P0.5 强清安全边界（评审问题 6）
+- 强清**不摘车**，改为**隔离**：`quarantined = true` → 该车**不再参与自动分配**（`PlanVehicleAssignment` 视为不合格），但仍在受管清单、仍可见、仍可被显式恢复。
+- **恢复流程**：新增 `RestoreVda5050Link` 服务——需操作员确认车辆位置已核实（`position_verified` 字段）→ 清 `quarantined` → 重新参与分配。
+- **审计**：`ForceClearVda5050Link.srv` 增加 `operator_id`（必填）、`reason`（必填）、`confirm_vehicle_id`（必须与 `vehicle_id` 完全一致，防误操作）。
+- **服务端复验**：前端按钮隐藏**不是**安全边界；服务端 `PlanForceClearLink` 重新校验（在线车拒、隔离车拒、车辆 id 必须匹配）。
+- **车辆物理占位未知**：强清释放锁前必须显式记录"车辆物理位置未核实"这一事实到审计日志（不伪称已确认安全）。
+
+### P0.6 ROS 话题与 TF 隔离（评审坑 1、2）
+- 话题命名：`/plan/{vid}`、`/cmd_vel_raw/{vid}`、`/cmd_vel_safe/{vid}`、`/odom/{vid}`、`/tracking/error/{vid}`。
+- **vehicle_id 必须先过 ROS 名称校验**（`[A-Za-z_][A-Za-z0-9_]*`），非法 id 直接拒绝接入（外部 VDA 5050 serialNumber 不保证合法）。
+- **TF frame 隔离**：每车 `odom_frame_id` / `base_frame_id` 唯一（如 `amr_01/odom`、`amr_01/base_link`），禁止多车抢同一 frame。
+- 兼容红线：单车（`vehicle_ids` 为空）时**话题名逐字不变**。
+
+### P0.7 并发派单原子性（评审坑 3）
+- 派发链路的提交顺序固定为：**选车 → 占车（busy）→ 预留路权锁 → Pop 出队 → 发布订单/路径**。
+- 任一步失败 → **逆序回滚**（释放 busy、回滚锁预留、任务留队），**禁止**出现"车被占但任务没派"或"锁被占但车没占"。
+- 单线程 executor（现状 `rclcpp::spin`）保证无竞态，但**回滚必须写全**。
+
+---
+
+## Task A：真多车并发 + 显式绑定（评审后修订）
+
+### A1 — 核心纯函数（已部分实现，按评审修订）
+文件：`core/fleet/vehicle_assignment.hpp/.cpp`（已存在 `b6b3538`，需按 P0.3 修订）
+- 修订点：①加 `backend`/`quarantined`/`position_valid`/`state_time` 字段；②结果改三态 `AssignmentOutcome`；③**删除** "first_available 兜底"（位置不可算 → 该车不合格）；④显式指定也施加全部硬约束；⑤加 `state_max_age_ms` 阈值（默认 5000，超龄 → 状态不确定 → `kIndeterminate`）。
+- `test/unit/test_vehicle_assignment.cpp` 已有 24 例，需按新语义增补：三态各一例、隔离车不合格、位置无效不合格、状态超龄 → indeterminate、显式指定带全部硬约束。
+
+### A2 — 车辆身份字段
+- `mission_state.hpp`：`fleet_id` **保持原义**，**新增** `std::string assigned_vehicle_id;`
+- `SubmitOrder.srv` / `EnqueueMission.srv`：末尾追加 `string assigned_vehicle_id`。
+- `dispatcher_node.cpp`：`SubmitOrderCb` / `EnqueueMissionCb` 写入 `m.assigned_vehicle_id`。
+- `rest_gateway.cpp`：`/api/v1/orders` 解析 `vehicle=` query 参数透传。
+
+### A3 — 车队目录接入 + 车辆状态表
+- `fleet.yaml`：`robots[]` 增 `backend` 字段（默认 `local_sim`）。
+- `dispatcher_node`：`on_configure` 加载 `config/fleet.yaml`（参数 `fleet_catalog_file`），构建 `vehicle_states_`（vehicle_id → VehicleRuntimeState）。
+- 动态刷新：VDA 5050 车从 `/fleet/{vid}/state` 更新 online/battery/position/state_time；本地车从 `/odom/{vid}` 更新位置。
+- 隔离态：`quarantined` 由强清/恢复服务维护。
+
+### A4 — per-vehicle 话题参数化（**仅 local_sim 后端的车**）
+- `path_tracker_node`：参数 `vehicle_id`（默认空 = 单车兼容）+ 话题可覆盖。
+- `safety_gate_node`：参数 `vehicle_id` + 话题可覆盖。
+- `chassis_driver_node`：参数 `cmd_vel_topic` / `odom_topic` / frame 前缀。
+- `dispatcher_node`：`plan_pub_` → `vehicle_plan_pubs_[vid]`；`/tracking/error/{vid}`、`/odom/{vid}` per-vehicle 订阅。
+- `launch/full_system.launch.py`：`vehicle_ids` 参数（非空时按 local_sim 车起多组 tracker/gate/chassis，namespace 隔离）。
+
+### A5 — 多车执行槽位拆分
+- `tracking_mission_id_`（string）→ `tracking_missions_`（mission_id → vehicle_id）+ `vehicle_current_mission_`（vehicle_id → mission_id）。
+- 派发门控：**只对 `kLocalSim` 车**要求 slot 空闲；`kVda5050` 车的"执行中"由订单状态判定，不占 path_tracker slot。
+- `TrackingErrorCb`（local_sim 到达）按 vehicle_id 收口；VDA 5050 完成判定在 `Vda5050StateCb`（lastNodeId 到终点）。
+- `EnforceVda5050LinkGuard`：fleet-wide 挂起 → **按车挂起**。
+
+### A6 — 选车接线（tri-state）
+- 派发时：`assigned_vehicle_id` 空 → 调 `PlanVehicleAssignment`。
+  - `kAssigned` → 继续派发
+  - `kDeferred` → **任务留队**（不 FailMission！），记 `pending_wait_`，下 tick 重试
+  - `kIndeterminate` → 暂停自动派发（WARN），等状态恢复
+  - `kRejected` → `FailMission` 带明确原因
+- **队首阻塞**：队首任务不可派时，**继续扫描队列后续任务**找可派发的（需 core 支持 peek-N 或 snapshot 后逐个尝试）。
+
+### A7 — 验证
+- 核心单测：A1 修订后的用例 + A2 字段 + 派发 tri-state 决策单测。
+- **e2e 回归（兼容红线）**：单车配置下现有 8 阶段原样 PASS。
+- **e2e 新增 Stage 7（本地双模拟车）**：两台 local_sim 车各起一组 tracker/gate/chassis，提交 2 单 → 断言两车**同时**在跑（时间窗重叠断言）、状态不串线、锁无交叉误释放、两单都完成。
+- **e2e 新增 Stage 8（双 VDA 5050 车）**：两台 mock VDA 车（`mock_amr_01`/`mock_amr_02`）+ 订单路由 → 断言两车各自收到 order、state 互不串线、两单都完成、锁正确释放。**不允许**用两套 ROS tracker 冒充 VDA 5050 多车闭环。
+
+---
+
+## Task C：Web 强清闭环（评审后修订）
+
+### C1 — 服务语义修订
+- `ForceClearVda5050Link.srv` 增：`operator_id`（必填）、`confirm_vehicle_id`（必填，须等于 `vehicle_id`）。
+- 响应增：`quarantined`（车已隔离）、`audit_id`。
+- 新增 `RestoreVda5050Link.srv`：`vehicle_id` + `operator_id` + `position_verified`（bool）→ 解除隔离。
+- `PlanForceClearLink`（核心纯函数）按 P0.5 修订：在线拒、隔离拒、id 不匹配拒；受理 → 释锁 + 收口在途任务 + **置隔离**（非移除）。
+
+### C2 — REST 端点
+- `POST /api/v1/force_clear_link`，**请求体 JSON**（非 query）：`{vehicle_id, confirm_vehicle_id, operator_id, reason}`。
+- `POST /api/v1/restore_link`：同上语义。
+- `GET /api/v1/vehicle_links`：返回结构化车辆状态（复用 `VehicleLinkState`）。
+- 危险操作：超时处理 + 审计字段透传 + 失败回传服务端拒绝原因（HTTP 409）。
+
+### C3 — Web 控制台
+- 新增「受管车辆」面板：表格（id / backend / online / busy / quarantined / 位置 / 电量 / 状态时延）。
+- 强清按钮：**仅对满足服务端条件的车启用**（前端过滤是 UX，服务端仍复验）；点击后**弹确认框**要求填写 operator_id + reason，并回显车辆 id 确认。
+- 隔离态展示 + 「恢复」按钮（需勾选"已核实车辆位置"）。
+- 沿用现有 `baseUrl` + fetch 风格。
+
+### C4 — 验证
+- e2e Stage 6.8 扩展：改用 **REST 端点**触发强清，断言 HTTP 响应（含审计 id）+ 锁释放 + 车辆进入隔离 + 后续任务不派给该车。
+- 新增：恢复流程断言（恢复后重新可派发）。
+- 控制台手工验证。
+
+---
+
+## Task B：时空窗交通协调（评审后修订）
+
+### B1 — 逐边进出时刻 + 全有或全无
+- 核心新增 `core/workflow/time_space_planning.hpp/.cpp`：
+  - 输入：每单的**逐资源**占用区间（每条边单独的 enter/exit 时刻）、资源冲突模型、车辆参数。
+  - 占用时长 = 路径长度 / 速度 × 安全系数 + **加减速与转弯附加时间** + **车辆尺寸/安全余量**。
+  - **全有或全无**：一条路径涉及多资源 → 必须**整条路径全部预约成功**才提交；任一失败 → 全部回滚（`ResourceTable` 需补一个批量预约接口，带 rollback）。
+- 路口/窄道/对向冲突：进入资源模型（不只是同边窗口重叠）——**一期以"节点资源（路口）+ 边资源（通道）双粒度"表达**，节点窗口 = 进入路口到驶出路口的完整区间。
+
+### B2 — 延期扩窗（执行偏离时）
+- 车辆上报进度滞后 → **延长**该车的窗口（`ExtendTimeSpace`），延长失败（与后车窗口冲突）→ 触发**后车让行等待**（延后后车窗口），**绝不**因窗口到期而让后车进入。
+- **窗口到期 ≠ 资源已释放**：释放仍需"车辆确认驶离该资源"（lastNodeId 推进），与 Spec §5.3 逐段解锁一致。
+
+### B3 — 双模式接线
+- 参数 `traffic_mode: static | time_space`（**默认 static**，现网行为不变）。
+- `time_space` 模式仅在 Task A 多车并发落地且 B1/B2 单测全绿后**显式启用**。
+
+### B4 — 验证
+- `test/unit/test_time_space_planning.cpp`：逐边窗口、全有或全无回滚、延期扩窗、冲突让行、零时长边界。
+- `test/integration/`：两单共享边不同窗口 → 双成功；同窗口 → 一成一败（无残留半预约）。
+
+---
+
+## 执行顺序与提交切分
+
+```
+P0（契约冻结：设计文档 + 核心类型 + srv/msg 变更）
+ └→ A（多车并发 + 绑定 + 选车）
+     └→ B（时空窗）
+ C（Web 强清，可与 A 并行）
+```
+
+提交（每条带 `Co-Authored-By: Claude Code <noreply@anthropic.com>`）：
+1. `docs: 冻结多车车队化接口契约（执行后端/身份语义/选车三态/强清边界）`
+2. `feat(core): 车辆执行后端与选车三态决策（PlanVehicleAssignment 修订）`
+3. `feat(core): 强清隔离语义与审计字段（PlanForceClearLink 修订）`
+4. `feat(interfaces): 结构化车辆状态消息与提单/强清/恢复服务契约`
+5. `feat(ros): 车队目录接入与 per-vehicle 话题参数化（local_sim 后端）`
+6. `feat(ros): 多车执行槽位拆分与按车挂起守卫`
+7. `feat(ros): 选车接线（tri-state：留队/暂停/拒绝）`
+8. `feat(web): REST 强清/恢复端点与结构化车辆状态`
+9. `feat(web): Web 控制台受管车辆面板与强清/恢复交互`
+10. `feat(core): 时空窗逐边预约决策与全有或全无提交`
+11. `feat(ros): traffic_mode 双模式接线`
+
+## 验证总表
+
+| 项 | 命令 | 期望 |
+|---|---|---|
+| 核心单测 | `ctest --test-dir build/core` | 612 + 新增全绿 |
+| ROS 编译 | `docker exec amr_dispatcher bash -c "source /opt/ros/jazzy/setup.bash && cd /workspace && colcon build --packages-select amr_dispatcher_core amr_dispatcher_interfaces amr_dispatcher_ros amr_dispatcher_tools --base-paths src"` | 无错 |
+| e2e 兼容 | `./scripts/check_vda5050_e2e.sh` | 现有 8 阶段**原样全 PASS** |
+| e2e 多车 | 同上 + Stage 7（本地双车）/ Stage 8（双 VDA 5050） | 全 PASS，EXIT=0 |
+
+## 显式裁剪
+
+- 真机多车物理并发（每车一套底盘硬件）——只做软件侧隔离与调度并行
+- per-vehicle 安全门差异化限速——沿用同一套 safety.yaml
+- 电量感知选车/能耗最优——A1 留 battery 过滤位，不接充电策略
+- 对等协商/分布式去中心化——Roadmap Phase 3
+- 强清的"车辆物理位置二次确认"（需现场/其它传感器）——本次只做**人工勾选声明 + 审计留痕**，不自动判定
+
+---
+
+## 执行结果台账 (2026-10-22 已完成)
+
+分支 `feat/multi-vehicle-concurrency`（已推送 origin）。P0 → A → C → B 全部落地。
+
+### 提交对照（计划 11 条 → 实际 24 条）
+
+| 计划条目 | 实际提交 |
+|---|---|
+| 1 docs 冻结接口契约 | `397ecd3` feat(interfaces) 结构化车辆状态消息与强清/恢复服务契约 |
+| 2 core 选车三态 + 后端 | `4a32e93` feat(core) 选车决策升级为三态语义 |
+| 3 core 强清隔离语义 | `629a7e3` feat(core) 强清改隔离语义并补审计/恢复决策 |
+| 4 interfaces 消息与服务 | `397ecd3`（与 1 同条） |
+| 5 ros 车队目录 + per-vehicle 话题 | `413d65f` feat(ros) per-vehicle 话题与 TF 隔离 |
+| 6 ros 执行槽位拆分 | `2df36bb` feat(core+ros) 多车执行槽位拆分与按车挂起守卫 |
+| 7 ros 选车接线 tri-state | `2df36bb`（同条）+ `b1cce70` fix(ros) legacy 单车模式不得走选车流程 |
+| 8 web REST 端点 | `0850978` feat(web) REST 强清/恢复端点与受管车状态查询 |
+| 9 web 控制台面板 | `04699d4` feat(web) Web 控制台受管车辆面板与强清/恢复交互 |
+| 10 core 时空窗决策 | `e3b514a` feat(core) 时空窗预约决策纯函数 |
+| 11 ros traffic_mode 接线 | `8030746` feat(core+ros) 时空窗模式接线 |
+
+补充提交：`418cdda` 提单显式指定车辆透传 + `5901afb` VDA 派发不再同时发本地 /plan
+（两套运动源打架）+ `4338bc7`/`412070a` 双车并发验收 + `ae5be48`/`09e83e1` 测试地图
+第二条通道与底盘模拟器多位姿 + `b1cce70` legacy 兼容红线修复 + 3 条文档。
+
+### 验证结果（全部实测）
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 核心单测 | `ctest --test-dir build/core` | **659/659 全绿**（~5s） |
+| BT 单测 | `ctest --test-dir build/amr_dispatcher_bt` | **36/36 全绿** |
+| ROS 编译 | colcon 5 包 | 全部成功 |
+| 混沌流水线 | `./scripts/check_all.sh` | EXIT=0，`PASSED_WITH_SKIPPED_STAGES`（BT 阶段本机跳过，容器内 36/36 绿） |
+| 地图导入 e2e | `./scripts/check_map_ingest_e2e.sh` | EXIT=0（**曾因 legacy 单车误走选车而判负，已由 b1cce70 修复**） |
+| VDA 5050 e2e | `./scripts/check_vda5050_e2e.sh` | EXIT=0，**9 阶段全 PASS**（含 Stage 7 双 VDA 5050 车、Stage 8 本地双模拟车并发） |
+
+### 计划中"显式裁剪"的落实
+
+- 真机多车物理并发 —— 只做软件侧隔离与调度并行（每车一套 tracker/gate/chassis 走 PTY 模拟底盘）
+- per-vehicle 安全门差异化限速 —— 沿用同一套 safety.yaml
+- 电量感知选车 —— A1 留 `min_battery_percent` 过滤位，**未**接充电策略
+- 对等协商/分布式去中心化 —— Roadmap Phase 3（roadmap 中已写实现状：中心不可用时保守派发）
+- 强清的位置二次确认 —— 只做**人工勾选声明 + 审计留痕**（`position_verified` + operator_id + reason）
+
+### 遗留 / 后续
+
+- ~~浏览器端手工验证（点按钮看面板）仍未做~~ —— **已解决**（`78cf826`）：
+  新增 `scripts/check_web_console_e2e.sh` + `scripts/web_console_check.mjs`，
+  用 headless Chrome + CDP 真实点击控制台按钮，5 个 phase 全 PASS：
+  面板渲染 / 在线车强清被**服务端**拒绝 / 缺审计字段**不发请求** /
+  离线车强清 -> 隔离态可见 / 未核实位置**不发请求** / 显式恢复解除隔离。
+  环境隔离：容器内独立域 82（MQTT 18890 / REST 18092），宿主机跑浏览器。
+- `docs/superpowers/specs/multi_vehicle_fleet.md`（P0 计划中的契约文档）**未单独成文**：
+  契约内容已写入 `docs/API.md`（per-vehicle 话题 / 参数表 / 选车三态 / 强清恢复语义），
+  避免同一份契约两处维护而漂移。
+
+### 验证缺口收口 (2026-10-22，`6ceef19`)
+
+A7 / B4 的验证要求逐条对照测试源码后，落地如下（此前这些符号**零测试引用**）：
+
+| 计划条目 | 落地位置 | 用例数 |
+|---|---|---|
+| A6 队首阻塞规避 | `test/unit/test_mission_queue.cpp`（PeekN / PopById） | 7 |
+| A2 身份字段语义 | `test/unit/test_mission_state.cpp`（fleet_id vs assigned_vehicle_id） | 3 |
+| A7 派发 tri-state 决策 | `src/amr_dispatcher_ros/include/.../assignment_dispatch_decision.hpp` + `test_assignment_dispatch_decision.cpp` | 5 |
+| P0.3 路网成本选车 | `test/unit/test_fleet_catalog.cpp`（EstimateVehicleApproachCost 三条规则） | 13 |
+| B2 延期扩窗 | `test/unit/test_traffic_reservation.cpp`（ExtendTimeSpaceReservation / TimeSpaceResourcesOf） | 6 |
+| B4 零时长边界 | `test/unit/test_time_space_planning.cpp` | 3 |
+| B4 集成场景 | `test/integration/test_multi_vehicle_time_space.cpp`（共享边双成功 / 同窗口一成一败无残留 / 对头冲突 / 部分共享） | 4 |
+| — | `test/unit/test_facility_catalog.cpp`（补齐 CMake 空注册） | 8 |
+
+顺带修两处真实缺陷：
+- `facility_catalog.cpp`：缺 `type` 的资源记录被**静默丢弃** -> 改为整份目录判负
+- `operator_console.html`：恢复按钮未强制"已核实车辆物理位置"勾选 -> 已加前置校验
+
+验证：核心 **710/710** 全绿、ROS **25/25** 全绿、colcon 2 包通过、
+`check_all.sh` EXIT=0、`check_map_ingest_e2e.sh` EXIT=0、
+`check_vda5050_e2e.sh` 9 阶段全 PASS。
+
+**剩余人工项已清零**：Web 控制台浏览器端验证已由 `78cf826` 的
+`scripts/check_web_console_e2e.sh` 自动化接管（headless Chrome + CDP 真实点击），
+不再需要人工在浏览器点一遍。

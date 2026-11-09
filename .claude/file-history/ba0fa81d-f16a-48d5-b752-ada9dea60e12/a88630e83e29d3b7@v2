@@ -1,0 +1,21 @@
+# 2026-10-19 审查修复 Ledger
+
+计划：docs/superpowers/plans/2026-10-19-review-fixes.md
+
+## 状态
+
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| Workstream A（core） | 进行中 | 派发 implementer；测试数已见增长（470→483 静态计数） |
+| Workstream B（ROS） | 待开始 | 等 A 完成后派发（B 的 colcon 构建会编译 core，避免与 A 并行编辑冲突） |
+| Workstream C（工程化） | 完成（未提交） | C1–C6 完成；bash -n/json/yaml 校验过；留主线程：终验重跑 check_all、统一提交、复核测试数（README/USAGE 现口径 470，静态实测 483） |
+| 最终验证 + 终审 | 待开始 | |
+
+## Rulings
+
+- 不用 worktree：仓库惯例直接在 main 工作（用户历史提交均在 main）。
+- 提交策略：按工作流分批提交，消息风格对齐仓库历史，结尾 Co-Authored-By。
+- 孤儿接口删除决策全部推迟到修复完成后讨论（用户明确指示）。
+- L2 launch 契约测试：本轮只做诚实化报告（SKIPPED），不建 launch_testing 包（避免范围膨胀）；留待孤儿/后续讨论。
+- 三个桩服务（estimate_mission_cost / list_stations / validate_site_config / get_operator_snapshot 半桩）做真实现，不做删除（属"重新规划接入"方向）。
+- A5 Ruling：UDP 按数据报原子语义单次 sendto、不做分片循环（短计数/EAGAIN 视为丢失返回 false）；serial 部分写循环重试。PTY 测试经 would-block 阈值实测构造。ctest 491/491（A5 完成时点）。

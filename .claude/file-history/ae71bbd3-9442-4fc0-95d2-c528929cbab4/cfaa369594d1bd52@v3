@@ -1,0 +1,110 @@
+#include "quality/quality_feedback.h"
+#include "common/monotonic_clock.h"
+
+namespace xgrids {
+
+QualityFeedback::QualityFeedback(Thresholds t, Callback cb)
+    : th_(t), cb_(std::move(cb)) {}
+
+void QualityFeedback::update(const QualityInput& in) {
+    QualityReport r;
+
+    // ---- 运动模糊（走太快）----
+    if (in.motion_speed_mps > th_.motion_blur_err_mps) {
+        r.level = QualityLevel::kError;
+        r.headline = "too fast - data may be unusable";
+    } else if (in.motion_speed_mps > th_.motion_blur_warn_mps) {
+        r.level = QualityLevel::kWarn;
+        r.headline = "please slow down";
+    }
+
+    // ---- 光照 ----
+    if (in.ambient_lux < th_.lux_warn) {
+        r.details.push_back("low light (" + std::to_string((int)in.ambient_lux) + " lux)");
+        if ((int)r.level < (int)QualityLevel::kWarn) {
+            r.level = QualityLevel::kWarn;
+            if (r.headline.empty()) r.headline = "low light";
+        }
+    }
+
+    // ---- 存储/背压 ----
+    if (in.buffer_fill > th_.buffer_err) {
+        r.level = QualityLevel::kError;
+        r.headline = "write buffer critical, dropping previews";
+    } else if (in.buffer_fill > th_.buffer_warn) {
+        r.details.push_back("buffer filling (" +
+                            std::to_string((int)(in.buffer_fill * 100)) + "%)");
+        if ((int)r.level < (int)QualityLevel::kWarn) {
+            r.level = QualityLevel::kWarn;
+            if (r.headline.empty()) r.headline = "buffer filling";
+        }
+    }
+    if (in.write_rate_gbps > 1e-6) {
+        r.remain_minutes = in.storage_free_gb / in.write_rate_gbps;
+        if (r.remain_minutes < th_.remain_warn_min) {
+            r.details.push_back("low storage (" +
+                std::to_string((int)r.remain_minutes) + " min left)");
+            if ((int)r.level < (int)QualityLevel::kWarn) {
+                r.level = QualityLevel::kWarn;
+                if (r.headline.empty()) r.headline = "low storage";
+            }
+        }
+    }
+
+    // ---- 过热降频 ----
+    if (in.cpu_temp_x10 > th_.temp_err_x10) {
+        r.level = QualityLevel::kError;
+        r.headline = "device overheating, pause and cool down";
+    } else if (in.cpu_temp_x10 > th_.temp_warn_x10) {
+        r.details.push_back("running hot (" +
+            std::to_string(in.cpu_temp_x10 / 10.0) + " C)");
+        if ((int)r.level < (int)QualityLevel::kWarn) {
+            r.level = QualityLevel::kWarn;
+            if (r.headline.empty()) r.headline = "warming up";
+        }
+    }
+
+    // ---- 同步/完整性 ----
+    if (in.sync_violations > 0 || in.frame_gaps > 0) {
+        r.details.push_back("sync violations=" + std::to_string(in.sync_violations) +
+                            " gaps=" + std::to_string(in.frame_gaps));
+        if ((int)r.level < (int)QualityLevel::kWarn) {
+            r.level = QualityLevel::kWarn;
+            if (r.headline.empty()) r.headline = "capture anomalies";
+        }
+    }
+
+    // ---- RTK ----
+    if (!in.rtk_locked)
+        r.details.push_back("RTK float/single - absolute accuracy degraded");
+
+    if (r.headline.empty()) r.headline = "scanning ok";
+
+    // 面积估算：速度 * 时间 * 扫描幅宽（粗略 4m）
+    int64_t now = MonotonicClock::now_us();
+    if (last_update_us_ > 0) {
+        double dt = (now - last_update_us_) / 1e6;
+        area_m2_ += in.motion_speed_mps * dt * 4.0;
+    }
+    last_update_us_ = now;
+    r.scanned_area_m2 = area_m2_;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        cur_ = r;
+        if ((int)r.level > (int)worst_) worst_ = r.level;
+    }
+    if (cb_) cb_(r);
+}
+
+QualityReport QualityFeedback::current() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return cur_;
+}
+
+QualityLevel QualityFeedback::final_verdict() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return worst_;
+}
+
+}  // namespace xgrids

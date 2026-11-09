@@ -1,0 +1,120 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <thread>
+#include <atomic>
+#include <random>
+#include <mutex>
+#include <condition_variable>
+#include "sensors/sensor_frame.h"
+#include "common/monotonic_clock.h"
+
+namespace xgrids {
+
+// ============================================================
+// 驱动仿真：按真实设备的行为产帧，注入可控故障
+// 用来验证上层（同步/manifest/质量）在没有真机时也能闭环
+// ============================================================
+
+// 硬件触发源：模拟多相机阵列共享的硬件触发信号。
+// 真实设备里四路相机由同一触发脉冲同步曝光（否则四路相位随机、
+// 根本凑不齐同步窗口——本项目实测过这个坑）。
+struct HwTrigger {
+    std::mutex mu;
+    std::condition_variable cv;
+    int64_t trigger_ts_us = 0;   // 本次触发的曝光时刻
+    uint64_t seq = 0;            // 触发序号
+    bool stopping = false;
+
+    // 触发线程：周期产生触发
+    void fire(int64_t ts_us) {
+        { std::lock_guard<std::mutex> lk(mu); trigger_ts_us = ts_us; seq++; }
+        cv.notify_all();
+    }
+    // 相机线程：等下一次触发，返回触发时刻
+    bool wait(uint64_t my_seq, int64_t& ts_us) {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&]{ return seq > my_seq || stopping; });
+        if (stopping) return false;
+        ts_us = trigger_ts_us;
+        return true;
+    }
+    void stop() {
+        { std::lock_guard<std::mutex> lk(mu); stopping = true; }
+        cv.notify_all();
+    }
+    uint64_t current_seq() { std::lock_guard<std::mutex> lk(mu); return seq; }
+};
+
+// 单路相机驱动仿真
+class CameraSim {
+public:
+    struct Params {
+        int channel_id;
+        int fps = 20;
+        int64_t exposure_jitter_us = 1500;
+        double drop_prob = 0.005;
+        int64_t latency_us = 3000;
+        uint32_t width = 1920, height = 1080;
+        int64_t readout_offset_us = 100;  // 各通道读出延迟差（硬件固有）
+    };
+
+    using Output = std::function<void(const ImageFrame&)>;
+
+    CameraSim(Params p, Output out) : p_(p), out_(std::move(out)) {}
+
+    // 硬件触发模式（多相机同步曝光）
+    void set_trigger(HwTrigger* t) { trig_ = t; }
+    void start(std::atomic<bool>& running);
+
+    // 故障注入
+    void inject_drop_burst(int n) { drop_burst_ = n; }
+    void inject_slowdown(double factor) { fps_scale_ = factor; }
+    void inject_jitter_us(int64_t jitter_us) { jitter_us_.store(jitter_us); }
+
+private:
+    Params p_;
+    Output out_;
+    HwTrigger* trig_ = nullptr;
+    std::mt19937 rng_{};
+    std::atomic<int> drop_burst_{0};
+    std::atomic<double> fps_scale_{1.0};
+    std::atomic<int64_t> jitter_us_{0};
+};
+
+// LiDAR 驱动仿真（10Hz 扫描周期）
+class LidarSim {
+public:
+    using Output = std::function<void(const LidarFrame&)>;
+    LidarSim(Output out, int points_per_scan = 60000)
+        : out_(std::move(out)), points_(points_per_scan) {}
+    void start(std::atomic<bool>& running);
+private:
+    Output out_;
+    int points_;
+};
+
+// IMU 驱动仿真（200Hz）
+class ImuSim {
+public:
+    using Output = std::function<void(const ImuPacket&)>;
+    explicit ImuSim(Output out) : out_(std::move(out)) {}
+    void start(std::atomic<bool>& running);
+private:
+    Output out_;
+};
+
+// RTK/GNSS 仿真（1Hz，可模拟失锁）
+class GnssSim {
+public:
+    using Output = std::function<void(const GnssFix&)>;
+    GnssSim(Output out) : out_(std::move(out)) {}
+    void start(std::atomic<bool>& running);
+    void inject_loss_lock(bool loss) { loss_lock_ = loss; }
+private:
+    Output out_;
+    std::atomic<bool> loss_lock_{false};
+};
+
+}  // namespace xgrids

@@ -1,0 +1,53 @@
+/* 一次性探针：把 libweaknet 的真实返回完整落盘，用于本机解析层验证。
+ * 用完即删，不入库。 */
+#include <stdio.h>
+#include <string.h>
+
+#include "weaknet_client.h"
+
+static int dump(const char* path, bool (*fn)(char*, size_t, char*, size_t),
+                char* buf, size_t n, char* err, size_t en) {
+    memset(buf, 0, n);
+    memset(err, 0, en);
+    const int ok = fn(buf, n, err, en);
+    FILE* f = fopen(path, "w");
+    if (f) {
+        fwrite(buf, 1, strlen(buf), f);
+        fclose(f);
+    }
+    fprintf(stderr, "dump %-28s ok=%d bytes=%zu\n", path, ok, strlen(buf));
+    return ok;
+}
+
+int main(void) {
+    static char buf[256 * 1024];
+    static char err[1024];
+
+    if (!weaknet_init()) {
+        fprintf(stderr, "init FAILED\n");
+        return 1;
+    }
+    fprintf(stderr, "init OK\n");
+
+    dump("/tmp/board_experience.json",
+         weaknet_get_network_experience, buf, sizeof(buf), err, sizeof(err));
+    dump("/tmp/board_diagnosis.json",
+         weaknet_get_diagnosis, buf, sizeof(buf), err, sizeof(err));
+    dump("/tmp/board_interfaces.json",
+         weaknet_get_interfaces, buf, sizeof(buf), err, sizeof(err));
+
+    memset(buf, 0, sizeof(buf));
+    memset(err, 0, sizeof(err));
+    const int ok = weaknet_get_history("wlan0", "", "", 60,
+                                       buf, sizeof(buf), err, sizeof(err));
+    FILE* f = fopen("/tmp/board_history.json", "w");
+    if (f) {
+        fwrite(buf, 1, strlen(buf), f);
+        fclose(f);
+    }
+    fprintf(stderr, "dump %-28s ok=%d bytes=%zu\n",
+            "/tmp/board_history.json", ok, strlen(buf));
+
+    weaknet_cleanup();
+    return 0;
+}

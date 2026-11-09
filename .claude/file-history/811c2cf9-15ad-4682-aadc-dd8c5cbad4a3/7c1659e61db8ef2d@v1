@@ -1,0 +1,21 @@
+# rtmp 模块
+file(GLOB_RECURSE RTMP_SRCS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
+)
+
+add_library(live_broadcast_rtmp STATIC ${RTMP_SRCS})
+
+target_link_libraries(live_broadcast_rtmp PUBLIC
+    ins_defaults
+    ins_base
+    ins_error_code
+    rtmp
+    ins_proto
+    live_broadcast_stream
+    live_broadcast_muxer
+)
+
+# 模块头文件目录，对上游可见以支持应用内跨模块引用
+target_include_directories(live_broadcast_rtmp PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)

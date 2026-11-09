@@ -1,0 +1,70 @@
+# xgrids-embedded-intern
+
+对应简历「嵌入式应用软件实习生」预写项目的**完整闭环代码骨架**：
+四相机 + LiDAR + IMU + GNSS 多传感器手持采集设备的**应用层数据通路**。
+
+## 数据链路
+
+```
+传感器驱动（含硬件触发同步） → 时间对齐（时钟模型+插值） → 同步监控
+      ↓                              ↓                      ↓
+ manifest（完整性）           存储（索引+CRC+包头）      质量反馈（UI）
+      ↓                              ↓
+ 重扫窗口判定                上传（断点续传+manifest优先）
+      ↓
+ 维测工具（回放/对账/时间线）
+```
+
+## 深度模块（区别于玩具实现）
+
+| 模块 | 文件 | 解决的真实问题 |
+|---|---|---|
+| `HwTrigger` | `sensors/sensor_drivers.h` | 四相机共享硬件触发信号——独立 sleep 循环相位随机，根本凑不齐同步窗口（实测过） |
+| `ClockModel` | `sync/clock_model.*` | 每路传感器独立时钟漂移，最小二乘估计 `sys = a*local + b`，未收敛时回退 |
+| `ImuInterpolator` | `sync/interpolator.*` | IMU 线性插值取切片中心时刻状态 + 扫描区间预积分位姿（非最近邻） |
+| `TimeAligner` | `sync/time_aligner.*` | 时基换算 + 窗口聚合 + 乱序帧丢弃（迟到帧错占槽位会连锁污染后续窗口） |
+| `SyncMonitor` | `sync/sync_monitor.*` | 帧号连续性 / 间隔抖动 EMA / 组内 skew，异常告警进 log 与 manifest |
+| `ManifestRecorder` | `manifest/manifest_recorder.*` | 逐路帧计数 / 丢帧 seq 区间 / RTK 失锁窗 / 同步缺口 → rescan_windows |
+| `StorageBackend` | `backend/storage_backend.*` | 每帧 CRC32 + ts→offset 帧索引 + 包头（版本/SN/标定哈希） |
+| `Uploader` | `backend/uploader.*` | manifest 优先上传 + 断点续传（sent_bytes） + 指数退避重试 |
+| `FaultScenario` | `testing/fault_injector.*` | 剧本驱动故障注入 + ManifestSnapshot 回归对账 |
+| `PacketReader` | `tools/packet_reader.*` | 维测：按索引回放数据包、四路时间线、缺口标注 |
+
+## 构建与运行
+
+```bash
+mkdir build && cd build && cmake .. && make -j4
+
+# 端到端演示（10 秒扫描，注入丢帧+过热+RTK失锁）
+./capture_app
+
+# 剧本驱动测试：正常场景→clean；故障场景→捕获异常；同剧本两次→快照一致
+./tests/test_pipeline          # 需在项目根目录运行（读 config/scenario_*.txt）
+
+# 回放数据包，对账完整性
+./packet_replay /tmp/xgrids_data/scan_demo_001
+```
+
+## 故障剧本示例（config/scenario_drops.txt）
+
+```
+at: 1.0   action: cam_drop   channel: 1   count: 3
+at: 2.5   action: cam_drop   channel: 2   count: 1
+at: 4.0   action: cpu_heat   temp_x10: 820
+at: 5.0   action: rtk_loss   duration_ms: 1500
+at: 6.5   action: cpu_heat   temp_x10: 320
+```
+
+## 面试可聊的设计决策
+
+1. **硬件触发 vs 独立触发**：四相机必须共享触发信号。独立 sleep 循环相位随机，
+   5ms 对齐窗口根本凑不齐——实测 gaps 从 1128 降到 8。
+2. **时钟模型**：不假设传感器共用时基。每路本地时钟漂移用最小二乘估计，
+   收敛前回退到本地 ts，收敛后换算——避免"时基错位导致同步判定失效"。
+3. **迟到帧处理**：乱序帧不参与成组但数据照落盘。它错过的窗口已在关闭时记为
+   sync_incomplete——迟到是队列时延问题，不是数据丢失。
+4. **manifest 优先上传**：后端先判完整性（等不等完整数据），再决定要不要等帧流。
+5. **CRC + 帧索引**：断电后尾部帧可能截断，CRC 校验识别并丢弃；ts→offset 索引
+   让回放 O(1) seek 而非 O(N) 顺序扫。
+6. **回归对账**：同剧本跑两次，`ManifestSnapshot::diff` 输出结构性差异——
+   lost[] 由注入量决定必须一致，frames/gap 受调度时序影响允许微抖动。

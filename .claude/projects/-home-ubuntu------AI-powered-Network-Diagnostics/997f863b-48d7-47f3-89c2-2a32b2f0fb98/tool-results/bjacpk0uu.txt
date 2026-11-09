@@ -1,0 +1,649 @@
+==============================================
+  WeakNet 开发板全面测试
+==============================================
+
+===== Phase 1: 启动服务端 =====
+等待服务端启动 (15s)...
+  [PASS] 服务端运行中 (PID=3218)
+
+===== Phase 2: 服务端基础检查 =====
+
+----- health -----
+I1019 07:19:47.977304  3247 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:19:47.977532  3247 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:19:47.977550  3247 logger.cpp:165] [logger] Min log level: 0
+I1019 07:19:47.977563  3247 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:19:47.979559  3247 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:19:48.258855  3247 client.cpp:1432] [client] weaknet_health_check: success
+I1019 07:19:48.258991  3247 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:19:48.259027  3247 logger.cpp:183] [logger] Shutting down logger
+✅ 健康检查结果: {"success":true,"data":{"interface":"wlan0","quality_score":50.0,"rtt_ms":101,"tcp_loss_rate":0.00,"rssi_dbm":-2,"rssi_estimated":false,"rssi_source":"nl80211","traffic_bps":0,"traffic_pps":0,"active_flows":0,"jitter_ms":8.0,"median_rtt_ms":-1.0,"assessment_reason":"insufficient_rtt_samples","quality_level":0,"link_quality":"Good","overall_quality":"UNKNOWN","overall_score":50.0,"rf_applicability":"APPLICABLE","assessment_profile":"INTERNET_ACCESS","issues":["Insufficient telemetry for network assessment"],"score_model":"assurance_v2"}}
+  [0;32m[PASS][0m health
+
+----- get -----
+I1019 07:19:48.273051  3248 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:19:48.273341  3248 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:19:48.273362  3248 logger.cpp:165] [logger] Min log level: 0
+I1019 07:19:48.273376  3248 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:19:48.275383  3248 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:19:48.276880  3248 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:19:48.276968  3248 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:19:48.276996  3248 logger.cpp:183] [logger] Shutting down logger
+✅ 网络接口信息: wlan0
+  [0;32m[PASS][0m get
+
+===== Phase 3: 基础功能测试 =====
+
+----- test-basic -----
+I1019 07:19:48.289951  3249 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:19:48.290202  3249 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:19:48.290225  3249 logger.cpp:165] [logger] Min log level: 0
+I1019 07:19:48.290238  3249 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:19:48.292829  3249 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:19:48.292968  3249 client.cpp:1351] [client] weaknet_init: already initialized, connected=1
+
+🧪 测试: 基础功能测试
+   ✅ 通过: 库初始化
+   ✅ 通过: 连接状态检查
+   ✅ 通过: 获取版本信息
+   📦 版本: WeakNet Client Library v1.0.0
+   ✅ 通过: 获取编译信息
+   🔧 编译信息: Built: Oct 19 2026 22:06:08 | DBus-enabled | C++17
+  [0;32m[PASS][0m test-basic
+
+----- test-network -----
+I1019 07:19:48.305552  3250 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:19:48.305785  3250 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:19:48.305809  3250 logger.cpp:165] [logger] Min log level: 0
+I1019 07:19:48.305826  3250 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:19:48.308040  3250 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:19:49.706817  3250 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:19:49.799649  3250 client.cpp:1432] [client] weaknet_health_check: success
+
+🧪 测试: 网络接口信息获取
+   ✅ API调用成功
+   📡 网络接口: wlan0
+   ✅ API调用成功
+   💚 健康检查: {"success":true,"data":{"interface":"wlan0","quality_score":25.0,"rtt_ms":101,"tcp_loss_rate":0.00,"rssi_dbm":-2,"rssi_estimated":false,"rssi_source":"nl80211","traffic_bps":0,"traffic_pps":0,"active_flows":0,"jitter_ms":8.0,"median_rtt_ms":-1.0,"assessment_reason":"insufficient_rtt_samples","quality_level":1,"link_quality":"Good","overall_quality":"POOR","overall_score":25.0,"rf_applicability":"APPLICABLE","assessment_profile":"INTERNET_ACCESS","issues":["DNS service resolution failure"],"score_model":"assurance_v2"}}
+   ✅ API调用成功
+   🧭 网络体验: {"schema_version":2,"interface":"wlan0","assessment_profile":"INTERNET_ACCESS","overall":{"state":"BAD","coverage":"PARTIAL","display_score":25},"network_health":{"ip_reachability":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"ip_path_fully_reachable","evidence":[{"metric":"success_ratio","value":100,"detail":"Probe success ratio: 100%"},{"metric":"recent_consecutive_fails","value":0,"detail":"Recent consecutive failed probes"}]},"responsiveness":{"state":"UNKNOWN","coverage":"PARTIAL","applicability":"APPLICABLE","reason":"insufficient_rtt_samples","evidence":[]},"reliability":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_loss_metrics_available","evidence":[]},"rf_health":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"strong_rf_signal","evidence":[{"metric":"median_rssi_dbm","value":-2,"detail":"Median Wi-Fi RSSI"},{"metric":"low_rssi_ratio","value":0,"detail":"Low signal sample ratio %"}]}},"service_health":{"dns":{"state":"BAD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"critical_burst_timeouts","evidence":[{"metric":"burst_timeouts","value":3,"detail":"Burst consecutive timeouts detected without success"}]},"tcp_connect":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_tcp_connect_observations","evidence":[]},"tcp_rtt":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"passive_tcp_rtt_healthy","evidence":[{"metric":"p50_tcp_rtt_ms","value":11.542,"detail":"Passive TCP srtt p50 (ms)"},{"metric":"p90_tcp_rtt_ms","value":112.967,"detail":"Passive TCP srtt p90 (ms)"},{"metric":"p99_tcp_rtt_ms","value":112.967,"detail":"Passive TCP srtt p99 (ms)"},{"metric":"avg_tcp_rtt_ms","value":15.39,"detail":"Passive TCP srtt average (ms)"},{"metric":"active_tcp_connections","value":3,"detail":"Tracked TCP connections in LRU map"}]},"http_access":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_http_observations","evidence":[]},"captive_portal":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_portal_probe_capability","evidence":[]},"active_dns":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_probe_targets","evidence":[]},"active_tcp":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_probe_targets","evidence":[]},"active_https":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_probe_targets","evidence":[]},"active_portal":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_probe_targets","evidence":[]}},"warnings":[],"primary_issue":"DNS service resolution failure"}
+   ✅ API调用成功
+   🧠 机器诊断: {"fault_domain":"DNS_SERVICE","primary_issue":"critical_burst_timeouts","confidence":"HIGH","secondary_issues":[],"evidence_refs":["ev_radxa-cubie-a7a_e271_dns_service_s2_01"],"excluded_causes":[{"cause":"WEAK_WIFI_SIGNAL","reason":"空口 Wi-Fi 信号极佳 (RSSI > -65dBm)"},{"cause":"GATEWAY_UNREACHABLE","reason":"网关 ping 连通性正常且丢包率为 0"}],"actions":[{"priority":1,"action_id":"CHECK_RESOLVER_CONFIG","params":{}},{"priority":2,"action_id":"PROBE_PUBLIC_RESOLVER","params":{"resolver":"223.5.5.5"}}],"default_summary_template":"检测到 DNS 域名解析服务发生突发连续超时，局域网链路可达。请依次执行建议的排查动作。"}
+   ✅ API调用成功
+   ⚡ 动作执行: {"success":true,"exit_code":0,"stdout":"# Generated by NetworkManager\nsearch mshome.net\nnameserver 192.168.137.1\n","error":""}
+  [0;32m[PASS][0m test-network
+
+===== Phase 4: Ping 测试 =====
+
+----- test-ping -----
+I1019 07:19:50.859200  3710 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:19:50.859450  3710 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:19:50.859468  3710 logger.cpp:165] [logger] Min log level: 0
+I1019 07:19:50.859480  3710 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:19:50.862231  3710 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:19:51.653046  3710 client.cpp:1459] [client] weaknet_ping_host: success for 8.8.8.8
+E1019 07:20:02.159118  3710 client.cpp:1463] [client] weaknet_ping_host: failed for baidu.com: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+E1019 07:20:12.659629  3710 client.cpp:1463] [client] weaknet_ping_host: failed for 127.0.0.1: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+E1019 07:20:23.162118  3710 client.cpp:1463] [client] weaknet_ping_host: failed for invalidhost12345.com: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+
+🧪 测试: Ping功能测试
+   🎯 Ping目标: 8.8.8.8
+     ✅ 结果: PING 8.8.8.8 via wlan0: 350ms
+   🎯 Ping目标: baidu.com
+     ❌ 失败: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+   🎯 Ping目标: 127.0.0.1
+     ❌ 失败: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+   🎯 Ping目标: invalidhost12345.com
+     ❌ 失败: ping调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+  [0;32m[PASS][0m test-ping
+
+===== Phase 5: 事件系统测试 =====
+
+----- test-events -----
+I1019 07:20:23.681020  4332 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:20:23.681308  4332 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:20:23.681339  4332 logger.cpp:165] [logger] Min log level: 0
+I1019 07:20:23.681362  4332 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:20:23.683905  4332 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:20:23.684069  4332 client.cpp:1488] [client] weaknet_subscribe_event: subscribing to InterfaceChanged
+I1019 07:20:23.684556  4332 client.cpp:484] [client] 已订阅事件: InterfaceChanged
+I1019 07:20:23.684588  4332 client.cpp:1488] [client] weaknet_subscribe_event: subscribing to ConnectionModeChanged
+I1019 07:20:23.684970  4332 client.cpp:484] [client] 已订阅事件: ConnectionModeChanged
+I1019 07:20:23.684996  4332 client.cpp:1488] [client] weaknet_subscribe_event: subscribing to NetworkQualityChanged
+I1019 07:20:23.685379  4332 client.cpp:484] [client] 已订阅事件: NetworkQualityChanged
+
+🧪 测试: 事件系统测试
+   ✅ API调用成功
+   📋 支持的事件类型: InterfaceChanged,ConnectionModeChanged,NetworkQualityChanged,BluetoothDeviceChanged,MonitorStateChanged,EbpfMonitorStats
+   🔔 订阅事件: InterfaceChanged
+   ✅ API调用成功
+   🔔 订阅事件: ConnectionModeChanged
+   ✅ API调用成功
+   🔔 订阅事件: NetworkQualityChanged
+   ✅ API调用成功
+   🔍 检查事件 (5秒)...
+     ⏳ 第1秒: 无事件
+     ⏳ 第2秒: 无事件
+     ⏳ 第3秒: 无事件
+     ⏳ 第4秒: 无事件
+     ⏳ 第5秒: 无事件
+   🔕 取消订阅: InterfaceChanged
+   ✅ API调用成功
+   🔕 取消订阅: ConnectionModeChanged
+   ✅ API调用成功
+   🔕 取消订阅: NetworkQualityChanged
+   ✅ API调用成功
+  [0;32m[PASS][0m test-events
+
+===== Phase 6: 网络质量测试 =====
+
+----- test-quality -----
+I1019 07:20:28.711011  4333 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:20:28.711246  4333 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:20:28.711267  4333 logger.cpp:165] [logger] Min log level: 0
+I1019 07:20:28.711282  4333 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:20:28.713447  4333 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:20:28.713567  4333 client.cpp:1488] [client] weaknet_subscribe_event: subscribing to NetworkQualityChanged
+I1019 07:20:28.714205  4333 client.cpp:484] [client] 已订阅事件: NetworkQualityChanged
+
+🧪 测试: 网络质量事件监听测试
+   🔔 订阅网络质量事件...
+     ✅ 网络质量事件订阅成功
+   🔍 检查网络质量事件 (10秒)...
+     ⏳ 第1秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第2秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第3秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第4秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第5秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第6秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第7秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第8秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第9秒: 无网络质量事件 (没有检测到网络质量事件)
+     ⏳ 第10秒: 无网络质量事件 (没有检测到网络质量事件)
+  [0;32m[PASS][0m test-quality
+
+===== Phase 7: 蓝牙测试（可能 SKIP）=====
+
+----- test-bt -----
+I1019 07:20:38.736625  4334 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:20:38.736841  4334 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:20:38.736861  4334 logger.cpp:165] [logger] Min log level: 0
+I1019 07:20:38.736873  4334 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:20:38.738961  4334 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:20:39.980271  4334 client.cpp:484] [client] 已订阅事件: BluetoothDeviceChanged
+
+🧪 测试: 蓝牙设备获取
+   ✅ API调用成功
+   📱 蓝牙设备列表: 04:EC:D8:CA:4A:76|CY的天选5PRO|-85|0|Classic|very_poor
+31:F6:6D:ED:17:CF|31-F6-6D-ED-17-CF|-91|0|Dual|very_poor
+48:87:2D:2D:82:D6|BT19-S|-89|0|Dual|very_poor
+48:87:2D:2D:83:A2|BT19-S|-90|0|Dual|very_poor
+4C:DE:F1:D5:34:A6|4C-DE-F1-D5-34-A6|-60|0|Dual|good
+4D:BB:C0:14:E0:BE|4D-BB-C0-14-E0-BE|-89|0|Dual|very_poor
+4E:D0:CE:9D:FF:4E|4E-D0-CE-9D-FF-4E|-75|0|Dual|poor
+50:8E:1E:E9:CF:B9|50-8E-1E-E9-CF-B9|-77|0|Dual|poor
+51:F0:9F:46:E0:7E|51-F0-9F-46-E0-7E|-88|0|Dual|very_poor
+5B:DC:06:DF:33:3A|CY的天选5PRO|-81|0|Dual|very_poor
+5C:CC:C6:5F:71:C4|5C-CC-C6-5F-71-C4|-93|0|Dual|very_poor
+66:0C:6C:1F:BD:D7|66-0C-6C-1F-BD-D7|-71|0|Dual|fair
+70:A6:CC:92:23:C6|LAPTOP-NO4QEEFL|-1000|0|Classic|unknown
+7B:F8:8E:58:26:26|7B-F8-8E-58-26-26|-90|0|Dual|very_poor
+A0:82:22:B2:1B:C9|U-PC1BC8|-1000|0|Dual|unknown
+A8:6F:36:6E:B7:90|iQOO Neo9|-1000|0|Dual|unknown
+D0:96:EA:52:30:AC|vivo X300s|-1000|0|Dual|unknown
+E4:8F:DB:60:2D:6F|E4-8F-DB-60-2D-6F|-87|0|Dual|very_poor
+
+🧪 测试: 蓝牙适配器信息
+   ✅ API调用成功
+   📡 蓝牙适配器: Powered:1|Name:radxa-cubie-a7a|Address:9C:04:B6:84:0B:57|Discovering:1|Discoverable:1|Pairable:1
+
+🧪 测试: 蓝牙事件监听测试
+   🔔 订阅蓝牙设备变化事件...
+     ✅ 蓝牙事件订阅成功
+   🔍 监听蓝牙事件 (15秒)...
+     ⏳ 第1秒: 无蓝牙事件
+     ⏳ 第2秒: 无蓝牙事件
+     ⏳ 第3秒: 无蓝牙事件
+     ⏳ 第4秒: 无蓝牙事件
+     ⏳ 第5秒: 无蓝牙事件
+     ⏳ 第6秒: 无蓝牙事件
+     ⏳ 第7秒: 无蓝牙事件
+     ⏳ 第8秒: 无蓝牙事件
+     ⏳ 第9秒: 无蓝牙事件
+     ⏳ 第10秒: 无蓝牙事件
+     ⏳ 第11秒: 无蓝牙事件
+     ⏳ 第12秒: 无蓝牙事件
+     ⏳ 第13秒: 无蓝牙事件
+     ⏳ 第14秒: 无蓝牙事件
+     ⏳ 第15秒: 无蓝牙事件
+  [0;32m[PASS][0m test-bt
+
+===== Phase 8: 错误处理测试 =====
+
+----- test-errors -----
+I1019 07:20:55.001348  4335 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:20:55.001592  4335 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:20:55.001616  4335 logger.cpp:165] [logger] Min log level: 0
+I1019 07:20:55.001633  4335 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:20:55.004065  4335 client.cpp:1360] [client] weaknet_init: connect result=1
+E1019 07:20:55.004185  4335 client.cpp:1452] [client] weaknet_ping_host: hostname is empty
+E1019 07:20:55.004215  4335 client.cpp:1452] [client] weaknet_ping_host: hostname is empty
+
+🧪 测试: 错误处理测试
+   🚫 测试空主机名ping
+     ✅ 正确处理空主机名: 主机名不能为空
+   🚫 测试null主机名ping
+     ✅ 正确处理null主机名: 主机名不能为空
+  [0;32m[PASS][0m test-errors
+
+===== Phase 9: 性能测试 =====
+
+----- test-performance -----
+I1019 07:20:55.016445  4336 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:20:55.016649  4336 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:20:55.016667  4336 logger.cpp:165] [logger] Min log level: 0
+I1019 07:20:55.016681  4336 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:20:55.018550  4336 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:20:55.757362  4336 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:20:56.347548  4336 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:20:56.858841  4336 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:20:56.860548  4336 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+I1019 07:20:56.863684  4336 client.cpp:1391] [client] weaknet_get_interfaces: success, result size=5
+E1019 07:21:01.869488  4336 client.cpp:1395] [client] weaknet_get_interfaces: failed: 调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+
+🧪 测试: 性能测试
+   ⚡ 执行10次get_interfaces调用
+     ❌ 第6次调用失败: 调用失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+  [0;32m[PASS][0m test-performance
+
+===== Phase 10: 单项命令验证 =====
+
+----- check -----
+I1019 07:21:01.888545  4337 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:01.888823  4337 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:01.888847  4337 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:01.888868  4337 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:01.891165  4337 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:01.891294  4337 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:01.891321  4337 logger.cpp:183] [logger] Shutting down logger
+ℹ️  没有检测到新变化: 无新的状态变化
+  [0;32m[PASS][0m check
+
+----- event-types -----
+I1019 07:21:01.902231  4338 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:01.902472  4338 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:01.902493  4338 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:01.902510  4338 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:01.904882  4338 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:01.905007  4338 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:01.905041  4338 logger.cpp:183] [logger] Shutting down logger
+✅ 支持的事件类型: InterfaceChanged,ConnectionModeChanged,NetworkQualityChanged,BluetoothDeviceChanged,MonitorStateChanged,EbpfMonitorStats
+  [0;32m[PASS][0m event-types
+
+----- ebpf-health -----
+I1019 07:21:01.918134  4339 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:01.918357  4339 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:01.918377  4339 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:01.918393  4339 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:01.920385  4339 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:02.941730  4339 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:02.941854  4339 logger.cpp:183] [logger] Shutting down logger
+✅ eBPF 监控器健康状态: {"monitors":[{"name":"DnsMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":732635687889,"consecutive_errors":0,"total_errors":0,"attached_probes":12,"map_reads":8,"map_read_errors":0,"samples":8,"total_read_time_us":488,"average_read_time_us":61,"last_error":"","status":"BPF probes attached","eviction":{"new_keys":0,"disappeared_keys":0,"reset_keys":0,"entries":17,"max_entries":2048,"watermark_pct":0.830078,"eviction_limited":false}},{"name":"WifiPacketLossMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":732820519306,"consecutive_errors":0,"total_errors":0,"attached_probes":3,"map_reads":9,"map_read_errors":0,"samples":8,"total_read_time_us":719,"average_read_time_us":79,"last_error":"","status":"BPF probes attached"},{"name":"HttpLatencyMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":732783135098,"consecutive_errors":0,"total_errors":0,"attached_probes":3,"map_reads":24,"map_read_errors":0,"samples":1,"total_read_time_us":21611,"average_read_time_us":900,"last_error":"","status":"BPF probes attached"},{"name":"ProcessNetProfiler","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":733197598848,"consecutive_errors":0,"total_errors":0,"attached_probes":3,"map_reads":21,"map_read_errors":0,"samples":19,"total_read_time_us":51942,"average_read_time_us":2473,"last_error":"","status":"BPF probes attached (shared TrafficAnalyzer)","eviction":{"new_keys":0,"disappeared_keys":0,"reset_keys":0,"entries":2,"max_entries":86353,"watermark_pct":0.00231607,"eviction_limited":false}},{"name":"TcpRetransMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":733205628140,"consecutive_errors":0,"total_errors":0,"attached_probes":2,"map_reads":32,"map_read_errors":0,"samples":28,"total_read_time_us":133630,"average_read_time_us":4175,"last_error":"","status":"BPF probes attached","eviction":{"new_keys":0,"disappeared_keys":0,"reset_keys":0,"entries":9,"max_entries":173202,"watermark_pct":0.00519624,"eviction_limited":false}},{"name":"TcpConnMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":733202815848,"consecutive_errors":0,"total_errors":0,"attached_probes":2,"map_reads":18,"map_read_errors":0,"samples":18,"total_read_time_us":2634,"average_read_time_us":146,"last_error":"","status":"BPF probes attached","eviction":{"new_keys":0,"disappeared_keys":0,"reset_keys":0,"entries":1,"max_entries":128,"watermark_pct":0.78125,"eviction_limited":false}},{"name":"SkbDropMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":0,"consecutive_errors":0,"total_errors":0,"attached_probes":1,"map_reads":9,"map_read_errors":0,"samples":9,"total_read_time_us":0,"average_read_time_us":0,"last_error":"","status":"attached"},{"name":"TcpRttMonitor","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":0,"consecutive_errors":0,"total_errors":0,"attached_probes":1,"map_reads":23,"map_read_errors":0,"samples":23,"total_read_time_us":0,"average_read_time_us":0,"last_error":"","status":"attached"},{"name":"BtAudioAnalyzer","state":"uninitialized","available":false,"healthy":false,"last_successful_sample_ns":0,"consecutive_errors":0,"total_errors":0,"attached_probes":0,"map_reads":0,"map_read_errors":0,"samples":0,"total_read_time_us":0,"average_read_time_us":0,"last_error":"","status":""},{"name":"BtDataPathAnalyzer","state":"attached","available":true,"healthy":true,"last_successful_sample_ns":740347266435,"consecutive_errors":0,"total_errors":0,"attached_probes":0,"map_reads":44,"map_read_errors":0,"samples":0,"total_read_time_us":0,"average_read_time_us":0,"last_error":"","status":"kprobe/hci_send_frame,kprobe/hci_recv_frame"}]}
+  [0;32m[PASS][0m ebpf-health
+
+----- skb-drop -----
+I1019 07:21:02.958783  4340 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:02.959040  4340 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:02.959061  4340 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:02.959079  4340 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:02.961190  4340 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:02.963348  4340 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:02.963402  4340 logger.cpp:183] [logger] Shutting down logger
+✅ Socket丢包归因统计: {"total_drops":0,"top_reasons":[]}
+  [0;32m[PASS][0m skb-drop
+
+----- dns-stats -----
+I1019 07:21:02.976549  4341 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:02.976794  4341 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:02.976816  4341 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:02.976832  4341 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:02.978945  4341 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:05.986539  4341 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:05.986626  4341 logger.cpp:183] [logger] Shutting down logger
+✅ DNS 解析统计: totalQueries:20|totalResponses:0|totalTimeouts:20|totalErrors:0|avgLatencyMs:0|maxLatencyMs:0|timeoutRate:100.000000
+  [0;32m[PASS][0m dns-stats
+
+----- wifi-loss -----
+I1019 07:21:06.001896  4342 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:06.002158  4342 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:06.002183  4342 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:06.002198  4342 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:06.004276  4342 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:06.006012  4342 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:06.006071  4342 logger.cpp:183] [logger] Shutting down logger
+✅ Wi-Fi 协议丢包归因: ifindex:1 rxPkts:360 txPkts:360 txDrops:0 txLossRate:0.000000%|ifindex:4 rxPkts:136 txPkts:210 txDrops:0 txLossRate:0.000000%|
+  [0;32m[PASS][0m wifi-loss
+
+----- http-latency -----
+I1019 07:21:06.018978  4343 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:06.019232  4343 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:06.019253  4343 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:06.019268  4343 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:06.021158  4343 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:07.983144  4343 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:07.983242  4343 logger.cpp:183] [logger] Shutting down logger
+✅ HTTP 请求延迟指标 (TTFB): totalTxns:0|p50Ms:0|p95Ms:0|p99Ms:0|maxMs:0|analysis:正常
+  [0;32m[PASS][0m http-latency
+
+----- profiling -----
+I1019 07:21:07.999042  4344 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:07.999271  4344 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:07.999292  4344 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:07.999308  4344 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:08.001340  4344 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:08.983033  4344 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:08.983120  4344 logger.cpp:183] [logger] Shutting down logger
+✅ 进程网络流量画像: === Top Bandwidth ===|pid:355 comm:sd-resolve txBytes:1780 txPackets:40 retrans:0|pid:3218 comm:weaknet-dbus-se txBytes:791 txPackets:21 retrans:0|=== Top Retransmit ===|pid:3218 comm:weaknet-dbus-se txBytes:791 retrans:0|pid:355 comm:sd-resolve txBytes:1780 retrans:0|
+  [0;32m[PASS][0m profiling
+
+----- history -----
+I1019 07:21:08.997813  4345 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:08.998047  4345 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:08.998070  4345 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:08.998090  4345 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:09.000154  4345 client.cpp:1360] [client] weaknet_init: connect result=1
+❌ 历史记录查询失败: 历史查询失败: Did not receive a reply. Possible causes include: the remote application did not send a reply, the message bus security policy blocked the reply, the reply timeout expired, or the network connection was broken.
+  [0;32m[PASS][0m history
+
+----- bt-traffic -----
+I1019 07:21:14.025738  4346 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:14.025974  4346 logger.cpp:164] [logger] Log directory: ./logs/client
+I1019 07:21:14.025997  4346 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:14.026015  4346 logger.cpp:166] [logger] Log to stderr: true
+I1019 07:21:14.028260  4346 client.cpp:1360] [client] weaknet_init: connect result=1
+I1019 07:21:14.985850  4346 client.cpp:1369] [client] weaknet_cleanup: cleaning up
+I1019 07:21:14.985934  4346 logger.cpp:183] [logger] Shutting down logger
+✅ 工业蓝牙数据通道历史指标: [{"ts":1791872014829,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2003,"tx_bytes":52,"rx_bytes":52,"tx_packets":1,"rx_packets":1,"tx_bps":207.688,"rx_bps":207.688,"max_gap_ms":143},{"ts":1791872012826,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":52,"rx_bytes":52,"tx_packets":1,"rx_packets":1,"tx_bps":207.792,"rx_bps":207.792,"max_gap_ms":156},{"ts":1791872010823,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":104,"rx_bytes":104,"tx_packets":2,"rx_packets":2,"tx_bps":415.584,"rx_bps":415.584,"max_gap_ms":47},{"ts":1791872008821,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2003,"tx_bytes":104,"rx_bytes":104,"tx_packets":2,"rx_packets":2,"tx_bps":415.377,"rx_bps":415.377,"max_gap_ms":77},{"ts":1791872006817,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":104,"rx_bytes":124,"tx_packets":2,"rx_packets":3,"tx_bps":415.584,"rx_bps":495.504,"max_gap_ms":89},{"ts":1791872004815,"controller_id":"hci0","handle":129,"generation":1,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":1000,"tx_bytes":56,"rx_bytes":36,"tx_packets":4,"rx_packets":3,"tx_bps":448,"rx_bps":288,"max_gap_ms":0},{"ts":1791871731576,"controller_id":"hci0","handle":129,"generation":3,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":52,"rx_bytes":52,"tx_packets":1,"rx_packets":1,"tx_bps":207.792,"rx_bps":207.792,"max_gap_ms":88},{"ts":1791871729574,"controller_id":"hci0","handle":129,"generation":3,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":52,"rx_bytes":104,"tx_packets":1,"rx_packets":2,"tx_bps":207.792,"rx_bps":415.584,"max_gap_ms":133},{"ts":1791871727572,"controller_id":"hci0","handle":129,"generation":3,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":104,"rx_bytes":52,"tx_packets":2,"rx_packets":1,"tx_bps":415.584,"rx_bps":207.792,"max_gap_ms":1000},{"ts":1791871725570,"controller_id":"hci0","handle":129,"generation":3,"attribution_scope":"device","device_address":"D0:96:EA:52:30:AC","window_ms":2002,"tx_bytes":104,"rx_bytes":104,"tx_packets":2,"rx_packets":2,"tx_bps":415.584,"rx_bps":415.584,"max_gap_ms":120}]
+  [0;32m[PASS][0m bt-traffic
+
+===== Phase 11: 单元测试 =====
+  [1;33m[SKIP][0m Phase 11: 板端未部署单元测试二进制（test/bin/ 为空）；gtest 套件在 x86 本地与 CI 运行
+
+===== Phase 12: eBPF 测试 =====
+  --- 运行 eBPF 测试（sudo）---
+🚀 开始 eBPF 功能专项测试
+============================================================
+I1019 07:21:35.140322  4353 logger.cpp:163] [logger] Logger initialized successfully
+I1019 07:21:35.140537  4353 logger.cpp:164] [logger] Log directory: ./logs/test
+I1019 07:21:35.140556  4353 logger.cpp:165] [logger] Min log level: 0
+I1019 07:21:35.140569  4353 logger.cpp:166] [logger] Log to stderr: true
+
+🧪 测试1: BPF 对象文件检查
+  ✅ BPF 对象文件存在: server/build/flow_rate.bpf.o
+     📦 文件大小: 597560 字节
+
+🧪 测试2: libbpf 支持检查
+  ✅ libbpf 头文件可用
+
+🧪 测试3: 流量分析器初始化
+  ✅ 获取流量分析器实例
+  ✅ 设置 BPF 对象路径
+  ✅ 设置异常检测参数
+
+🧪 测试4: 网络接口初始化（BPF 加载）
+     📡 使用网络接口: wlan0
+libbpf: loading server/build/flow_rate.bpf.o
+libbpf: elf: section(3) kprobe/tcp_retransmit_skb, size 272, link 0, flags 6, type=1
+libbpf: sec 'kprobe/tcp_retransmit_skb': found program 'trace_tcp_retransmit' at insn offset 0 (0 bytes), code size 34 insns (272 bytes)
+libbpf: elf: section(4) .relkprobe/tcp_retransmit_skb, size 32, link 31, flags 40, type=9
+libbpf: elf: section(5) kprobe/ip_queue_xmit, size 1264, link 0, flags 6, type=1
+libbpf: sec 'kprobe/ip_queue_xmit': found program 'tcp_transmit_entry' at insn offset 0 (0 bytes), code size 158 insns (1264 bytes)
+libbpf: elf: section(6) .relkprobe/ip_queue_xmit, size 80, link 31, flags 40, type=9
+libbpf: elf: section(7) kprobe/udp_sendmsg, size 960, link 0, flags 6, type=1
+libbpf: sec 'kprobe/udp_sendmsg': found program 'udp_send_entry' at insn offset 0 (0 bytes), code size 120 insns (960 bytes)
+libbpf: elf: section(8) .relkprobe/udp_sendmsg, size 64, link 31, flags 40, type=9
+libbpf: elf: section(9) license, size 4, link 0, flags 3, type=1
+libbpf: license of server/build/flow_rate.bpf.o is GPL
+libbpf: elf: section(10) .maps, size 96, link 0, flags 3, type=1
+libbpf: elf: section(21) .BTF, size 32790, link 0, flags 0, type=1
+libbpf: elf: section(23) .BTF.ext, size 2484, link 0, flags 0, type=1
+libbpf: elf: section(31) .symtab, size 840, link 1, flags 0, type=2
+libbpf: looking for externs among 35 symbols...
+libbpf: collected 0 externs total
+libbpf: map 'process_stats': at sec_idx 10, offset 0.
+libbpf: map 'process_stats': found type = 9.
+libbpf: map 'process_stats': found key [8], sz = 4.
+libbpf: map 'process_stats': found value [11], sz = 40.
+libbpf: map 'process_stats': found max_entries = 65536.
+libbpf: map 'current_sec': at sec_idx 10, offset 32.
+libbpf: map 'current_sec': found type = 9.
+libbpf: map 'current_sec': found key [19], sz = 13.
+libbpf: map 'current_sec': found value [25], sz = 24.
+libbpf: map 'current_sec': found max_entries = 65536.
+libbpf: map 'cfg_iface': at sec_idx 10, offset 64.
+libbpf: map 'cfg_iface': found type = 1.
+libbpf: map 'cfg_iface': found key [8], sz = 4.
+libbpf: map 'cfg_iface': found value [8], sz = 4.
+libbpf: map 'cfg_iface': found max_entries = 1.
+libbpf: sec '.relkprobe/tcp_retransmit_skb': collecting relocation for section(3) 'kprobe/tcp_retransmit_skb'
+libbpf: sec '.relkprobe/tcp_retransmit_skb': relo #0: insn #5 against 'process_stats'
+libbpf: prog 'trace_tcp_retransmit': found map 0 (process_stats, sec 10, off 0) for insn #5
+libbpf: sec '.relkprobe/tcp_retransmit_skb': relo #1: insn #24 against 'process_stats'
+libbpf: prog 'trace_tcp_retransmit': found map 0 (process_stats, sec 10, off 0) for insn #24
+libbpf: sec '.relkprobe/ip_queue_xmit': collecting relocation for section(5) 'kprobe/ip_queue_xmit'
+libbpf: sec '.relkprobe/ip_queue_xmit': relo #0: insn #25 against 'cfg_iface'
+libbpf: prog 'tcp_transmit_entry': found map 2 (cfg_iface, sec 10, off 64) for insn #25
+libbpf: sec '.relkprobe/ip_queue_xmit': relo #1: insn #92 against 'current_sec'
+libbpf: prog 'tcp_transmit_entry': found map 1 (current_sec, sec 10, off 32) for insn #92
+libbpf: sec '.relkprobe/ip_queue_xmit': relo #2: insn #109 against 'current_sec'
+libbpf: prog 'tcp_transmit_entry': found map 1 (current_sec, sec 10, off 32) for insn #109
+libbpf: sec '.relkprobe/ip_queue_xmit': relo #3: insn #127 against 'process_stats'
+libbpf: prog 'tcp_transmit_entry': found map 0 (process_stats, sec 10, off 0) for insn #127
+libbpf: sec '.relkprobe/ip_queue_xmit': relo #4: insn #147 against 'process_stats'
+libbpf: prog 'tcp_transmit_entry': found map 0 (process_stats, sec 10, off 0) for insn #147
+libbpf: sec '.relkprobe/udp_sendmsg': collecting relocation for section(7) 'kprobe/udp_sendmsg'
+libbpf: sec '.relkprobe/udp_sendmsg': relo #0: insn #54 against 'current_sec'
+libbpf: prog 'udp_send_entry': found map 1 (current_sec, sec 10, off 32) for insn #54
+libbpf: sec '.relkprobe/udp_sendmsg': relo #1: insn #71 against 'current_sec'
+libbpf: prog 'udp_send_entry': found map 1 (current_sec, sec 10, off 32) for insn #71
+libbpf: sec '.relkprobe/udp_sendmsg': relo #2: insn #89 against 'process_stats'
+libbpf: prog 'udp_send_entry': found map 0 (process_stats, sec 10, off 0) for insn #89
+libbpf: sec '.relkprobe/udp_sendmsg': relo #3: insn #109 against 'process_stats'
+libbpf: prog 'udp_send_entry': found map 0 (process_stats, sec 10, off 0) for insn #109
+libbpf: loading kernel BTF '/sys/kernel/btf/vmlinux': 0
+libbpf: map 'process_stats': created successfully, fd=4
+libbpf: map 'current_sec': created successfully, fd=5
+libbpf: map 'cfg_iface': created successfully, fd=6
+libbpf: sec 'kprobe/ip_queue_xmit': found 10 CO-RE relocations
+libbpf: CO-RE relocating [35] struct user_pt_regs: found target candidate [197] struct user_pt_regs in [vmlinux]
+libbpf: prog 'tcp_transmit_entry': relo #0: <byte_off> [35] struct user_pt_regs.regs[1] (0:0:1 @ offset 8)
+libbpf: prog 'tcp_transmit_entry': relo #0: matching candidate #0 <byte_off> [197] struct user_pt_regs.regs[1] (0:0:1 @ offset 8)
+libbpf: prog 'tcp_transmit_entry': relo #0: patched insn #0 (LDX/ST/STX) off 8 -> 8
+libbpf: prog 'tcp_transmit_entry': relo #1: <byte_off> [35] struct user_pt_regs.regs[0] (0:0:0 @ offset 0)
+libbpf: prog 'tcp_transmit_entry': relo #1: matching candidate #0 <byte_off> [197] struct user_pt_regs.regs[0] (0:0:0 @ offset 0)
+libbpf: prog 'tcp_transmit_entry': relo #1: patched insn #1 (LDX/ST/STX) off 0 -> 0
+libbpf: CO-RE relocating [48] struct sk_buff: found target candidate [1665] struct sk_buff in [vmlinux]
+libbpf: prog 'tcp_transmit_entry': relo #2: <byte_off> [48] struct sk_buff.dev (0:0:0:2:0 @ offset 16)
+libbpf: prog 'tcp_transmit_entry': relo #2: matching candidate #0 <byte_off> [1665] struct sk_buff.dev (0:0:0:2:0 @ offset 16)
+libbpf: prog 'tcp_transmit_entry': relo #2: patched insn #4 (ALU/ALU64) imm 16 -> 16
+libbpf: CO-RE relocating [87] struct net_device: found target candidate [2834] struct net_device in [vmlinux]
+libbpf: prog 'tcp_transmit_entry': relo #3: <byte_off> [87] struct net_device.ifindex (0:17 @ offset 208)
+libbpf: prog 'tcp_transmit_entry': relo #3: matching candidate #0 <byte_off> [2834] struct net_device.ifindex (0:17 @ offset 208)
+libbpf: prog 'tcp_transmit_entry': relo #3: patched insn #15 (ALU/ALU64) imm 208 -> 208
+libbpf: CO-RE relocating [375] struct sock: found target candidate [2555] struct sock in [vmlinux]
+libbpf: prog 'tcp_transmit_entry': relo #4: <byte_off> [375] struct sock.__sk_common.skc_family (0:0:3 @ offset 16)
+libbpf: prog 'tcp_transmit_entry': relo #4: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_family (0:0:3 @ offset 16)
+libbpf: prog 'tcp_transmit_entry': relo #4: patched insn #37 (ALU/ALU64) imm 16 -> 16
+libbpf: prog 'tcp_transmit_entry': relo #5: <byte_off> [375] struct sock.__sk_common.skc_rcv_saddr (0:0:0:1:1 @ offset 4)
+libbpf: prog 'tcp_transmit_entry': relo #5: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_rcv_saddr (0:0:0:1:1 @ offset 4)
+libbpf: prog 'tcp_transmit_entry': relo #5: patched insn #46 (ALU/ALU64) imm 4 -> 4
+libbpf: prog 'tcp_transmit_entry': relo #6: <byte_off> [375] struct sock.__sk_common.skc_daddr (0:0:0:1:0 @ offset 0)
+libbpf: prog 'tcp_transmit_entry': relo #6: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_daddr (0:0:0:1:0 @ offset 0)
+libbpf: prog 'tcp_transmit_entry': relo #6: patched insn #54 (ALU/ALU64) imm 0 -> 0
+libbpf: prog 'tcp_transmit_entry': relo #7: <byte_off> [375] struct sock.__sk_common.skc_num (0:0:2:1:1 @ offset 14)
+libbpf: prog 'tcp_transmit_entry': relo #7: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_num (0:0:2:1:1 @ offset 14)
+libbpf: prog 'tcp_transmit_entry': relo #7: patched insn #63 (ALU/ALU64) imm 14 -> 14
+libbpf: prog 'tcp_transmit_entry': relo #8: <byte_off> [375] struct sock.__sk_common.skc_dport (0:0:2:1:0 @ offset 12)
+libbpf: prog 'tcp_transmit_entry': relo #8: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_dport (0:0:2:1:0 @ offset 12)
+libbpf: prog 'tcp_transmit_entry': relo #8: patched insn #73 (ALU/ALU64) imm 12 -> 12
+libbpf: prog 'tcp_transmit_entry': relo #9: <byte_off> [48] struct sk_buff.len (0:6 @ offset 112)
+libbpf: prog 'tcp_transmit_entry': relo #9: matching candidate #0 <byte_off> [1665] struct sk_buff.len (0:6 @ offset 112)
+libbpf: prog 'tcp_transmit_entry': relo #9: patched insn #84 (ALU/ALU64) imm 112 -> 112
+libbpf: sec 'kprobe/udp_sendmsg': found 7 CO-RE relocations
+libbpf: prog 'udp_send_entry': relo #0: <byte_off> [35] struct user_pt_regs.regs[2] (0:0:2 @ offset 16)
+libbpf: prog 'udp_send_entry': relo #0: matching candidate #0 <byte_off> [197] struct user_pt_regs.regs[2] (0:0:2 @ offset 16)
+libbpf: prog 'udp_send_entry': relo #0: patched insn #0 (LDX/ST/STX) off 16 -> 16
+libbpf: prog 'udp_send_entry': relo #1: <byte_off> [35] struct user_pt_regs.regs[0] (0:0:0 @ offset 0)
+libbpf: prog 'udp_send_entry': relo #1: matching candidate #0 <byte_off> [197] struct user_pt_regs.regs[0] (0:0:0 @ offset 0)
+libbpf: prog 'udp_send_entry': relo #1: patched insn #1 (LDX/ST/STX) off 0 -> 0
+libbpf: prog 'udp_send_entry': relo #2: <byte_off> [375] struct sock.__sk_common.skc_family (0:0:3 @ offset 16)
+libbpf: prog 'udp_send_entry': relo #2: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_family (0:0:3 @ offset 16)
+libbpf: prog 'udp_send_entry': relo #2: patched insn #7 (ALU/ALU64) imm 16 -> 16
+libbpf: prog 'udp_send_entry': relo #3: <byte_off> [375] struct sock.__sk_common.skc_rcv_saddr (0:0:0:1:1 @ offset 4)
+libbpf: prog 'udp_send_entry': relo #3: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_rcv_saddr (0:0:0:1:1 @ offset 4)
+libbpf: prog 'udp_send_entry': relo #3: patched insn #16 (ALU/ALU64) imm 4 -> 4
+libbpf: prog 'udp_send_entry': relo #4: <byte_off> [375] struct sock.__sk_common.skc_daddr (0:0:0:1:0 @ offset 0)
+libbpf: prog 'udp_send_entry': relo #4: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_daddr (0:0:0:1:0 @ offset 0)
+libbpf: prog 'udp_send_entry': relo #4: patched insn #24 (ALU/ALU64) imm 0 -> 0
+libbpf: prog 'udp_send_entry': relo #5: <byte_off> [375] struct sock.__sk_common.skc_num (0:0:2:1:1 @ offset 14)
+libbpf: prog 'udp_send_entry': relo #5: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_num (0:0:2:1:1 @ offset 14)
+libbpf: prog 'udp_send_entry': relo #5: patched insn #33 (ALU/ALU64) imm 14 -> 14
+libbpf: prog 'udp_send_entry': relo #6: <byte_off> [375] struct sock.__sk_common.skc_dport (0:0:2:1:0 @ offset 12)
+libbpf: prog 'udp_send_entry': relo #6: matching candidate #0 <byte_off> [2555] struct sock.__sk_common.skc_dport (0:0:2:1:0 @ offset 12)
+libbpf: prog 'udp_send_entry': relo #6: patched insn #43 (ALU/ALU64) imm 12 -> 12
+  ✅ BPF 程序加载成功
+  ✅ kprobe 挂载成功
+
+🧪 测试5: 流量数据采集
+     🔍 正在采样流量数据（2秒）...
+  ✅ 流量数据采集成功
+     📊 采集到 1 个流量流:
+       1. 192.168.137.210:52281 -> 192.168.137.1:9 [UDP] 132300 B/s, 94 pkt/s
+
+🧪 测试6: 实时统计获取
+  ✅ 获取实时统计成功
+     📊 实时统计:
+       - 总字节/秒: 0 B/s
+       - 总包/秒: 0 pkt/s
+       - 活跃流数: 0
+
+🧪 测试7: 异常流量检测
+  ✅ 异常检测运行成功（未检测到异常）
+     ✅ 当前流量正常，未检测到异常
+
+🧪 测试8: 流量历史记录
+  ✅ 流量历史记录获取成功
+     📊 记录了 1 个接口的历史数据
+       - 192.168.137.210:50786-192.168.137.1:53/UDP: 1 条 BPS 记录, 1 条 PPS 记录
+
+🧪 测试9: 清理历史数据
+  ✅ 清理历史数据成功
+
+============================================================
+
+📊 测试统计: 总计=12, 通过=12, 失败=0, 成功率=100%
+
+🎉 eBPF 功能测试完成!
+  [0;32m[PASS][0m eBPF 测试
+
+===== Phase 13: eBPF 挂载检查 =====
+  [0;32m[PASS][0m eBPF 程序存在（51 个）
+
+===== Phase 14: OTA 升级与签名回归测试 =====
+  --- 14.1: status 查询 ---
+  [0;32m[PASS][0m OTA update status 查询
+  --- 14.2: 未签名包被拒 (fail-closed) ---
+  [0;32m[PASS][0m 未签名包拦截 (fail-closed 有效)
+  --- 14.3: 伪造私钥签名被拒 ---
+  [0;32m[PASS][0m 伪造私钥签名拦截成功
+
+===== Phase 15: 服务端日志（最后 80 行）=====
+I1019 07:21:33.899071  3230 weak_netmgr.cpp:467] [rssi] using iface wlan0 RSSI=-3 dBm
+I1019 07:21:33.899304  3230 rssi_monitor.cpp:61] [rssi] RSSI_MONITOR: wlan0 | RSSI: -3dBm
+I1019 07:21:33.912634  3234 server.cpp:286] [weak_mgr] traffic analysis thread running, loop=7
+I1019 07:21:33.912904  3234 server.cpp:289] [weak_mgr] traffic analysis: calling updateTrafficAnalysisSafe
+I1019 07:21:33.913285  3229 server.cpp:431] [network] DNS SLE: state=BAD coverage=FULL_FOR_PROFILE reason=critical_burst_timeouts fail=28/28 inflight=2 ok=0 unmatched=0 ambiguous=0 late=0
+I1019 07:21:33.913590  3229 server.cpp:454] [network] TCP SLE: state=UNKNOWN coverage=PARTIAL reason=insufficient_tcp_connect_samples ok=1 fail=0 unmatched=0
+I1019 07:21:33.916337  3229 server.cpp:473] [network] TCP_RTT SLE: state=GOOD coverage=FULL_FOR_PROFILE reason=passive_tcp_rtt_healthy p50=141us p90=11542us conns=19 samples=549
+I1019 07:21:33.918359  3229 server.cpp:514] [network] HTTP SLE: state=UNKNOWN coverage=NONE reason=no_http_observations samples=0 | Portal: UNKNOWN reason=no_portal_probe_capability
+I1019 07:21:33.918908  3229 server.cpp:558] [network] Active capability: dns=BAD(active_dns_capability_failed) tcp=UNKNOWN(blocked_by_dns) https=UNKNOWN(blocked_by_tcp) portal=UNKNOWN(no_portal_probe_capability)
+I1019 07:21:33.951515  3233 weak_netmgr.cpp:192] [weak_mgr] updateTcpLossRate: iface=wlan0 rate=0 level=good
+I1019 07:21:34.001647  3243 database_manager.cpp:568] [system] snapshot metadata: generation=29 snapshot_ts=1792394493899 rtt=1792394485620 rssi=1792394493899 jitter=1792394485620 tcp_loss=1792394493951 traffic=1792394483884
+I1019 07:21:34.002192  3243 server.cpp:1183] [system] History persistence: wrote 1 records
+I1019 07:21:34.004778  3243 server.cpp:1215] [system] History persistence: wrote 2 Bluetooth records
+I1019 07:21:34.116698  3239 server.cpp:951] [network] PROC_BW pid=355 comm=sd-resolve txBytes=2236 retrans=0
+I1019 07:21:34.117074  3239 server.cpp:951] [network] PROC_BW pid=3218 comm=weaknet-dbus-se txBytes=1050 retrans=0
+I1019 07:21:34.117357  3239 server.cpp:951] [network] PROC_BW pid=4349 comm=curl txBytes=292 retrans=0
+I1019 07:21:34.127188  3240 server.cpp:1017] [tcp_loss] TCP conn tick: accepts=8 closes=7 active=1 acceptFailures=0 avgDur=566ms
+I1019 07:21:34.230862  3242 server.cpp:1074] [tcp_loss] TCP passive RTT tick: active_conns=20 avg_rtt=50441us p50=141us p90=11542us p99=157886us total_samples=551
+I1019 07:21:34.338629  3241 server.cpp:982] [network] TCP retransmit tick: connections=12 lossRate=0%
+I1019 07:21:35.757567  3231 weak_netmgr.cpp:232] [network] using iface wlan0 jitter updated: 73.9598ms (poor)
+I1019 07:21:35.757994  3231 rtt_monitor.cpp:170] [rtt] RTT_MONITOR: wlan0 | RTT: 102ms | Quality: 2 | Target: 223.5.5.5
+I1019 07:21:38.875697  3227 server.cpp:836] [network] DNS events drained=1
+I1019 07:21:39.006645  3243 database_manager.cpp:568] [system] snapshot metadata: generation=31 snapshot_ts=1792394495757 rtt=1792394495757 rssi=1792394493899 jitter=1792394495757 tcp_loss=1792394493951 traffic=1792394483884
+I1019 07:21:39.007328  3243 server.cpp:1183] [system] History persistence: wrote 1 records
+I1019 07:21:39.008386  3243 server.cpp:1215] [system] History persistence: wrote 2 Bluetooth records
+I1019 07:21:39.501739  3224 bt_monitor.cpp:1125] [bluetooth] BtMonitor: Device lost: F8-53-84-5E-9B-08 (F8:53:84:5E:9B:08)
+I1019 07:21:39.501981  3224 event_manager.cpp:114] [event_mgr] emitting event: type=6, message='Device lost: F8-53-84-5E-9B-08 (F8:53:84:5E:9B:08)', source='F8-53-84-5E-9B-08'
+I1019 07:21:39.502069  3224 event_manager.cpp:192] [event_mgr] Bluetooth device event: Device lost: F8-53-84-5E-9B-08 (F8:53:84:5E:9B:08)
+I1019 07:21:42.545006  3224 bt_monitor.cpp:1125] [bluetooth] BtMonitor: Device lost: 4E-D0-CE-9D-FF-4E (4E:D0:CE:9D:FF:4E)
+I1019 07:21:42.545293  3224 event_manager.cpp:114] [event_mgr] emitting event: type=6, message='Device lost: 4E-D0-CE-9D-FF-4E (4E:D0:CE:9D:FF:4E)', source='4E-D0-CE-9D-FF-4E'
+I1019 07:21:42.545404  3224 event_manager.cpp:192] [event_mgr] Bluetooth device event: Device lost: 4E-D0-CE-9D-FF-4E (4E:D0:CE:9D:FF:4E)
+I1019 07:21:42.545477  3224 event_manager.cpp:114] [event_mgr] emitting event: type=6, message='CY的天选5PRO distance ~6m', source='CY的天选5PRO'
+I1019 07:21:42.545547  3224 event_manager.cpp:192] [event_mgr] Bluetooth device event: CY的天选5PRO distance ~6m
+I1019 07:21:43.418038  3223 server.cpp:322] [weak_mgr] using iface thread running, loop=14
+I1019 07:21:43.418444  3223 server.cpp:325] [weak_mgr] using iface: calling updateCurrentUsingSafe
+I1019 07:21:43.418653  3223 weak_netmgr.cpp:160] [weak_mgr] updateCurrentUsing: current=wlan0 flags=1
+I1019 07:21:43.418851  3223 weak_netmgr.cpp:172] [interface] current=wlan0 flags=IPv4
+I1019 07:21:43.419041  3223 server.cpp:327] [weak_mgr] using iface: updateCurrentUsingSafe completed, changed=0
+I1019 07:21:43.419241  3223 server.cpp:331] [weak_mgr] using iface: current interfaces count=1
+I1019 07:21:43.419430  3223 server.cpp:347] [weak_mgr] unchanged (interfaces: 1)
+I1019 07:21:43.418313  3222 server.cpp:195] [interface] tick: collecting interfaces...
+I1019 07:21:43.419835  3222 weak_netmgr.cpp:52] [weak_mgr] collectCurrentInterfaces begin
+I1019 07:21:43.420017  3222 net_iface.cpp:162] [interface] SnapshotCollector::collect begin
+I1019 07:21:43.420742  3222 net_iface.cpp:416] [interface] Link update: ifindex=1 name=lo up=1 loopback=1 flags=0x10049
+I1019 07:21:43.420969  3222 net_iface.cpp:416] [interface] Link update: ifindex=2 name=sit0 up=0 loopback=0 flags=0x80
+I1019 07:21:43.421317  3222 net_iface.cpp:416] [interface] Link update: ifindex=3 name=eth0 up=1 loopback=0 flags=0x1003
+I1019 07:21:43.421561  3222 net_iface.cpp:416] [interface] Link update: ifindex=4 name=wlan0 up=1 loopback=0 flags=0x11043
+I1019 07:21:43.421959  3222 net_iface.cpp:482] [interface] Default route added: IPv4 ifindex=4 name=wlan0
+I1019 07:21:43.422477  3222 net_iface.cpp:512] [interface] recomputeManaged: up=2 v4_default=1 v6_default=0 managed=1
+I1019 07:21:43.422693  3222 net_iface.cpp:180] [interface] collect success: up=2 v4_default=1 v6_default=0 managed=1
+I1019 07:21:43.423125  3222 weak_netmgr.cpp:77] [weak_mgr] collectCurrentInterfaces end: 1 ifaces, using=wlan0
+I1019 07:21:43.423318  3222 server.cpp:197] [interface] collected 1 interfaces
+I1019 07:21:43.423488  3222 server.cpp:209] [interface] ACTIVE: wlan0 | RTT: -1ms | Jitter: -1ms () | Quality: 0 | RSSI: -1000dBm | TCP Loss: -1% () | Traffic: 0MB/s, 0 flows, 0 pps
+I1019 07:21:43.423730  3222 server.cpp:240] [interface] no changes detected
+I1019 07:21:43.781895  3218 dbus_service.cpp:2068] [dbus] handleGetUpdateStatus called
+I1019 07:21:43.792299  3227 server.cpp:850] [network] dns-capture diag: {"capture":{"sendto":20,"sendmsg":4413,"sendmmsg":0,"recvfrom":179,"recvmsg_enter":16818,"recvmsg_exit":16818,"recvmmsg_exit":1,"msghdr_read_fail":0,"iovec_read_fail":0,"payload_read_fail":0,"short_payload":0,"not_dns_port":0,"port_unknown":10416,"connect_seen":29,"send_enter":1063,"queue_enter":0,"send_dns_port":88,"send_nonipv4":0,"send_nondns":975,"queue_dns_port":0,"send_has_msg_name":0,"send_connected_peer":0,"send_payload_fail":0,"send_emitted":60,"queue_nonipv4":0,"queue_header_fail":0,"queue_payload_fail":0,"queue_nondns":0,"queue_emitted":0,"emitted":60,"emit_fail":0},"drain":{"poll_calls":1300,"poll_records":30,"poll_errors":0,"sample_callbacks":60,"lost_events":0,"tracker_query_accepted":60,"tracker_response_accepted":0},"delivery":{"capture_attempts":88,"capture_emit_failures":0,"delivered_events":60,"perf_lost_events":0,"capture_emit_failure_ratio":0.000000,"perf_delivery_loss_ratio":0.000000}}
+I1019 07:21:43.793296  3227 server.cpp:861] [network] DNS tick: queries=28 avgLatency=0ms timeoutRate=100%
+I1019 07:21:43.893640  3227 server.cpp:836] [network] DNS events drained=1
+I1019 07:21:43.918704  3230 net_wifiriss.cpp:469] [network] connect: starting, iface=wlan0, ctrlDir=
+I1019 07:21:43.919123  3230 net_wifiriss.cpp:491] [network] connect: socket created, fd=10
+I1019 07:21:43.919328  3230 net_wifiriss.cpp:498] [network] connect: bindLocal() succeeded
+I1019 07:21:43.919409  3230 net_wifiriss.cpp:508] [network] connect: trying 2 candidate directories
+I1019 07:21:43.919456  3230 net_wifiriss.cpp:510] [network] connect: trying directory /run/wpa_supplicant
+I1019 07:21:43.919531  3230 net_wifiriss.cpp:513] [network] connect: connected to /run/wpa_supplicant
+I1019 07:21:43.919625  3230 net_wifiriss.cpp:469] [network] connect: starting, iface=wlan0, ctrlDir=/var/run/wpa_supplicant
+I1019 07:21:43.919766  3230 net_wifiriss.cpp:491] [network] connect: socket created, fd=10
+I1019 07:21:43.919884  3230 net_wifiriss.cpp:498] [network] connect: bindLocal() succeeded
+I1019 07:21:43.919945  3230 net_wifiriss.cpp:508] [network] connect: trying 3 candidate directories
+I1019 07:21:43.919993  3230 net_wifiriss.cpp:510] [network] connect: trying directory /var/run/wpa_supplicant
+I1019 07:21:43.920063  3230 net_wifiriss.cpp:513] [network] connect: connected to /var/run/wpa_supplicant
+I1019 07:21:43.920676  3230 net_wifiriss.cpp:188] [rssi] nl80211: querying station wlan0 ifindex=4 bssid=c6:35:32:9c:7c:7d
+I1019 07:21:43.921031  3230 net_wifiriss.cpp:214] [rssi] nl80211: GET_STATION response bytes=244
+I1019 07:21:43.921149  3234 weak_netmgr.cpp:586] [weak_mgr] Updated traffic stats for wlan0: 0 MB/s, 0 flows, 0 pps
+I1019 07:21:43.921257  3230 net_wifiriss.cpp:220] [rssi] nl80211: GET_STATION response hex=f40000001900000002000000920c00001301000008000300040000000a000600c635329c7c7d000008002e0000000000c40015000800010028000000080002002be1010008000300f7ce0a000c0017002be10100000000000c001800f7ce0a000000000005000700fe0000003800080008000500140a000006000100140a00000400030005000d000a00000005000e000100000005000f0000000000050010000000000038000e0008000500330b000006000100330b00000400030005000d000b00000005000e000100000005000f0000000000050010000000000008000900de02000008000a00ec05000008000c0000000000
+I1019 07:21:43.921411  3230 weak_netmgr.cpp:467] [rssi] using iface wlan0 RSSI=-2 dBm
+I1019 07:21:43.921317  3234 server.cpp:291] [weak_mgr] traffic analysis: updateTrafficAnalysisSafe completed, changed=1
+I1019 07:21:43.921504  3230 rssi_monitor.cpp:61] [rssi] RSSI_MONITOR: wlan0 | RSSI: -2dBm
+I1019 07:21:43.921577  3234 server.cpp:295] [weak_mgr] traffic analysis: current interfaces count=1
+I1019 07:21:43.921715  3234 server.cpp:298] [weak_mgr] Traffic analysis updated
+I1019 07:21:43.988083  3233 weak_netmgr.cpp:192] [weak_mgr] updateTcpLossRate: iface=wlan0 rate=0 level=good
+
+==============================================
+  测试汇总
+==============================================
+  PASS: 26
+  FAIL: 0
+  SKIP: 1
+==============================================
+

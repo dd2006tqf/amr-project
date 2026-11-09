@@ -1,0 +1,2689 @@
+# 影石实习项目二：基于 Ace Pro 2 机型的 AI 修图功能 · 深度简历知识库
+
+> **部门与岗位**：影石 Insta360 · 相机工程部 · 通信组 · 嵌入式软件工程师（应用层）
+> **平台与架构**：影石 Ace Pro 2 旗舰运动相机（IAC3 板端，安霸 Ambarella CV5x 系列双核异构 SoC：ThreadX 实时控制核 + Linux 服务核，AIP3.0 消费相机业务框架）与 Android、iOS 双端 App；AI 修图为 AIP3 框架上相机主动发起类的 AI 业务，主体逻辑运行于 ThreadX 侧 `Insta360AIP`，经 AmbaLink/RPMsg 与 Linux 核协同
+> **代码物理根目录**：相机端 `ins_app` 蓝牙应用层与 AI 修图业务模块；Android 端 Companion Device 唤醒服务与任务编排层；iOS 端 iBeacon 区域监控模块
+> **设计规范遵循**：UCD 2.0 强契约帧格式、控制面与数据面分离、链路白名单 MAC 绑定、双重门禁防重入、三级异常降级矩阵。
+
+---
+
+## 目录结构大纲
+
+```
+├── 一、简历正式定稿版（3 大核心 Bullet Points）
+│
+├── 二、AI 修图端到端业务全流程与各阶段数据格式总览
+│   ├── 1. 产品形态与三大核心业务场景（拍后修 / 拍时修 / 静默检测与无预期主动推送）
+│   ├── 2. 端到端四方协同拓扑（相机 GUI-媒体-应用编排-蓝牙 ↔ App ↔ OSS ↔ 云端 AI）
+│   ├── 3. 全链路 7 大阶段逐帧数据格式、命令码、事件与业务动作全解
+│   │   ├── 阶段 0：前置授权引导、蓝牙唤醒与双端数据通路建链（Option 183/184 + 0x207B + 0x00EF）
+│   │   ├── 阶段 1：进入 AI 修图与机内 256×256 场景检测缩略图生成（MMC 事件与 YUV 缩放管线）
+│   │   ├── 阶段 2：请求模板列表与场景缩略图上行 + App 端 mobileClip 768 维向量检索（0x207C / 0x00EB / 0x2079）
+│   │   ├── 阶段 3：模板元数据返回与 280×280 缩略图分片渐进下发及 BGRA 解码上屏（0x00F1 / 0x00F4 / 0x00EC / 0x207A）
+│   │   ├── 阶段 4：用户选定模板与 2048×H 源图人脸 ROI HEIF 硬件压缩（0x207D / 0x00EB / 0x2079 / 0x00F2）
+│   │   ├── 阶段 5：触发云端 AI 生图任务与状态轮询（0x207E / 0x00F3）
+│   │   └── 阶段 6：720P 结果图蓝牙分片回传、文件尾合成与 2K 原片 Wi-Fi 空闲异步替换（0x00EC / 0x207A）
+│   ├── 4. 全流程数据形态与图像规格演进总表（分辨率 / 编码格式 / 字节量 / 承载通道 / 校验方式）
+│   ├── 5. 机内跨模块交互架构（GUI ↔ 应用编排 ↔ 媒体层 ↔ 蓝牙层，7 类通知 N1~N7 与 7 个 MMC 事件）
+│   └── 6. IAC3 平台架构底座（双核异构分工 / AmbaLink 三件套 / AIP3.0 五层框架与 MMC·DMC / UCD 命令码五段空间与跨核消息族 / 三层通信切片 / 与 AIPL 平台差异辨析 / AI 修图代码地图 / 启动时序与容错降级）
+│
+├── 三、条目一：UCD 2.0 业务通信协议设计与实现
+│   ├── 1. 简历标准写法
+│   ├── 2. 6 大可验证断言拆解
+│   ├── 3. 背景知识 A：UCD 1.0 的五大痛点与 UCD 2.0 帧格式设计
+│   ├── 4. 背景知识 B：magic 粘包边界、CRC32 覆盖范围与 sequence 语义
+│   ├── 5. 背景知识 C：options TLV 扩展机制与新旧协议版本协商
+│   ├── 6. 背景知识 D：11 个业务命令码的配对设计与 3 份 Protobuf 消息族
+│   ├── 7. 背景知识 E：分片确认与滑动窗口重传（拉式协议到批量推送的演进）
+│   ├── 8. 核心源码走读片段
+│   ├── 9. 面试问答汇总（12 问深度技术交锋）
+│   └── 10. 面试 30 秒应答模板
+│
+├── 四、条目二：双平台蓝牙数据通路打通与 SPP 传输优化
+│   ├── 1. 简历标准写法
+│   ├── 2. 6 大可验证断言拆解
+│   ├── 3. 背景知识 A：控制面与数据面分离的三链路架构
+│   ├── 4. 背景知识 B：博通协议栈 SPP 打通与链路状态机
+│   ├── 5. 背景知识 C：MAC 白名单绑定与未授权接入防护
+│   ├── 6. 背景知识 D：iOS L2CAP CoC 接入与 SPSM 六回调
+│   ├── 7. 背景知识 E：SPP 吞吐瓶颈的利用率测算与四层优化
+│   ├── 8. 核心源码走读片段
+│   ├── 9. 面试问答汇总（13 问深度技术交锋）
+│   └── 10. 面试 30 秒应答模板
+│
+├── 五、条目三：相机端蓝牙唤醒 App 后台拉起
+│   ├── 1. 简历标准写法
+│   ├── 2. 5 大可验证断言拆解
+│   ├── 3. 背景知识 A：双端后台限制与唤醒机制选型
+│   ├── 4. 背景知识 B：Companion Device 四层任务链架构与 ActionType 路由
+│   ├── 5. 背景知识 C：双重门禁防重入与全局串行执行队列
+│   ├── 6. 背景知识 D：iOS iBeacon 区域监控唤醒与权限约束
+│   ├── 7. 核心源码走读片段
+│   ├── 8. 面试问答汇总（11 问深度技术交锋）
+│   └── 9. 面试 30 秒应答模板
+│
+├── 六、条目四（扩展业务闭环谈资）：权益扣费、异常矩阵与任务断点恢复
+│   ├── 1. 顺便提一嘴的口语概括
+│   ├── 2. 背景知识 A：预扣、确认、退还的三段式扣费与幂等设计
+│   ├── 3. 背景知识 B：入口、模板、任务的三级异常降级矩阵
+│   ├── 4. 背景知识 C：任务断点恢复与 SD 卡热插拔保护
+│   └── 5. 口语化实战问答（5 问）
+│
+└── 七、附录：面试通关实战武器库
+    ├── 1. 端到端一分钟项目介绍（Elevator Pitch 黄金开场白）
+    ├── 2. 工业级系统指标与实战性能量化大表（真机实测数据）
+    └── 3. 四大技术深水区排障实战故事（STAR 法则）
+        ├── 故事一：SPP 链路上行利用率仅一成的协议层瓶颈定位与四层优化
+        ├── 故事二：相机主动唤醒后台 App 的任务链防重入与双端唤醒选型
+        ├── 故事三：回放页场景检测 4096×3072 Y2Y 缩放触发安霸 DSP vproc Tile Assertion 整机重启排障
+        └── 故事四：Generate_Task 返回 errorcode=2（RTOS 手拼 HEIC 容器缺少 pixi/colr Box 与 VUI）及 18 模板下载 RFCOMM credit 耗尽超时排障
+```
+
+---
+
+## 一、简历正式定稿版（3 大核心 Bullet Points）
+
+> **项目名称**：基于 Ace Pro 2 机型的 AI 修图功能
+> **项目简介**：在已上市的 Ace Pro 2 机型上开发相机 AI 修图功能，负责 App 与相机通信层、应用层开发。
+>
+> * **参与通信协议设计与实现**。基于 UCD 2.0 帧格式参与定义 11 个业务命令码与 3 份业务 Protobuf 消息族，配合 CRC32 校验、分片确认与滑动窗口重传协议方案（`BatchPush`/`BatchAck`），闭环相机与手机 App 的全链路通信。
+> * **参与蓝牙通信链路打通与传输优化**。基于博通协议栈，在内测 BLE 基础上为 Android 端打通 SPP/RFCOMM 数据通路，测得流程耗时约 38s，提升约 35%；针对 iOS 设备接入 L2CAP CoC 高吞吐数据通道。
+> * **参与实现相机端蓝牙唤醒 App 后台拉起**。Android 基于 Companion Device 机制，由系统检测到相机广播拉起唤醒服务，按 ActionType（AI 修图 = 0x03）路由并串行执行任务链；iOS 通过 iBeacon 广播（Minor=0x05 标识 AI 修图来源）由系统区域监控拉起 App，随后建立 L2CAP CoC 数据通道。
+
+---
+
+## 二、AI 修图端到端业务全流程与各阶段数据格式总览
+
+> **为什么面试前必须先吃透这一章**：面试官听完简历后，第一反应往往是问：*"你先给我讲一下，用户在相机上点了一下 AI 修图，到最后相机屏幕上显示修好的照片，中间到底经历了哪几步？每一步传的是什么数据、多大、什么格式、走的哪条通道、怎么校验的？"* 本章把散落在《AI修图-应用层与相机媒体层通信流程》《ai修图业务proto》《ai修图总文档》《经典蓝牙》《相机唤醒App》五份内部文档中的全链路细节一次性串齐。
+
+---
+
+### 1. 产品形态与三大核心业务场景
+
+AI 修图的目标是在运动相机上实现**"即拍即修即分享"**——相机本身没有跑生成式大模型（AIGC）的算力与蜂窝网络，因此以手机 App 作为中继桥接云端大模型，由相机端发起交互、控制节奏并最终在相机相册内落盘展示。按触发方式与交互形态分为三大业务场景：
+
+| 业务场景 | 触发入口与前置条件 | 核心交互与数据流差异 | 模板分类与特殊约束 |
+| :--- | :--- | :--- | :--- |
+| **场景一：拍后修图（回放页主动修图，P0 主链路）** | 用户在相机相册/回放页查看单张照片，点击右下角"AI 修图"入口浮标（支持普通拍照、Live 图取封面帧、间隔拍照、连拍；录像不支持） | 1. 媒体层从原片解码或提取 `256×256` 场景检测图上行 App；<br>2. App 运行 `mobileClip` 提取 768 维 float32 向量上云检索推荐模板；<br>3. 相机展示模板墙，用户选定一个模板点击确认；<br>4. 相机将 4K 原图下采样至 `2048×H` 并经人脸 ROI 硬件 HEVC 编码封装为 `22~66KB` HEIF 上行；<br>5. 云端生成 2K 成片并压缩出 720P 预览图，App 先经蓝牙将 720P 回传机内写入文件尾展示，空闲连 Wi-Fi 时再回传 2K 替换 | 区分**常用/预设模板**（机内预置功能型模板，如一键美颜、消除路人、变清晰）与**推荐模板**（云端按场景匹配下发，每次占位加载 5 个）；若对机内已生成的 AI 成片再次发起修图，直接复用无需二次压缩 |
+| **场景二：拍时修图（预览页即拍即修，T7 链路）** | 拍照模式预览页开启修图入口（Live 开关开启时入口置灰，点击弹窗询问是否关闭 Live） | 1. 点击预览页修图入口，截取当前实时预览帧生成 `256×256` 缩略图上行；<br>2. **强约束：AI 分析画面期间叠加光效 Loading（"AI 分析画面中… 38%"），用户不可退出**（应用层 `AR.14` 拦截 GUI 返回事件），必须等分析结束进入模板选择页才允许退出；<br>3. 模板页无"预设模板"分类，仅展示**推荐模板 + 空模板（清除效果） + 当前已应用模板（固定在队首） + 重新分析按钮**；<br>4. 确认模板后返回预览页，左上角常驻显示当前模板小缩略图与名称；<br>5. 之后每次按下快门拍照，媒体层在生成原图同时自动将 `template_id` 写入文件尾并转入后台异步上传修图任务，不阻塞用户继续拍照或切换模式 | 连拍、定时拍摄、QC（快拍）触发的拍照不走修图流程，仅输出原片；若机内水印开关打开，上传**未叠加水印**的图片上云，成片返回后再由机内叠加水印，防止小分辨率压缩再生成导致水印边缘扭曲 |
+| **场景三：静默场景检测与无预期模板主动推送（媒体版）** | 满足 6 项严苛前置条件：<br>① 设置内"自动推荐模板"开关开启；<br>② 蓝牙已连接、账号已登录且权益 ≥ 1 次；<br>③ 相机处于**拍照模式-待机预览亮屏**状态；<br>④ **画面稳定**：陀螺仪判断相机无明显抖动 ≥ 2 秒，且非全黑/全白画面；<br>⑤ 距离上次推荐已超过 **10 分钟**；<br>⑥ 单次开机生命周期推荐未超过 **3 次** | **两个触发时机**：<br>· 时机 1：切换到拍照模式后满足前置条件立即触发一次；<br>· 时机 2：停留在拍照模式期间，拍完上一张照片后，或调节完 3A/变焦/切换视角返回预览页无操作 **5 秒**后。<br>后台每 **30 秒**静默采样一次 `256×256` 预览帧（经机内帧间相似度筛选避免重复传图），App 提取向量匹配云端模板（同一模板当天最多推荐一次）；命中后预览页弹出蒙层展示最匹配的 **1 个**模板，5 秒无操作自动消失，识别到操作重置计时，按物理按键立即关闭蒙层并响应按键 | 纯后台静默探测，绝不打断用户取景；一旦用户点击应用该推荐模板，即刻无缝汇入场景二的"拍时修"状态 |
+
+---
+
+### 2. 端到端四方协同拓扑（相机四层 ↔ 手机 App ↔ 对象存储 OSS ↔ 云端 AI 服务）
+
+相机不直连互联网，所有云端交互均以手机 App 为代理中继（相机 ↔ App 走 **BLE / SPP / L2CAP CoC** 承载的 **UCD 2.0 协议**；App ↔ 云端与 OSS 走 **HTTPS**）：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                              相机固件侧（Ace Pro 2 · IAC3 RTOS）                         │
+│                                                                                         │
+│  ┌──────────────┐   GUI消息/Push*   ┌────────────────────┐   MMC Pub/Sub事件  ┌────────┐ │
+│  │   GUI 模块   │ ◄───────────────► │  AI 修图应用编排层   │ ◄────────────────► │ 媒体层 │ │
+│  │  ins_gui /   │  PostSetCameraMsg │ ins_app_ai_retouch │  THUMB_READY /    │MODULE_ │ │
+│  │ gui_midware  │                   │  + host_command.c  │  SET_TEMPLATE_ID/ │ MEDIA  │ │
+│  └──────────────┘                   └─────────┬──────────┘  RESULT_READY     └────────┘ │
+│                                               │ UCD 2.0 编解码 (ucd.c / data_transport) │
+│                                               ▼                                         │
+│                                     ┌────────────────────┐                              │
+│                                     │  蓝牙中间件与设备层  │                              │
+│                                     │ ins_app_bt_msg.c   │                              │
+│                                     │ BLE / SPP / L2CAP  │                              │
+│                                     └─────────┬──────────┘                              │
+└───────────────────────────────────────────────┼─────────────────────────────────────────┘
+                                                │
+                  空口射频链路：控制面 BLE GATT  │  数据面 Android: SPP(RFCOMM) / iOS: L2CAP CoC (SPSM=0x0083)
+                                                ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                      手机 App 侧（Android / iOS）                        │
+│  ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────────────┐ │
+│  │ 唤醒与长连编排层       │   │ UCD 2.0 协议与分片引擎│   │ AI 修图业务与本地推理层       │ │
+│  │ Android: CDM 穿戴服务 │   │ RequestData(0x00EB)  │   │ · mobileClip 768维 float32   │ │
+│  │ iOS: iBeacon 区域监控 │   │ DataTransPort(0x00EC)│   │ · HEIC 解码重编码兼容转换     │ │
+│  └──────────────────────┘   └──────────────────────┘   └──────┬───────────────┬───────┘ │
+└───────────────────────────────────────────────────────────────┼───────────────┼─────────┘
+                                                                │ HTTPS         │ HTTPS
+                                       ┌────────────────────────┘               └──────────────────┐
+                                       ▼                                                           ▼
+                        ┌─────────────────────────────┐                             ┌─────────────────────────────┐
+                        │   对象存储 OSS / CDN 公桶    │                             │    云端 AI 业务与大模型服务    │
+                        │ · 缓存模板 280×280 缩略图    │                             │ · 向量余弦相似度检索推荐模板 │
+                        │ · 接收相机上传的 2048×H 源图 │                             │ · 权益校验、创建消费订单     │
+                        │ · 缓存 2K 成片与 720P 预览图 │                             │ · AIGC 图生图推理 (2K+720P)  │
+                        └─────────────────────────────┘                             └─────────────────────────────┘
+```
+
+---
+
+### 3. 全链路 7 大阶段逐帧数据格式、命令码、事件与业务动作全解
+
+下面按一次完整的**修图生命周期（阶段 0 → 阶段 6）**，逐阶段拆解：**触发条件 → 机内模块动作 → 跨端通信命令码 → 精确数据结构与字段取值 → 载荷格式与字节大小 → 对端处理与状态流转**。
+
+---
+
+#### 阶段 0：前置授权引导、蓝牙唤醒与双端数据通路建链
+
+在传输任何 AI 修图业务消息前，必须先通过系统级唤醒拉起后台/被杀的 App，并完成控制面（BLE）到数据面（Android SPP / iOS L2CAP CoC）的升维建链与白名单绑定。
+
+##### 0.1 相机端发起蓝牙唤醒广播的数据格式
+
+| 平台 | 广播类型 | 广播包精确字节格式与字段含义 | 系统与 App 响应动作 |
+| :--- | :--- | :--- | :--- |
+| **iOS** | **iBeacon 广播**（开机广播约 1s，或点击 AI 修图入口断连时持续广播，间隔 100ms） | · **Byte 0~2（Flags）**：`0x02 0x01 0x06`（Length=2, Type=Flags, Value=LE General Discoverable + BR/EDR Not Supported）<br>· **Byte 3~5（厂商头）**：`0x1A 0xFF 0x4C 0x00 0x02 0x15`（Length=26, Type=0xFF Manufacturer Specific, Apple ID=`0x004C`, iBeacon Type=`0x02`, Length=`0x15`=21B）<br>· **UUID（16B）**：`<相机序列号后 6 位 ASCII>-4532-867E-E53BE79CA109`<br>· **Major（2B）**：产品线机型标识（Ace Pro 2 为 `0x0001`）<br>· **Minor（2B，关键业务区分字段）**：<br>  - `0x03`：普通唤醒并连接<br>  - `0x04`：唤醒并连接，来自 **AI 语音助手**<br>  - **`0x05`：唤醒并连接，来自 AI 修图** | iOS 系统 `CLLocationManager`（需用户授予地理位置**「始终允许」**权限）在 App 被杀状态下监听到匹配 UUID+Major 的信标，触发 `didEnterRegion` 拉起 App 后台进程；App 随后通过 `didRangeBeacons` 读取 `Minor == 0x05` 识别出本次唤醒源为 AI 修图，主动向相机发起 BLE 连接并打开 `SPSM = 0x0083` 的 L2CAP CoC 通道 |
+| **Android** | **CDM 广播 / 经典蓝牙 ACL 回连**（系统需 ≥ Android 12，埋点覆盖率 96%） | · **首次配对后**：相机在 `user_data` 分区持久化手机经典蓝牙地址 `phone_addr[6]`（`InsMw_CfgOther_Bluetooth_t`）<br>· **触发唤醒时**：相机发出 BLE 关联广播被 Android 系统 `CompanionDeviceManager` 捕获，或相机在 `BT_EVENT_AG_OPENED` 时直接按 `phone_addr[6]` 向手机发起经典蓝牙 ACL/SPP 反向连接（`InsApp_Middleware_Bt_SPP_Connect_addr`） | Android 系统穿戴服务拉起独立于主进程的 `CompanionDeviceService`，回调 `onDeviceAppeared(address)`；进入四层唤醒框架，通过设备会话门禁与业务任务门禁后，查询唤醒类型并建立 SPP 数据链路 |
+
+##### 0.2 建链、MAC 绑定与唤醒业务查询的 4 条控制协议（BLE 控制面承载）
+
+Android 端在 BLE 连接建立后，通过以下 4 条协议完成经典蓝牙开启、双向 MAC 校验绑定与唤醒原因确认（定义于 `bluetooth_operate.proto` 与 `ai_feature.proto`）：
+
+**① App → 相机：下发打开经典蓝牙指令 `SetOptions`（`OPTION_TYPE__BLUETOOTH_OPEN = 183`）**
+```protobuf
+// App 通过 BLE 下发，通知相机开启经典蓝牙可发现/可连接，并上报手机自身 BR/EDR MAC
+message BluetoothOperate {
+  uint32 session_id     = 1;  // 本次操作会话 ID，用于与相机回推的 0x207B 状态通知对齐
+  uint32 op_id          = 2;  // 操作类型：Operate_TYPE_OPEN (打开) / CLOSE (关闭)
+  uint32 bluetooth_type = 3;  // 目标链路类型：BLUETOOTHTYPE_CLASSIC (经典蓝牙) / BLE
+  uint32 open_type      = 4;  // 打开方式：0 = 广播扫描连接 (inquiry)；1 = 按 MAC 直连/回连
+  bytes  app_bt_mac     = 5;  // 手机自身 BR/EDR 蓝牙地址（固定 6 字节 BD_ADDR），作为权威白名单来源
+}
+```
+- **相机侧处理函数**：`host_command.c` → `InsApp_Bt_Ucd_Apply_Bluetooth_Operate()`，校验并保存 `app_bt_mac` 至非易失存储，打开经典蓝牙 RFCOMM Server（或按 `app_bt_mac` 发起主动回连），状态机从 `INSAPP_AIR_LINK_BLE_ONLY` 迁入 `INSAPP_AIR_LINK_SPP_CONNECTING`。
+
+**② 相机 → App：回推相机经典蓝牙状态与本机 MAC（命令码 `0x207B`，`CAMERA_NOTIFICATION_BLUETOOTH_STATUS`）**
+```protobuf
+message CameraBluetoothCurrInfo {
+  uint32 session_id        = 1;  // 回显步骤 ① 的 session_id
+  uint32 bluetooth_type    = 2;  // BLUETOOTHTYPE_CLASSIC
+  uint32 open_type         = 3;  // 回显连接方式（扫描或直连）
+  bytes  mac_addr          = 4;  // 相机自身经典蓝牙 MAC 地址（6 字节，由 InsApp_Bt_Get_Local_Mac 获取）
+  uint32 bt_operate_result = 5;  // 打开结果：OPEN_SUCCESS / FAIL
+}
+message NotificationBluetoothCurrInfo {
+  CameraBluetoothCurrInfo currinfo = 1;
+}
+```
+- **业务作用**：App 拿到 `mac_addr`（即 `camera_bt_mac`）后，若相机主动回连未成功，App 据此主动发起 `SPP Connect(camera_bt_mac)`。SPP 物理建链成功瞬间，相机从博通协议栈回调拿到对端真实地址 `peer_bt_mac`，与步骤 ① 保存的 `app_bt_mac` 做 `memcmp(peer_bt_mac, app_bt_mac, 6)` 全等校验，一致才迁入 `INSAPP_AIR_LINK_SPP_READY`。
+
+**③ App → 相机：蓝牙 MAC 与业务功能绑定（命令码 `0x00EF`，`PHONE_COMMAND_FEATURE_BLUETOOTHMAC_BIND`）**
+```protobuf
+message FeatureBluetoothMacBind {
+  uint32 bluetooth_type = 1;  // BLUETOOTHTYPE_CLASSIC（经典蓝牙）或 BLE
+  uint32 feature_type   = 2;  // 业务类型：AI_FEATURE_TYPE_PS_PHOTO = 3（AI 修图）
+  bytes  app_bt_mac     = 3;  // optional 6 字节手机 BD_ADDR（缺省时回退取当前 BLE 会话对端 BDA）
+}
+```
+- **相机侧处理函数**：`InsProto_Host_Cmd_FeatureBluetoothMacBind_Handler()` → `InsApp_Bt_Ucd_Save_Phone_Bt_Mac()`，将手机 MAC 与 `AI_PHOTO_PS` 业务持久化绑定到配置结构体 `InsMw_CfgOther_Bluetooth_t.phone_addr[6]`（全 0 表示无效）。
+
+**④ App → 相机：查询本次唤醒对应的业务类型 `GetOptions`（`OPTION_TYPE__APP_WAKEUP_TYPE = 184`）**
+```protobuf
+// App 被唤醒建链后查询："相机你这次叫醒我是为了干什么业务？"
+// 相机在 InsProto_Host_Cmd_Get_Options 中读取 InsApp_Bt_Ucd_Get_App_Wakeup_Business() 应答：
+// 返回枚举值 ActionType：
+//   0x00 = 未知类型 (默认任务链)
+//   0x01 = GPS 助手 (定位 → GATT 回复 → 亮屏 → 通知)
+//   0x02 = 无预览拍摄 (亮屏 → 通知 → GATT 回复)
+//   0x03 = AI 修图 (SPP 建链 → 业务绑定 → 查询状态 → 亮屏 → 通知)
+//   0x04 = AI 滤镜 (SPP 建链 → 滤镜同步 → 通知)
+```
+- 此外，App 连接期间若账号登录状态变化，通过 `LoginStatusPush`（`int32 login_status`：`1 = 未登录`，`2 = 已登录`）实时推送给相机；相机检测到未登录时可通过 `LoginRequest`（`AiFeatureType business_type = AI_FEATURE_TYPE_PS_PHOTO`）反向请求拉起 App 登录页。
+
+---
+
+#### 阶段 1：进入 AI 修图与机内 `256×256` 场景检测缩略图生成
+
+用户在相机上点击 AI 修图入口（预览页或回放页），首先在相机内部完成场景检测小图的生成。
+
+##### 1.1 机内跨模块事件流转（GUI → 应用编排 → 媒体层 → 应用编排）
+
+```
+[用户点击 AI 修图入口]
+        │
+        ▼
+1. GUI 层下发命令：InsGui_PostSetCameraMsg (GUI_SET_AI_EDIT_OPTION_START_LOAD)
+        │
+        ▼
+2. 应用层入口处理（ins_app_handler_aigc.c）：
+   ├── 预览页进入 (src=0)：Publish 事件 MEDIA_EVENT_AI_RETOUCH_GET_SCENE_DETECT_YUV
+   └── 回放页进入 (src=1)：Publish 事件 MEDIA_EVENT_AI_RETOUCH_PB_SCENE_DETECT (携带原片 thumb_hash)
+        │
+        ▼
+3. 媒体层订阅并执行（ins_mw_ai_retouch_main.c）：
+   ├── 预览路径：直接从当前实时预览流取 NV12 帧
+   └── 回放路径：按 thumb_hash 反查 DCF 路径（如 C:\DCIM\Camera01\IMG_xxx.jpg）
+                → InsMw_MediaDecode_StillDecodeExecDsp 硬解 4K JPEG 得到 4096×3072 NV12
+                → 两步 Y2Y 缩放：先 8K/4K → 2048×H，再 2048×H → 256×256 NV12
+                → 编码封装落盘为 C:\SCN_SCENE_00000000.heic（或 256×256 JPEG，约 2.8KB ~ 12KB）
+        │
+        ▼
+4. 媒体层通知应用层（ai_retouch_publish_scene_det_thumb_ready）：
+   Publish 事件 AI_RETOUCH_EVENT_THUMB_READY（携带 InsApp_AiRetouch_Thumbnail_Info_t 结构体）
+```
+
+##### 1.2 机内事件载荷数据结构 `InsApp_AiRetouch_Thumbnail_Info_t`
+
+应用层主任务 `InsApp_AiRetouch_TaskEntry`（位于 `ins_app_ai_retouch.c`）收到 `AI_RETOUCH_EVENT_THUMB_READY` 时，根据结构体中的 `has_template_id` 标志位决定走**阶段 2（请求模板列表）**还是**阶段 4（创建修图任务）**：
+
+```c
+// 媒体层向应用层投递的缩略图就绪载荷
+typedef struct {
+    char     thumbnail_name[128]; // 缩略图落盘路径或唯一标识，如 "C:\\SCN_SCENE_00000000.heic"
+    uint32_t data_size;           // 文件总字节数，如 2827 字节 (256×256) 或 20014 字节 (2048×1536)
+    uint32_t width;               // 图像宽度：256（场景检测图）或 2048（待修源图）
+    uint32_t height;              // 图像高度：256（场景检测图）或 1536/1152/872（待修源图）
+    uint8_t  has_template_id;     // ★ 核心分流标志：
+                                  //   0 = 尚未选模板（刚进修图页）→ 触发 0x207C 请求模板列表
+                                  //   1 = 已选定模板（确认修图）  → 触发 0x207D 请求创建修图任务
+    uint32_t template_id;         // 当 has_template_id == 1 时有效，如 11014616
+} InsApp_AiRetouch_Thumbnail_Info_t;
+```
+
+---
+
+#### 阶段 2：请求模板列表与场景缩略图上行 + App 端 `mobileClip` 768 维向量检索
+
+当 `has_template_id == 0` 时，相机主动通知 App"我准备好了一张 `256×256` 的场景检测图，请拉取它并给我返回匹配的推荐模板列表"。
+
+##### 2.1 交互时序与 3 个命令码配合
+
+```
+相机 (Camera)                                              手机 App                                云端 Server
+     │                                                        │                                        │
+     │ ① 0x207C AIRETOUCH_GET_TEMPLATE_LIST                   │                                        │
+     │   携带 AiPhotoPsTemplateListRequest (含 datainfo)      │                                        │
+     │───────────────────────────────────────────────────────►│                                        │
+     │                                                        │                                        │
+     │ ② 0x00EB INSPROTO_UCD_MSG_HOST_CMD_REQUEST_DATA        │                                        │
+     │   携带 RequestReceiveDataInformation (拉取分片 0..N-1) │                                        │
+     │◄───────────────────────────────────────────────────────│                                        │
+     │                                                        │                                        │
+     │ ③ 0x2079 CAMERA_NOTIFICATION_DATA_TRANSPORT            │                                        │
+     │   携带 DataTransPort (256×256 缩略图分片数据)          │                                        │
+     │───────────────────────────────────────────────────────►│                                        │
+     │                                                        ├── 本地 mobileClip 模型推理 (~50ms)      │
+     │                                                        │   输入: 256×256 RGB                     │
+     │                                                        │   输出: 768 维 float32 归一化特征向量   │
+     │                                                        │                                        │
+     │                                                        │ ④ HTTPS 上传 768 维特征向量 (约 3KB)    │
+     │                                                        │───────────────────────────────────────►│
+     │                                                        │                                        ├── 向量内积/余弦相似度检索
+     │                                                        │ ⑤ 返回 Top-K 推荐模板元数据列表         │
+     │                                                        │◄───────────────────────────────────────│
+```
+
+##### 2.2 本阶段每条消息的精确数据格式与字段取值
+
+**① 相机 → App：请求模板列表（命令码 `0x207C`，处理函数 `InsProto_Notify_AiRetouch_Request_Template_List`）**
+```protobuf
+message AiPhotoPsTemplateListRequest {
+  RequestSendDataInformation datainfo = 1;
+}
+
+// 其中嵌套的 datainfo (定义于 data_transport.proto) 在本阶段的具体取值：
+// datainfo.current_data_index = 0
+// datainfo.chunk_total        = 3                // 以 2827 字节按 1024B 分片为例，共 3 个 chunk
+// datainfo.image_identifier   = "C:\\SCN_SCENE_00000000.heic" // 场景检测缩略图标识
+// datainfo.data_type          = DATA_SOURCE_TYPE_PREVIEW_FRAME (枚举值 1，表示预览帧/场景检测图)
+// datainfo.data_total_num     = 1                // 本批次共 1 个文件对象
+// datainfo.check_type         = PAYLOAD_CHECK_CRC16 (1) 或 PAYLOAD_CHECK_CRC32 (2)
+// datainfo.check_total_sum    = 0x...            // 整个 2827B 文件的总校验值
+// datainfo.width_px           = 256
+// datainfo.height_px          = 256
+// datainfo.total_bytes        = 2827             // 实测日志：256×256 HEIC 约 2.8KB，JPEG 约 10~15KB
+```
+
+**② App → 相机：按序请求文件分片（命令码 `0x00EB`，处理函数 `InsProto_Host_Cmd_RequestData_Handler`）**
+```protobuf
+message RequestReceiveDataInformation {
+  uint32         current_data_index = 1;  // 0（第 1 个数据对象）
+  string         image_identifier   = 2;  // 回显 "C:\\SCN_SCENE_00000000.heic"
+  DataSourceType data_type          = 3;  // DATA_SOURCE_TYPE_PREVIEW_FRAME (1)
+  uint32         request_data_index = 4;  // 请求的分片序号：0, 1, 2 ...
+}
+```
+
+**③ 相机 → App：发送单个文件分片（命令码 `0x2079`，处理函数 `InsProto_Notify_AiRetouch_Data_Transport`）**
+```protobuf
+message DataTransPort {
+  uint32 current_data_index = 1;  // 0
+  string image_identifier   = 2;  // "C:\\SCN_SCENE_00000000.heic"
+  uint32 data_total_num     = 3;  // 1
+  uint32 chunk_index        = 4;  // 当前分片号：0, 1, 2
+  uint32 chunk_total        = 5;  // 总分片数：3
+  uint32 check_single_sum   = 6;  // 当前分片 data 的独立 CRC 校验值
+  uint32 data_length        = 7;  // 前两片为 1024，最后一片为 779 (1024×2 + 779 = 2827)
+  bytes  data               = 8;  // 分片原始二进制字节流
+}
+```
+
+**④ App 端本地场景向量提取与上云数据格式**
+- App 收齐 `256×256` 缩略图并解码为 RGB 张量后，送入部署在 App 本地的 **`mobileClip` 视觉特征模型**（不把图片直接传给推荐服务，节省公网上传耗时）。
+- **模型输出格式**：长度为 **768** 的 `float32` 一维归一化特征向量（如 `[0.0123, -0.9981, 0.3345, ..., 0.8765]`，体积仅 `768 × 4B = 3072B`）。
+- **時間指标**：机内传输 `256×256` 至 App 约 `500ms` → App 端 `mobileClip` 推理并上传向量约 `100ms` → 云端向量检索约 `100ms`。
+
+---
+
+#### 阶段 3：模板元数据返回与 `280×280` 缩略图分片渐进下发及 BGRA 解码上屏
+
+云端返回推荐模板列表后，为了**让相机 UI 最快展现出模板列表框架**，App 采用**「元数据先行 + 缩略图分片渐进推送 + 满 5 张提前唤醒 UI」**的三步策略。
+
+##### 3.1 交互时序与 4 个命令码配合
+
+```
+手机 App                                                    相机 (Camera · 应用层 & 媒体层)
+   │                                                               │
+   │ ① 0x00F1 PHONE_COMMAND_AIRETOUCH_RESPONSE_TEMPLATE_LIST       │
+   │   携带 TemplateListResponse (纯元数据列表，如 18 个模板 + 钻石)│
+   │──────────────────────────────────────────────────────────────►│
+   │                                                               ├── InsProto_Host_Cmd_AiRetouchRespTemplateList()
+   │                                                               ├── InsApp_AiRetouch_TemplateInfoList_Init()
+   │                                                               ├── InsApp_AiRetouch_Update_Template_BaseInfo_From_HostCmd()
+   │                                                               └── Publish AI_RETOUCH_EVENT_TEMPLATE_INFO_LIST_NUM
+   │                                                               │
+   │   ┌─── 循环下发每个模板的缩略图 (i = 0 .. N-1) ───────────┐    │
+   │   │                                                       │   │
+   │   │ ② 0x00F4 AI_TEMPLATE_THUMBNAIL_INFO_PUSH              │   │
+   │   │   携带 AITemplateThumbnailInfoPush (宣告该模板分片数)  │   │
+   │   │──────────────────────────────────────────────────────►│   ├── InsProto_Host_Cmd_AiRetouchAiTemplateThumbnailInfo()
+   │   │                                                       │   └── InsApp_AiRetouch_Update_Template_ChunkInfo_From_HostCmd()
+   │   │                                                       │       (为该模板预分配接收缓冲区)
+   │   │ ③ 0x00EC PHONE_COMMAND_DATA_TRANSPORT (× chunk_total) │   │
+   │   │   携带 DataTransPort (每个分片约 990B~1024B)          │   │
+   │   │──────────────────────────────────────────────────────►│   ├── InsProto_Host_Cmd_DataTransport_Rec_Thunk()
+   │   │                                                       │   └── InsApp_AiRetouch_Update_Template_Data_From_HostCmd()
+   │   │ ④ 0x207A CAMERA_NOTIFICATION_DATA_TRANSPORT_FEEDBACK  │   │
+   │   │   携带 DataTransportResult (每片校验反馈)              │   │
+   │   │◄──────────────────────────────────────────────────────│   │
+   │   │                                                       │   ├── 单张收齐且校验通过：
+   │   │                                                       │   │   Publish AI_RETOUCH_EVENT_TEMPLATE_READY
+   │   │                                                       │   │   → 媒体层解码为 120×120 BGRA8888 供 UI 渲染
+   │   │                                                       │   │   → 累计满 5 张立即 Push LOAD_SUCCESS 切出 Loading 页！
+   │   └───────────────────────────────────────────────────────┘   │
+   │                                                               ├── 全部 18 张收齐：
+   │                                                               │   Publish AI_RETOUCH_EVENT_ALL_TEMPLATE_READY
+   │                                                               └── 若 15s (后调至 30s) 未收齐：
+   │                                                                   触发 AI_RETOUCH_EVENT_TEMPLATE_RECEIVE_TIME_OUT 兜底
+```
+
+##### 3.2 本阶段每条消息的精确数据格式与字段取值
+
+**① App → 相机：返回模板元数据列表（命令码 `0x00F1`）**
+```protobuf
+message TemplateInfo {
+  int32  template_id        = 1;  // 模板唯一 ID，如 11014418、11014153、11014616
+  string name               = 2;  // 模板名称（支持多语言，如 "繁花"）
+  string cameraThumbnailUrl = 3;  // CDN 上的模板缩略图 URL（App 用此 URL 从 OSS 下载后切片推给相机）
+  int32  price              = 4;  // 使用该模板需消耗的钻石价格（如 20）
+  int32  freeTimes          = 5;  // 该模板当前剩余免费次数（如 5）
+}
+
+message TemplateListResponse {
+  repeated TemplateInfo     templates  = 1;  // 推荐模板数组（实测日志一次下发 n_templates = 18 个）
+  int32                     diamond    = 2;  // 用户当前账户钻石余额
+  TemplateListResponseError error_code = 3;  // 1=SUCCESS, 2=FAIL, 3=NO_NETWORK, 4=PHOTO_TRANSFER_FAILED
+}
+```
+- **为什么元数据不直接带缩略图二进制**：18 张缩略图总计约 `190KB ~ 270KB`，若打包在一条消息里下发，首屏要等十几个秒。拆开后 `0x00F1` 仅约 `570B ~ 900B`，几百毫秒即达相机，相机先初始化列表槽位与多语言名称。
+
+**② App → 相机：推送单张模板缩略图的分片元信息（命令码 `0x00F4`）**
+```protobuf
+message TemplateThumbnailInfo {
+  int32                      template_id = 1;  // 对应 TemplateInfo 中的 template_id，如 11014418
+  RequestSendDataInformation datainfo    = 2;  // 该模板缩略图的分片描述：
+                                               //   image_identifier = "11014418"
+                                               //   data_type        = DATA_SOURCE_TYPE_AI_TEMPLATE (枚举值 2)
+                                               //   chunk_total      = 11 (以 9516 字节为例)
+                                               //   total_bytes      = 9516 (单张模板图约 9KB ~ 51KB)
+                                               //   width_px / height_px = 280 × 280
+  TemplateThumbnailInfoError error_code  = 3;  // 1=SUCCESS, 2=FAIL, 3=NO_NETWORK, 4=DOWNLOAD_FAILED
+}
+
+message AITemplateThumbnailInfoPush {
+  TemplateThumbnailInfo thumbnailinfo = 1;
+}
+```
+
+**③ App → 相机：逐片下发模板缩略图数据（命令码 `0x00EC`）与 ④ 相机 → App：分片反馈（命令码 `0x207A`）**
+- App 发送 `0x00EC`（`DataTransPort`），其中 `image_identifier = "11014418"`，`chunk_index = 0..10`。
+- 相机在 `InsProto_Host_Cmd_DataTransport_Rec_Thunk` 中每收一片，调用 `InsApp_AiRetouch_Update_Template_And_Result_Data_From_HostCmd` 写入对应模板缓冲区，并回发 `0x207A`（`DataTransportResult`）：
+  ```protobuf
+  message DataTransportResult {
+    uint32                  current_data_index = 1;
+    string                  image_identifier   = 2;  // "11014418"
+    uint32                  chunk_index        = 3;  // 0..10
+    uint32                  chunk_total        = 4;  // 11
+    DataRetransmitErrorType error_type         = 5;  // 1=SUCESS, 2=TIMEOUT, 3=CHECK_FAILED, 4=SEQUENCE
+  }
+  ```
+
+##### 3.3 相机媒体层对模板缩略图的解码管线（`ai_retouch_ingest_host_template_bgra`）
+
+模板字节流收齐（`target_info->current_bytes >= target_info->template_data.data_size`）并不等于 UI 直接可用，媒体层收到 `AI_RETOUCH_EVENT_TEMPLATE_READY` 后执行严格的图像转换：
+1. 将收齐的模板字节流写入临时文件 `tmp_path`（`.heic` 或 `.jpg`）；
+2. 解封装与硬件解码：`InsMw_HevcHeif_ReadFile` 读出 HEVC Annex-B 码流与宽高（要求 `280×280`，即 `AI_RETOUCH_TEMPLATES_JPEG_PX = 280U`）→ `InsMw_HevcDecoder_HwDecodeToNv12` 硬解为 `NV12(280×280)`（若为 JPEG 则走 `StillDecodeExec`）；
+3. 缩放与色彩空间转换：`NV12(280×280)` → 下采样为 `NV12(120×120)`（`AI_RETOUCH_TEMPLATES_PIX_PX = 120U`）→ 转换为 **`BGRA8888(120×120×4 = 57,600 Bytes)`** 写入 UI 显存目录；
+4. 若任何一步解码失败，自动回退使用机内占位图（`ingest_with_placeholder`），绝不阻塞列表展示；
+5. **渐进式 UI 唤醒**：当 `catalog_snap.count >= 5U`（已成功解码入库满 5 张模板）时，立即调用 `Ins_App_GuiMiddleware_PushAILoadStatus(GUI_AI_LOAD_STATUS_LOAD_SUCCESS)` 切出全屏 Loading 页，后续模板通过 `NumObserver` 增量刷新上屏（每次加载 5 个占位圆，完成后向右位移 `60px` 露出下一批第二个模板的左半边提示用户右滑）。
+
+---
+
+#### 阶段 4：用户选定模板与 `2048×H` 源图人脸 ROI HEIF 硬件压缩及任务创建
+
+用户在相机屏幕上浏览模板例图（可查看剩余免费次数或钻石价格），点击对勾确认应用某个模板（例如 `template_id = 11014616`）。
+
+##### 4.1 机内源图压缩管线（4K 原图 → 2048×H NV12 → 人脸 ROI HEVC 硬编 → HEIF 封装）
+
+1. **GUI 触发**：用户选定模板后，发布 `MEDIA_EVENT_AI_RETOUCH_SET_TEMPLATE_ID`（携带 `template_id`），回放修图同时发布 `PLAYBACK_RETOUCH`（携带原片 `thumb_hash`），拍时修则在按下快门拍照完成时触发。
+2. **宽高比自适应下采样（`ai_retouch_wide2048_dims`）**：
+   为了在蓝牙带宽（几十 KB/s）与大模型输入画质之间取得平衡，4K 原图（约 `12MB`）不能原样上传，媒体层先将原图 YUV 按原始画幅比例硬件下采样到长边固定为 **2048 像素**（`AI_RETOUCH_WIDE_JPEG_W_PX = 2048U`）：
+   - **4:3 画幅**：`4096×3072` → **`2048×1536`**
+   - **16:9 画幅**：`4096×2304` → **`2048×1152`**
+   - **2.35:1 画幅**：`4096×1732` → **`2048×872`**
+3. **人脸 ROI 检测与 HEVC 硬件编码（`ins_mw_ai_retouch_hevc_enc.c`）**：
+   - 调用人脸识别 Pipeline 提取画面中的人脸框区域（ROI，Region of Interest）；
+   - 启动安霸硬件 HEVC 编码器编码单帧静态图（基础量化参数 `QP = 32`，对人脸 ROI 区域分配更低 QP / 更高码率以保护五官细节不因高倍率压缩而崩坏）；
+   - 经 `InsMw_HevcHeif_WriteFile` 封装为 `.heic` 文件落盘（如 `C:\WPV\SCN_WPV_IMG_20260522_152553_672_b000079c6.heic`），**实测体积仅 `20KB ~ 66KB`**（对比原图 12MB 压缩比超 **200:1**，比同画质 JPEG 节省一半体积）。
+4. **通知应用层发起任务**：媒体层发布 `AI_RETOUCH_EVENT_THUMB_READY`，此时载荷中 **`has_template_id = 1`** 且携带用户所选的 `template_id`。应用层调用 `InsApp_AiRetouch_ResultInfo_Init` 初始化结果槽位，并调用 `InsProto_Notify_AiRetouch_Generate_Task` 向 App 发送创建任务请求。
+
+##### 4.2 任务创建与源图上行的 4 步交互（`0x207D` → `0x00EB` → `0x2079` → `0x00F2`）
+
+```
+相机 (Camera)                                              手机 App                                云端 Server / OSS
+     │                                                        │                                            │
+     │ ① 0x207D CAMERA_NOTIFICATION_AIRETOUCH_GENERATE_TASK   │                                            │
+     │   携带 GenerateAiPhotoPsTaskRequest                    │                                            │
+     │   (含 2048×1536 源图 datainfo + template_id=11014616)  │                                            │
+     │───────────────────────────────────────────────────────►│                                            │
+     │                                                        │                                            │
+     │ ② 0x00EB PHONE_COMMAND_REQUEST_DATA                    │                                            │
+     │   App 请求拉取源图的所有分片 (如 20 个 chunk)          │                                            │
+     │◄───────────────────────────────────────────────────────│                                            │
+     │                                                        │                                            │
+     │ ③ 0x2079 CAMERA_NOTIFICATION_DATA_TRANSPORT (× 20)     │                                            │
+     │   相机经 SPP / L2CAP 连续回传 20 个分片 (共 20014 字节)│                                            │
+     │───────────────────────────────────────────────────────►│                                            │
+     │                                                        ├── 收齐 20014B 并校验总 CRC                 │
+     │                                                        │   (若后台不认自拼 HEIC 则转码为兼容格式)   │
+     │                                                        │                                            │
+     │                                                        │ ④ 请求上传凭证 → 上传源图至 OSS             │
+     │                                                        │───────────────────────────────────────────►│
+     │                                                        │◄── 返回图片 OSS URL ───────────────────────│
+     │                                                        │                                            │
+     │                                                        │ ⑤ 创建修图任务 (图片 URL + template_id)    │
+     │                                                        │───────────────────────────────────────────►│
+     │                                                        │                                            ├── 权益校验与扣费/锁定
+     │                                                        │                                            ├── 绑定 (固件SN + task_id)
+     │                                                        │◄── 返回唯一 task_id 与扣费结果 ────────────│
+     │                                                        │                                            │
+     │ ⑥ 0x00F2 PHONE_COMMAND_AIRETOUCH_RESPONSE_GENERATE_TASK│                                            │
+     │   携带 GenerateAiPhotoPsTaskResponse (task_id, err=1)  │                                            │
+     │◄───────────────────────────────────────────────────────│                                            │
+     ├── InsProto_Host_Cmd_AiRetouchRespGenerateTask()        │                                            │
+     └── InsApp_AiRetouch_Update_Result_TaskId_From_HostCmd() │                                            │
+         保存 task_id，立即衔接阶段 5                          │                                            │
+```
+
+##### 4.3 本阶段每条消息的精确数据格式与字段取值
+
+**① 相机 → App：请求创建 AI 修图任务（命令码 `0x207D`）**
+```protobuf
+message GenerateAiPhotoPsTaskRequest {
+  RequestSendDataInformation datainfo    = 1;
+  int32                      template_id = 2;  // 用户选定的模板 ID，如 11014616
+}
+
+// 其中嵌套的 datainfo 在本阶段（以实测日志 20014 字节源图为例）的具体取值：
+// datainfo.current_data_index = 0
+// datainfo.chunk_total        = 20               // 19 × 1024B + 558B = 20014B
+// datainfo.image_identifier   = "2026052215255367200" (原片主图 hash 主键，或诊断路径)
+// datainfo.data_type          = DATA_SOURCE_TYPE_ATHUMBNAIL (枚举值 3，表示待修源图/文件缩略图)
+// datainfo.data_total_num     = 1
+// datainfo.check_type         = PAYLOAD_CHECK_CRC16 (1) 或 PAYLOAD_CHECK_CRC32 (2)
+// datainfo.check_total_sum    = 0x...            // 20014B 整文件校验和
+// datainfo.width_px           = 2048
+// datainfo.height_px          = 1536
+// datainfo.total_bytes        = 20014
+```
+
+**⑥ App → 相机：返回任务创建结果与 `task_id`（命令码 `0x00F2`）**
+```protobuf
+message GenerateAiPhotoPsTaskResponse {
+  string                             task_id    = 1;  // 云端签发的唯一任务 ID（账号 ID 拼接 10 位随机数字字母，如 "T20260824abc"）
+  GenerateAiPhotoPsTaskResponseError error_code = 2;  // 错误码枚举：
+                                                      //   1 = SUCCESS（成功，携带有效 task_id）
+                                                      //   2 = FAIL（通用失败，如源图格式被后端拒收）
+                                                      //   3 = NO_NETWORK（手机无网）
+                                                      //   4 = PHOTO_TRANSFER_FAILED（0x00EB/0x2079 机内图拉取或校验失败）
+                                                      //   6 = BALANCE_NOT_ENOUGH（钻石余额不足）
+                                                      //   7 = DEDUCTION_FAIL（扣费失败）
+                                                      //   8 = PARAMETER_ILLEGAL（参数不合法）
+                                                      //   9 = TEMPLATE_ILLEGAL（模板已下架）
+}
+```
+
+---
+
+#### 阶段 5：触发云端 AI 生图任务与状态轮询
+
+相机在 `InsProto_Host_Cmd_AiRetouchRespGenerateTask` 中校验 `error_code == 1` 且 `task_id` 非空后，将 `task_id` 持久化保存，并**立即自动触发**任务执行请求。
+
+##### 5.1 为什么协议要把"创建任务（`0x207D`）"与"执行任务（`0x207E`）"拆成两步？
+
+这是面试高频追问点，有三个工程原因：
+1. **早拿锚点 ID 以支持断连自愈**：`0x207D` 完成图片上传与订单创建后耗时仅 1~2 秒即可拿到 `task_id`；而云端 AIGC 大模型生图推理需要 **10~20 秒（实测长尾可达 39~44 秒）**。先通过 `0x00F2` 把 `task_id` 交还相机落盘，即便在漫长的 AI 推理期间发生蓝牙断连、相机息屏关机，相机重启后手里已经有 `task_id`，重连即可直接重发 `0x207E` 查询并拉取结果，不会丢失已扣费的任务。
+2. **解耦"上传/扣费错误"与"模型生成/合规错误"**：创建阶段关注的是机内图传输是否成功（错误码 4）、余额是否充足（6）、扣费是否成功（7）；执行阶段关注的是大模型推理是否成功、画面是否涉黄涉政违规（`CONTENT_INVALID = 5`）、结果图下载是否失败（`RESULT_DOWNLOAD_FAIL = 4`）。两阶段职责边界清晰。
+3. **支持多任务并发排队**：相机最多支持队列中多张照片后台排队修图（状态栏展示 `AI icon + N`），拿到 `task_id` 即可将当前照片转入后台等待态，释放前台 UI 供用户继续拍摄下一张。
+
+##### 5.2 本阶段每条消息的精确数据格式与字段取值
+
+**① 相机 → App：请求执行 AI 修图任务（命令码 `0x207E`，处理函数 `InsProto_Notify_AiRetouch_Perform_Task`）**
+```protobuf
+message PerformAiPhotoPsTaskRequest {
+  string task_id = 1;  // 阶段 4 中由 0x00F2 返回的 task_id
+}
+```
+- **App 与云端动作**：App 收到 `0x207E` 后向云端提交执行并轮询任务状态。云端大模型基于源图生成 **2K 高清成片**，并在云端同步压缩出一张 **720P 低清成片（约 `50KB ~ 94KB`）**，两者均缓存在云端 OSS 并以 **`固件 SN + task_id`** 作为唯一检索凭证。App 先把 720P 成片下载到本地。
+
+**② App → 相机：返回任务执行结果与 720P 成片元信息（命令码 `0x00F3`，处理函数 `InsProto_Host_Cmd_AiRetouchRespPerformTask`）**
+```protobuf
+message PerformAiPhotoPsTaskResponse {
+  string                            task_id                         = 1;  // 对应任务 ID
+  RequestSendDataInformation        datainfo                        = 2;  // ★ 合成后的 720P 结果图分片元信息：
+                                                                          //   image_identifier = "RESULT_T20260824abc"
+                                                                          //   data_type        = DATA_SOURCE_TYPE_ATHUMBNAIL (3)
+                                                                          //   chunk_total      = 15 (或按 1KB 分片为 86 片)
+                                                                          //   total_bytes      = 88080 (实测 82~94KB)
+                                                                          //   check_type       = PAYLOAD_CHECK_CRC32 (2)
+                                                                          //   check_total_sum  = 0x... (结果图整文件总 CRC)
+  PerformAiPhotoPsTaskResponseError error_code                      = 3;  // 错误码枚举：
+                                                                          //   1 = SUCCESS
+                                                                          //   2 = FAIL
+                                                                          //   3 = NO_NETWORK
+                                                                          //   4 = RESULT_DOWNLOAD_FAIL（App 从云端下载结果图失败）
+                                                                          //   5 = CONTENT_INVALID（图片内容违规，云端已自动退还权益）
+                                                                          //   6 = BALANCE_NOT_ENOUGH
+                                                                          //   7 = DEDUCTION_FAIL
+                                                                          //   8 = PARAMETER_ILLEGAL
+                                                                          //   9 = TEMPLATE_ILLEGAL
+                                                                          //   10 = CONTENT_ILLEGAL（素材不符合模型要求，如无人脸）
+  string                            request_airetouch_thumbnailname = 4;  // 原请求修图的缩略图名称，用于与机内原片关联
+}
+```
+- **相机侧处理**：收到 `0x00F3` 且 `error_code == 1` 后，相机调用 `InsApp_AiRetouch_Update_Result_ChunkInfo_From_HostCmd` 根据 `datainfo` 初始化结果图接收缓存，准备接收分片。
+
+---
+
+#### 阶段 6：720P 结果图蓝牙分片回传、文件尾合成与 2K 原片 Wi-Fi 空闲异步替换
+
+##### 6.1 720P 结果图蓝牙分片下发与统一分流函数（`0x00EC` + `0x207A`）
+
+1. **分片下发**：App 在发完 `0x00F3` 后，通过数据面（Android 走 `PHONE_SPP`，iOS 走 `L2CAP CoC`）连续发送 `0x00EC`（`PHONE_COMMAND_DATA_TRANSPORT`，携带 `DataTransPort`），将 720P 结果图按分片下发给相机。
+2. **相机侧统一接收与 `image_identifier` 路由分流**：
+   相机在 `InsProto_Host_Cmd_DataTransport_Rec_Thunk` 中接收每个 `0x00EC` 分片，调用 `InsApp_AiRetouch_Update_Template_And_Result_Data_From_HostCmd`。因为**阶段 3 的模板缩略图**和**阶段 6 的修图结果图**共用同一个命令码 `0x00EC`，该函数内部通过匹配 `image_identifier` 进行分流：
+   ```c
+   // ins_app_ai_retouch.c：同一个 0x00EC 入口按 image_identifier 区分是模板图还是结果图
+   InsPal_Mutex_Take(&s_template_ctrl.mutex, INSPAL_MUTEX_WAIT_FOREVER);
+   template_target_info_ptr = Find_Template_By_Identifier(chunk->image_identifier);
+   if (template_target_info_ptr != NULL) {
+       // 命中模板缩略图 → 写入模板缓存 (阶段 3)
+       rval = InsApp_AiRetouch_Update_Template_Data_From_HostCmd(...);
+       InsPal_Mutex_Give(&s_template_ctrl.mutex);
+       return rval;
+   }
+   InsPal_Mutex_Give(&s_template_ctrl.mutex);
+
+   // 未命中模板 → 走修图结果图路径 (阶段 6)，写入结果缓存并累加长度、分片计数与 CRC
+   rval = InsApp_AiRetouch_Update_Result_Data_From_HostCmd(...);
+   ```
+3. **分片反馈与收齐通知**：每片校验后相机回发 `0x207A`（`CAMERA_NOTIFICATION_DATA_TRANSPORT_FEEDBACK`）。当最后一个结果分片收齐且整文件 `check_total_sum` 校验通过后，应用层打印 `result_data_completed`，并发布机内事件 **`AI_RETOUCH_EVENT_RESULT_READY`** 通知媒体层导出。
+
+##### 6.2 媒体层成片落盘、文件尾合成与相册隔离规则
+
+媒体层主任务 `InsMw_AiRetouch_Main_TaskEntry` 收到 `AI_RETOUCH_EVENT_RESULT_READY` 后执行落盘合成：
+1. **解码与转码**：若回传的 720P 为 HEIF，经 `ai_retouch_result_heic_blob_to_jpeg` 解封装、硬件解码为 NV12 再编码为相册标准 JPEG（若使用了水印开关，在此刻叠加机内水印）。
+2. **文件命名与时间戳 +1s 规则**：
+   - 每次修图**同时保留原片与 AI 成片**（存放在同一存储介质 SD 卡或内置存储中，独立单张展示，不覆盖原片）；
+   - AI 成片文件名在原片名称后增加 `_AI` 后缀；
+   - **生成时间写入为「原片拍摄时间 + 1 秒」**——这样在相册按时间排序时，AI 成片永远紧挨在原片旁边展示，方便用户左右滑动对比效果。
+3. **文件尾（File Tail）元数据继承与扩展**：
+   从原片拷贝 3A 参数（FOV、滤镜、人像模式、EV、光圈、快门、ISO、WB）与拍摄规格（镜头、拍摄模式），写入新生成的 `256×256` 缩略图，并在文件尾扩展写入 AI 专属字段：
+   - **`task_id`**：继承保存在 720P 成片文件尾中，作为后续拉取 2K 高清成片的唯一凭证；
+   - **`template_id` 与修图来源枚举（`Live / AfterCapture / Album`）**；
+   - **AI 成片标识位**：相册回放页识别该标志后，在右下角渲染 AI 专属角标，隐藏不支持的 UHDR 按钮。
+   - *强依赖约束*：因为文件尾必须基于原片写入，**若原片在成片传回前被用户删除，或换了新 SD 卡导致卡内无原片，成片将拒绝写入**。
+4. **未传回 2K 前的隔离约束（不上云、不被 MTA 互传发现）**：
+   当机内仅有 720P 预览成片、尚未被 2K 高清图替换时：
+   - **U 盘模式 / 拔卡插电脑读取**：文件夹内隐藏该 720P 临时成片；
+   - **云存储自动上传**：跳过 720P 成片，不触发上云；
+   - **MTA 互传联盟（安卓互传）**：按钮置灰不可用，多选互传时自动过滤并提示"当前素材不支持安卓互传"。
+
+##### 6.3 为什么采用「720P 蓝牙即时回传 + 2K Wi-Fi 空闲异步替换」双分辨率方案？（4 套方案评测结论）
+
+在《ai修图总文档》预研阶段，团队实测对比了 4 套高分辨率成片获取方案：
+
+| 预研方案 | 链路耗时拆解 | 机内看到成片耗时 | 核心优劣势与最终裁决 |
+| :--- | :--- | :--- | :--- |
+| 方案一：云端生成 720P 传回 + 导出时端侧自研超分 | `17s(AI) + 1s(720P传输) + 7s(超分) = 25s` | `18s` | **淘汰**：人像面部识别与定位不准，面部重绘明显不协调；高细节静物出现多次反复叠加伪影 |
+| 方案二：云端生成 720P 传回 + 导出时调三方模型超分 | `17s(AI) + 1s(720P传输) + 20s(三方超分) = 38s` | `18s` | **淘汰**：需调用两次云端模型，成本翻倍且导出需再等 20~25s，特定场景仍有重绘 |
+| **方案三（★ 最终采用）：云端直接生成 2K，云上压出 720P 蓝牙先回传，2K 后续走 Wi-Fi 替换** | **`17s(AI) + 0.3s(云端压720P) + 1~8s(蓝牙传720P)`** | **`~18.3s`（蓝牙理想态）** | **胜出**：2K 原生生成在人脸表现与细节上远优于 1K+超分（1K 磨皮过度后期超分无法挽救），且豆包 Seedream 5.0 等主力模型最低即输出 2K、生成耗时与 720P 几乎无差；机内先秒级拿到 720P 预览满足"即拍即看"，高清 2K 留给 Wi-Fi 异步兜底 |
+| 方案四：云端直接生成 2K，直接走蓝牙传回 2K | `17s(AI) + 40s(蓝牙传2K) = 57s` | `57s` | **淘汰**：蓝牙传 2K 大图耗时高达 40s+，用户在相机前干等近 1 分钟无法接受 |
+
+**2K 高清成片替换的完整闭环**：
+- **机内替换路径**：当相机与 App 建立 **Wi-Fi 连接**且 App 处于**空闲状态**（无正在进行的下载/导出任务）时，固件扫描机内带 AI 标记的 720P 素材，读取其文件尾中的 `task_id`（连同固件 `SN`）向 App 请求 2K 原片；App 从云端拉取 2K 成片经 Wi-Fi（速率 `>5MB/s`）传回相机；相机读取原 720P 的文件尾、仅修改分辨率字段后写入 2K 成片，并**同步删除机内的 720P 临时素材**，解除导出与上云限制。
+- **App 播放页按需替换路径**：若用户在 Wi-Fi 替换完成前就在 App 相册页点击查看、长按保存、选片预览或导出该 720P AI 照片，App 立即根据文件尾 `task_id` 向云端请求下载 2K 原图，作为 `WorkUsage = aiPreview` 的高优任务替换 720P 供用户消费与导出。
+
+---
+
+### 4. 全流程数据形态与图像规格演进总表（面试速查）
+
+| 流程阶段 | 数据对象名称 | 分辨率 / 维度 | 编码与容器格式 | 典型数据体积 | 方向与承载通道 | 关联命令码 / 协议消息 | 校验与完整性机制 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **阶段 0** | iBeacon 唤醒广播 | 固定广播帧 | BLE Advertising PDU (`0xFF` Apple `0x004C`) | `30 Bytes` | 相机 → iOS 系统 (BLE 广播) | UUID(含SN后6位) + Major(`0x0001`) + **Minor(`0x05`=AI修图)** | BLE 链路层 CRC24 |
+| **阶段 0** | 蓝牙建链与绑定控制信令 | 结构化控制报文 | UCD 2.0 + Protobuf | `20 ~ 64 Bytes` | 相机 ↔ App (BLE GATT 控制面) | `Option 183` / `0x207B` / `0x00EF` / `Option 184` (`ActionType=0x03`) | UCD 2.0 帧尾 CRC32 + 6B BD_ADDR 全等比对 |
+| **阶段 1~2** | 场景检测缩略图 | **`256 × 256`** | HEIF (`.heic`) 或 JPEG | **`2.8 KB ~ 15 KB`**（实测 HEIC 2827B，分 3 片） | 相机 → App (`PHONE_SPP` / `L2CAP CoC`) | `0x207C` (`AiPhotoPsTemplateListRequest`) + `0x00EB` + `0x2079` (`DataSourceType=1`) | UCD 帧 CRC32 + 分片 `check_single_sum` + 文件总 `check_total_sum` |
+| **阶段 2** | 场景语义特征向量 | **`768 维`** 一维向量 | `float32[768]` L2 归一化数组 | **`3,072 Bytes` (3 KB)** | App → 云端 Server (HTTPS) | App 本地 `mobileClip` 推理产出，上传检索 Top-K 模板 | HTTPS / TLS |
+| **阶段 3** | 推荐模板元数据列表 | 每次下发 **5 ~ 18 个**模板项 | UCD 2.0 + Protobuf (`TemplateListResponse`) | **`570 B ~ 900 B`**（每模板约 50B） | App → 相机 (`PHONE_SPP` / `L2CAP CoC` / BLE) | `0x00F1` (`PHONE_COMMAND_AIRETOUCH_RESPONSE_TEMPLATE_LIST`) | UCD 2.0 帧尾 CRC32 |
+| **阶段 3** | 模板例图缩略图（传输态） | **`280 × 280`**（部分版本协商 256/160/128/96） | HEIC 或 JPEG | 单张 **`9 KB ~ 51 KB`**；18 张总计 **`190 KB ~ 270 KB`**（约 281 片） | App → 相机 (`PHONE_SPP` / `L2CAP CoC`) | `0x00F4` (`AITemplateThumbnailInfoPush`) + `0x00EC` + `0x207A` (`DataSourceType=2`) | 分片独立 CRC + 整图总校验 + 15s/30s 超时兜底 |
+| **阶段 3** | 模板例图缩略图（机内上屏态） | **`120 × 120`** | **BGRA8888** 未压缩像素缓冲 | **`57,600 Bytes`** (`120×120×4B`) | 相机媒体层 → GUI 显存 | `AI_RETOUCH_EVENT_TEMPLATE_READY` 触发硬件解码与缩放 | 解码失败回退机内占位图 |
+| **阶段 4** | 待修压缩源图（宽图 WPV） | 4:3 为 **`2048×1536`**<br>16:9 为 **`2048×1152`**<br>2.35:1 为 **`2048×872`** | **HEIF (`.heic`)**，内含 HEVC 单帧（`QP=32` + 人脸 ROI 码率增强） | **`20 KB ~ 66 KB`**（实测日志 20,014B / 38,720B，分 20~43 片） | 相机 → App (`PHONE_SPP` / `L2CAP CoC`) → OSS (HTTPS) | `0x207D` (`GenerateAiPhotoPsTaskRequest`) + `0x00EB` + `0x2079` (`DataSourceType=3`) + `0x00F2` | 分片 CRC + 整文件总 CRC + `error_code=4` 传输失败检测 |
+| **阶段 5~6** | AI 修图 720P 预览成片 | **720P** (`1280×960` 或对应画幅) | 云端生成后压缩为 HEIF / JPEG，机内落盘转 JPEG + 扩展文件尾 | **`50 KB ~ 94 KB`**（实测日志 88,080B，按 1KB 分 88 片或 4KB 分 22 片） | 云端 → App (HTTPS) → 相机 (`PHONE_SPP` / `L2CAP CoC`) | `0x207E` (`PerformRequest`) → `0x00F3` (`PerformResponse`) → `0x00EC` + `0x207A` | 整文件总 CRC32 校验通过后发布 `RESULT_READY`，写入原片时间+1s 及 `task_id` 文件尾 |
+| **阶段 6+** | AI 修图 2K 高清成片 | **2K** (`2048×1536` 等) | 高清 JPEG / HEIF + 继承 720P 文件尾（更新分辨率字段） | **`1.5 MB ~ 3 MB`** | 云端 → App → 相机 (**Wi-Fi 通道**，App 空闲时) | 凭 `固件 SN + task_id` 拉取，完成后删除机内 720P 临时图 | Wi-Fi TCP 可靠传输 + 断点续传缓存 |
+
+---
+
+### 5. 机内跨模块交互架构（GUI ↔ 应用编排 ↔ 媒体层 ↔ 蓝牙层）
+
+在相机固件内部（IAC3 RTOS，代码根目录 `rtos/cortex_a/Insta360AIP/`），为了防止 UI、媒体、蓝牙三个模块互相直连导致耦合爆炸与重复发包，架构上确立了**以「AI 修图应用编排层」为唯一中枢**的四模块边界规则：
+
+#### 1. 四大核心源码文件与职责映射
+
+| 模块层级 | 核心源码文件 | 架构定责与铁律 |
+| :--- | :--- | :--- |
+| **UI 与 GUI 中间件层** | `app/gui/`、`app/gui/middleware/`、`ins_gui_device_id_def.h` | 负责引导页、模板选择页（常用/推荐 Tab）、光效 Loading 页、状态栏 `AI icon + N` 及回放页角标渲染。**铁律：严禁 UI 直接调用 `InsApp_Middleware_Bt_Write_*` 发送 UCD 数据，所有指令必须经 `InsGui_PostSetCameraMsg` 投递给编排层**。 |
+| **AI 修图应用编排与协议层** | `ins_app_ai_retouch.c/h`、`ins_app_handler_aigc.c`、`proto_handler/ucd/host_command.c`、`data_transport.c` | **全链路唯一编排中枢**：<br>· `host_command.c` 中以 `InsProto_Notify_*` 开头的是相机主动发往 App 的通知，以 `InsProto_Host_Cmd_*` 开头的是 App 下发给相机的命令处理函数；<br>· **唯一订阅者铁律**：媒体层的缩略图就绪通知只允许编排层一个消费者注册，彻底杜绝"通信模块与应用模块同时订阅导致一份缩略图重复发送两次"的风险。 |
+| **媒体处理层（MODULE_MEDIA）** | `mw/media_manager/ins_mw_ai_retouch_main.c`、`ins_mw_ai_retouch_hevc_enc.c`、`ins_mw_hevc_heif.c` | 负责预览帧截取、`4K→2K→256` 两步 Y2Y 缩放、人脸 ROI 检测、HEVC 硬编与 HEIF 容器读写、模板图 `280×280 → 120×120 BGRA8888` 转换、720P/2K 成片文件尾合成。**铁律：媒体层不解析任何 UCD 协议，不直接调用蓝牙发送**。 |
+| **蓝牙中间件与设备层** | `app/app_devicetx_manager/ins_app_bt.c`、`ins_app_l2cap.c`、`app/msg_handle/bt/ins_app_bt_msg.c` | 维护 BLE / SPP / L2CAP CoC 物理连接与链路状态机，对外仅提供字节流发送接口与接收队列 `InsBt_Rcv_Msg_t`（含 `CLIENT_RECV` / `PHONE_SPP` / `L2CAP` 消息类型）。**铁律：蓝牙层只传字节流，不解析模板 ID 或图片语义**。 |
+
+#### 2. 机内 7 个 MMC 核心事件表（`ins_mw_mmc_event.h`）
+
+| 事件宏定义 | 发布方 (Pub) → 订阅方 (Sub) | 触发时机与业务动作 |
+| :--- | :--- | :--- |
+| `MEDIA_EVENT_AI_RETOUCH_GET_SCENE_DETECT_YUV` | 应用层 (`ins_app_handler_aigc.c`) → 媒体层 (`MODULE_MEDIA`) | 用户从预览页进入 AI 修图，请求媒体层从实时预览流生成 `256×256` 场景检测缩略图（回放页进入则对应 `MEDIA_EVENT_AI_RETOUCH_PB_SCENE_DETECT`） |
+| `AI_RETOUCH_EVENT_THUMB_READY` | 媒体层 → 应用层 (`InsApp_AiRetouch_TaskEntry`) | 缩略图落盘就绪。应用层检查载荷 `has_template_id`：`0` 则调 `0x207C` 请求模板列表；`1` 则调 `0x207D` 创建修图任务 |
+| `AI_RETOUCH_EVENT_TEMPLATE_INFO_LIST_NUM` | 应用层 → 媒体层 / GUI | 收到 `0x00F1` 模板元数据列表后发布，通知模板总数量变化，准备列表占位槽位 |
+| `AI_RETOUCH_EVENT_TEMPLATE_READY` | 应用层 → 媒体层 (`ins_mw_ai_retouch_main.c`) | 单张模板缩略图的 `0x00EC` 分片收齐且校验通过后发布，触发媒体层 work_queue 将其解码为 `120×120 BGRA`（满 5 张即提前推 `LOAD_SUCCESS`） |
+| `AI_RETOUCH_EVENT_ALL_TEMPLATE_READY` | 应用层 → 媒体层 / GUI | 全部期望数量的模板缩略图均收齐校验通过后发布 |
+| `MEDIA_EVENT_AI_RETOUCH_SET_TEMPLATE_ID` | GUI / 应用层 → 媒体层 | 用户在模板选择页点击确认应用某个模板，媒体层缓存该 `template_id` 供拍照写文件尾或回放修图使用 |
+| `AI_RETOUCH_EVENT_RESULT_READY` | 应用层 → 媒体层 (`InsMw_AiRetouch_Main_TaskEntry`) | 阶段 6 中 720P 结果图最后一个 `0x00EC` 分片收齐且校验通过后发布，触发媒体层转码 JPEG、写入原片时间+1s 及 `task_id` 文件尾并入库相册 |
+
+#### 3. 编排层与 GUI / 媒体交互的 7 类标准通知（N1 ~ N7）
+
+| 编号 | 通知逻辑名与對應 GUI Push 接口 | 方向 | 载荷摘要与业务消费逻辑 |
+| :--- | :--- | :--- | :--- |
+| **N1** | **业务链路就绪状态** `Ins_App_GuiMiddleware_PushAiRetouchConnState` | 编排 → GUI | 布尔或 8 态细化枚举（`BLE_ONLY` / `CLASSIC_OPENED` / `SPP_CONNECTING` / `WAITING_APP_WAKE` / `SPP_READY` 等），决定点击入口是进业务页还是进引导页 |
+| **N2** | **预览场景缩略图已生成** `INS_MEDIA_NOTIFY_AI_RETOUCH_PREVIEW_THUMB_READY` | 媒体 → 仅编排 | `request_id`、256×256 缩略图路径/缓冲区、错误码；编排层收到后立即启动阶段 2 的 UCD 上行 |
+| **N3** | **UCD 发送结果通知** `Ins_App_GuiMiddleware_PushAiRetouchUcdSendResult` | 编排 → GUI | 成功 / 失败 / 重试耗尽错误码；失败时驱动 GUI 弹出异常提示（全屏引导 / 阻塞弹窗 / Toast / 状态栏异常 icon 四形态之一） |
+| **N4** | **模板与例图下行就绪** `Ins_App_GuiMiddleware_PushAiRetouchTemplateReady` | 编排 → GUI | 模板 ID、例图句柄、顺序号；配合 `PushAILoadProgress` 驱动模板墙渐进展示 |
+| **N5** | **拍照后待修源图就绪** `INS_MEDIA_NOTIFY_AI_RETOUCH_CAPTURE_THUMB_READY` | 媒体 → 仅编排 | 拍照会话 ID、`2048×H` HEIF 压缩图路径、原图路径；编排层收到后启动阶段 4 的 `0x207D` 上行 |
+| **N6** | **修后 720P 成片下行完成** `Ins_App_GuiMiddleware_PushAiRetouchRetouchThumbReady` | 编排 → GUI + 存储 | 成片相册路径/句柄；驱动预览页弹出完成 Snackbar（"「繁花」模板 AI 修图已完成 · 点击查看"）并更新状态栏待处理任务计数 `N - 1` |
+| **N7** | **蓝牙链路断开通知** `Ins_App_GuiMiddleware_PushAiRetouchLinkLost` | 蓝牙 → 编排 → GUI | 断链原因枚举；中断当前前台模板加载，或将后台处理中任务置为"等待中"、状态栏修图 icon 叠加异常小图标 |
+
+---
+
+### 6. IAC3 平台架构底座（双核异构分工 / AmbaLink 三件套 / AIP3.0 框架 / 三层通信切片 / 代码地图）
+
+> **为什么必须补这一节**：前面五节讲的是"AI 修图这个业务自己怎么跑"，但面试官的下一问几乎必然是——*"你们相机固件整体是什么架构？为什么这么分？你的业务跑在哪颗核、哪一层上？"* 本节把《iac3大致架构说明》《AIP3.0消费相机业务框架设计》《IAC3项目结构地图》三份平台文档的知识压缩成可直接作答的架构底座，让 AI 修图的所有细节都能挂回平台骨架上。
+
+#### 1. 双核异构总分工：ThreadX 实时控制核 ↔ Linux 服务核
+
+IAC3（Ace Pro 2）主控为安霸 Ambarella CV5x 系列 SoC（工程路径 `rtos/cortex_a/bsp/cv5x/`），以**两颗 Cortex-A 核组运行异构操作系统**，分工界限极其清晰：
+
+| 维度 | **RTOS 核（ThreadX，core0）** | **Linux 核（Kernel + `instaAIP` 守护进程）** |
+| :--- | :--- | :--- |
+| **角色** | 绝对主控、硬实时控制中心（微秒级中断响应） | 协处理器、重型网络与系统服务中心（软实时） |
+| **掌管硬件** | DSP 矩阵（ISP/编码器）、Sensor（MIPI CSI）、LCD、按键/PMIC（经 MCU UART）、音频硬编解码 | SDIO Wi-Fi 芯片（wlan0）、蓝牙 BSA 协议栈服务、USB 高层网络、libcurl/librtmp |
+| **核心业务** | 拍照/录像编排、istreamer 媒体管线、EIS 防抖、Embedded Wizard GUI、DCF 文件系统、**UCD 主命令分发、AI 修图状态机** | hostapd/wpa_supplicant、dnsmasq、RTMP 直播推流、云端上传鉴权、HTTP Server、第三方 AI 推理 |
+| **为何放这侧** | DSP 喂流有严苛时序窗口，Linux 的缺页中断与 CFS 调度无法满足 4K60 零丢帧；相机要求 1 秒级出图 | WPA3/OAuth2/SSL 等复杂网络协议栈在 RTOS 上移植维护成本极大，Linux 开源生态成熟 |
+
+**AI 修图的归属结论**：AI 修图的**业务主体（状态机、UCD 分发、MMC 事件、媒体管线、GUI）全部在 ThreadX 侧**；只有当相机需要访问云端/OSS 的重型网络能力（2K 成片 Wi-Fi 回传、HTTP 下载）时才借道 Linux 核——即"**控制与实时媒体在 RTOS，网络与文件搬运在 Linux**"。
+
+#### 2. 核间通信：AmbaLink 三件套（RPMsg 控制信令 / AmbaIPC RPC / FrameShare 零拷贝数据面）
+
+| 通道 | 定位 | Linux 侧接入 | RTOS 侧接入 |
+| :--- | :--- | :--- | :--- |
+| **RPMsg**（OpenAMP 规范，共享 DDR VRing 环形缓冲 + 硬件 Mailbox 中断） | 控制信令通道 | 字符设备 `/dev/rpmsg_insta360_scull`（信道 `rpmsg_insta360_comm`）、`/dev/rpmsg_insta360_scull_factory`（产测）、`echo_cortex`（启动同步）；用户态 `msg_device/rpmsg/rpmsg.c` 用独立线程阻塞 `read()` 收包 | `mw/ambalink/ins_mw_rpmsg.c`：`AmbaIPC_Alloc()` + `AmbaIPC_RegisterChannel()` 注册通道，`InsMw_Rpmsg_Comm_ReadCallback()` 回调收包，`InsMw_Rpmsg_Send()` 发包 |
+| **AmbaIPC RPC** | RPMsg 之上的远程过程调用，约 38 个 Program ID：RTOS 注册 `RT_* = 0x1xxxxxxx`、Linux 注册 `LU_* = 0x2xxxxxxx`、自定义扩展 `0x3xxxxxxx` | — | — |
+| **FrameShare** | 高清媒体**零拷贝**数据面，5 条独立流通道：`GYRO`（32KB×12800 描述符）、`VIDEO`（320KB×128 环形队列，约 40MB 物理共享内存）、`AUDIO`、`AUDIO_RX`（AirPods 反向音频）、`FW_INFO`（升级分块） | `mmap` 直接访问物理内存读帧 | 写方直接写物理 DDR 并填帧描述符 `LU_FRAMESHARE_FRAME_DESC_s`（`start_addr/size/pts/yaw/pitch/roll/exposure`），再发轻量 RPC 敲门信号（如 `LU_FRAMESHARE_FUNC_VIDEO_FRAMEEVENT`） |
+
+**双核协作三实例**（面试讲"两核怎么配合"直接引用）：
+- **RTMP 直播**：RTOS 编码出的 H.264/H.265 帧写入 FrameShare VIDEO 通道 → Linux 推流服务零拷贝取流经 wlan0 用 `librtmp` 推 CDN（即《项目一》的底层通路）。
+- **云上传**：RTOS 调度上传队列 → RPMsg 通知 Linux → Linux `libcurl` 跑断点续传与 HTTPS 直传，不消耗 RTOS 珍贵 CPU。
+- **固件升级**：Linux 验签解包 → FrameShare UPDATE 队列 → RTOS `InsApp_FwUpdateMem_Write()` 双 A/B 分区直写 NAND。
+
+#### 3. AIP3.0 消费相机业务框架：五层结构与六大去耦合支柱
+
+AIP3.0 是在 AIP2 基础上演进的**上层业务控制框架**，自顶向下五层：
+
+```
+【应用层】   Linux: App comm Manager / Http Server / Wifi·USB·BLE manager
+             RTOS: Record·Capture·GUI·UCD·OTA App / App msg Dispatcher / Device Manager
+【中间层】   Rpmsg · DMC/FrameShare · MMC(消息管理中心) · Media Manager · GUI View
+【服务层】   HAL/BSP 接口: GPS·TP/IMU·LCD·Sensor·LED·BT·WIFI·USB·SD / ImageService / MediaService
+【系统层】   OS 中间件(thread·memory·timer·queue) · Vendor SDK(libsys·libmux·libisp) · 驱动(I2C·SPI·SDIO·UART)
+【硬件层】   Ambarella CV5x SoC + Sensor + 外设
+```
+
+**六大去耦合支柱**：① **MMC**（RTOS 内部异步事件总线）；② **RPC/Rpmsg**（跨核打通 Linux 与 RTOS）；③ **DMC/VF**（音视频数据分发，共享内存 `FrameShare` 与安霸 `video_fifo`）；④ **CameraMediaManager**（相机/Sensor 状态封装）；⑤ **DeviceMonitorManager**（Gyro/TF 卡/电池/按键监控上报）；⑥ **HAL + OS 适配层**（隔离硬件差异，封装跨平台 `thread/ipc/memory/lock/timer`、LOG、加解密）。
+
+**MMC（控制面）与 DMC（数据面）的分工——AI 修图 7 个事件的机制根因**：
+
+| | MMC（Module Message Center） | DMC（数据管理中心） |
+| :--- | :--- | :--- |
+| 语义 | 异步 **发布-订阅** 事件总线，多线程消息传递 + 模块注册订阅分发 | 受 MMC 调度的数据流分发，底层共享内存 / `video_fifo` |
+| 三类发布者 | ① HAL 层外设事件（除高频 Gyro 外）统一上报；② 手机 App/BLE/Wi-Fi/USB 指令经协议模块解析后注入；③ 各业务 Task 经 MMC API 发跨模块消息 | 媒体帧/码流数据 |
+| 关键 API | `InsMw_MMC_PublishEvent(event_id)`、`InsMw_MMC_PublishEventWithParameter()`、`InsMw_MMC_SendEventToModule_WithParameter()`；模块 ID 含 `MODULE_UCD / MODULE_RECORD / MODULE_CAPTURE / MODULE_AI_RETOUCH / MODULE_GUI / MODULE_AMBALINK` | FrameShare / VF 队列 |
+| 工程铁律 | **异步非阻塞**：`PublishEvent` 只把事件指针复制进订阅模块各自的 `InsPal_MsgQueue_t` 就返回，调用方绝不等订阅者处理完；必须顺序时上层要另设计 Ack 事件 → 这正是 AI 修图要用 `THUMB_READY → 请求模板` 显式接力的原因 | Gyro 数据量太大太密，**旁路 MMC** 直接回调缓存 |
+
+**AIP3.0 相比 AIP2 的关键架构演进（设计文档七大总结）**：彻底分层拆分；把 unit/module 集合重构为设备管理/配置/媒体/消息通信/公共模块；**取消集中式大状态机**，改为应用消息分发中心统一路由；配置与媒体模块拆成"应用接口 + 底层抽象接口"；设备模块统一调用接口；**内部消息、手机 App 消息、产测消息统一走消息分发机制**——AI 修图的 UCD 命令、GUI 消息、MMC 事件三流合一正是这一条的落地。
+
+**设备管理的读写分离**（解释为何蓝牙/外设命令不会竞态）：外设事件统一经 `DevManager Rx Task` 上报 MMC；应用层对硬件的下发**全部经 `DevManager Tx Task` 串行化**，从根上解决多线程并发操作寄存器的竞态。
+
+#### 4. UCD 命令码的五段空间与跨核消息族（条目一的平台级延伸）
+
+UCD 外层通用头 = 4 字节包长 + 1 字节 `msg_type`（`0x04` MSG 业务 / `0x05` HEART_BEAT / `0x06` SYNC / `0x07` TUNNEL 隧道 / `0xFE` 产测）；内层 9 字节 MSG 头 = `msg_code`(2) + `content_type`(1：Protobuf `0x01`/JSON `0x02`/RAW `0x03`) + `stream_id`(4：bit31 `end` 切片结束位、bit30 `direction`、低 30 位会话流水号) + `reserve`(2)。**`msg_code` 按用途划分五段**——这是理解"AI 修图命令为什么一个 0x00xx 一个 0x20xx"的钥匙：
+
+| 命令码段 | 名称 | 方向与规模 |
+| :--- | :--- | :--- |
+| `0x0000–0x1FFF` | **HOST_CMD** | 手机 App → 相机的控制指令，200+ 条（AI 修图的 `0x00EB/0x00EC/0x00F1/0x00F2/0x00F3/0x00F4` 均在此段） |
+| `0x2000–0x2FFF` | **DEVICE_MSG** | 相机 → App 主动上报/通知，100+ 条（AI 修图的 `0x2079/0x207A/0x207B/0x207C/0x207D/0x207E` 均在此段） |
+| `0x5000–0x5FFF` | **AMBALINK_MESSAGE** | **Linux → RTOS** 的事件上报（如 `WIFI_STATE 0x5002`） |
+| `0x6000–0x6FFF` | **RTOS_MESSAGE** | **RTOS → Linux** 的命令请求（如 `OPEN_WIFI 0x6001`；AI 修图的 `InsProto_Rtos_Message_AiRetouch_Data_Transport` 属此族） |
+| `0x7000–0x7FFF` | **OSC_MESSAGE** | Open Spherical Camera 兼容指令 |
+
+#### 5. host_command 分发与"血统回包"结构 `Insta_Msg_From_Info_t`
+
+- **分发表**：`proto_handler/ucd/host_command.c` 维护 200+ 条 `g_host_cmd_map[]`（`{msg_code, handler}` 线性映射），核心分发函数 `InsProto_Host_Cmd_Handler()` 先查 `stream_id` 的 `end` 位做多包重组，再查表命中 handler。
+- **两段式响应**（AI 修图命令也是这个节奏）：handler 反序列化后**先立即原路回 `ERRCODE_SUCCESS`（HTTP 语义，`direction=0`）**，再经 MMC 异步触发真正业务，业务完成后再用 `DEVICE_MSG`（`0x2xxx`）广播通知 App。
+- **血统标记三元组** `Insta_Msg_From_Info_t = {msg_from, msg_from_sub, Connect_Identifier}`：
+  - `msg_from`（`INS_MSG_BT / WIFI / USB / NO_VAGUE`）+ `msg_from_sub`（`BLE_SERVER / PHONE_SPP / L2CAP / WIFI_AP / WIFI_STA`）——各介质底层收包后统一构造三元组注入 `InsProto_Ucd_Handler_Rcv_In()` 单点入口；回包时原样带回落到具体通道；标记 `NO_VAGUE` 则在所有就绪通道多路广播。
+  - `Connect_Identifier` 全局单调递增——**拦截断线重连后旧会话延迟回包打到新连接的竞态**，这是 UCD 相比裸 socket 协议的关键健壮性设计。
+- **Linux 侧对偶结构**：Linux `instaAIP` 用 `InsMsg_Device_t`（`init/send/set_callback` 三接口）抽象 rpmsg/wifi/usb/bt/tunnel 五种介质，启动时 `InsAIP3_BindMsgProto()` 把 `mdev_rpmsg` 绑给 UCD、`mdev_rpmsg_factory` 绑产测、`mdev_tunnel` 绑隧道——**同一套 UCD 帧格式跑在蓝牙、Wi-Fi TCP 6666、USB、RPMsg 之上的机制来源**。
+
+#### 6. 三层通信切片模型（App 一条命令的完整机内旅程）
+
+```
+[第 1 层 接入与介质透明] BLE/SPP/L2CAP/WiFi/USB 收包 → 拼出 SDU + 附加 Insta_Msg_From_Info_t
+        → InsProto_Ucd_Handler_Rcv_In()（单点入口）
+        → 异步队列 rcv_msg_handle_queue → InsApp_Rcv_Msg_Handle_Task_Entry 按 msg_type 分发
+[第 2 层 协议路由分发]   MSG(0x04) → InsProto_Host_Cmd_Handler() 查 g_host_cmd_map[] → handler
+        → 立即回 ERRCODE_SUCCESS → 业务经 MMC 异步推进 → 完成后 InsProto_Notify_* 下发 0x2xxx
+        TUNNEL(0x07) → 透传 RPMsg 至 Linux（OSC/REST 解析）
+        跨核：InsProto_Rtos_Message_* 封 0x6xxx 经 RPMsg 给 Linux；Linux 用 0x5xxx 回报
+[第 3 层 RTOS 内部解耦]  InsMw_MMC_PublishEvent(EVENT) → 订阅者：media_manager（驱动 DSP 编解码）
+        / apphandler（状态机）/ gui middleware（刷新）/ proto_handler（DEVICE_MSG 上报）
+```
+
+回包闭环三条路：① **控制应答**——借原 `msg_from_info` 定向返还；② **异步通知**——业务完成发布 MMC 事件触发 `InsProto_Notify_*`；③ **跨核交互**——`0x6xxx`/`0x5xxx` 经 RPMsg 往返。
+
+**一条完整例子（RTOS 请求 Linux 开热点）**：GUI/UCD 触发 → `InsProto_Rtos_Message_OpenWifi()` 先调 `InsComm_Event_Track_Check_Linux_Status()` 做 **Linux 心跳健康检查** → 组 `0x6001` 经 `InsMw_Rpmsg_Send(COMM)` 写 VRing 触发核间中断 → Linux 读线程从 `/dev/rpmsg_insta360_scull` 读出、`msg_handler.c` 查 `s_ucd_msg_map[]` 命中 → **另起独立 pthread** 执行 `InsDev_Wifi_Start()`（拉 GPIO + `wifi_start.sh`，防阻塞收包线程）→ 起来后回 `0x5002 WIFI_STATE` → RTOS 更新 `dev_state` 状态机并发布 MMC 事件让 GUI 亮 Wi-Fi 图标。
+
+#### 7. AI 修图业务在平台中的精确坐标（代码地图）
+
+`sportcamera` 工程四大顶层板块：`ambalink_sdk_4_14/`（Linux 侧，约 5500 万行，含内核/buildroot/`ambarella/package` 用户态包）、`rtos/cortex_a/`（ThreadX BSP/soc/svc/vendors）、**`rtos/cortex_a/Insta360AIP/`（自研业务核心，6186 文件 / 319 万行）**、其余（`mcu/` 电源管理协处理器固件、`build/` 顶层 `lunch.py` + `combos/iac3_aip` 生产配置、`project/` 机型参数）。
+
+`Insta360AIP/` 内部调用链 `app/ → service/、mw/ → device/、svc/ → pal/ → soc/io/ → vendors/`，AI 修图相关路径精确锚定：
+
+| 层级 | 路径与文件 | 在 AI 修图中的角色 |
+| :--- | :--- | :--- |
+| 应用层 `app/` | `app/app_devicetx_manager/ins_app_ai_retouch.c`、`app/apphandler/ins_app_handler_aigc.c`、`app/gui/`（Embedded Wizard）、`app/msg_handle/`（`ins_msg_handle.c` 单点总入口 + `bt/` 拼包 + `dev_state/` 连接状态机）、`app/app_middleware/` | 会话生命周期与链路状态机、GUI 交互入口与鉴权拦截、介质拼包收敛、Push 接口封装 |
+| 协议层 `proto_handler/` | `ucd/host_command.c`（200+ 命令表）、`ucd/data_transport.c`（分片传输）、`ucd/rtos_message.c` / `ambalink_message.c`（跨核消息族）、`protobuf/`（178 个 .proto 生成 C 结构） | UCD 编解码、滑动窗口分片、跨核封包 |
+| 中间件 `mw/` | `media_manager/ins_mw_ai_retouch_main.c`、`ins_mw_ai_retouch_hevc_enc.c`、`mmc/`（事件总线）、`ambalink/`（`ins_mw_rpmsg.c`、`inc/ins_mw_frame_share.h`）、`config_manager/`、`dcf/`、`muxer/` | 缩略图/宽图管线与硬件 HEVC 编码、7 个 MMC 事件、跨核与零拷贝、配置与落盘命名 |
+| 服务与算法 | `service/media/`（SVC 编码服务）、**设计文档将 AI 修图算法主流程归入 `service/alg/`，实际工程落地在 `mw/media_manager/`**（面试可主动点出"设计稿与落地的差异"） | DSP 编码调度 |
+| 设备与平台 `device/` `pal/` | `device/peripheral/ins_dev_bt.c` / `ins_dev_wifi.c`、`pal/os/`（task/mutex/msg_queue + tcmalloc 式三级内存池 `memPool/`）、`pal/file_system/`（异步写优化） | 蓝牙/Wi-Fi 硬件操作、任务与队列原语、断电安全写 |
+| Linux 侧 | `ambalink_sdk_4_14/pkg/instaAIP/`（`aip.c`、`appHandler/`、`protoHandler/ucd/msg/msg_handler.c`、`msg_device/`）、`ambarella/package/`（`instaAIP`、`bcm_bt`、`ambacv`/`cavalry_lib`/`amba_tvm` 推理栈、`ambaipc`） | 云端上传、Wi-Fi 热点、第三方 AI 推理、跨核 RPC |
+| 蓝牙栈分布 | RTOS：`rtos/cortex_a/vendors/synaptics/bluetooth/`（`libsynabt_stack.a`，BTA Host 栈，BLE/SPP/L2CAP 全在 RTOS 侧）；Linux：BSA `bsa_server_arm64`（AirPods HFP-AG、遥控器 BLE Central） | AI 修图三条蓝牙链路均在 RTOS 侧闭环 |
+
+**进程/线程模型**（面试常问"AIP3 有没有进程"）：Linux 端是**单一进程 `instaAIP`**，内部 20–30 个 pthread（RPMsg/Wi-Fi TCP/BT 收包线程组、HTTP 与心跳服务线程、FrameShare RPC 数据线程、RTMP/云上传业务线程）；**RTOS 端没有 Linux 意义上的进程**，由 ThreadX 直管约 80–120 个 Task，分四档优先级——`REALTIME`（看门狗、Sensor 回调、MCU 1kHz 采样、DSP/RPC 中断）、`HIGH`（编码器调度、BT/WiFi/USB 首段收包队列）、`NORMAL`（UCD 解析队列消费 `InsApp_Rcv_Msg_Handle_Task_Entry`、MMC 各模块订阅 Task、**AI 修图会话 Task**、GUI 64KB+ 巨型栈）、`LOW`（日志/埋点）。
+
+#### 8. 启动时序与容错降级（对 AI 修图的实际影响）
+
+- **16 阶段启动总原则：通信基础设施早于消费它的业务，实时出图早于网络就绪**——PMIC/MCU 上电 → BLD 加载 ThreadX → `InsAIP3_InitPreOS`（内存池/Timer/中断）→ MCU UART 握手 + MMC/DMC 初始化 → CfgMgr + MediaInit（含 AI 修图 YUV 通道预热）→ `InsMw_Ambalink_Init()` 异步引导 Linux → LCD/Sensor 出图、1.5 秒内屏显首帧 → Embedded Wizard GUI 启动 → Linux systemd 拉起 `instaAIP` → `/etc/init.d/S99bootdone` 向 `echo_cortex` 写入回执 → RTOS 状态机推到 `INSMW_STAT_AMBALINK_LINUX_READY` → 最后启动 Cloud/FwUpdate 等依赖 Linux 的后线业务。
+- **三层看门狗**：① MCU ↔ SoC UART 心跳 5 秒丢失 → 整机强制复位；② **RTOS ↔ Linux RPMsg 心跳 30 秒丢失** → `InsComm_Event_Track_Check_Linux_Status()` 判异常，**RTOS 立即拒发新的 `0x6xxx` 消息**（防止 VRing 塞满拖垮 RTOS），GUI 弹窗降级——这正是蓝牙/Wi-Fi 异常矩阵里"网络不可用但蓝牙业务继续"的底层依据；③ 各任务级看门狗。
+- **断电恢复与 AI 修图**：开机扫描修复损坏的 MP4 索引 Box；读取 `ai_retouch_pending_tasks.json` 重新装载未完成修图任务；DCF 层用 `.tmp 写入 → fsync → rename` 原子落盘——对应知识库里"任务断点恢复 + SD 卡热插拔保护"的平台实现；配置中心内存镜像缓存全系统配置，变更广播 `CONFIG_EVENT_CHANGED`，关机由 `ins_app_saveconfig.c` 批量落盘。
+
+#### 9. 平台架构对比辨析：IAC3/AIP3.0 双核异构 vs AIPL 纯 Linux 多进程（防混淆指南）
+
+在面试中，面试官经常会串联考察两个项目：*"你做的项目一（RTMP 直播推流）和项目二（AI 修图），背后的相机系统平台架构有什么区别？为什么一个强调 IBus / ShareState，另一个强调 ThreadX / RPMsg / MMC？"*
+必须建立清晰的平台代际演进与架构差异认知，绝对不能混淆：
+
+| 对比维度 | **项目二：IAC3 / AIP3.0 平台架构（当前项目）** | **项目一：AIPL 平台架构（RTMP 直播推流）** |
+| :--- | :--- | :--- |
+| **所属代际与产品线** | **成熟量产机型：影石 Ace Pro 2（开发代号 IAC3，安霸 CV52 SoC）** | **新一代统一嵌入式软件基座：Ace Pro 3 / 全系列未来影像平台** |
+| **系统核心拓扑** | **双核异构操作系统**：Cortex-A ThreadX RTOS 实时控制核 + Cortex-A Linux 服务协处理核 | **纯嵌入式 Linux 多进程微服务架构**：长生命周期守护进程化，由 systemd 统一管理生命周期与重启 |
+| **AI 修图 vs 推流的归属侧** | **主体在 ThreadX 实时核**：状态机、UCD 分发、MMC 事件、媒体缩略图/宽图生成全在 RTOS；Linux 仅作网络协处理 | **独立 Linux 用户态应用进程 `ins_livecast`**：推流业务、五态状态机、网络监控与自适应码率全在 Linux 用户空间 |
+| **机内核间 / 跨进程控制面** | **MMC 发布-订阅总线 + RPMsg / AmbaIPC**：RTOS 内部用 MMC 消息队列解耦；跨核用 OpenAMP RPMsg 传递 `0x5xxx`/`0x6xxx` 消息族 | **自研内部总线 IBus（基于 eRPC 深度定制）**：IDL 强契约声明（`.erpc`/`.erpci`），自动生成 C++ 桩代码，统一 16 位地址空间与双层帧头（Link 12B + eRPC 10B） |
+| **机内音视频数据面** | **FrameShare（物理 DDR 共享内存通道）**：划分 GYRO / VIDEO / AUDIO 等固定物理通道，填帧描述符后发轻量 RPC 敲门 | **POSIX 共享内存 + 环形帧缓冲（`IpcFrameBuf`）**：`ins_mediad` 写入，直播 `StreamReader` 线程多端无锁零拷贝映射拉流 |
+| **运行态高频状态查询** | **RTOS 内存直接访问 / MMC 事件回调**：单核任务间直接共享内存上下文，无需 IPC | **POSIX 共享内存 `ShareState`（`/dev/shm/ins_livecast_state`）**：`ins_livecast` 单写，GUI 进程多读，纳秒级读取，RPC 开销归零 |
+| **外部通信主协议** | **UCD 2.0 贯穿内外**：App ↔ 相机直连 UCD 2.0，内部通过 `Insta_Msg_From_Info_t` 血统标记原路返回；跨核也承载 UCD | **外部直通 UCD 2.0，内部全走 IBus**：外部 App 经 `ins_link`（端口 6666）统一接入并转发，机内业务全面转化为 IBus RPC 与 Topic |
+
+> **关键演进动因（为什么影石要从 IAC3/AIP3 演进到 AIPL？）**：
+> 1. **双核异构维护成本极高**：在 IAC3 中，网络协议栈（Wi-Fi STA/AP、DNS、TLS、HTTP/RTMP）天然适合 Linux，但实时拍摄控制又必须在 ThreadX。双核之间需要维护繁琐的 RPMsg 通道、两套编译链、跨核消息同步（`0x5xxx`/`0x6xxx`）以及严苛的双核启动时序（`echo_cortex` / `S99bootdone`），一旦出现跨核死锁或心跳超时排查极难。
+> 2. **AIPL 走向全 Linux 微服务**：随着新一代高性能 SoC（如高通平台、新一代图像处理芯片）的引入，Linux 内核的实时补丁与硬件隔离能力大幅增强。AIPL 将所有业务全面下沉为 Linux 守护进程（`ins_mediad`、`ins_netd`、`ins_configd` 等），内部通信统一收敛为标准 IDL 约束的 **IBus**，多媒体帧流统一收敛为 **`IpcFrameBuf`**，从而让新机型立项可以通过标准微服务搭积木的方式快速演进，摆脱了安霸专属双核通信的深度耦合。
+
+#### 10. 面试问答汇总（平台架构 8 问）
+
+1. **"你们相机固件整体什么架构？"**——安霸 CV5x 双核异构：ThreadX 实时核做拍摄/媒体/GUI/UCD 主分发，Linux 核做 Wi-Fi/蓝牙管理进程/云上传/推流，两核经 AmbaLink（RPMsg 控制面 + FrameShare 零拷贝数据面）协同；上层统一跑 AIP3.0 业务框架，内部用 MMC 发布订阅总线解耦，AI 修图是这个框架上的一个业务模块，主体在 ThreadX 侧。
+2. **"为什么不用单 Linux？"**——DSP 喂流要求硬实时，Linux CFS 调度与缺页中断撑不住 4K60 零丢帧与秒级开机；而 WPA3/SSL/OAuth 这类复杂网络栈放 RTOS 移植成本太高。所以实时媒体归 RTOS、重网络归 Linux。
+3. **"一条 App 命令在机内怎么走？"**——介质收包（BLE/SPP/L2CAP/WiFi）→ 构造 `Insta_Msg_From_Info_t` 血统三元组 → `InsProto_Ucd_Handler_Rcv_In()` 单点入口 → 异步队列 → `InsProto_Host_Cmd_Handler()` 查 `g_host_cmd_map[]` → handler 先回成功码，再发 MMC 事件驱动业务，完成后 `InsProto_Notify_*` 下发 `0x2xxx` 通知；要过核的走 `0x6xxx/0x5xxx` 经 RPMsg。
+4. **"MMC 为什么必须异步？会有什么坑？"**——解耦模块、避免头文件交叉依赖与初始化死锁；代价是不可靠、不确定，所以必须设计超时回收与 Ack 排序机制，AI 修图的"缩略图就绪→请求模板"接力就是显式 Ack。
+5. **"UCD 命令码为什么分段？"**——五段空间隔离角色：`0x0xxx` 手机命令、`0x2xxx` 相机通知、`0x5xxx` Linux→RTOS、`0x6xxx` RTOS→Linux、`0x7xxx` OSC 兼容。同一帧格式复用在蓝牙/Wi-Fi/USB/RPMsg 上，分段避免方向与来源混淆。
+6. **"同一套协议怎么同时跑蓝牙和 Wi-Fi？"**——介质层统一注入 `InsProto_Ucd_Handler_Rcv_In()`，回包靠 `Insta_Msg_From_Info_t` 原路返回；Linux 侧 `InsMsg_Device_t` 把 rpmsg/wifi/usb/bt/tunnel 抽象成同一 `send/set_callback` 接口——协议与承载彻底解耦，所以 AI 修图从 BLE 兜底切到 SPP/L2CAP、再用 Wi-Fi 传 2K 成片，协议层完全无感。
+7. **"跨核的心跳挂了会怎样？"**——RTOS 检测到 Linux 30 秒心跳丢失后拒发 `0x6xxx` 防止 VRing 阻塞反噬 RTOS 实时性，GUI 降级提示；蓝牙链路（AI 修图主通道）在 RTOS 侧不受影响，业务降级到"仅蓝牙可用"状态——这就是异常矩阵设计的架构根据。
+
+---
+
+## 三、条目一：UCD 2.0 业务通信协议设计与实现
+
+### 1. 简历标准写法
+> 参与通信协议设计与实现。基于 UCD 2.0 帧格式参与定义 11 个业务命令码与 3 份业务 Protobuf 消息族，配合 CRC32 校验、分片确认与滑动窗口重传协议方案（`BatchPush`/`BatchAck`），闭环相机与手机 App 的全链路通信。
+
+### 2. 6 大可验证断言拆解
+1. **帧边界与完整性闭环**：UCD 2.0 固定 12 字节基础头，magic 取值 `0x32444355`（ASCII 即 "UCD2"），接收侧在字节流中扫描 magic 定位包起点，CRC32 覆盖 magic 至 payload 全域但不含 CRC 字段自身，任何一位误码即整包丢弃，从根上解决旧协议无协议头导致非法数据污染后续解析的问题。
+2. **11 个命令码按方向与用途闭环**（以《AI修图-应用层与相机媒体层通信流程》附录命令码汇总表为准）：3 组业务请求响应共 6 个（`0x207C` 模板列表请求 / `0x00F1` 响应、`0x207D` 任务创建 / `0x00F2` 响应、`0x207E` 任务执行 / `0x00F3` 响应）；数据传输通道 5 个——`0x00EB` RequestData（App→相机拉片）、`0x2079` CAMERA_NOTIFICATION_DATA_TRANSPORT（相机→App 发片）、`0x207A` CAMERA_NOTIFICATION_DATA_TRANSPORT_FEEDBACK（相机→App 传输反馈）、`0x00EC` PHONE_COMMAND_DATA_TRANSPORT（App→相机发片）、`0x00F4` PHONE_COMMAND_AIRETOUCH_AI_TEMPLATE_THUMBNAIL_INFO_PUSH（App→相机 模板缩略图信息推送）。
+3. **3 份业务 Protobuf 消息族**：仅模板列表、任务创建、任务执行三类业务语义各自独立成族，数据传输族复用 UCD 框架既有消息，业务语义与传输机制物理隔离，新增业务不触碰传输层。
+4. **CRC32 单校验选型**：对比 TCP 累加和、QUIC 的 AEAD 加密加 CRC、以太网与 Wi-Fi 的 CRC-32，按抗误码能力与计算开销折中选定 CRC-32，规避了曾被提出但工业界少用的头 CRC 加载荷 CRC 双重校验方案。
+5. **sequence 一到 255 循环的定位语义**：明确 sequence 不承担可靠传输职责，只用于一次多报文拆分场景下快速定位丢失的具体消息，为后续基于序号的精准重传预留抓手，收发双向各自独立维护序号互不耦合。
+6. **滑动窗口重传协议方案**：《SPP传输速率优化方案》提出把逐片同步等待的拉式协议演进为批量推送加位图确认——新增 `BatchPush`（`batch_id`/`chunk_index_base`/`chunk_count`/`repeated DataTransPort chunks`）与 `BatchAck`（`batch_id`/64 位 `received_bitmap`/`missing` 全局序号列表，兼容跨批次重传），拟新增命令码 `0x00ED`/`0x00F0` 并通过握手字段 `support_batch_v1` 协商开关，旧 App 自动回退 `0x00EB` 拉式路径。
+
+---
+
+### 3. 背景知识 A：UCD 1.0 的五大痛点与 UCD 2.0 帧格式设计
+
+#### 1. 旧协议到底烂在哪
+
+UCD 1.0 的帧格式只有 `length | type | padding-length | payload | padding` 五个字段，没有协议头、没有校验、没有版本号。评审会上列出的痛点非常具体：
+
+| 痛点 | 现象 | 后果 |
+| :--- | :--- | :--- |
+| 无协议头 | App 无法区分收到的是合法协议帧还是噪声 | 非法数据过滤不掉，还会污染后续包的解析 |
+| 无 CRC | 收到异常 length 字段时无法快速判定该帧作废 | 收数据流程卡死在错误长度上，无法自恢复 |
+| 无版本号 | 无法声明当前帧遵循哪个协议版本 | 新旧固件与新旧 App 无法协商，升级即破环 |
+| 无 sequence | 一次业务拆成多个报文发送时中途丢包 | 无法定位究竟丢了哪一条消息 |
+| 字段冗余 | padding 与 padding-length 源于安霸平台驱动在接收 512 字节倍数长度时不正确的 bug | 该规避手段已无存在必要，却持续占用头部空间 |
+
+另外，多连接场景下旧协议无法区分消息归属，导致 TC 产品线被迫自己另写了一套 UCP 协议，两套协议并存造成冗余。
+
+#### 2. UCD 2.0 的新帧格式
+
+```
+┌──────────┬─────────┬──────────────┬──────┬──────────┐
+│  magic   │ version │ header_len   │ type │ sequence │
+│   4B     │   1B    │     1B       │  1B  │    1B    │
+├──────────┴─────────┴──────────────┴──────┴──────────┤
+│ payload_len (4B)  │  options（TLV，可变）            │
+├───────────────────┴─────────────────────────────────┤
+│                  payload（可变）                     │
+├─────────────────────────────────────────────────────┤
+│                  CRC32（4B）                         │
+└─────────────────────────────────────────────────────┘
+```
+
+| 字段 | 长度 | 说明 |
+| :--- | :--- | :--- |
+| magic | 4 字节 | `0x32444355`，协议识别与粘包扫描锚点 |
+| version | 1 字节 | 当前 `0x01`，版本协商的载体 |
+| header_len | 1 字节 | magic 到 options 末尾的总长，不含 payload 与 CRC |
+| type | 1 字节 | 消息类型，承载请求、响应、通知三类方向 |
+| sequence | 1 字节 | 一到 255 循环累加，到达 255 后回绕到 1 |
+| payload_len | 4 字节 | 载荷实际字节数，小端序 |
+| options | 可变 | TLV 扩展，受 header_len 封顶，最大 243 字节 |
+| CRC | 4 字节 | CRC-32，覆盖 magic 到 payload，不含自身 |
+
+**固定头部恰好 12 字节**：四加一加一加一加一加四等于十二。header_len 一字节最大 255，减去固定 12 字节，options 上限即 243 字节——这个数字是被头部长度字段的位宽直接约束出来的，不是拍脑袋定的。
+
+#### 3. padding 字段为什么被砍掉
+
+`padding-length` 与 `padding` 追溯下来源于安霸平台，amba 驱动在接收到长度为 512 字节倍数的数据时不正确。当年的规避手段是当总长度恰好为 512 倍数时在数据尾部补一个 0。这个驱动侧的 bug 已随平台演进消失，字段却留在协议里白吃头部开销，UCD 2.0 直接移除。
+
+---
+
+### 4. 背景知识 B：magic 粘包边界、CRC32 覆盖范围与 sequence 语义
+
+#### 1. 为什么必须有 magic：字节流没有天然包边界
+
+蓝牙 RFCOMM 与 L2CAP 交付给应用层的都是**字节流**，不是报文。两次 `recv` 之间没有一对一关系，一个 `recv` 可能拿到半条消息，也可能拿到三条半消息。没有边界锚点，解析器就只能靠猜。
+
+```c
+/* 接收侧扫描包边界：先找 magic，再读 header_len 定位整帧 */
+uint32_t Ucd2_Scan_Frame(uint8_t* buf, uint32_t len, uint32_t* frame_len) {
+    for (uint32_t i = 0; i + 12 <= len; i++) {
+        if (*(uint32_t*)(buf + i) != UCD2_MAGIC) continue;   /* 逐字节滑动找锚点 */
+        uint8_t header_len = buf[i + 2];                     /* 固定头部第 3 字节 */
+        if (header_len < 12) return UCD2_ERR_BAD_HEADER;     /* 头长下界硬校验 */
+        if (i + header_len + 4 > len) return UCD2_NEED_MORE; /* 帧未收齐，等下一次 */
+        *frame_len = header_len + 4;                         /* 头 + 载荷 + CRC 之外还有 payload_len 指示 */
+        return UCD2_OK;
+    }
+    return UCD2_NEED_MORE;
+}
+```
+
+**关键点**：找到 magic 之后不能立刻解析，还要读 `header_len` 与 `payload_len` 两个字段才能算出整帧长度，判断缓冲区里是否已经收齐。这就是为什么头部要拆成 `header_len` 与 `payload_len` 两个长度字段——一个描述头有多长（决定 options 何时结束），一个描述载荷有多长（决定帧何时结束）。
+
+#### 2. CRC32 的覆盖范围与选型依据
+
+覆盖范围是**从 magic 到 payload 结束，不包含 CRC 字段自身**。这是所有带校验字段协议的通则：校验值不能把自己算进去，否则校验恒等式无解。
+
+选型时的三方对比：
+
+| 方案 | 计算开销 | 抗误码能力 | 场景适用度 | 参照对象 |
+| :--- | :--- | :--- | :--- | :--- |
+| 累加和取反 | 极低 | 弱 | 高 | TCP checksum（RFC 1071） |
+| CRC | 中 | 强 | 高 | 以太网 FCS、Wi-Fi 802.11 FCS |
+| AEAD 加密加 CRC | 高 | 极强 | 低 | QUIC |
+
+评审中曾有人提出头 CRC 加载荷 CRC 的双重校验方案，好处是载荷 CRC 可以晚算、先验头能提前丢弃坏包。但**业内很少采用**，本场景的载荷上限只有 2M，且高频传输是 4Mbps 的预览流，没有严苛到需要双重校验，最终按工业界共识选定单次 CRC-32。
+
+**开销问题**：CRC 引入对速率与 CPU 使用率的影响是评审明确提出的系统限制之一。以太网与 Wi-Fi 的 FCS 普遍走硬件 CRC 计算，板端同样优先走硬件加速路径，软件查表实现作为无硬件加速时的兜底。
+
+#### 3. sequence 的真实语义：定位而非可靠传输
+
+这是最容易被面试官追打的点，必须讲准：
+
+> **UCD 并没有强制的 ACK 重传机制，sequence 的首要目的不是保证可靠传输与有序处理。**
+
+它的定位是：当请求方一次用多个报文拆分发送一条业务消息时，中途若出现丢包，可以通过 sequence 快速识别具体丢的是哪一条。在此基础上，后续才可能基于 sequence 开发精准请求重传功能。
+
+```
+发送方：msg 拆成 3 个报文，sequence 分别为 10、11、12
+接收方：收到 10、12，缺 11
+       → 一眼定位丢的是 11，而不是把整条业务消息重来一遍
+```
+
+收发双方的 sequence 各自维护、互不依赖耦合——这一点很重要，它意味着 sequence 不是连接状态的一部分，链路重建后序号计数器无需同步。
+
+---
+
+### 5. 背景知识 C：options TLV 扩展机制与新旧协议版本协商
+
+#### 1. 为什么用 TLV 而不是继续加字段
+
+在固定头部之外设置 options 并遵循 TLV 格式，这个思路直接来自经典网络协议：
+
+| 协议 | 选项格式 | 代表选项 |
+| :--- | :--- | :--- |
+| IPv4（RFC 791） | 类型、长度、数据 | 记录路由、时间戳 |
+| TCP（RFC 793、7323、2018） | Kind、Length、Data | MSS、窗口缩放、SACK 允许、时间戳 |
+| DHCP（RFC 2132） | Code、Length、Data | 消息类型、请求 IP、参数请求清单 |
+
+共同点是：**用可变长选项区扩展能力，保持核心头部稳定，未知选项一律跳过**。UCD 2.0 的 options 设计完全对齐这一范式——新增能力优先放进 options，只有基础头字段变更时才升 version。
+
+#### 2. TLV 二进制格式与类型空间
+
+```
+编码：T (1B) | L (1B) | V (L 字节)
+位置：位于头部尾部，header_len = 12 + sum(2 + L)
+上限：header_len 小于等于 255，故 options 总长不超过 243 字节
+```
+
+类型空间的分配约定（建议）：
+
+| 区间 | 含义 | 接收端行为 |
+| :--- | :--- | :--- |
+| `0x01` - `0x3F` | 通用标准选项，非必须理解 | 未知则按长度跳过 |
+| `0x40` - `0x5F` | 强约束选项，必须理解 | 不认识就丢弃整帧并回复 Type-Error |
+| `0x60` - `0x7E` | 保留 | 跳过 |
+| `0x7F` | 厂商扩展，取值为自由格式或二级 TLV | 按厂商约定处理 |
+
+**解析铁律**：顺序独立，不依赖 TLV 次序；未知类型严格跳过不报错；必须理解型若不识别则丢弃并回错误帧；`header_len` 必须不小于 12，TLV 不得越界，总长不得超上限，CRC 必须正确；生成侧不得在 TLV 中重复表达与基础头冲突的语义。
+
+#### 3. 新旧协议共存的版本协商
+
+固件侧的兼容逻辑是一棵判定树：
+
+```
+收到数据
+  │
+  ├─ 检查 magic number 成功 ──► 启动 UCD 2.0 解析
+  │
+  └─ 检查 magic number 失败 ──► 是否为 UCD 1.0？
+                                   ├─ 是 ──► 启动 UCD 1.0 解析
+                                   └─ 否 ──► 识别为异常协议数据，丢弃
+```
+
+App 侧更棘手，因为它要区分的不是帧本身，而是**对端相机到底跑的哪个版本**。三种连接场景给了三种判断路径：
+
+1. **常规连接与跳过蓝牙连接**：都能从蓝牙广播里拿到设备信息，按设备类型查协议版本映射表；蓝牙名称拿不到时，用收到的第一个数据包兜底判断。
+2. **跳过 Wi-Fi 连接场景**：用户已经连上相机 Wi-Fi，启动后直接建 socket，拿不到蓝牙广播。此时 App socket 连接成功后立刻用 UCD 1.0 发一个同步包——UCD 2.0 相机收到没有协议头的数据直接丢弃，App 等心跳包发现协议头后切到 2.0；UCD 1.0 相机则按老逻辑回复同步包，App 发现回复没有协议头就继续走 1.0，对旧项目零影响。
+3. **同步包的本质**：它只是确认双方链路 Ready，蓝牙阶段这个作用已由心跳包承担，所以能安全去掉同步包逻辑（X4、X5、Go3s 已验证）。
+
+---
+
+### 6. 背景知识 D：11 个业务命令码的配对设计与 3 份 Protobuf 消息族
+
+#### 1. 命令码全景表（以《AI修图-应用层与相机媒体层通信流程》附录汇总表为准，恰好 11 个）
+
+**相机发往 App 的通知类（5 个，宏前缀 `CAMERA_NOTIFICATION` / `INSPROTO_UCD_MSG_DEVICE_MSG`）**
+
+| 命令码 | 名称 | 触发时机 | 业务语义 |
+| :--- | :--- | :--- | :--- |
+| `0x207C` | AIRETOUCH_GET_TEMPLATE_LIST | 用户进入 AI 修图界面 | 携带 256×256 场景检测缩略图标识请求推荐模板 |
+| `0x2079` | CAMERA_NOTIFICATION_DATA_TRANSPORT | 响应 App 的 RequestData | 相机向 App 发送单个文件分片（场景检测图/源图），携带实际数据内容 |
+| `0x207A` | CAMERA_NOTIFICATION_DATA_TRANSPORT_FEEDBACK | 分片接收校验后 | 相机向 App 反馈分片接收结果（成功、失败或超时） |
+| `0x207D` | AIRETOUCH_GENERATE_TASK | 用户确认模板 | 携带源图 datainfo 与 template_id，请求创建 AI 修图任务 |
+| `0x207E` | AIRETOUCH_PERFORM_TASK | 收到 task_id 后 | 携带 task_id 触发云端处理，开始拉取修图结果 |
+
+**App 回给相机的命令类（6 个，宏前缀 `PHONE_COMMAND` / `INSPROTO_UCD_MSG_HOST_CMD`；另有 `LoginStatusPush` 无文档命令码、不计入）**
+
+| 命令码 | 名称 | 时机 | 业务语义 |
+| :--- | :--- | :--- | :--- |
+| `0x00EB` | REQUEST_DATA（部分文档亦作 `PHONE_COMMAND_REQUEST_DATA`） | 数据传输控制 | 请求相机发送指定索引的文件分片，拉式协议核心（同一宏名在文档中出现两种写法） |
+| `0x00F1` | AIRETOUCH_RESPONSE_TEMPLATE_LIST | 模板请求响应 | 返回模板元数据列表，含 ID、多语言名称、缩略图 URL、价格、剩余免费次数，以及用户钻石数 |
+| `0x00F4` | AIRETOUCH_AI_TEMPLATE_THUMBNAIL_INFO_PUSH | 模板列表返回后 | 下发模板缩略图分片信息（`AITemplateThumbnailInfoPush`），随后以 `0x00EC` 推送缩略图数据 |
+| `0x00EC` | PHONE_COMMAND_DATA_TRANSPORT | 数据传输主体 | App 向相机发送单个文件分片（模板图片、修图成片），携带实际数据内容 |
+| `0x00F2` | AIRETOUCH_RESPONSE_GENERATE_TASK | 任务创建响应 | 返回云端签发的 `task_id` 与错误码；相机侧 `InsApp_AiRetouch_Update_Result_TaskId_From_HostCmd` 保存 |
+| `0x00F3` | AIRETOUCH_RESPONSE_PERFORM_TASK | 任务执行响应 | 返回 720P 修图结果信息；成功时必须携带合成的 `datainfo`（`image_identifier`/`chunk_total`/`total_bytes`/`check_type`/`check_total_sum`），相机据此初始化结果任务 |
+| （`LoginStatusPush`） | AIRETOUCH_PUSH_LOGIN_STATUS | 账号登录状态变化 | `login_status`（1 未登录 / 2 已登录），proto 中有消息定义但文档未给出十六进制命令码，不计入 11 码汇总表 |
+
+**11 的计法**：按汇总表口径——相机侧 5 个（0x207C/0x2079/0x207A/0x207D/0x207E）+ App 侧 6 个（0x00EB/0x00EC/0x00F1/0x00F2/0x00F3/0x00F4）= 11。面试被追问口径就按汇总表讲，数字与简历严格对齐。（历史注：优化方案文档另给出一组拟扩展码——`0x00ED` BatchPush / `0x00F0` BatchAck，见背景知识 E。）
+
+#### 2. 3 份业务 Protobuf 消息族
+
+```protobuf
+/* 消息族一：模板列表 */
+message AiPhotoPsTemplateListRequest {
+  RequestSendDataInformation datainfo = 1;   /* 场景缩略图标识、数据类型、分片总数 */
+}
+message TemplateListResponse {
+  repeated TemplateInfo templates = 1;
+  int32 diamond = 2;
+  TemplateListResponseError error_code = 3;
+}
+message TemplateInfo {
+  int32 template_id = 1;
+  string name = 2;
+  string cameraThumbnailUrl = 3;
+  int32 price = 4;
+  int32 freeTimes = 5;
+}
+
+/* 消息族二：任务创建 */
+message GenerateAiPhotoPsTaskRequest {
+  RequestSendDataInformation datainfo = 1;
+  int32 template_id = 2;
+}
+message GenerateAiPhotoPsTaskResponse {
+  string task_id = 1;
+  GenerateAiPhotoPsTaskResponseError error_code = 2;
+}
+
+/* 消息族三：任务执行 */
+message PerformAiPhotoPsTaskRequest {
+  string task_id = 1;
+}
+message PerformAiPhotoPsTaskResponse {
+  string task_id = 1;
+  RequestSendDataInformation datainfo = 2;
+  PerformAiPhotoPsTaskResponseError error_code = 3;
+  string request_airetouch_thumbnailname = 4;
+}
+```
+
+**为什么业务族只有 3 份**：模板列表、任务创建、任务执行恰好对应用户在相机上的一次完整操作节拍——先看有什么模板，再创建任务，再执行任务拿结果。数据传输族（`RequestSendDataInformation`、`DataTransPort`、`DataTransportResult`、`BatchPush`、`BatchAck`）是 UCD 框架既有的通用消息，被这三族复用，**业务语义与传输机制物理分离**：加一种新业务只动业务族，不动传输层。
+
+#### 3. 错误码的枚举式闭环（proto 真实枚举值）
+
+任务创建与任务执行的错误码枚举是业务异常的显式契约（`ai修图业务proto.md`）：
+
+| 枚举值 | 所属枚举 | 含义 | 相机端应有的反应 |
+| :--- | :--- | :--- | :--- |
+| `0` | 通用 | UNKNOWN 未知 | 走默认兜底分支 |
+| `1` | 通用 | SUCCESS 成功 | 推进业务 |
+| `2` | 通用 | FAIL 通用失败 | 提示失败并保留原片（联调中"HEIC 内容判定被拒"即落在此码） |
+| `3` | 通用 | NO_NETWORK 手机无网络 | 入口提示，保留本地原图 |
+| `4` | Generate=`PHOTO_TRANSFER_FAILED`；Perform=`RESULT_DOWNLOAD_FAIL` | 图片传输失败 / 结果下载失败 | 保留 task_id 支持重查 |
+| `5` | 仅 Perform=`CONTENT_INVALID` | 内容不合规 | 提示违规并退还权益 |
+| `6` | 通用 | BALANCE_NOT_ENOUGH 钻石余额不足 | 调起充值，不消耗权益 |
+| `7` | 通用 | DEDUCTION_FAIL 扣费失败 | 提示重试，不消耗权益 |
+| `8` | 通用 | PARAMETER_ILLEGAL 参数不合法 | 用例问题，报错排查 |
+| `9` | 通用 | TEMPLATE_ILLEGAL 模板已下架 | 刷新模板列表 |
+| `10` | 仅 Perform=`CONTENT_ILLEGAL` | 素材不符合要求 | 重拍或换模板 |
+
+两个细节值得被追问时展开：**Generate 枚举的取值 5 是空缺的**（4 直接跳到 6，两枚举独立演进所致）；Perform 独有 4/5/10 三个结果侧错误码。枚举而非自由字符串的意义在于：**App 与相机两端对同一异常的处置路径是编译期确定的**，不会出现一端加了新错误码、另一端落到默认分支吞掉问题的情况。
+
+---
+
+### 7. 背景知识 E：分片确认与滑动窗口重传（拉式协议到批量推送的演进）
+
+#### 1. 传输的三个层次
+
+一次文件传输在协议上被拆成**协商、传输、确认**三层，各自对应不同的消息：
+
+```protobuf
+/* 第一层：协商——告知对端即将传输什么 */
+message RequestSendDataInformation {
+  uint32 current_data_index = 1;    /* 当前第几个数据对象 */
+  uint32 chunk_total = 2;           /* 该对象的总分片数 */
+  string image_identifier = 3;      /* 文件唯一标识 */
+  DataSourceType data_type = 4;     /* 模板缩略图或修图结果 */
+  uint32 data_total_num = 5;        /* 本批数据对象总数 */
+  PayloadCheckType check_type = 6;  /* 校验方式，CRC32 */
+  uint32 check_total_sum = 7;       /* 数据对象总校验值 */
+  uint32 width_px = 8;
+  uint32 height_px = 9;
+  uint32 total_bytes = 10;          /* 文件总字节数 */
+}
+
+/* 第二层：传输——单个分片 */
+message DataTransPort {
+  uint32 current_data_index = 1;
+  string image_identifier = 2;
+  uint32 data_total_num = 3;
+  uint32 chunk_index = 4;           /* 0 起始的分片序号 */
+  uint32 chunk_total = 5;
+  uint32 check_single_sum = 6;      /* 本分片校验值 */
+  uint32 data_length = 7;           /* 有效载荷长度 */
+  bytes data = 8;                   /* 分片原始数据 */
+}
+
+/* 第三层：确认——接收结果反馈 */
+message DataTransportResult {
+  uint32 current_data_index = 1;
+  string image_identifier = 2;
+  uint32 chunk_index = 3;
+  uint32 chunk_total = 4;
+  DataRetransmitErrorType error_type = 5;   /* 成功、超时、校验失败、顺序异常 */
+}
+```
+
+注意 `RequestSendDataInformation` 同时携带**对象级总校验** `check_total_sum` 与**分片级校验** `check_single_sum`。两层校验解决两类故障：分片级校验定位哪一片错了，对象级校验确认整文件拼装后完整——只有分片对而整体也对，传输才算真正成功。
+
+#### 2. 拉式协议的性能天花板（固件 log 实测）
+
+现役协议是纯粹的拉式：
+
+```
+相机 ──chunk[i]──────────► App        （相机→App 数据通道，DataTransport 类消息）
+相机 ◄─RequestData(next)── App        （0x00EB，携带要请求的 chunk_index 列表）
+              ↑
+        必须等 App 请求才发下一片
+```
+
+每片之间都是一次完整的请求响应往返。蓝牙链路上单次往返的协议开销固定，片数越多，固定开销被重复支付的次数越多。叠加 **App 端单批 RequestData 上限 32 片**的硬限制（固件 log 实测：38 chunks 的宽图被切成 32+6 两批，第 1 批 8ms 发完，与第 2 批间隔 **6373ms**；43 chunks 切 32+11、跨批 6388ms；66 chunks 切 32+32+2、跨批 6357/6412ms），文件一旦超过 32 片立刻踩台阶——**每多一批就多约 6 秒跨批空等，与文件实际字节数几乎无关**（≤32 片时 32KB/38ms ≈ 0.84MB/s，接近物理上限）。固件侧 `RequestData` 处理本无上限（按 `n_rxdatainfo` 循环），瓶颈纯在 App 端。
+
+#### 3. 滑动窗口与位图确认（《SPP传输速率优化方案》措施 1 的协议设计）
+
+```protobuf
+/* 批量推送：一次打包多个分片（拟新增，命令码 0x00ED） */
+message BatchPush {
+  uint32 batch_id = 1;               /* 批次唯一标识 */
+  uint32 chunk_index_base = 2;       /* 本批起始分片序号 */
+  uint32 chunk_count = 3;            /* 本批分片数量 */
+  repeated DataTransPort chunks = 4; /* 分片列表，复用既有结构 */
+}
+
+/* 批量确认：位图表达接收情况，支持选择性重传（拟新增，命令码 0x00F0） */
+message BatchAck {
+  uint32 batch_id = 1;
+  uint64 received_bitmap = 2;        /* 第 i 位为 1 表示第 i 片已收到 */
+  repeated uint32 missing = 3;       /* 缺失的全局分片序号，兼容跨批次 */
+}
+```
+
+**为什么同时要位图和 missing 列表**：位图表达批次内的接收情况最紧凑（64 位覆盖 64 片），但在**跨批次重传**场景下，缺失片的全局序号超出了本批位图的索引范围，必须再给一份全局序号列表。两者不是冗余，是分别服务批内与跨批两种寻址。
+
+**握手与兼容**：通过 `GetOptions` 答复新增 `support_batch_v1`、App 发 `RequestData` 时携带 `batch_window_size` 协商；旧 App 不上报即回退既有 `0x00EB` 拉式路径，老相机+新手机按相机协议版本回退；灰度只对 `INS_MSG_BT_SUB_PHONE_SPP` 链路开启（TRC/BVC2/Printer/TRC-A 共用底层不动）。
+
+**滑动窗口的收益结构**：
+- 发送方不必逐片等待确认，可以连发整批；
+- 接收方一次性回一张位图，把 N 次确认压缩成 1 次；
+- 丢失只重传缺失的那几片，不必整批重来；
+- 方案测算：窗口=8 时上行 7.4s → 1.5~2s、下行 8.7s → 2~3s，整段省 10~12 秒（与"取消 32 片上限"互补而不重叠——前者让单批内紧凑，后者消掉跨批空等）。
+
+> **状态口径（面试务必讲准）**：`BatchPush`/`BatchAck` 是**方案设计与原型**（含拟新增命令码与握手字段），现役固件跑的仍是拉式 + 取消 32 片上限 + 相机端 1 秒 watchdog 的组合；把它说成"已上线"会在追问细节时露馅。
+
+---
+
+### 8. 核心源码走读片段
+
+#### 片段 1：UCD 2.0 帧解析——从 magic 扫描到 CRC 校验
+```c
+/* ucd2_parser.c：帧边界定位与完整性校验 */
+Ucd2_Ret_e Ucd2_Parse_One_Frame(uint8_t* recv_buf, uint32_t recv_len,
+                                uint32_t* consumed) {
+    uint32_t i = 0;
+    /* 步骤 1：逐字节滑动扫描 magic，找到帧起点 */
+    while (i + 12 <= recv_len &&
+           *(uint32_t*)(recv_buf + i) != UCD2_MAGIC) {
+        i++;
+    }
+    if (i + 12 > recv_len) { *consumed = recv_len; return UCD2_NEED_MORE; }
+
+    /* 步骤 2：读 header_len 确定头部总长 */
+    uint8_t header_len = recv_buf[i + 2];
+    if (header_len < 12) return UCD2_ERR_BAD_HEADER;      /* 头长下界守卫 */
+
+    /* 步骤 3：读 payload_len 算出整帧长度，判断是否收齐 */
+    uint32_t payload_len = *(uint32_t*)(recv_buf + i + 8);
+    uint32_t total = header_len + payload_len + 4;        /* 头 + 载荷 + CRC */
+    if (i + total > recv_len) { *consumed = recv_len; return UCD2_NEED_MORE; }
+
+    /* 步骤 4：CRC32 覆盖 magic 到 payload，不含 CRC 自身 */
+    uint32_t computed = crc32_calc(recv_buf + i, header_len + payload_len);
+    uint32_t received = *(uint32_t*)(recv_buf + i + header_len + payload_len);
+    if (computed != received) {
+        *consumed = total;                                /* 跳过坏帧继续找下一帧 */
+        return UCD2_ERR_CRC;
+    }
+
+    *consumed = total;
+    return UCD2_OK;
+}
+```
+- **三道守卫的顺序是有讲究的**：先验头长下界，再验是否收齐，最后才算 CRC。如果一上来就对没收齐的数据算 CRC，必然校验失败并把好数据误杀。
+- **CRC 失败时 `*consumed = total` 而不是 0**：坏帧必须整体跳过，否则解析器会卡在同一位置反复重试，重现旧协议"卡在收数据流程"的老毛病。
+
+#### 片段 2：拉式协议下的单片传输与结果反馈
+```c
+/* data_transport.c：单分片发送与接收方确认 */
+int32_t DataTransport_Send_Chunk(const FileCtx_t* ctx, uint32_t index) {
+    DataTransPort msg = {0};
+    msg.current_data_index = ctx->data_index;
+    strncpy(msg.image_identifier, ctx->identifier, sizeof(msg.image_identifier) - 1);
+    msg.chunk_index = index;
+    msg.chunk_total  = ctx->chunk_total;
+    msg.data_length  = (index == ctx->chunk_total - 1)
+                     ? ctx->tail_len : INSAPP_DATA_TRANSPORT_FILE_CHUNK_MAX_SIZE;
+    memcpy(msg.data, ctx->buf + index * CHUNK_SIZE, msg.data_length);
+    msg.check_single_sum = crc32_calc(msg.data, msg.data_length);  /* 分片级校验 */
+
+    return Ucd2_Send_Message(&msg, MSG_TYPE_DATA);
+}
+
+void DataTransport_On_Result(const DataTransportResult* res) {
+    switch (res->error_type) {
+        case DATA_RETRANSMIT_ERROR_SUCESS:      /* 成功：推进发送窗口 */
+            Mark_Chunk_Acked(res->chunk_index);
+            break;
+        case DATA_RETRANSMIT_ERROR_TIMEOUT:     /* 超时：本片进入重传队列 */
+        case DATA_RETRANSMIT_ERROR_CHECK_FAILED:/* 校验失败：同上，且记维测日志 */
+            Enqueue_Retransmit(res->chunk_index);
+            break;
+        case DATA_RETRANSMIT_ERROR_SEQUENCE:    /* 顺序异常：暂停发送，回退窗口 */
+            Pause_And_Rewind(res->chunk_index);
+            break;
+        default:
+            break;
+    }
+}
+```
+- **四种错误类型对应四种不同的处置**，不是笼统的"失败重传"。顺序异常如果也简单重传，会加剧乱序，必须先暂停并回退窗口。
+
+#### 片段 3：批量推送与位图确认的窗口推进
+```c
+/* batch_transport.c：滑动窗口的发送与确认处理 */
+int32_t BatchTransport_Push_Batch(FileCtx_t* ctx, uint32_t base, uint32_t count) {
+    BatchPush msg = {0};
+    msg.batch_id         = ctx->next_batch_id++;
+    msg.chunk_index_base = base;
+    msg.chunk_count      = count;
+    for (uint32_t k = 0; k < count; k++) {
+        Fill_Chunk(&msg.chunks[k], ctx, base + k);
+    }
+    ctx->inflight_bitmap |= ((uint64_t)0) - ((uint64_t)1) << 0;  /* 本批全标记在途 */
+    return Ucd2_Send_Message(&msg, MSG_TYPE_DATA);
+}
+
+void BatchTransport_On_BatchAck(const BatchAck* ack) {
+    /* 位图清除在途标记：批内寻址 */
+    ctx->inflight_bitmap &= ~Shift_Mask(ack->received_bitmap, ack->batch_id);
+
+    /* 缺失片走全局序号列表，兼容跨批次重传 */
+    for (uint32_t i = 0; i < ack->missing_count; i++) {
+        Enqueue_Retransmit(ack->missing[i]);
+    }
+    /* 窗口有空位则继续滑动，发送新一批 */
+    BatchTransport_Try_Send_Next(ctx);
+}
+```
+- **在途位图的位移对齐**是易错点：`received_bitmap` 是批内相对位，映射到全局在途位图必须按 `batch_id` 推算的基准位移，否则跨批次后位图错位、窗口卡死。
+
+#### 片段 4：Protobuf 直接序列化到传输缓冲区（嵌入式零拷贝）
+```cpp
+/* ucd2_sender.cpp：省掉中间缓冲区的一次拷贝 */
+Ucd2_Ret_e Ucd2_Send_With_Protobuf(Ucd2_Msg_t* msg,
+                                   const google::protobuf::Message& pb) {
+    /* 头部字段先定好，payload 区域留给序列化结果就地写入 */
+    uint8_t* pb_buffer = msg->payload;                 /* 指向帧内 payload 起点 */
+    size_t   pb_size   = pb.ByteSizeLong();
+    if (pb_size > UCD2_MAX_PAYLOAD) return UCD2_ERR_TOO_LARGE;
+
+    if (!pb.SerializeToArray(pb_buffer, pb_size))      /* 零拷贝：直接写进帧 */
+        return UCD2_ERR_SERIALIZE;
+
+    msg->base_header.payload_len = static_cast<uint32_t>(pb_size);
+    msg->header_len = 12;                              /* 当前无 options */
+    return Ucd2_Encode_And_Send(msg);                  /* 补 CRC32 后发出 */
+}
+```
+- **常规写法是序列化到临时字符串、再 memcpy 进帧缓冲**，嵌入式场景下这一刀切掉了栈上或堆上的一次完整复制，对 4Mbps 预览流这种高频路径收益可观。
+- **`ByteSizeLong` 必须先于 `SerializeToArray` 调用**：protobuf 的 `ByteSize` 有缓存语义，先问长度才能保证 `SerializeToArray` 不越界。
+
+---
+
+### 9. 面试问答汇总（12 问深度技术交锋）
+
+#### Q1：UCD 2.0 和 UCD 1.0 最本质的区别是什么？
+> **答**：本质区别是从"裸载荷透传"升级为"带边界、带校验、带版本的自描述帧"。1.0 只有长度、类型和为绕开安霸驱动 bug 加的 padding，没有协议头也没有校验，App 收到数据无法判断是不是合法帧，遇到异常 length 还会卡死在收数据流程里。2.0 加了 magic 做帧边界锚点、CRC32 做完整性校验、version 做版本协商、sequence 做报文定位、options TLV 做无损扩展，同时把 padding 那两个字段彻底砍掉。一句话概括：1.0 是"假设链路一定干净"，2.0 是"假设链路一定出错"，这是工业级协议和玩具协议的分水岭。
+
+#### Q2：为什么 CRC 覆盖范围不包括 CRC 字段自己？
+> **答**：这是所有带校验字段协议的数学通则。校验值的定义是"让校验函数在包含校验值在内的整段数据上运算后得到固定结果"，如果把自己也算进去，这个等式就无解——你需要先知道校验值才能算出校验值。所以工业惯例永远是"校验字段覆盖它之前的所有字节，自身除外"，UDP 的校验和、以太网的 FCS 全都如此，UCD 2.0 也严格照此实现。
+
+#### Q3：sequence 明明有了，为什么还说 UCD 不保证可靠传输？
+> **答**：因为 sequence 的设计定位就不是可靠传输，而是**报文定位**。UCD 协议栈没有强制的 ACK 与重传机制，sequence 的作用是：当一条业务消息被拆成多个报文发送时，中途丢了，接收方能通过序号一眼看出丢的是哪一条，而不是把整条业务消息重传一遍。在此之上，后续才能做基于序号的精准重传。这个区分很重要——可靠传输需要序号、确认、超时重传、去重四件套，UCD 只提供了第一件，其余是靠上层的分片确认协议补的。
+
+#### Q4：options 最大 243 字节这个数字是怎么来的？
+> **答**：它是被头部长度字段的位宽硬约束出来的。`header_len` 只有一个字节，最大值 255；固定头部占 12 字节（magic 4、version 1、header_len 1、type 1、sequence 1、payload_len 4）；255 减 12 等于 243。所以 options 的上限不是设计者拍脑袋定的，而是帧格式里两个字段位宽的算术结果。这也意味着往 options 里塞超过 243 字节的东西在协议层就是非法帧。
+
+#### Q5：为什么用 TLV 而不是在固定头部里继续加字段？
+> **答**：因为加固定字段会破坏向后兼容——每加一个字段，所有旧接收端的偏移量计算全错。TLV 的价值在于**保持核心头部稳定，把扩展性放到可变长选项区**，这正是 IPv4 Options、TCP Options、DHCP Options 用了几十年的成熟范式：未知选项按长度跳过，不报错，老实现收到新选项也能正常解析。UCD 2.0 还把类型空间分成"非必须理解"和"必须理解"两档，真正关键的能力放到必须理解区间，接收端不认识就丢帧回错，避免静默降级。
+
+#### Q6：CRC32 计算会不会成为吞吐瓶颈？
+> **答**：这是评审阶段明确列出来的系统限制，我们做了三方对比才定的单次 CRC-32。TCP 的累加和开销极低但抗误码能力弱，QUIC 的 AEAD 加 CRC 极强但开销高，CRC-32 居中且是工业界共识——以太网 802.3 的 FCS 和 Wi-Fi 802.11 的 FCS 全都用 CRC-32。开销问题靠两条路解决：板端优先走硬件 CRC 加速（Wi-Fi 和以太网的 FCS 就是硬件算的），无硬件加速时退回软件查表实现。另外我们明确否决了头 CRC 加载荷 CRC 的双校验方案，因为载荷上限才 2M，没有严苛到需要那个开销。
+
+#### Q7：一次文件传输的分片、确认、重传具体怎么配合？
+> **答**：分三层。**协商层**用 `RequestSendDataInformation` 告诉对端文件标识、总分片数、数据类型、总字节数和对象级总校验；**传输层**用 `DataTransPort` 逐片或批量发送，每片带分片级校验；**确认层**用 `DataTransportResult` 或 `BatchAck` 反馈。确认里区分四种错误：成功就推进窗口，超时和校验失败进重传队列，顺序异常必须先暂停并回退窗口——这个区分很关键，顺序异常如果也无脑重传会加剧乱序。对象级总校验是最后一道防线，保证拼装后的整文件正确，只有分片对而整体也对才算传输成功。
+
+#### Q8：滑动窗口相比逐片等待到底省了什么？
+> **答**：省的是**往返次数的固定开销**。逐片拉式协议下，每一片都要付一次请求加响应的完整蓝牙往返，往返本身的协议开销是固定的，片数越多被重复支付越多。改成批量推送加位图确认后，发送方可以连发整批，接收方把 N 次确认压缩成 1 次位图，丢失只补缺失的那几片。对 88KB 的结果图按 1KB 分片有 88 片，逐片模式要 88 次往返；改成 4KB 分片加批量推送后往返次数降到个位数，这就是吞吐提升的主要来源。
+
+#### Q9：`received_bitmap` 和 `missing` 列表为什么同时要，不是重复吗？
+> **答**：不是重复，两者服务不同的寻址范围。位图最紧凑，但只能表达**批次内**的相对序号，64 位覆盖 64 片。当发生**跨批次重传**时，缺失片的全局序号可能超出本批位图的索引范围，位图就表达不出来了，必须再给一份全局序号列表。所以位图管批内、missing 管跨批，两者拼起来才是完整的接收情况。这也是为什么发送侧要把批内相对位按 `batch_id` 推算的基准位移映射到全局在途位图，映射错了窗口就卡死。
+
+#### Q10：新旧协议怎么共存？App 怎么知道对端是哪个版本？
+> **答**：固件侧看 magic：检查成功走 2.0 解析，失败再判断是不是 1.0，都不是就当异常数据丢弃。App 侧麻烦在它要判断的是对端相机的版本，不是帧本身。三个场景三条路：常规连接和跳过蓝牙连接都能从广播拿到设备信息，查版本映射表，拿不到名字就用第一个数据包兜底；跳过 Wi-Fi 连接时拿不到广播，App 就用 1.0 发个同步包——2.0 相机收到没协议头的数据直接丢，App 等心跳包看到协议头就切 2.0，1.0 相机按老逻辑回复同步包，App 看到回复没协议头就继续走 1.0，旧项目零影响。
+
+#### Q11：为什么业务 Protobuf 只有 3 份，而数据传输的 Protobuf 单独归类？
+> **答**：因为这是两种正交的关注点。业务族的 3 份——模板列表、任务创建、任务执行——恰好对应用户在相机上的一次完整操作节拍：先看有什么模板，再创建任务，再执行任务拿结果。而数据传输族（`RequestSendDataInformation`、`DataTransPort`、`DataTransportResult`、`BatchPush`、`BatchAck`）是 UCD 框架既有的通用机制，被三族业务复用。这样切分的收益是：加一种新业务只动业务族，完全不碰传输层；反过来要优化传输（比如从拉式改成滑动窗口），业务族一行都不用改。简历里说的 3 份就是业务族，数据传输族是复用的框架能力。
+
+#### Q12：如果让你重新设计这个协议，你会改哪里？
+> **答**：三点。第一，`sequence` 只有一字节、255 回绕，定位窗口太短，高速传输下一轮回绕内可能无法区分新旧报文，我会扩到两字节或在 options 里带会话标识。第二，`received_bitmap` 是 `uint64`，单批上限 64 片，超过就又得跨批，我会改成变长位图或在 options 里声明位图长度。第三，CRC 只保护传输完整性，不防篡改，如果后续要走更开放的外设生态，需要在 options 里预留认证选项的类型号，用必须理解区间强制协商，避免将来被迫升 version 破坏兼容。
+
+---
+
+### 10. 面试 30 秒应答模板
+> "协议这一块我参与的是 UCD 2.0 框架下的业务扩展。针对旧协议没有协议头、没有校验、没有版本号导致 App 无法过滤非法数据、异常长度会卡死解析的问题，2.0 引入了 magic 做粘包边界、CRC32 做完整性校验、version 做版本协商、sequence 做报文定位、options TLV 做无损扩展。业务侧我定义了 11 个命令码与 3 份 Protobuf 消息族，把业务语义和数据传输机制物理隔离；传输侧配合分片确认与滑动窗口重传，用批量推送加位图确认把逐片同步等待的拉式协议改成了连发窗口，消除了文件超过 32 片后每批约 6 秒的台阶式空等，完整闭环了相机与手机 App 的全链路通信。"
+
+---
+
+## 三、条目二：双平台蓝牙数据通路打通与 SPP 传输优化
+
+### 1. 简历标准写法
+> 参与蓝牙通信链路打通与传输优化。基于博通协议栈，在内测 BLE 基础上为 Android 端打通 SPP/RFCOMM 数据通路，测得流程耗时约 38s，提升约 35%；针对 iOS 设备接入 L2CAP CoC 高吞吐数据通道。
+
+### 2. 6 大可验证断言拆解
+1. **控制面与数据面彻底分离**：双端控制面统一走 BLE GATT 承载指令、状态与小数据，数据面按平台能力自适应选路——Android 走经典蓝牙 SPP、RFCOMM，iOS 走 BLE L2CAP CoC，路由优先级为 L2CAP CoC 优先、SPP 次之、广播兜底，应用层代码完全无感底层链路差异。
+2. **Android 数据通路从内测 BLE 基础上打通**：基于博通协议栈完成 SPP、RFCOMM 服务端注册与建链，测得完整流程耗时约 38 秒，相比内测阶段的纯 BLE 方案提升约 35%，SPP 实测物理层吞吐上限约 50KB 每秒。
+3. **iOS 接入 L2CAP CoC 高吞吐通道**：iOS 不支持厂商自定义 SPP，改用基于 LE Credit Based Connection 的 L2CAP 面向连接信道，注册 SPSM `0x0083` 并挂接六个回调，单次可承载 753 字节，同量级数据传输耗时从 GATT 的约 40 秒压到 2 至 3 秒。
+4. **链路白名单防伪造**：App 经 BLE 下发手机 BR/EDR 地址，SPP 建链成功后相机将对端地址与绑定地址做六字节全等比对，失配即主动断链并退回仅 BLE 状态，绑定信息持久化到非易失存储以支持重连自动恢复。
+5. **四态链路状态机带宽限期降级**：仅 BLE、SPP 连接中、SPP 就绪、SPP 断开宽限期四态，异常断开后保留 5 秒宽限期尝试重连，宽限期结束仍未恢复则降级，杜绝链路状态在抖动下反复横跳。
+6. **SPP 吞吐瓶颈定位于协议层而非物理层**：优化前上行链路物理层利用率仅约 10%、下行 19% 至 48%，根因是逐片同步等待的拉式协议加 App 端单批 32 片上限；经取消批次上限、调度去等待、RFCOMM 参数调优、日志节流四层优化，分段吞吐提升 2 至 3 倍。
+
+---
+
+### 3. 背景知识 A：控制面与数据面分离的三链路架构
+
+#### 1. 为什么必须分控制面和数据面
+
+AI 修图的通信特征是**控制极轻、数据极重**：控制面是开关、状态、模板元数据这类几十到几百字节的消息，但要求低延迟、高可靠；数据面是模板缩略图、压缩原图、修图成片，动辄几十上百 KB，要求吞吐。把两者塞进同一条链路，要么控制消息被大文件排队阻塞，要么大文件被控制消息的握手节奏拖慢。
+
+#### 2. 三链路能力对比
+
+| 维度 | SPP、RFCOMM | L2CAP CoC | BLE GATT |
+| :--- | :--- | :--- | :--- |
+| 适用平台 | Android | iOS | 双平台兜底 |
+| 协议层次 | BR/EDR 上的 RFCOMM | BLE 上的 L2CAP | BLE 上的 ATT |
+| MTU 量级 | 约 990 字节 | 约 753 字节 | 约 517 字节 |
+| 流控机制 | Credit-based | LE Credit-based | 无内置流控 |
+| 传输模式 | 字节流 | SDU 流式 | 帧传输，请求响应 |
+| 典型速率 | 约 50KB 每秒 | 约 30 至 50KB 每秒 | 约 5 至 10KB 每秒 |
+| 可靠性 | 链路层保证 | 链路层保证 | 需应用层保证 |
+| 适用场景 | Android 大文件 | iOS 大文件 | 控制指令与小数据兜底 |
+
+#### 3. 统一传输层抽象
+
+同一套业务逻辑要同时跑在 SPP 与 L2CAP 上，靠的是传输层函数指针表抽象：
+
+```c
+/* UCD 2.0 传输层抽象接口 */
+typedef struct {
+    int32_t (*send)(uint8_t* data, uint32_t len);
+    int32_t (*recv)(uint8_t* data, uint32_t len, uint32_t timeout_ms);
+    bool    (*is_connected)(void);
+    LinkInfo_t (*get_link_info)(void);
+} Ucd2_Transport_t;
+
+/* 三条链路各自的实现 */
+static Ucd2_Transport_t g_ble_gatt_transport = {
+    .send = BleGatt_Send_Data, .recv = BleGatt_Recv_Data,
+    .is_connected = BleGatt_Is_Connected, .get_link_info = BleGatt_Get_LinkInfo
+};
+static Ucd2_Transport_t g_spp_transport = {
+    .send = Spp_Send_Data, .recv = Spp_Recv_Data,
+    .is_connected = Spp_Is_Connected, .get_link_info = Spp_Get_LinkInfo
+};
+static Ucd2_Transport_t g_l2cap_transport = {
+    .send = L2cap_Send_Data, .recv = L2cap_Recv_Data,
+    .is_connected = L2cap_Is_Connected, .get_link_info = L2cap_Get_LinkInfo
+};
+
+/* 路由：控制面固定走 BLE，数据面按平台选路 */
+int32_t Ucd2_Send_Message(Ucd2_Msg_t* msg, MsgType_t msg_type) {
+    Ucd2_Transport_t* transport;
+    switch (msg_type) {
+        case MSG_TYPE_CONTROL:
+            transport = &g_ble_gatt_transport;
+            break;
+        case MSG_TYPE_DATA:
+            transport = Is_Android() ? &g_spp_transport   /* Android 数据面 */
+                                     : &g_l2cap_transport;/* iOS 数据面 */
+            break;
+        default:
+            return INSERR_NG;
+    }
+    return Ucd2_Send_With_Transport(transport, msg);
+}
+```
+
+**这个抽象的价值**：新增一条链路（比如 Wi-Fi 直连）只需要实现四个函数指针，业务层一行不改。这就是"应用层代码无需关心底层链路差异"的技术落地方式。
+
+#### 4. 数据面路由的三级优先级
+
+```c
+/* 数据平面消息路由选择：L2CAP CoC > PHONE_SPP > BLE 广播兜底 */
+Insta_Msg_From_Info_t InsApp_Bt_AiRetouch_Get_Data_Plane_Msg_From(void) {
+    /* ① iOS 的 L2CAP CoC 已连接则优先走它 */
+    if (InsApp_Bt_Get_State_Handler(INS_MSG_BT_SUB_L2CAP) == INSAPP_BT_STATUS_CONNECTED) {
+        return (Insta_Msg_From_Info_t){INS_MSG_BT, INS_MSG_BT_SUB_L2CAP};
+    }
+    /* ② Android 的 SPP 处于就绪态则走 SPP */
+    if (s_ai_retouch_link_state == INSAPP_AIR_LINK_SPP_READY &&
+        InsApp_Bt_Get_State_Handler(INS_MSG_BT_SUB_PHONE_SPP) == INSAPP_BT_STATUS_CONNECTED) {
+        return (Insta_Msg_From_Info_t){INS_MSG_BT, INS_MSG_BT_SUB_PHONE_SPP};
+    }
+    /* ③ 都不通，退回 BLE 兜底，绝不静默丢消息 */
+    return (Insta_Msg_From_Info_t){INS_MSG_FROM_NO_VAGUE, 0};
+}
+```
+
+**兜底分支的存在意义**：数据面主通道不通时不能直接报错返回，而是退到 BLE 让控制类消息仍然可达，用户至少能看到进度或错误提示，而不是界面卡死。
+
+---
+
+### 4. 背景知识 B：博通协议栈 SPP 打通与链路状态机
+
+#### 1. Android 为什么必须上 SPP
+
+内测阶段双端都只走 BLE GATT。GATT 基于属性协议，每次传输都是请求响应交互，受 MTU 约 517 字节限制，且无内置流控，传 80KB 级别的数据实测需要约 40 秒。而 Android 支持经典蓝牙 BR/EDR，SPP、RFCOMM 能提供字节流语义与 Credit-based 流控，物理层吞吐上限约 50KB 每秒——是 GATT 的十倍量级。
+
+**iOS 的约束**：iOS 系统不开放厂商自定义 SPP，所以这条高速路 iOS 走不了，只能换 L2CAP CoC。这就是"双平台必须分别打通两条不同数据通路"的根本原因。
+
+#### 2. 完整建链时序
+
+```
+用户点击 AI 修图入口
+      │
+      ▼
+App ──SetOptions(BluetoothOperate)──► 相机      （经 BLE 控制面）
+      op_id = OPEN, bluetooth_type = CLASSIC
+      app_bt_mac = 手机 BR/EDR 地址
+      │
+      ├─ 相机保存 app_bt_mac 到非易失存储
+      ├─ 相机打开经典蓝牙能力
+      │
+相机 ──BluetoothStatusNotify──► App             （经 BLE）
+      camera_bt_mac = 相机 BR/EDR 地址
+      │
+      ▼
+App 发起 SPP Connect(camera_bt_mac)
+      │
+      ├─ 系统建立 RFCOMM 连接
+      ├─ 相机获取 peer_bt_mac 并与 app_bt_mac 比对
+      │
+App ──FeatureBluetoothMacBind──► 相机
+      bluetooth_type = CLASSIC, feature_type = AI_PHOTO_PS
+      │
+      ▼
+绑定成功，状态机进入 SPP_READY
+```
+
+**注意控制面全程是 BLE**：建链的每一步协商都走 BLE GATT，只有数据传输才切到 SPP。这样即使 SPP 建链失败，控制通道仍然完好，可以收到失败原因并重试。
+
+#### 3. 四态链路状态机
+
+```c
+typedef enum {
+    INSAPP_AIR_LINK_BLE_ONLY = 0,       /* 仅 BLE 连接，数据面未就绪 */
+    INSAPP_AIR_LINK_SPP_CONNECTING,     /* SPP 连接中 */
+    INSAPP_AIR_LINK_SPP_READY,          /* SPP 就绪，可传输大数据 */
+    INSAPP_AIR_LINK_SPP_DOWN_GRACE,     /* SPP 异常断开，处于宽限期 */
+} InsApp_Bt_AiRetouch_LinkState_e;
+```
+
+| 迁移 | 触发条件 | 动作 |
+| :--- | :--- | :--- |
+| 仅 BLE 到 连接中 | App 下发 `BluetoothOperate(OPEN)` | 打开经典蓝牙，等待 SPP 接入 |
+| 连接中 到 就绪 | 建链成功且 MAC 校验通过 | 数据路由切到 SPP 通道 |
+| 连接中 到 仅 BLE | 连接超时 30 秒或 MAC 校验失败 | 恢复仅 BLE 模式，控制面不受影响 |
+| 就绪 到 宽限期 | SPP 异常断开 | 保留 5 秒宽限期尝试重连 |
+| 宽限期 到 就绪 | 5 秒内重新建链成功 | 恢复数据传输，用户无感 |
+| 宽限期 到 仅 BLE | 宽限期结束仍未恢复 | 降级，数据传输退回兜底路径 |
+
+**宽限期设计解决的问题**：蓝牙在地铁、电梯等环境会瞬断。如果没有宽限期，瞬断会立刻触发完整的重连流程，用户看到的是进度条回退重来；有了 5 秒宽限期，绝大多数瞬断在用户毫无感知的情况下自愈。
+
+---
+
+### 5. 背景知识 C：MAC 白名单绑定与未授权接入防护
+
+#### 1. 威胁模型
+
+蓝牙设备地址（BD_ADDR）是可以在空口被观察并伪造的。SPP 一旦建成，任何设备都能往 RFCOMM 通道里灌数据，如果没有身份校验，恶意设备可以伪造一台"手机"接入，接收用户的修图原图，或者往相机里注入恶意指令。
+
+#### 2. 三步绑定与校验
+
+```c
+/* 步骤一：App 经 BLE 下发手机 BR/EDR 地址 */
+typedef struct {
+    uint32_t session_id;      /* 会话 ID，用于状态通知对齐 */
+    uint8_t  op_id;           /* 操作 ID，OPEN 或 CLOSE */
+    uint8_t  bluetooth_type;  /* 目标链路类型，CLASSIC 或 BLE */
+    uint8_t  open_type;       /* 打开方式，扫描或直连 */
+    uint8_t  app_bt_mac[6];   /* 手机 BR/EDR 地址，6 字节 BD_ADDR */
+} BluetoothOperate_t;
+
+/* 步骤二：相机侧校验并持久化 */
+bool InsApp_Bt_AiRetouch_Verify_And_Bind(uint8_t* peer_bt_mac,
+                                          uint8_t* app_bt_mac) {
+    if (!IsValidBluetoothOperate()) return false;      /* 未收到有效指令 */
+
+    if (memcmp(peer_bt_mac, app_bt_mac, 6) != 0) {     /* 六字节全等比对 */
+        INSLOG_E("BT MAC mismatch: peer=%02X:%02X...", peer_bt_mac);
+        return false;                                   /* 拒绝，防止地址伪造 */
+    }
+
+    InsApp_Bt_Save_Phone_Bt_Mac(app_bt_mac);           /* 持久化到非易失存储 */
+    s_bind_info.feature_type = AI_PHOTO_PS;            /* 记录业务类型 */
+    s_bind_info.bind_time    = get_system_tick();
+    return true;
+}
+
+/* 步骤三：SPP 建链成功后的自动校验 */
+void InsApp_Bt_OnSppConnected(BD_ADDR peer_bd_addr) {
+    uint8_t saved_mac[6];
+    if (InsApp_Bt_Load_Phone_Bt_Mac(saved_mac) == 0) {
+        if (memcmp(peer_bd_addr, saved_mac, 6) == 0) {
+            SetLinkState(INSAPP_AIR_LINK_SPP_READY);    /* 校验通过，进入就绪 */
+        } else {
+            DisconnectSPP();                            /* 校验失败，主动断开 */
+            SetLinkState(INSAPP_AIR_LINK_BLE_ONLY);
+        }
+    }
+}
+```
+
+**为什么两处都要比对**：第一次比对是"授权时刻"，确认 App 下发的地址与相机接受连接时看到的地址一致；第二次比对是"重连时刻"，因为绑定信息持久化了，任何后续设备试图建链都会被拿持久化的白名单地址验一遍。少了第二步，持久化的绑定就形同虚设——攻击者只要能触发一次合法建链，之后就能自由接入。
+
+---
+
+### 6. 背景知识 D：iOS L2CAP CoC 接入与 SPSM 六回调
+
+#### 1. 为什么 GATT 不够用
+
+GATT 基于属性协议，每个特征值读写都要走请求响应，单次传输受 MTU 约束，且没有内置流控，拥塞时只能靠应用层自己退避。实测传输 80KB 数据需要约 40 秒。而 L2CAP Connection-Oriented Channel 基于 LE Credit Based Connection，是**流式传输**，不需要逐帧应答，带 Credit-based 流控和链路层可靠性，同量级数据 2 至 3 秒完成。
+
+| 维度 | BLE GATT | L2CAP CoC |
+| :--- | :--- | :--- |
+| 协议模型 | 请求响应 | 流式传输 |
+| 单次承载 | 受 MTU 约 517 字节限制 | 可配置 MTU 约 753 字节 |
+| 流控 | 无内置 | Credit-based 流控 |
+| 可靠性 | 需应用层保证 | 链路层保证 |
+| 典型速率 | 约 5 至 10KB 每秒 | 约 30 至 50KB 每秒 |
+| 80KB 传输耗时 | 约 40 秒 | 约 2 至 3 秒 |
+
+#### 2. SPSM 注册
+
+```c
+#define INS_L2CAP_SPSM   0x0083U   /* 静态分配的协议服务多路复用器 */
+#define INS_L2CAP_RX_MTU 753U      /* 本端宣告的接收 MTU */
+
+int32_t InsApp_L2cap_Init(void) {
+    /* 把 SPSM 注册到 BLE 协议栈，同时挂接六个回调 */
+    UINT16 registered_psm = L2CA_LeRegister(INS_L2CAP_SPSM,
+                                            (tL2CAP_LE_APPL_INFO*)&s_l2cap_appl_info);
+    if (registered_psm == 0) {
+        INSLOG_E("L2CA_LeRegister SPSM=0x%04X failed", INS_L2CAP_SPSM);
+        return INSERR_NG;
+    }
+    INSLOG_N("L2CAP CoC registered SPSM=0x%04X", registered_psm);
+    return INSERR_OK;
+}
+
+/* 六个回调构成完整的信道生命周期 */
+static const tL2CAP_LE_APPL_INFO s_l2cap_appl_info = {
+    .pL2CA_LeConnectInd_Cb     = l2cap_connect_ind_cb,     /* 连接指示 */
+    .pL2CA_LeConnectCfm_Cb     = l2cap_connect_cfm_cb,     /* 连接确认 */
+    .pL2CA_DisconnectInd_Cb    = l2cap_disconnect_ind_cb,  /* 断连指示 */
+    .pL2CA_DisconnectCfm_Cb    = l2cap_disconnect_cfm_cb,  /* 断连确认 */
+    .pL2CA_DataInd_Cb          = l2cap_data_ind_cb,        /* 数据接收 */
+    .pL2CA_CongestionStatus_Cb = l2cap_congestion_cb,      /* 拥塞状态 */
+};
+```
+
+**SPSM 是什么**：Static Protocol Service Multiplexer，L2CAP CoC 用它在同一 BLE 链路上区分不同的逻辑信道，相当于 TCP 的端口号。`0x0083` 落在动态分配区间，注册成功后协议栈回填实际分配值，代码里必须用回填值而不是硬编码值。
+
+#### 3. 六回调里最容易踩的两个坑
+
+```c
+/* 连接指示：相机是被连方，必须显式应答并宣告接收能力 */
+static void l2cap_connect_ind_cb(BD_ADDR bd_addr, UINT16 lcid,
+                                 UINT16 psm, UINT8 id, UINT16 mtu) {
+    s_lcid      = lcid;        /* 记住逻辑通道 ID，后续收发都靠它 */
+    s_peer_mtu  = mtu;         /* 对端宣告的接收 MTU，决定我们单次能发多少 */
+    s_congested = 0;
+
+    L2CA_LeConnectRsp(bd_addr, id, lcid, 0,
+                      INS_L2CAP_RX_MTU,                /* 宣告本端接收 753 字节 */
+                      L2CAP_DEFAULT_BLE_CB_POOL_ID);
+
+    InsApp_Bt_Set_State_Handler(INS_MSG_BT_SUB_L2CAP, INSAPP_BT_STATUS_CONNECTED);
+}
+
+/* 数据接收：协议栈缓冲必须在回调内归还，业务层要自己留一份 */
+static void l2cap_data_ind_cb(UINT16 lcid, BT_HDR* p_buf) {
+    uint16_t len     = p_buf->len;
+    uint8_t* payload = (uint8_t*)(p_buf + 1) + p_buf->offset;
+
+    /* 关键：BT_HDR 属于协议栈内存池，回调返回前必须释放，
+       所以必须 malloc 加 memcpy 复制一份交给业务层 */
+    uint8_t* copy = InsPal_Malloc(len);
+    memcpy(copy, payload, len);
+
+    InsBt_Rcv_Msg_t msg = {
+        .type     = INSDEV_BT_RCV_MSG_L2CAP,
+        .length   = len,
+        .rcv_data = copy
+    };
+    InsPal_MsgQueue_Send(&s_rcv_queue, &msg, INSPAL_MSG_TIMEOUT_NO_WAIT);
+
+    GKI_freebuf(p_buf);          /* 归还协议栈缓冲，否则内存池泄漏 */
+}
+```
+
+- **坑一，缓冲所有权**：`BT_HDR` 是协议栈内存池的对象，回调一返回协议栈就可能复用它。业务层若直接持有指针，下一次收包就把数据踩了。必须在回调内复制，回调返回前 `GKI_freebuf` 归还。这是嵌入式蓝牙开发里最典型的 use-after-free 来源。
+- **坑二，MTU 双向宣告**：本端 `RX_MTU` 决定对方一次能给我们发多少，`s_peer_mtu` 决定我们一次能给对方发多少。发送侧如果不看 `s_peer_mtu` 就按自己的意愿切包，对端会因为超长 SDU 直接拒收。
+
+#### 4. 发送侧的拥塞与缓冲管理
+
+```c
+int32_t InsApp_L2cap_Send_Data(const uint8_t* data, uint32_t len) {
+    if (s_lcid == 0 || data == NULL || len == 0) return INSERR_NG;
+    if (s_congested) return INSERR_NG;      /* 拥塞时拒绝，由上层排队重试 */
+
+    /* 必须用协议栈的分配器取缓冲，不能用系统 malloc */
+    BT_HDR* p_buf = GKI_getbuf(sizeof(BT_HDR) + L2CAP_BLE_CONN_MIN_OFFSET + len);
+    if (p_buf == NULL) return INSERR_NG;
+
+    p_buf->offset = L2CAP_BLE_CONN_MIN_OFFSET;   /* 9 字节头部预留 */
+    p_buf->len    = len;
+    memcpy((uint8_t*)(p_buf + 1) + p_buf->offset, data, len);
+
+    /* L2CA_LeDataWrite 成功后缓冲所有权转交协议栈，本函数不得再释放 */
+    return L2CA_LeDataWrite(s_lcid, p_buf) == L2CAP_DW_SUCCESS
+           ? INSERR_OK : INSERR_NG;
+}
+```
+
+- `GKI_getbuf` 与 `GKI_freebuf` 必须成对，且与协议栈的内存池匹配，混用系统 `malloc` 会让协议栈的池统计错乱。
+- **`L2CA_LeDataWrite` 是所有权转移语义**：调用成功后缓冲归协议栈，失败时按协议栈约定处理。这条和上面数据接收的规则合起来就是一句话——**谁分配谁释放，与协议栈之间只按约定转移所有权，绝不跨池混用**。
+
+---
+
+### 7. 背景知识 E：SPP 吞吐瓶颈的利用率测算与四层优化
+
+#### 1. 先算一笔账：瓶颈到底在哪一层
+
+优化前的分段吞吐压测（每段用固定数据量单独压测，不叠加业务交互）：
+
+| 链路 | 数据量 | 耗时 | 实际速率 | 物理层上限 | 利用率 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 模板缩略图下行 18 张 | 约 190KB | 8.0 秒 | 约 24KB 每秒 | 约 50KB 每秒 | 48% |
+| 宽图上行 | 38 至 43KB | 7.3 秒 | 约 5.2KB 每秒 | 约 50KB 每秒 | **10%** |
+| 结果图下行 | 82 至 94KB | 8.7 至 9.1 秒 | 约 9.4KB 每秒 | 约 50KB 每秒 | **19%** |
+
+**结论非常明确**：上行只有 10%、下行只有 19%，而物理层上限摆在那。**瓶颈不在射频、不在协议栈驱动，而在协议层的交互模式**——如果物理层是瓶颈，三个方向的利用率应该大致相当且都接近上限；现在方向之间差了近 5 倍，说明浪费的是等待时间而不是带宽。
+
+#### 2. 两个根因
+
+**根因一：拉式协议加单包同步等待**
+
+```
+相机 ──chunk[i]───────► App      （0x00EC）
+相机 ◄─RequestData──── App       （0x00EB）
+            ↑
+   必须等 App 显式请求才发下一片
+```
+
+每片之间都是一次完整的请求响应往返。蓝牙链路上单次往返的协议开销是固定的，片数越多被重复支付的次数越多。40KB 上行按 1KB 分片有 40 片，就是 40 次往返的固定开销。
+
+**根因二：App 端单批 RequestData 上限 32 片**
+
+```kotlin
+// 旧逻辑：限制每批最多 32 个
+val batchSize = minOf(remainingChunks, 32)
+```
+
+每多一批就多约 6 秒跨批空等，文件一旦超过 32 片立刻踩台阶——这就是 82KB 结果图（按 1KB 分片约 88 片）传输时间明显不成比例的直接原因。
+
+#### 3. 四层优化措施
+
+**措施一：取消 App 端 32 片上限（改动一行，收益最大）**
+
+```kotlin
+// 新逻辑：一次请求所有分片
+val batchSize = remainingChunks
+```
+
+相机端必须配一个兜底，防止旧版 App 或丢包导致传输永久卡住：
+
+```c
+/* 相机端 watchdog：1 秒内没收到下一批 RequestData 就主动推剩余分片 */
+void DataTransport_Watchdog_Check(void) {
+    if (last_pulled_index < chunk_total - 1 &&
+        now - last_pull_tick > 1000ms) {
+        Push_Remaining_Chunks(last_pulled_index + 1, chunk_total - 1);
+    }
+}
+```
+
+**单批上限改动的预期收益 6 至 13 秒，风险等级低**——但注意，收益全部来自跨批等待的消除，这是典型的"改一个常量、省一整类开销"，面试时可以作为"定位到根因后优先选低风险高收益改动"的例子。
+
+**措施二：调度层去等待**
+
+```c
+/* 发送间隔定时器：4 拍压到 1 拍 */
+#define SEND_INTER_TIMER 1        /* ins_app_bt_msg.c，原值 4 */
+
+/* 重试退避：缩短到原来五分之一与八分之一 */
+InsPal_Task_Sleep(10);            /* data_transport.c，原值 50 */
+InsPal_Task_Sleep(2);             /* ins_app_bt_msg.c，原值 10 */
+
+/* SPP 发送任务优先级提升，避免被业务任务抢占 */
+s_bt_msg.send_msg_task.priority = TASK_PRIORITY_HIGH;   /* 原值 NORMAL */
+```
+
+预期收益 0.5 至 1 秒，风险低，纯相机端单方改动，不依赖 App 发版。
+
+**措施三：RFCOMM 参数调优**
+
+```c
+/* 单分片从 1KB 提到 4KB，直接减少 4 倍分片数与往返次数 */
+#define INSAPP_DATA_TRANSPORT_FILE_CHUNK_MAX_SIZE  (4096U)   /* 原值 1024 */
+
+/* RFCOMM 接收 credit 从 7 提到 32，允许对端连续灌入更多帧 */
+BTA_JvRfcommStartServer(BTA_SEC_AUTHENTICATE, BTA_JV_ROLE_MASTER,
+                        local_scn, 32, ...);                  /* 原值 7 */
+```
+
+预期收益 3 至 5 秒，涉及 vendor BSP 改动，风险中等，需要与博通协议栈侧对齐。
+
+**措施四：日志节流**
+
+```c
+/* SPP 发送日志：每 16 个分片打一次，而不是每片一次 */
+static uint32_t s_spp_tx_log_counter = 0;
+if ((s_spp_tx_log_counter++ & 0xF) == 0) {
+    INSLOG_N("[SPP TX] enter: sub=%d handle=%u", ...);
+}
+
+/* 协议栈正常路径日志降级为 VERBOSE，异常路径保留 ERROR */
+LOG_VERBOSE(LOG_TAG, "%s: handle:0x%x credit_tx:%d", ...);
+if (status != SUCCESS) {
+    LOG_ERROR(LOG_TAG, "%s: status=%d", ...);   /* 异常路径不节流 */
+}
+```
+
+预期收益 0.1 至 0.5 秒，风险低。**关键设计是异常路径不节流**——节流只砍正常路径的高频日志，错误现场的日志一条都不能少，否则省了时间丢了排障能力。
+
+#### 4. 优化效果与端到端口径
+
+| 措施 | 单独收益 | 改动范围 | 风险等级 |
+| :--- | :--- | :--- | :--- |
+| 取消 32 片上限 | 减 6 至 13 秒 | App 端一行常量 | 低 |
+| 调度去等待 | 减 0.5 至 1 秒 | 相机端单方 | 低 |
+| RFCOMM 参数调优 | 减 3 至 5 秒 | 博通 vendor BSP | 中 |
+| 日志节流 | 减 0.1 至 0.5 秒 | 相机端单方 | 低 |
+
+**端到端口径（与简历严格一致，区分两个测试阶段）**：
+
+- **阶段一（内测对比基线）**：内测阶段纯 BLE GATT 方案，AI 修图端到端完整流程约 58 秒；打通 SPP、RFCOMM 数据通路并实施优化后，完整流程缩短至约 38 秒，**端到端提速约 35%**（简历定稿口径）。
+- **阶段二（实测全链路拆解基线，见《SPP传输速率优化方案》§1.1/§2.2/§8 真实时间戳）**：完整流程实测 73 秒，结构为——**云端推理 44 秒（60%）**、**SPP 传输 16 秒（22%）**、其它流程（进入 AI 模式到 CaptureReady、用户按快门、原图落地）13 秒（18%）。短期落地（取消 32 片上限 + 调度去等待 + 日志节流）预期由 73s 降至 ~55s（-18s），中期落地后达 ~46s，突破 SPP 需大文件 Wi-Fi 直连（长期目标 ~42s）。
+
+面试时若被追问"物理层 50KB/s 对 GATT 5~10KB/s 理论差十倍，为什么端到端不是 5 倍提升"，标准回答是：**50KB 每秒是物理层上限，5 至 10KB 每秒是 GATT 实际速率，理论比值确实接近十倍，但端到端流程里蓝牙传输只占一部分时间（约 16s），还有唤醒建链、业务绑定、模板请求往返、场景检测与云端模板匹配、用户在相机上选择模板的交互等待，以及最占大头的云端 AI 推理（39~44 秒，占总耗时 60%）**。传输段自身提升明显，端到端被这些非传输环节摊薄后落到 35%，这个口径本身就是对系统有全局认知的体现。
+
+---
+
+### 8. 核心源码走读片段
+
+#### 片段 1：SPP 建链后的白名单校验（`ins_app_bt.c`）
+```c
+void InsApp_Bt_OnSppConnected(BD_ADDR peer_bd_addr) {
+    uint8_t saved_mac[6];
+
+    /* 持久化绑定地址加载失败时，不得默认放行 */
+    if (InsApp_Bt_Load_Phone_Bt_Mac(saved_mac) != 0) {
+        INSLOG_E("No bound phone MAC, reject SPP session");
+        DisconnectSPP();
+        SetLinkState(INSAPP_AIR_LINK_BLE_ONLY);
+        return;
+    }
+
+    /* 六字节全等：任何一个字节不匹配都判定为未授权设备 */
+    if (memcmp(peer_bd_addr, saved_mac, 6) == 0) {
+        SetLinkState(INSAPP_AIR_LINK_SPP_READY);
+        InsApp_Bt_AiRetouch_On_Data_Plane_Ready();   /* 通知业务层数据面就绪 */
+    } else {
+        INSLOG_E("Unauthorized peer, disconnect");
+        DisconnectSPP();                             /* 主动断开，不留后门 */
+        SetLinkState(INSAPP_AIR_LINK_BLE_ONLY);
+    }
+}
+```
+- **`Load` 失败必须拒绝**：如果这里写成"加载失败就放行"，首次使用场景和被清空存储的攻击场景就无法区分，绑定机制形同虚设。
+
+#### 片段 2：数据面三级路由选择（`ins_app_bt_msg.c`）
+```c
+Insta_Msg_From_Info_t InsApp_Bt_AiRetouch_Get_Data_Plane_Msg_From(void) {
+    if (InsApp_Bt_Get_State_Handler(INS_MSG_BT_SUB_L2CAP) == INSAPP_BT_STATUS_CONNECTED) {
+        return (Insta_Msg_From_Info_t){INS_MSG_BT, INS_MSG_BT_SUB_L2CAP};
+    }
+    if (s_ai_retouch_link_state == INSAPP_AIR_LINK_SPP_READY &&
+        InsApp_Bt_Get_State_Handler(INS_MSG_BT_SUB_PHONE_SPP) == INSAPP_BT_STATUS_CONNECTED) {
+        return (Insta_Msg_From_Info_t){INS_MSG_BT, INS_MSG_BT_SUB_PHONE_SPP};
+    }
+    return (Insta_Msg_From_Info_t){INS_MSG_FROM_NO_VAGUE, 0};
+}
+```
+- **`SPP_READY` 与协议栈 `CONNECTED` 双重判断**：协议栈报告连上不等于业务允许使用，状态机可能正处于宽限期。两道检查缺一不可。
+
+#### 片段 3：拉式协议的 watchdog 兜底（`data_transport.c`）
+```c
+void DataTransport_Watchdog_Check(void) {
+    uint32_t now = InsPal_Get_Tick();
+
+    /* 尚未传完，且距上次收到 RequestData 已超过 1 秒 */
+    if (last_pulled_index < chunk_total - 1 &&
+        now - last_pull_tick > 1000) {
+        INSLOG_W("Pull stalled, push remaining chunks [%u, %u]",
+                 last_pulled_index + 1, chunk_total - 1);
+        /* 主动推送剩余分片，避免传输永久挂起 */
+        Push_Remaining_Chunks(last_pulled_index + 1, chunk_total - 1);
+        last_pull_tick = now;
+    }
+}
+```
+- **watchdog 是"改对端行为"的必要配套**：把 App 端 32 片上限取消后，如果 App 因为丢包没有继续请求，相机会一直等。1 秒超时主动推，把协议从"必须对端驱动"降级为"对端驱动加本地兜底"，鲁棒性才成立。
+
+#### 片段 4：SPP 发送任务的优先级与日志节流（`ins_app_bt_msg.c`）
+```c
+void Spp_Send_Task_Init(void) {
+    /* 优先级从 NORMAL 提到 HIGH，避免被业务任务抢占发送窗口 */
+    s_bt_msg.send_msg_task.priority = TASK_PRIORITY_HIGH;
+    InsPal_Task_Create(&s_bt_msg.send_msg_task, Spp_Send_Task_Entry, NULL);
+}
+
+int32_t Spp_Send_Chunk(const uint8_t* data, uint32_t len) {
+    /* 每 16 片打一条日志，避免日志 IO 吃掉吞吐 */
+    if ((s_spp_tx_log_counter++ & 0xF) == 0) {
+        INSLOG_N("[SPP TX] len=%u credit=%d", len, Spp_Get_Credit());
+    }
+    return Spp_Write(data, len);      /* 底层 RFCOMM 写入 */
+}
+```
+- **优先级提升的机理**：RTOS 是抢占式调度，发送任务若与业务任务同级，业务任务一个长循环就会让发送窗口空转。提到 HIGH 后，只要协议栈给了 credit，发送任务立刻能跑起来。
+- **掩码计数而非取模**：`& 0xF` 比 `% 16` 在没有硬件除法器的 MCU 上快一个量级，这是嵌入式日志节流的标准写法。
+
+---
+
+### 9. 面试问答汇总（13 问深度技术交锋）
+
+#### Q1：为什么 Android 和 iOS 要用完全不同的两条数据通路？
+> **答**：这是被两个平台的系统能力逼出来的。Android 开放经典蓝牙 BR/EDR，SPP、RFCOMM 能提供字节流语义和 Credit-based 流控，物理层吞吐上限约 50KB 每秒；iOS 系统层面不开放厂商自定义 SPP，只能走 BLE。而 BLE 的 GATT 是属性协议，请求响应交互、受 MTU 约束、无内置流控，实测 80KB 要 40 秒。所以 iOS 改用同样基于 BLE 但属于 L2CAP 层的面向连接信道 CoC，它是流式传输带 Credit 流控，同量级数据 2 至 3 秒。一句话：Android 有高速路可以上，iOS 的高速路被系统封了，我们就在它允许的层里找最快的一条。
+
+#### Q2：控制面和数据面为什么一定要分开？
+> **答**：因为两者的流量特征完全相反。控制面是几十到几百字节的开关、状态、模板元数据，要求低延迟高可靠；数据面是几十上百 KB 的缩略图、原图、成片，要求吞吐。混在一条链路上，控制消息会被大文件排队阻塞，用户点了按钮半天没反应；大文件又会被控制消息的握手节奏切碎，吞吐上不去。分开之后，控制面固定走 BLE 保证响应，数据面按平台能力选路保证吞吐，路由层用三级优先级 L2CAP、SPP、BLE 兜底自动选择，业务层完全无感。
+
+#### Q3：SPP 的物理层上限是 50KB 每秒，为什么你们实测只有 5.2KB？
+> **答**：这正是我们定位问题的核心证据。如果瓶颈在射频或协议栈驱动，三个方向的利用率应该大致相当且都接近上限；但实测上行 10%、下行 19%、模板下行 48%，方向之间差了近 5 倍。**方向间的差异说明浪费的是等待时间而不是带宽**——射频是公平的，等待不是。根因有两个：一是拉式协议，每片都要等 App 显式请求才发下一片，40KB 按 1KB 分片就是 40 次完整往返的固定开销；二是 App 端单批上限 32 片，每多一批多约 6 秒跨批空等，超过 32 片立刻踩台阶。所以优化全部指向协议层交互模式，没有动一行射频或驱动代码。
+
+#### Q4：四层优化里你认为哪一个最关键？为什么先做它？
+> **答**：取消 App 端 32 片上限最关键，也是我们第一个做的。判断依据是**收益风险比**：它在 App 端只是一行常量改动，风险等级最低，但直接消除跨批空等，单项收益 6 至 13 秒，占总优化量的大头。工程上这叫"先摘低垂的果实"——先用最低风险拿到最大收益，把 RFCOMM 参数调优这种要动 vendor BSP、需要和博通对齐的中风险改动放到后面，这样即使后面受阻，前面的收益已经落袋。当然它有配套：相机端加了 1 秒 watchdog 兜底，否则对端丢包时传输会永久挂起。
+
+#### Q5：`credit` 从 7 提到 32 是什么原理？会不会有副作用？
+> **答**：RFCOMM 的 credit 是接收方给发送方的"发放额度"，表示我这边还能收多少帧。credit 7 意味着对端连发 7 帧就必须停下来等我们重新发放，每一轮发放都是一次往返。提到 32 后对端可以连续灌入更多帧，往返次数降到约四分之一。副作用主要有两个要考虑：一是本地接收缓冲压力变大，需要确认接收队列深度能撑住 32 帧，否则会丢包；二是可能加剧对端的突发占用，影响同链路上的控制消息。所以我们把这项放在措施三而不是措施一，先用低风险措施拿到大部分收益，这项目需要动博通 vendor BSP，风险等级标的是中。
+
+#### Q6：L2CAP CoC 的六个回调分别在什么时机触发？最容易踩什么坑？
+> **答**：连接指示在对端发起连接时触发，此时必须显式调用 `L2CA_LeConnectRsp` 应答并宣告本端接收 MTU，不应答就建不起来；连接确认在本端发起连接的场景下回报结果；断连指示和断连确认分别处理被动断连和主动断连的收尾；数据接收承载上行数据；拥塞状态在协议栈缓冲吃紧或恢复时触发，是发送侧必须监听的流控信号。最大的坑是**数据接收回调里的缓冲所有权**：`BT_HDR` 是协议栈内存池的对象，回调一返回协议栈就可能复用它，业务层必须在回调内 `malloc` 加 `memcpy` 复制一份，回调返回前 `GKI_freebuf` 归还。直接持指针就是典型的 use-after-free，会表现成偶发的数据错乱，极难复现。
+
+#### Q7：SPSM 是什么？为什么注册成功后要用回填值而不是硬编码？
+> **答**：SPSM 是 Static Protocol Service Multiplexer，L2CAP CoC 用它在同一 BLE 链路上区分不同的逻辑信道，作用等同于 TCP 的端口号。我们用的 `0x0083` 落在动态分配区间，`L2CA_LeRegister` 成功后协议栈会回填实际分配到的值。必须用回填值，是因为同一台设备上可能有多个业务同时注册 CoC 信道，硬编码会在冲突时拿到错误的通道 ID，表现成数据发到了别的业务或者发送直接失败。这也是"注册类接口的返回值永远是权威"这条通用规则的体现。
+
+#### Q8：为什么建链的每一步协商都要走 BLE，而不是直接用 SPP 传？
+> **答**：因为协商阶段 SPP 还不存在。整条时序是 App 先经 BLE 下发 `BluetoothOperate` 告知相机要开经典蓝牙并带上自己的 BR/EDR 地址，相机打开能力后回一个状态通知带上自己的地址，App 才知道该连谁，然后才发起 SPP 连接，建成后再经 BLE 下发业务绑定。**BLE 是常在的控制通道，SPP 是按需拉起的数据通道**。这样设计还有个关键好处：SPP 建链失败时控制通道仍然完好，能收到失败原因、能重试、能给用户明确提示，而不是整条链路一起黑掉。
+
+#### Q9：MAC 绑定真的能防住攻击吗？蓝牙地址不是可以伪造吗？
+> **答**：单靠 MAC 确实防不住嗅探伪造，所以我们做的是**绑定加持久化白名单加建链后复验**的组合，而不是把 MAC 当密码用。App 经 BLE 下发期望的地址，相机在 SPP 建链成功后拿对端实际地址与持久化的绑定地址做六字节全等比对，失配就主动断开。这里最关键的是**重连时的第二次比对**：如果只在授权时刻校验一次，攻击者只要能触发一次合法建链，之后就能自由接入，持久化的绑定形同虚设。另外要注意威胁模型的边界——BLE 控制面本身有系统级配对与加密保护，我们这套是应用层的第二道防线，两层合起来才构成完整防护。
+
+#### Q10：为什么要有 5 秒宽限期？直接重连不行吗？
+> **答**：不行，因为蓝牙在地铁、电梯、人多的场合会瞬断，通常几百毫秒就恢复。没有宽限期的话，每次瞬断都会立刻触发完整的重连流程——重新扫描、重新建链、重新业务绑定，用户看到的是进度条回退重来，体感很差。有了 5 秒宽限期，绝大多数瞬断在宽限期内自动重连成功，状态机从宽限期回到就绪态，用户完全无感。5 秒是权衡值：太短自愈不了真实瞬断，太长会在真正断开时让用户白等。宽限期结束仍未恢复才降级到仅 BLE，此时数据面退回兜底路径，控制面依然可用。
+
+#### Q11：端到端提升了 35%，但物理层有十倍差距，这个数字怎么解释？
+> **答**：这两个数字衡量的不是同一段。十倍是 GATT 与 SPP 的**传输段**理论比值，5 至 10KB 每秒对 50KB 每秒；35% 是**端到端完整流程**的比值。端到端里除了蓝牙传输，还有唤醒建链与业务绑定、模板请求的云端往返、场景检测与模板匹配、以及用户在相机上浏览并选择模板的交互等待，这些时间和蓝牙快慢无关。传输段自身提升明显，被这些非传输环节摊薄后落到 35%。这个口径我一开始也觉得不好看，但它是真机实测的诚实数字，而且说明我理解系统里哪一段是自己能优化的、哪一段是别人的——云端 AI 处理 39 至 44 秒才是端到端的大头，那不是通信层的问题。
+
+#### Q12：优化过程中你怎么确认改动确实生效，而不是别的因素导致变快？
+> **答**：靠**分段压测加控制变量**。每一段用固定数据量单独压测，模板下行、宽图上行、结果图下行各自计时，这样每项措施的收益能单独归因，不会互相污染。比如取消 32 片上限这项，只改 App 端一行常量，改前后用同一份 88KB 数据各测十轮，跨批等待那约 6 秒的台阶直接消失，归因就非常干净。而像 RFCOMM credit 这种要改 vendor BSP 的，改动前后必须保持分片大小、数据量、测试距离、干扰环境全部一致，否则测出来的差异说不清是 credit 的功劳还是环境波动。
+
+#### Q13：如果让你继续优化，下一步做什么？
+> **答**：三个方向。第一，**上行链路的利用率只有 10%，是最差的一段**，值得单独拆解——宽图上行的分片大小和 credit 配置可能和下行不对称，这是低垂果实。第二，**端到端的大头其实在云端 AI 处理的 39 至 44 秒**，通信层再优化也压不动它，真正的空间是并行化：原图边上传、云端边开始前段处理，或者模板确认后立刻预热，把串行链路改成流水线。第三，**协议层可以再进一格**，把 `received_bitmap` 从固定 64 位改成变长位图，消除单批 64 片的上限，配合现有的跨批次 `missing` 列表，滑动窗口的效率还有空间。
+
+---
+
+### 10. 面试 30 秒应答模板
+> "蓝牙链路这块我做了两件事。**打通**：在内测纯 BLE 的基础上，基于博通协议栈为 Android 端打通了 SPP、RFCOMM 数据通路，为 iOS 端接入了 L2CAP CoC 高吞吐信道，架构上坚持控制面与数据面分离——控制面双端统一走 BLE 保证响应，数据面按平台能力三级选路保证吞吐。**优化**：我们先用分段压测算出上行物理层利用率只有 10%，判定瓶颈在协议层而非射频，定位到拉式协议的逐片同步等待和 App 端单批 32 片上限两个根因，随后做了取消批次上限、调度去等待、RFCOMM 参数调优、日志节流四层优化，完整流程从约 58 秒压到约 38 秒，提升约 35%。"
+
+---
+
+## 四、条目三：相机端蓝牙唤醒 App 后台拉起
+
+### 1. 简历标准写法
+> 参与实现相机端蓝牙唤醒 App 后台拉起。当用户点击相机端 AI 修图入口时，Android 基于 Companion Device 机制触发 SPP 建链任务链；iOS 通过 iBeacon 广播唤醒 App 后建立 L2CAP CoC 通道。
+
+### 2. 5 大可验证断言拆解
+1. **触发点在相机端而非手机端**：用户在相机回放页点击 AI 修图入口这一动作就是唤醒起点，相机主动发广播，不依赖用户掏出手机解锁打开 App，把"拍修一体"的交互闭环留在相机侧。
+2. **Android 走 Companion Device 系统级关联**：基于 Android 8.0 引入的设备关联机制建立持久关联，App 进程未运行时系统仍可直接拉起，唤醒链路为广播被 `CompanionDeviceManager` 捕获、系统启动 `CompanionDeviceService`、`onDeviceAppeared` 回调进入业务逻辑。
+3. **唤醒后执行的是任务链而非单点动作**：按 ActionType 路由，AI 修图对应 `0x03`，任务链为 SPP 建链、业务绑定、查询相机状态、亮屏、用户通知五步，每步是独立可取消的 `ActionTask`，新增唤醒场景只需实现任务并注册到任务表。
+4. **双重门禁加全局串行队列防重入**：第一重设备会话门禁保证同一设备只允许一个会话，第二重业务任务门禁保证同一设备加同一业务只允许一条链，通过后进入全局串行队列由单通道执行器串行执行，杜绝并发抢占共享资源。
+5. **iOS 走 iBeacon 区域监控**：相机广播 iBeacon 格式的 BLE 包，iOS 系统蓝牙区域监控在 App 未运行时触发 `didEnterRegion` 回调将其拉起，随后按 major 与 minor 识别具体相机并建立 L2CAP CoC 通道，代价是必须获得用户位置权限授权。
+
+---
+
+### 3. 背景知识 A：双端后台限制与唤醒机制选型
+
+#### 1. 问题的本质：相机无法直接启动一个死进程
+
+移动端操作系统对后台进程有严格限制——Android 会回收后台 App 进程，iOS 的限制更严，只允许在特定条件下唤醒。而 AI 修图的交互起点在相机上：用户看着相机的回放页，手指在相机上，这时候要求他掏出手机、解锁、找到 App、打开它，交互链路就断了。
+
+**所以必须由相机侧发起一次"跨设备拉起"**，而且这个拉起要能在 App 进程完全不存在的情况下成功。
+
+#### 2. 双端方案选型
+
+| 平台 | 唤醒方式 | 核心机制 | 能否唤醒未运行进程 | 关键约束 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Android** | Companion Device 关联与广播 | 系统级设备关联，`CompanionDeviceService` 被系统拉起 | 可以 | 需用户一次性授权关联 |
+| **iOS** | iBeacon 广播与区域监控 | 系统级蓝牙区域监控，进入信号范围触发回调 | 可以 | 必须获得位置权限授权 |
+
+**为什么 Android 不用普通的蓝牙广播**：普通广播需要 App 自己注册 `BroadcastReceiver`，而进程被杀后接收器也不在了；即使通过后台服务保活，Android 8.0 之后对后台服务和隐式广播的限制越来越严。Companion Device 是 Google 专门为"App 与特定外设的关联"开的官方通道，语义上就是"这个设备出现时请叫醒我"，系统保底执行。
+
+**为什么 iOS 不用普通 BLE 扫描**：iOS 上后台 BLE 扫描有严格的时长与频率限制，且需要 App 保持一定的后台状态。iBeacon 的区域监控是系统级能力，**由系统负责持续监听，App 完全可以不在运行**，进入区域时系统自己决定要不要拉起 App——这是 iOS 上唯一可靠的"设备接近即唤醒"路径。
+
+#### 3. 一次唤醒的完整链路对比
+
+```
+【Android】
+相机蓝牙广播
+   → 系统 CompanionManager 检测到关联设备
+   → 系统启动 CompanionDeviceService
+   → onDeviceAppeared(address) 回调
+   → 任务编排层按 ActionType 选取任务链
+   → 串行执行 SPP 建链、绑定、查询、亮屏、通知
+
+【iOS】
+相机 iBeacon 广播
+   → iOS 系统蓝牙区域监控检测到进入区域
+   → CLLocationManager didEnterRegion 回调
+   → 系统在后台拉起 App
+   → AppDelegate 处理唤醒事件
+   → didRangeBeacons 按 major 与 minor 识别具体相机
+   → 建立 L2CAP CoC 通道
+```
+
+**两端的共同抽象**：都是"**广播是相机发的，监听是系统做的，拉起是系统执行的，业务是 App 被动接的**"。App 从头到尾没有主动权，所以业务逻辑必须设计成完全被动响应且幂等——这正是后面防重入机制存在的原因。
+
+---
+
+### 4. 背景知识 B：Companion Device 四层任务链架构与 ActionType 路由
+
+#### 1. 四层职责划分
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  系统拉活层                                              │
+│   CompanionDeviceManager：associate 建立系统级关联、      │
+│     startObservingDevicePresence 开始监听，广播时唤起 App │
+│   CompanionDeviceService：被系统以最高优先级拉起，         │
+│     onDeviceAppeared 回调，生命周期独立于 App 主进程       │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  任务编排层                                              │
+│   会话管理 ｜ 连接管理 ｜ 任务注册中心 ｜ 任务提交          │
+│   按 ActionType 从注册表取出对应任务链                     │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  任务执行层                                              │
+│   任务调度与分发 ｜ 共享上下文容器 ｜ 任务执行器            │
+│   单通道串行执行，每步可取消                               │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  支撑层                                                  │
+│   无网策略控制 ｜ 数据存储与状态 ｜ 机外拍摄引导            │
+└─────────────────────────────────────────────────────────┘
+```
+
+**为什么 `CompanionDeviceService` 的生命周期必须独立于 App 主进程**：唤醒发生时 App 主进程可能根本不存在。如果 Service 是主进程里的一个组件，系统拉它就等于拉整个进程，冷启动开销大且容易因主进程初始化失败而拖垮唤醒。独立 Service 让系统能以最小代价先把"接线员"叫起来，再由接线员决定要不要拉起完整业务。
+
+#### 2. ActionType 是一张可扩展的路由表（见《相机唤醒App技术方案》§4.3）
+
+相机端触发事件时将 `ActionType` 写入 `OPTION_TYPE_APP_WAKE_UP_TYPE`，App 被系统唤醒后经 `getOptions(184)` 读回（或监听建链后的相机 notify 推送）并在 `WakeupTaskRegistry` 查表匹配专属任务链：
+
+| AI 业务类型 | ActionType | 典型任务动作组合 | 业务场景 |
+| :--- | :--- | :--- | :--- |
+| 未知类型 | `0x00` | 默认任务链（`ACTION_UNKNOWN` 兜底） | 兜底，绝不静默失败 |
+| GPS 助手 | `0x01` | 定位、GATT 回复（携带坐标）、亮屏、通知 | 用户请求相机获取 GPS 坐标 |
+| 无预览拍摄 | `0x02` | 亮屏、通知、GATT 回复 | 远程遥控拍摄 |
+| **AI 修图** | **`0x03`** | **SPP 建链、业务绑定、查询状态、亮屏、通知** | **用户在相机触发 AI 修图** |
+| AI 滤镜 | `0x04` | SPP 建链、滤镜同步、通知 | 相机切换 AI 滤镜 |
+
+**前置配对 12 步时序**（首度配对时执行）：
+1. App 发 `SetOptions(184)` + `OPTION_TYPE_BLUETOOTH_OPEN`
+2. 监听 `CAMERA_NOTIFICATION_BLUETOOTH_STATUS` 获取 `session_id / result / type`
+3. 调用 `CompanionDeviceManager.associate(deviceName, mac)`，系统弹出伴侣设备确认
+4. 获得确认回调 `association_created`
+5. `startObservingDevicePresence(cameraClassicMac)` 开始在场监听
+6. 发起经典蓝牙连接
+7. 发 `PHONE_COMMAND_FEATURE_BLUETOOTH(MAC, BIND)` 绑定 `featureType`
+8. 返回绑定结果
+9. **主动断开经典蓝牙连接**（降低日常功耗）
+10. 持久化相机 `(deviceName, cameraMac)` 与手机 `(phoneMac, featureType)`
+
+#### 3. 任务抽象与 AI 修图任务链编排
+
+```kotlin
+/* 每一步都是独立、可取消、可组合的任务 */
+interface ActionTask {
+    val taskId: String
+    suspend fun execute(bundle: WakeupTaskBundle): TaskResult
+    fun cancel() {}
+}
+
+data class TaskResult(val success: Boolean, val message: String? = null)
+
+/* AI 修图（ActionType 0x03）注册的任务链 */
+registry.register(
+    actionType = 0x03,
+    tasks = listOf(
+        SppConnectTask(),                                      /* 1. 建立 SPP 连接 */
+        FeatureBindTask(featureType = FeatureType.AI_PHOTO_PS),/* 2. 绑定业务类型 */
+        QueryCameraStateTask(),                                /* 3. 查询相机状态 */
+        WakeScreenTask(),                                      /* 4. 亮屏 */
+        NotifyUserTask(message = "AI修图已就绪")                /* 5. 通知用户 */
+    )
+)
+```
+
+**任务链顺序不是随意排的**：SPP 必须最先建，因为后面所有业务消息都要走数据通路；绑定必须在建链之后，否则没有通道下发绑定指令；查询状态要在绑定之后，才能拿到业务上下文；亮屏与通知放最后，保证用户看到提示时一切已就绪——**通知提前弹出、后台还没建好链，是这类唤醒最常见的体验翻车**。
+
+---
+
+### 5. 背景知识 C：双重门禁防重入与全局串行执行队列
+
+#### 1. 为什么必须防重入
+
+唤醒事件不是一次性的。相机可能在几秒内连续广播，用户可能快速点退出再点进入，蓝牙还可能在边缘信号下反复触发 `onDeviceAppeared`。如果没有防重入，后果是：
+
+- 同一设备同时建两条 SPP 连接，互相抢占蓝牙资源；
+- 同一业务的任务链被并发启动两次，绑定指令重复下发导致状态机错乱；
+- 亮屏和通知任务重复执行，用户看到界面闪烁。
+
+#### 2. 四道关卡
+
+```
+系统唤醒事件
+    │
+    ▼
+┌──────────────────────────────────┐
+│ 第一重门：设备会话门禁            │  同一设备只允许一个会话
+└──────────────────────────────────┘
+    │ 通过
+    ▼
+┌──────────────────────────────────┐
+│          会话准备区              │  校验设备关联、准备连接上下文
+└──────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────┐
+│ 第二重门：业务任务门禁            │  同一设备加同一业务只允许一条链
+└──────────────────────────────────┘
+    │ 通过
+    ▼
+┌──────────────────────────────────┐
+│       全局串行队列                │  避免不同唤醒源抢占共享资源
+└──────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────┐
+│       单通道执行器                │  串行执行整条任务链
+└──────────────────────────────────┘
+```
+
+**为什么两道门而不是一道**：粒度不同。设备会话门禁解决"同一个设备被叫醒两次"，业务任务门禁解决"同一设备上两个不同业务同时要链路"——比如用户点 AI 修图的同时又触发了 AI 滤镜，设备会话是同一个（通过），但业务链必须串起来排队，不能并行。**会话门禁按设备去重，业务门禁按设备加业务去重**，两个维度缺一不可。
+
+#### 3. 全局串行队列与单通道执行器的关系（技术方案实现）
+
+- **两道门的键值设计**（《相机唤醒App技术方案》§4.5.3）：
+  - **第一重门（设备维度）**：`sessionKey = normalizedDeviceAddress`，同一设备同时只允许一个会话处于活动状态，重复唤醒直接**忽略**。
+  - **第二重门（设备+业务维度）**：`chainKey = normalizedDeviceAddress + actionType`，同一设备加同一业务只允许一条任务链执行，重复任务直接**丢弃**（埋点记录 `submit_decision = dropped_same_action`）。
+- **执行器配置与串行理由**（§4.4.5、§4.5.2）：
+  - `WakeupTaskExecutor(failFast: Boolean = false, totalTimeoutMs: Long = 60_000)`：默认不开启 failFast，以 60 秒为整条链路总超时。
+  - **为什么必须全局串行**：点亮屏幕、构建蓝牙连接、用户通知以及系统前台服务等属于强共享资源，若多设备并发访问会引发顺序错乱、连接状态覆盖与界面闪烁。串行队列管准入顺序，单通道执行器管执行互斥。
+  - **会话生命周期四态**：`CREATED → VALIDATING → QUERYING_WAKE_UP_TYPE → SUBMITTING_TASK`，执行完毕后统一释放会话与任务占用。
+
+---
+
+### 6. 背景知识 D：iOS iBeacon 区域监控唤醒与权限约束
+
+#### 1. iBeacon 广播包结构与来源编码（真实协议规范，见《相机唤醒App》§一）
+
+iOS 无法像 Android 那样在广播中携带任意自定义业务字段，因此影石在既有 iBeacon 格式上通过 **Minor 字段新增编码来区分唤醒来源业务**：
+
+- **广播包 AD 结构**：Byte0 `0x02` / Byte1 `0x01` / Value `0x06`（Flags）+ Byte0 `0x1A`（26 字节）/ Byte1 `0xFF` / Value `0x4C`（Apple 公司标识）等标准 iBeacon 段。
+- **UUID 计算规则**：**相机序列号后 6 位 + `"-4532-867E-E53BE79CA109"`**，与旧版 iBeacon 算法完全保持一致，兼顾生态识别与唯一性。
+- **Major**：保持原有产品线定义。
+- **Minor 新增定义（核心业务区分字段）**：
+  - `0x03`：唤醒并连接（通用）
+  - `0x04`：唤醒并连接，来自 **AI 语音**
+  - `0x05`：唤醒并连接，来自 **AI 修图**
+
+| 字段 | 作用 | 影石相机取值 / 算法 |
+| :--- | :--- | :--- |
+| **UUID** | 区分设备个体与影石生态 | 相机序列号后 6 位 + `"-4532-867E-E53BE79CA109"` |
+| **Major** | 区分产品线/系列 | 保持与既有 iBeacon 定义一致 |
+| **Minor** | **区分唤醒业务来源** | `0x03` 通用 / `0x04` AI 语音 / `0x05` AI 修图 |
+
+**为什么 iOS 必须用 Minor 区分业务**：Android 唤醒后能直接调用协议（如 `getOptions(184)` 查 `OPTION_TYPE_APP_WAKE_UP_TYPE`，或监听相机 notify）取回 `ActionType`；而 iOS iBeacon 在空口仅有 UUID/Major/Minor 暴露给系统的 CoreLocation，App 必须在扫描到 Minor 为 `0x05` 时立刻获知"本次唤醒来自 AI 修图"，从而直接调度对应的高吞吐 L2CAP CoC 通道，避免二次网络往返查询。
+
+#### 2. 实现骨架（iOS 端 CoreLocation 区域监控）
+
+```objc
+@interface CameraWakeupManager : NSObject <CLLocationManagerDelegate>
+@end
+
+@implementation CameraWakeupManager
+
+- (void)startMonitoringCamera {
+    /* UUID 为影石统一标识，Major 标识产品线，Ace Pro 2 为 0x0001 */
+    NSUUID* proximityUUID = [[NSUUID alloc]
+        initWithUUIDString:@"550e8400-e29b-41d4-a716-446655440000"];
+
+    self.cameraRegion = [[CLBeaconRegion alloc]
+        initWithProximityUUID:proximityUUID
+                        major:0x0001
+                   identifier:@"Insta360Camera"];
+
+    self.cameraRegion.notifyOnEntry = YES;            /* 进入区域时通知 */
+    self.cameraRegion.notifyOnExit  = YES;            /* 离开区域时通知 */
+    self.cameraRegion.notifyEntryStateOnDisplay = YES;/* 锁屏时也通知 */
+
+    /* 即使 App 在后台，系统仍会持续监听该区域 */
+    [self.locationManager startMonitoringForRegion:self.cameraRegion];
+}
+
+#pragma mark - CLLocationManagerDelegate
+
+/* 相机进入信号范围，App 此刻可能刚被系统从后台拉起 */
+- (void)locationManager:(CLLocationManager*)manager
+       didEnterRegion:(CLRegion*)region {
+    [self handleCameraWakeup];
+}
+
+/* 根据 major 与 minor 识别具体是哪一台相机，再建立连接 */
+- (void)locationManager:(CLLocationManager*)manager
+        didRangeBeacons:(NSArray*)beacons
+               inRegion:(CLBeaconRegion*)region {
+    for (CLBeacon* beacon in beacons) {
+        [self connectToCameraWithBeacon:beacon];
+    }
+}
+
+@end
+```
+
+#### 3. 必须交代的两个约束
+
+1. **位置权限是硬前提**：`startMonitoringForRegion` 需要用户授予定位权限，而且在 iOS 上定位权限与隐私强绑定，用户拒绝则整条唤醒路径失效。所以产品侧必须设计降级路径——用户拒绝定位时，退回到"打开 App 后手动连接"，功能可用但体验降级。
+2. **`didEnterRegion` 与 `didRangeBeacons` 的分工**：前者是**唤醒信号**，只告诉你"进入了区域"，不带任何设备细节；后者才给出范围内具体 beacon 的 major、minor、rssi。所以流程一定是先进区域被拉起，再扫描识别具体设备——两步不能合并成一步，因为拉起发生在扫描之前。
+
+#### 4. 为什么 major 用产品线而不是具体设备
+
+Major 若按具体设备分配，相机一旦更换或重置就要改广播参数，且 App 端要维护一份设备到 major 的映射表。按产品线分配后，App 只需知道"major 0x0001 是 Ace Pro 2 系列"就能判断是否需要拉起，具体设备的区分交给 minor 和后续的连接握手。**这样把静态的机型识别与动态的设备识别拆到了两个字段上**，新增机型不用改 App 的区域声明逻辑。
+
+---
+
+### 7. 核心源码走读片段
+
+#### 片段 1：Companion Device 关联与监听注册（Android Kotlin）
+```kotlin
+class CameraAssociationManager(private val context: Context) {
+
+    private val deviceManager: CompanionDeviceManager =
+        context.getSystemService(CompanionDeviceManager::class.java)
+
+    /* 一次性关联：用户在系统弹窗中确认后建立持久关联 */
+    fun associateCamera(deviceName: String, mac: String) {
+        val request = AssociationRequest.Builder()
+            .addDeviceFilter(
+                DeviceFilter.Builder()
+                    .setName(deviceName)
+                    .setAddress(mac)
+                    .build()
+            )
+            .setSingleDevice(true)          /* 只关联这一台，避免多设备歧义 */
+            .build()
+
+        deviceManager.associate(request, null, context.mainExecutor) { result ->
+            when (result) {
+                is AssociationResult.Success -> {
+                    /* 关联成功后立刻开始观察设备在场状态 */
+                    deviceManager.startObservingDevicePresence(
+                        result.deviceInfo.device
+                    )
+                }
+                is AssociationResult.Failure ->
+                    Log.e(TAG, "associate failed: ${result.reason}")
+            }
+        }
+    }
+}
+```
+- **`setSingleDevice(true)`**：不加这个，系统可能把名称相近的多台相机都关联上，`onDeviceAppeared` 就无法判断是哪一台，后续 SPP 建链的目标 MAC 会歧义。
+- **`startObservingDevicePresence` 是关键一步**：只关联不观察，系统不会在设备出现时回调；关联负责"记住这台设备"，观察负责"设备出现时叫我"，两者职责不同。
+
+#### 片段 2：唤醒服务回调与任务链选取（Android Kotlin）
+```kotlin
+class CameraWakeupService : CompanionDeviceService() {
+
+    /* 系统检测到关联设备广播时调用，此时 App 主进程可能刚被拉起 */
+    override fun onDeviceAppeared(deviceAddress: String?) {
+        super.onDeviceAppeared(deviceAddress)
+        if (deviceAddress == null) return
+
+        val actionType = resolveActionType(deviceAddress)   /* 判断业务类型 */
+        val tasks = taskRegistry.tasksFor(actionType)        /* 查表取任务链 */
+
+        /* 统一交给编排层，门禁与串行逻辑都在那里收口 */
+        WakeupOrchestrator.submit(
+            WakeupRequest(
+                deviceAddress = deviceAddress,
+                actionType = actionType,
+                tasks = tasks
+            )
+        )
+    }
+
+    override fun onDeviceDisappeared(deviceAddress: String?) {
+        super.onDeviceDisappeared(deviceAddress)
+        /* 设备消失时取消尚未开始的任务，已在执行的任务交给门禁处理 */
+        WakeupOrchestrator.cancelPending(deviceAddress)
+    }
+}
+```
+- **`resolveActionType` 的输入是设备地址而非任意参数**：唤醒源是系统回调，参数可信度有限，用设备地址反查业务上下文可以避免被伪造的广播参数带偏。
+- **`onDeviceDisappeared` 必须取消未开始任务**：设备已经走了，任务链还在队列里排队，轮到它时会建链失败并占住串行通道，把后续正常唤醒堵死。
+
+#### 片段 3：双重门禁的准入判定（Android Kotlin）
+```kotlin
+object WakeupOrchestrator {
+
+    private val activeSessions = ConcurrentHashMap<String, SessionHandle>()  /* 设备维度 */
+    private val activeChains   = ConcurrentHashMap<String, Job>()            /* 设备加业务维度 */
+    private val serialQueue    = Channel<WakeupRequest>(Channel.UNLIMITED)
+
+    fun submit(req: WakeupRequest): Boolean {
+        /* 第一重门：同一设备只允许一个会话 */
+        activeSessions.putIfAbsent(req.deviceAddress, SessionHandle(req))?.let {
+            Log.w(TAG, "session exists for ${req.deviceAddress}, drop")
+            return false                                   /* 拒绝重复会话 */
+        }
+
+        /* 第二重门：同一设备加同一业务只允许一条任务链 */
+        val chainKey = "${req.deviceAddress}:${req.actionType}"
+        if (activeChains.containsKey(chainKey)) {
+            activeSessions.remove(req.deviceAddress)
+            Log.w(TAG, "chain exists for $chainKey, drop")
+            return false                                   /* 回滚第一重门 */
+        }
+
+        /* 两道门都通过才允许入队，由单通道执行器串行消费 */
+        activeChains[chainKey] = Job()
+        serialQueue.trySend(req)
+        return true
+    }
+}
+```
+- **第二重门拒绝时必须回滚第一重门**：这是最容易漏的一行。不回滚的话，`activeSessions` 里会残留一个永远不释放的会话，该设备后续所有唤醒全部被第一重门挡住，功能等同于失效，而且极难从日志里看出原因。
+- **两道门在入队前完成**：门禁的作用是把重复请求挡在队列之外，如果只在执行时才检查，队列里已经堆了一串注定要失败的请求，浪费调度且让串行通道空转。
+
+#### 片段 4：iOS 区域监控与设备识别（Objective-C）
+```objc
+- (void)locationManager:(CLLocationManager*)manager
+     didEnterRegion:(CLRegion*)region {
+    /* 系统刚把 App 拉起，这里只做唤醒响应，不直接建链 */
+    [self markWakeupReason:WakeupReasonBeaconEntry];
+    [self startRangingForCamera];     /* 转入扫描，识别具体设备 */
+}
+
+- (void)startRangingForCamera {
+    CLBeaconRegion* beaconRegion = (CLBeaconRegion*)self.cameraRegion;
+    [self.locationManager startRangingBeaconsInRegion:beaconRegion];
+}
+
+- (void)locationManager:(CLLocationManager*)manager
+     didRangeBeacons:(NSArray<CLBeacon*>*)beacons
+            inRegion:(CLBeaconRegion*)region {
+    [self.locationManager stopRangingBeaconsInRegion:region];  /* 只需识别一次 */
+    if (beacons.count == 0) return;
+
+    CLBeacon* target = [self selectNearestValidBeacon:beacons]; /* 取信号最强 */
+    [self.l2capChannel connectToBeacon:target];                 /* 建 L2CAP CoC */
+}
+```
+- **`stopRangingBeaconsInRegion` 必须调用**：`startRanging` 是持续扫描，非常耗电，识别到目标后立刻停止是区域监控的标准收尾动作，否则后台功耗会显著上升。
+- **建链放在 `didRangeBeacons` 而不是 `didEnterRegion`**：进入回调不带设备细节，直接建链连不上具体设备；这正是背景知识里说的两步分工。
+
+---
+
+### 8. 面试问答汇总（11 问深度技术交锋）
+
+#### Q1：为什么需要相机主动唤醒 App？让用户自己打开 App 不行吗？
+> **答**：交互链路上行不通。AI 修图的起点是用户在相机回放页点了修图入口，此刻人在相机旁边、手在相机上、眼睛看着相机屏幕。如果这时候要求他掏出手机、解锁、找到 App、打开它、再等连接，一次简单的修图操作就变成了两个设备之间的来回切换，"拍修一体小相机"的卖点直接没了。更麻烦的是 App 大概率不在前台——用户可能刚拍完照锁屏了，甚至 App 进程早被系统回收了。所以必须由相机侧发起一次跨设备拉起，而且要能在进程完全不存在的情况下成功。
+
+#### Q2：Android 上普通蓝牙广播为什么不行，一定要 Companion Device？
+> **答**：因为普通广播的接收依赖 App 进程活着。App 进程被杀后 `BroadcastReceiver` 也不在了，广播发了没人听。走后台服务保活这条路在 Android 8.0 之后也被封死了——系统对后台服务启动和隐式广播有严格限制。Companion Device 是 Google 专门为"App 与特定外设的关联"开的官方通道，语义上就是"这个设备出现时请叫醒我"，而且**监听和拉起由系统保底执行，不依赖 App 进程存活**。它的服务生命周期独立于 App 主进程，系统能以最小代价先叫起接线员，再由接线员决定要不要拉起完整业务，冷启动开销也小得多。
+
+#### Q3：Companion Device 的唤醒链路具体是怎样的？
+> **答**：四步。相机发出蓝牙广播；系统侧 `CompanionDeviceManager` 发现这台设备在它关联的清单里；系统启动 `CompanionDeviceService` 并回调 `onDeviceAppeared`；回调里我们按设备地址反查业务类型得到 ActionType，从任务注册表取出对应任务链，交给编排层。这里有个细节：**ActionType 的输入是设备地址而不是广播里带的参数**——唤醒源是系统回调，参数可信度有限，用设备地址反查业务上下文可以避免被伪造的广播参数带偏。
+
+#### Q4：为什么唤醒后要跑一条任务链，而不是直接建链？
+> **答**：因为"唤醒成功"和"业务就绪"之间还差好几步，而且这些步骤有严格的顺序依赖。以 AI 修图的 ActionType 0x03 为例：必须先建 SPP，否则后面没有通道；绑定必须在建链之后，否则没通道下发绑定指令；查询状态要在绑定之后才能拿到业务上下文；亮屏和通知放最后，保证用户看到提示时一切已就绪——**通知提前弹出、后台还没建好链，是这类唤醒最常见的体验翻车**。任务链的价值还在于可扩展：每一步是独立可取消的 `ActionTask`，新增唤醒场景只需实现任务并登记 ActionType 到任务链的映射，唤醒框架一行不改。
+
+#### Q5：为什么需要双重门禁，一道门不够吗？
+> **答**：粒度不同，解决的问题也不同。唤醒事件不是一次性的——相机可能几秒内连续广播，用户可能快速点退出再点进入，蓝牙可能在边缘信号下反复触发 `onDeviceAppeared`。**设备会话门禁按设备去重**，解决"同一台设备被叫醒两次"；**业务任务门禁按设备加业务去重**，解决"同一台设备上两个不同业务同时抢链路"——比如用户点 AI 修图的同时又触发了 AI 滤镜，设备会话是同一个、第一道门会放行，但两条业务链必须串起来排队，不能并行，否则会互相抢占蓝牙资源、绑定指令重复下发导致状态机错乱。两个维度缺一不可。
+
+#### Q6：实现里最容易漏的坑是什么？
+> **答**：**第二重门拒绝时必须回滚第一重门**。我在实现时把两道门写成了顺序判断，第二道门拒绝后直接 return，结果 `activeSessions` 里残留了一个永远不释放的会话——该设备后续所有唤醒全被第一道门挡住，功能等同于失效，而且日志里只看得到"session exists"，根本看不出会话是什么时候、因为什么卡住的。另外两个坑：门禁必须在**入队前**完成，只在执行时检查的话队列里堆满了注定失败的请求，串行通道白白空转；还有 `onDeviceDisappeared` 必须取消未开始的任务，设备已经走了任务还在排队，轮到它时建链失败并占住串行通道，把后续正常唤醒全堵死。
+
+#### Q7：全局串行队列和单通道执行器分别管什么？
+> **答**：串行队列管**准入顺序**，单通道执行器管**执行互斥**。只做准入不做执行互斥，队列里前后两个任务仍可能因为协程调度而交叠执行；只做执行互斥不做准入，队列会无限膨胀，重复请求照样堆积。两者配合的语义是：同一时刻全局只有一条任务链在跑，其余按序排队，而队列长度由两道门禁在入口就截断了。这也是为什么门禁要放在 submit 而不是放在执行器里——**把重复请求挡在队列之外，比在队列里再筛一遍便宜得多**。
+
+#### Q8：iOS 为什么用 iBeacon 而不是普通 BLE 扫描？
+> **答**：因为普通后台 BLE 扫描在 iOS 上有严格的时长与频率限制，而且要求 App 保持一定的后台状态，App 一旦被挂起就扫不了。iBeacon 的区域监控是系统级能力——**监听由系统持续执行，App 完全可以不在运行**，进入区域时由系统决定要不要拉起 App。这是 iOS 上唯一可靠的"设备接近即唤醒"路径。代价也很明确：必须拿到用户的位置权限授权，因为区域监控在系统语义上属于定位能力。用户拒绝的话整条路径失效，所以产品侧设计了降级路径，退回到"打开 App 后手动连接"，功能可用但体验降级。
+
+#### Q9：iBeacon 的 UUID、Major、Minor 分别用来做什么？
+> **答**：三层定位坐标。UUID 区分厂商或生态，我们用影石的统一标识，保证只对自家设备产生回调；Major 区分产品线，Ace Pro 2 取 `0x0001`；Minor 区分同产品线的具体个体，按设备序列号分配。**Major 按产品线而不是按具体设备分配**是有讲究的——若按设备分配，相机更换或重置就要改广播参数，App 还要维护一份设备到 Major 的映射表；按产品线分配后，App 只需知道"Major 0x0001 是 Ace Pro 2 系列"就能判断要不要拉起，具体设备的区分交给 Minor 和后续连接握手，新增机型完全不用改 App 的区域声明逻辑。
+
+#### Q10：`didEnterRegion` 和 `didRangeBeacons` 的分工是什么？能合并吗？
+> **答**：不能合并，两者的时序决定了必须分两步。`didEnterRegion` 是**唤醒信号**，只告诉你"进入区域了"，不带任何设备细节——而这一刻 App 可能刚刚被系统从后台拉起，什么都还没初始化。`didRangeBeacons` 才给出范围内具体 beacon 的 UUID、Major、Minor 和 RSSI。所以流程一定是先进区域被拉起、转入扫描、识别到具体设备、再建立 L2CAP CoC 通道。另外 `startRanging` 是持续扫描非常耗电，识别到目标后必须立刻 `stopRanging`，否则后台功耗会显著上升——这是区域监控的标准收尾动作。
+
+#### Q11：怎么验证唤醒链路真的可靠？会测哪些场景？
+> **答**：按失败模式设计用例。**进程状态维度**：App 被强杀、App 在后台、App 从未启动过、手机重启后未打开过 App，四种状态都要能唤醒；**权限维度**：定位权限拒绝、Companion Device 关联被撤销，要验证降级路径而不是静默失败；**时序维度**：连续快速进出触发范围，验证双重门禁不产生并发建链；**环境维度**：蓝牙边缘信号下反复断连，验证宽限期与重连；**冷启动维度**：唤醒到任务链第一步 SPP 建链完成的耗时，这是用户可感知的等待时间。特别要盯的是**通知时机**——必须在任务链成功后才通知用户，早了就是体验翻车。
+
+---
+
+### 9. 面试 30 秒应答模板
+> "唤醒这条链路解决的是'用户在相机上点了一下，而 App 可能根本没在运行'的问题。Android 侧我基于 Companion Device 机制建立系统级设备关联，由系统在检测到相机广播时拉起独立于主进程的唤醒服务，再按 ActionType 路由到对应任务链——AI 修图是 SPP 建链、业务绑定、查询状态、亮屏、通知五步串行执行；针对唤醒事件可能重复到达的问题，设计了设备会话与业务任务双重门禁加全局串行队列的防重入结构。iOS 侧系统不开放普通后台扫描，改用 iBeacon 区域监控由系统持续监听、进入区域时拉起 App，再按 Major 与 Minor 识别具体相机后建立 L2CAP CoC 通道。整条链路的设计前提是唤醒完全由系统执行、App 只能被动响应，所以所有业务逻辑都做成幂等且可取消的。"
+
+---
+
+## 五、条目四（扩展业务闭环谈资）：权益扣费、异常矩阵与任务断点恢复
+
+### 1. 顺便提一嘴的口语概括
+> “除了协议、链路和唤醒三条主线，我还参与了业务闭环的收口部分：计费侧通过前置权益校验与服务端任务关联（`GenerateTask` 创单签发 `task_id`，`PerformTask` 触发执行并以‘固件 SN + task_id’绑定素材），异常时由服务端统一补偿退款；异常侧梳理了覆盖入口、模板、任务处理各阶段的异常协同表，任何一环失败都有明确的 UI 提示与处置动作；任务侧设计了开机重连状态查询，配合 SD 卡热插拔中断保护与 720P/2K 双分辨率回传策略，保证用户修图体验在各种异常下可自愈。”
+
+### 2. 背景知识 A：权益扣费时序与素材唯一性绑定（真实业务模型）
+
+#### 1. 真实扣费时序（《ai修图总文档》业务通信流）
+
+```
+用户确认模板
+     │
+     ▼
+① 前置校验 ──► 模板列表返回时带免费次数与钻石数（若余额不足直接置灰提示）
+     │
+     ▼
+② 创建任务 ──► 相机发 GenerateTask（带源图 datainfo + template_id）
+     │           App 上传 OSS → 请求 Server 创建任务
+     │           Server 创建消费订单，返回 task_id
+     │           App 返回 GenerateTaskResponse(task_id, error_code)
+     ▼
+③ 触发执行 ──► 相机发 PerformTask(task_id)
+     │           App 提交云端推理（AI 生图 10~20s）
+     │           App 轮询任务状态 → Server 返回 720P 结果 + 2K 地址
+     ▼
+④ 结果回传 ──► 720P 结果图经蓝牙回传相机落盘；若失败/违规服务端退还权益
+```
+
+#### 2. 素材认证唯一性：固件 SN + task_id
+- 素材的唯一性由 **「固件 SN + task_id」** 联合构成，**不与单一用户账号强绑定**。
+- **业务价值**：不同账户用户使用同一台相机设备，只要该相机持有原片且能拿到 `task_id`，就能从云端下载高清原图；原片被删除时文件尾无法写入，成片将拒绝写入。
+- **扣费失败处理**：`deduction_fail`（错误码 7）与 `balance_not_enough`（错误码 6）在任务创建与执行两个阶段均有契约枚举；支付失败时直接提示重拍，不消耗权益；若遇图片涉及违规或云端生成失败，由云端负责退还权益。
+
+---
+
+### 3. 背景知识 B：场景 × 异常类型的完整协同矩阵
+
+AI 修图跨越相机、蓝牙、App、云端四个环节。设计原则是**每一环失败都要有明确的降级路径，绝不静默卡死**（摘自《ai修图总文档》§5 异常处理表）：
+
+#### 1. 入口与前置异常
+| 异常场景 | 固件表现 | App 表现 / 处理 |
+| :--- | :--- | :--- |
+| **Live 模式开启** | 入口置灰，弹窗提示关闭 Live | Live 模式下自动切空模板 |
+| **蓝牙断连** | 状态栏 icon 变异常，toast 提示"蓝牙异常，请连接 APP 后重试" | 尝试静默回连，失败发唤醒广播 |
+| **账号未登录** | 入口选项确认置灰，snackbar 提示打开 App 登录 | 调起登录页 |
+| **配网中** | AI 修图功能禁用，避免 BLE 与经典蓝牙连接混乱 | — |
+
+#### 2. 模板选择异常
+| 异常场景 | 固件表现 |
+| :--- | :--- |
+| **部分模板封面加载失败** | 该模板不在列表展示，仅展示已完整下发的模板（单点故障单点降级） |
+| **手机无网 / 蓝牙断开** | 无缓存给空列表；有缓存则展示上次结果（整体故障整体降级） |
+| **服务器异常** | toast 提示"服务器异常，模版加载失败，请重试" |
+| **权益不足** | 确认按钮置灰，snackbar 提示"账号权益不足，请打开 APP 充值" |
+
+#### 3. 任务处理与执行异常
+| 异常场景 | 固件表现 | 权益处理 |
+| :--- | :--- | :--- |
+| **蓝牙断连（处理中）** | 状态栏图标变异常，回连后带 task_id 重新查询 | 任务仍在云端跑，不立即退还 |
+| **手机无网（处理中）** | 状态栏图标变异常，联网后重试 | 保持任务，不立即退还 |
+| **处理超时（1 分钟）** | 检查蓝牙与联网，正常则继续等待，断连则图标标记异常 | 保持任务 |
+| **图片涉及违规** | toast 提示"修图图片涉及违规，权益已退还" | 云端退还权益 |
+| **云端生成失败** | toast 提示"修图结果生成失败，权益已退还" | 云端退还权益 |
+| **扣费失败** | toast 提示"修图任务支付失败，请重新拍摄" | 不消耗权益 |
+
+---
+
+### 4. 背景知识 C：任务恢复机制与 SD 卡热插拔保护
+
+#### 1. 任务恢复与 720P / 2K 双分辨率策略
+- **720P 低清成片（蓝牙通道）**：蓝牙断开、App 被杀或设备重启后，固件在下次蓝牙连上 App 时，**主动带上 SN + task_id 重新向 App 请求 720P 素材**（若 App 侧素材已被清理，App 重新向云端拉取）。
+- **2K 高清成片（Wi-Fi 通道）**：2K 仅在 Wi-Fi 连接且 App 空闲时回传；固件扫描机内 720P 素材携带 task_id 发起请求，2K 传输完成后机内自动清理 720P 素材；2K 传输中断时素材暂存 App 本地，支持重连后断点续传。
+
+#### 2. SD 卡热插拔保护
+- **拔卡瞬间**：相机立即**主动中断 App 的成片传输流程**，弹窗提示"SD卡拔出，修图成片传输中断"，防止向半卸载的卡中写入导致文件尾损坏。
+- **重新插卡后的分支**：
+  - **插回原卡（卡内仍有未修完原片）**：重新向 App 请求未完成成片，写入成片与文件尾后闭环；
+  - **插入新卡（新卡内无原片）**：**不发起请求**，因为缺乏修图前的原片会导致成片文件尾无法正确关联与写入。中断写入必须先于状态记录，这是文件系统操作的顺序铁律。
+
+---
+
+### 5. 口语化实战问答（5 问）
+
+#### Q1：权益系统怎么防作弊？
+> **答**：四条。**服务端校验**——所有权益操作在服务端执行，本地数据改了也没用，因为扣费时服务端重新核算，本地的剩余次数只是展示用的估计值。**预扣机制**——任务开始就锁定额度，避免用同一份额度并发发两个任务。**幂等设计**——以 `task_id` 为幂等键，重试不重复扣费，已确认的再确认是空操作，已退还的再退还是空操作，额度不会被退成负数。**日志审计**——完整记录每一次权益变动，出问题能追溯到具体请求。
+
+#### Q2：扣费和云端处理不是同一个系统，怎么保证不白送也不白扣？
+> **答**：靠三段式拆解。核心是把"扣钱"拆成"锁定"和"入账"两步。查询之后先**预扣锁定**——额度被占住但钱没入账，此时签发 `task_id` 返回给相机；云端处理成功才执行**确认入账**；处理失败或内容不合规就**释放锁定**，因为钱根本没入账，不需要走支付渠道的逆向退款流程，只需解锁。这样"白送"（处理成功但没扣到）和"白扣"（扣了但处理失败）两条路都被堵住了。而并发重复扣费在入口就被预扣这把锁挡掉了——第二次请求拿不到额度，天然互斥。
+
+#### Q3：蓝牙断连的时候任务和权益分别怎么处理？
+> **答**：分开处理，因为它们的确定性不同。**权益保持锁定不动**——断连只能说明链路断了，云端那边任务很可能还在正常跑，这时候如果把额度退了，稍后云端处理成功，用户就白拿了一张图，平台亏钱。**任务保留 `task_id` 等待恢复**——回连后或相机重启后，凭 `task_id` 向云端查状态，处理中就继续等，处理完成就下载结果闭环，确认失败了才退还权益。原则就一句：**不确定就不动，确定了才处置**。这也解释了为什么状态栏图标要先变异常——UI 要诚实反映链路状态，不能让用户以为一切正常。
+
+#### Q4：模板列表加载失败为什么要区分"单个封面失败"和"整体加载失败"？
+> **答**：因为故障范围不同，降级粒度也该不同。单个封面失败是**局部故障**，其他模板是好的，处理方式是把坏的那个过滤掉、展示其余完整的——不能因为一张图加载不出来就把整个列表清空，那是用局部故障惩罚用户。而蓝牙断开或手机无网是**链路整体故障**，一张也拉不到，这时退到本地缓存展示上次结果，用户至少还能浏览；没有缓存才给空列表。这个"局部故障局部降级、整体故障整体降级"的区分，是整个降级矩阵的主线，套用到任务层也一样——单片校验失败只重传那一片，整条链路断了才走断点恢复。
+
+#### Q5：如果让你给这个业务闭环再加一道保险，你会加什么？
+> **答**：加**用户侧的显式对账入口**。现在的恢复机制是"系统自动查 `task_id`"，但有一种情况覆盖不到：额度被预扣锁定，然后 App 和云端都出问题，两边都查不到任务状态，锁就永远解不开——用户看到的是次数少了却没拿到图，而且系统自己发现不了。我会加一个"我的修图记录"页，把所有锁定中的任务列出来，让用户手动发起查询或申请释放，同时在服务端给预扣锁加一个超时兜底——锁定超过一定时长且查无任务，自动释放。**自动恢复机制解决已知的失败模式，对账入口和超时兜底解决未知的**，这两层合起来闭环才完整。
+
+---
+
+## 六、附录：面试通关实战武器库
+
+### 1. 端到端一分钟项目介绍（Elevator Pitch 黄金开场白）
+
+> "面试官您好，我在影石相机工程部通信组实习期间，核心参与的是 **Ace Pro 2 机型的 AI 修图功能**——让用户在相机上拍完照，不用掏出手机就能自动完成 AI 修图。这个功能跑在安霸 CV5x 双核异构 SoC 上：ThreadX 实时核承担 UCD 命令分发、MMC 事件编排与媒体管线，Linux 服务核承担 Wi-Fi 与云端上传，两核经 AmbaLink/RPMsg 控制面与 FrameShare 零拷贝数据面协同——AI 修图正是 AIP3.0 消费相机业务框架上的一个标准业务模块。
+>
+> **【项目背景与痛点】**
+> 这个功能的最大难点是：交互起点在相机上，而算力和生态在手机与云端。相机要驱动手机上的 App 干活，但移动端系统对后台进程有严格限制——App 大概率没在运行，甚至进程早被回收了。同时内测阶段双端只走 BLE，传一张结果图要 40 秒起，体验完全不可用。
+>
+> **【技术方案三大支柱】**
+> 针对这些痛点，我在三条主线上做了工作：
+> 1. **协议层**：基于 UCD 2.0 框架定义了 11 个业务命令码与 3 份 Protobuf 消息族，把业务语义和数据传输机制物理隔离；配合 CRC32 完整性校验、分片确认与滑动窗口重传，用批量推送加位图确认把逐片同步等待的拉式协议改成连发窗口，闭环了相机与 App 的全链路通信。
+> 2. **链路层**：架构上坚持控制面与数据面分离——控制面双端统一走 BLE 保证响应，数据面按平台能力选路。基于博通协议栈在内测 BLE 基础上为 Android 打通了 SPP、RFCOMM 数据通路，为 iOS 接入了 L2CAP CoC 高吞吐信道。优化上我们先用分段压测算出上行物理层利用率只有 10%，判定瓶颈在协议层而非射频，定位到拉式协议逐片等待和单批 32 片上限两个根因，做了四层优化，完整流程从约 58 秒压到约 38 秒，提升约 35%。
+> 3. **唤醒层**：解决了"用户在相机上点了修图，App 却没在运行"的问题。Android 基于 Companion Device 建立系统级设备关联，由系统拉起唤醒服务并执行 SPP 建链任务链；iOS 通过 iBeacon 区域监控唤醒 App 后建立 L2CAP CoC 通道。针对唤醒事件可能重复到达，设计了设备会话与业务任务双重门禁加全局串行队列的防重入结构。
+>
+> **【落地成果】**
+> 最终这套方案随 Ace Pro 2 机型上市交付，覆盖 Android 与 iOS 双端，支撑了从模板推荐、任务创建、权益扣费到成片回传的完整业务闭环，包括蓝牙断连与相机重启场景下的任务断点恢复。"
+
+---
+
+### 2. 工业级系统指标与实战性能量化大表（真机实测数据）
+
+> **使用场景**：面试官追问"你们链路到底多快"、"优化是怎么量化的"、"怎么保证可靠性"。
+> **核心原则**：所有数字区分**优化前基线、优化后实测、物理层上限**三个口径，绝不混用。
+
+| 指标维度 | 优化前基线 / 物理层上限 | 本项目实测（Ace Pro 2） | 实现与架构保障手段 |
+| :--- | :--- | :--- | :--- |
+| **蓝牙链路端到端流程** | 内测纯 BLE 方案约 58 秒 | **约 38 秒，提升约 35%** | 控制面与数据面分离 + SPP 数据通路 + 四层优化 |
+| **SPP 物理层吞吐上限** | 约 50KB 每秒 | 优化前实测仅 5.2 至 24KB 每秒 | 分段压测定性，判定瓶颈在协议层而非射频 |
+| **上行链路利用率** | 理论应接近 100% | 优化前仅 **10%**，为全链路最差一段 | 拉式协议逐片等待 + 单批 32 片上限是两大根因 |
+| **单分片承载量** | 1KB | **4KB** | `INSAPP_DATA_TRANSPORT_FILE_CHUNK_MAX_SIZE` 上调，分片数降为四分之一 |
+| **RFCOMM 接收 credit** | 7 | **32** | `BTA_JvRfcommStartServer` credit 上调，往返次数降为约四分之一 |
+| **跨批次空等** | 每批约 6 秒台阶 | **消除** | App 端取消 32 片上限 + 相机端 1 秒 watchdog 兜底 |
+| **iOS 单张 80KB 传输** | GATT 约 40 秒 | **L2CAP CoC 2 至 3 秒** | LE Credit Based 流式传输，SPSM `0x0083` + 六回调 |
+| **iOS L2CAP 接收 MTU** | GATT 约 517 字节 | **753 字节** | 连接应答时显式宣告本端接收能力 |
+| **协议完整性** | UCD 1.0 无协议头无校验 | **magic 粘包扫描 + CRC32 覆盖全域** | 固定 12 字节头，options TLV 最大 243 字节 |
+| **未授权接入防护** | 蓝牙地址可被观察伪造 | **六字节全等比对，失配即断链** | 授权时刻与重连时刻双重校验 + 持久化白名单 |
+| **链路瞬断自愈** | 瞬断触发完整重连，进度条回退 | **5 秒宽限期，用户无感** | 四态链路状态机 + 宽限期降级 |
+| **唤醒可达性** | App 进程被杀后无法响应 | **进程未运行可被系统拉起** | Companion Device 系统级关联 + iBeacon 区域监控 |
+| **唤醒防重入** | 重复广播导致并发建链与状态错乱 | **设备会话与业务任务双重门禁** | 两道门准入 + 全局串行队列 + 单通道执行器 |
+| **权益一致性** | 处理与扣费无事务，可能白送或白扣 | **三段式扣费，重试不重复扣** | 预扣锁定 + `task_id` 幂等键 + 失败释放锁定 |
+| **端到端耗时分布** | 蓝牙传输只占一部分 | 云端 AI 处理 **39 至 44 秒**为大头 | 通信层优化已接近收益上限，并行化是下一步方向 |
+
+---
+
+### 3. 两大技术深水区排障实战故事（STAR 法则）
+
+> **使用场景**：面试核心提问"你遇到的最难的技术问题是什么？怎么解决的？"
+> **核心原则**：严格按 **S 场景 → T 任务 → A 行动 → R 成果** 四步展开，行动部分必须体现"用数据定性、用排除法收敛"。
+
+#### 故事一（协议与吞吐深水区）：SPP 链路上行利用率仅一成的协议层瓶颈定位与四层优化
+
+* **Situation（背景情境）**：
+  我们基于博通协议栈为 Android 端打通了 SPP、RFCOMM 数据通路之后，按理说相比内测阶段的纯 BLE 应该有数量级的提升。但真机联调时发现，模板缩略图下行、宽图上行、结果图下行三段的耗时仍然不成比例——一张 88KB 的结果图要跑 9 秒左右，用户在相机上点完确认之后要盯着进度条看好久，反馈相当差。
+* **Task（冲突与故障）**：
+  我需要查明 SPP 链路的真实瓶颈到底在哪一层：是射频环境不行、是博通协议栈驱动有问题，还是我们自己的业务协议写得低效。定性错了，后面所有优化都会打偏——如果是射频问题就该换天线或降速保稳，如果是驱动问题就该找博通，只有定位到协议层才轮到我们自己动手改。
+* **Action（深入排查与重构行动）**：
+  1. **先用分段压测算一笔账**：我们把链路拆成三段，每段用固定数据量单独压测，不叠加业务交互。结果是——模板下行 190KB 用 8 秒，约 24KB 每秒，利用率 48%；宽图上行 40KB 用 7.3 秒，约 5.2KB 每秒，**利用率只有 10%**；结果图下行约 9.4KB 每秒，利用率 19%。而 SPP 物理层上限摆在那，约 50KB 每秒。
+  2. **用方向间差异定性**：这是整个排查最关键的一步推理。**如果瓶颈在射频或驱动，三个方向的利用率应该大致相当且都接近上限；现在方向之间差了近 5 倍——射频是公平的，等待不是**。所以瓶颈一定在等待时间上，也就是协议层的交互模式，而不是带宽。这一步直接排除了换天线、找博通两条路线。
+  3. **收敛到两个根因**：扒协议流程发现，一是**拉式协议**——相机发完一片必须等 App 显式发 `RequestData` 才能发下一片，40KB 按 1KB 分片就是 40 次完整往返，每趟往返的协议开销被重复支付 40 次；二是**App 端单批上限 32 片**，每多一批多约 6 秒跨批空等，文件超过 32 片立刻踩台阶，88KB 的结果图按 1KB 分片有 88 片，正好踩两次。
+  4. **按收益风险比排序落地**：第一刀切 App 端 32 片上限，它只是一行常量改动、风险最低，但直接消除跨批空等，单项收益 6 至 13 秒，同时在相机端加了 1 秒 watchdog 兜底，防止对端丢包时传输永久挂起；第二刀做调度去等待，把发送间隔定时器从 4 拍压到 1 拍、重试退避从 50 毫秒压到 10 毫秒、发送任务优先级从普通提到高，纯相机端单方改动；第三刀调 RFCOMM 参数，单分片从 1KB 提到 4KB、接收 credit 从 7 提到 32，这项要动博通 vendor BSP，风险中等所以放最后；第四刀做日志节流，每 16 片打一条而不是每片一条，**但异常路径的 ERROR 日志一条不节流**——省时间不能省掉排障能力。
+* **Result（成果与沉淀）**：
+  完整流程从约 58 秒压到约 38 秒，提升约 35%。更重要的是沉淀了两条方法：**"方向间利用率差异"是判断带宽型瓶颈还是等待型瓶颈的低成本手段**——不用抓包、不用上仪器，三组计时就能定性；以及**"先摘低垂果实"的优化排序原则**——先用最低风险拿到最大收益，把要动 vendor BSP 的中风险改动放到后面，即使受阻前面的收益已经落袋。
+
+---
+
+#### 故事二（跨设备与并发深水区）：相机主动唤醒后台 App 的任务链防重入与双端唤醒选型
+
+* **Situation（背景情境）**：
+  AI 修图的交互起点在相机上——用户在相机回放页点了修图入口，此时 App 大概率没在前台，甚至进程早被系统回收了。最初我们按普通思路做，Android 走蓝牙广播让 App 接收，结果在测试机上发现：App 被强杀之后广播根本没人收，功能直接不可用；就算保活勉强活着，快速连点入口也会触发多次唤醒，同时建出两条 SPP 链路，互相抢占蓝牙资源，绑定指令重复下发，状态机直接错乱。
+* **Task（冲突与故障）**：
+  我需要同时解决两个问题：**唤醒的可达性**——必须能在 App 进程完全不存在的情况下把它拉起来；**唤醒的幂等性**——唤醒事件天然可能重复到达（相机几秒内连续广播、蓝牙在边缘信号下反复触发在场回调、用户快速点退出再点进入），必须保证同一时刻只有一条任务链在执行。
+* **Action（深入排查与重构行动）**：
+  1. **双端机制选型**：Android 侧放弃普通广播——接收器随进程被杀，后台服务与隐式广播又被 Android 8.0 之后的限制封死，改用 **Companion Device**：这是 Google 为"App 与特定外设的关联"开的官方通道，监听与拉起由系统保底执行，不依赖 App 存活，且 `CompanionDeviceService` 的生命周期独立于主进程，系统能以最小代价先叫起"接线员"。iOS 侧普通后台 BLE 扫描有严格时长与频率限制，改用 **iBeacon 区域监控**——监听由系统持续执行，App 可以完全不在运行，代价是必须拿到位置权限，所以产品侧配套设计了拒绝授权时的降级路径。
+  2. **把唤醒后的动作从"一个动作"改成"一条任务链"**：唤醒成功不等于业务就绪，中间有严格的顺序依赖。我按 ActionType 路由，AI 修图对应 `0x03`，任务链是 SPP 建链、业务绑定、查询相机状态、亮屏、用户通知五步——SPP 必须最先建，否则后面没有通道；绑定必须在建链之后；亮屏和通知放最后，**通知提前弹出、后台还没建好链，是这类唤醒最常见的体验翻车**。每一步抽象成独立可取消的 `ActionTask`，新增唤醒场景只需实现任务并登记映射，唤醒框架一行不改。
+  3. **设计双重门禁解决重入**：一道门不够，因为去重维度不同。**设备会话门禁按设备去重**，挡住"同一台设备被叫醒两次"；**业务任务门禁按设备加业务去重**，挡住"同一设备上 AI 修图和 AI 滤镜同时抢链路"——这时设备会话是同一个、第一道门会放行，但两条业务链必须排队。两道门都通过才进全局串行队列，由单通道执行器串行执行。
+  4. **踩到并修掉三个实现级的坑**：**其一**，最初第二重门拒绝后直接 return，没有回滚第一重门，导致 `activeSessions` 里残留一个永远不释放的会话，该设备后续所有唤醒全被挡住，日志里只看得到"session exists"，根本查不出会话何时卡住——修复方式是拒绝时必须回滚上一道门；**其二**，门禁一开始写在执行器里，结果队列里堆满了注定失败的请求，白白空转，改为在 `submit` 入队前拦截；**其三**，`onDeviceDisappeared` 没有取消未开始的任务，设备走了任务还在排队，轮到它时建链失败并占住串行通道，把后续正常唤醒全堵死。
+* **Result（成果与沉淀）**：
+  四种进程状态（强杀、后台、从未启动、重启后未打开）下唤醒全部可达，快速连点压测下零并发建链、零状态错乱，状态机不再出现重复绑定导致的异常。沉淀出两条可复用的设计准则：**"系统执行的动作必须假定会重复到达"**——因为 App 对唤醒事件只有被动接收权，所有业务逻辑必须幂等且可取消；以及**"多维度去重要分层设门而不是合并成一道"**——每道门管一个维度，拒绝时必须回滚上一道门的准入，否则会留下无法回收的脏状态。
+
+---
+
+#### 故事三（媒体管线与嵌入式系统稳定性深水区）：回放页场景检测 4096×3072 Y2Y 缩放触发安霸 DSP vproc Tile Assertion 整机重启排障
+
+* **Situation（背景情境）**：
+  在 AI 修图从"拍时修（实时取景流）"拓展到"拍后修（相册回放页）"的联调阶段，开发团队引入了通过 `MEDIA_EVENT_AI_RETOUCH_PB_SCENE_DETECT` 事件从机内 DCF 照片（如 4096×3072 的 4K 原图）提取 `256×256` 场景检测小图的逻辑。在压力测试中，测试人员在回放页连续快速滑动照片并狂点 AI 修图入口时，相机发生偶发性**整机卡死并在 3 秒后硬件看门狗触发重启**。
+* **Task（冲突与故障）**：
+  由于 Ace Pro 2 是安霸（Ambarella）芯片平台的双核/多核异构架构（ARM Cortex-A 核跑 RTOS/Linux，DSP 跑视觉算法与多媒体编解码 vproc），整机看门狗重启意味着底层媒体驱动或 DSP 固件发生不可逆崩溃（Kernel Panic 或 DSP Assertion）。我需要抓取并解析 Crash 现场的串口 Log 与 CoreDump，查明触发 DSP 挂死的根因，并在不降低图片画质的前提下彻底解决崩溃。
+* **Action（深入排查与重构行动）**：
+  1. **解析 DSP CoreDump 与串口内核日志**：通过连接串口线捕获到崩溃瞬间日志：
+     ```text
+     [DSP ERR] vproc_scale_tile_calc: input_w=4096, input_h=3072, output_w=256, output_h=256
+     [DSP ASSERT] Assertion failed: (scale_factor_x <= MAX_DOWNSCALE_RATIO && scale_factor_y <= MAX_DOWNSCALE_RATIO) at amba_dsp_vproc.c:1428
+     [WATCHDOG] Bark! Rebooting system...
+     ```
+     崩溃现场明确指向安霸 DSP 的 **Y2Y（YUV to YUV）硬件硬件缩放器（vproc scaler）**。
+  2. **定位安霸 DSP 硬件缩放比极限**：安霸平台的硬件缩放引擎设计了基于分块（Tile-based）的下采样流水线，其单级硬件缩放器的最大降采样比例被硬件算力限制为 **8 倍（即下采样系数不超过 8:1）**。而从 `4096×3072` 直接一步硬缩放到 `256×256`，长宽缩小比率高达 **16:1**（`4096 / 256 = 16`），直接越过了 DSP 的单次分块下采样极限，触发了底层断言 `scale_factor_x <= 8` 崩溃！
+  3. **重构媒体层多级降采样流水线（Two-Stage Y2Y Cascade Pipeline）**：
+     在 `ins_mw_ai_retouch_main.c` 中重构图像缩放逻辑，严禁单步越级缩放：
+     - **第一级缩放**：利用安霸 DSP 硬件硬解 `StillDecode` 后，先将 `4096×3072` NV12 等比下采样至长边为 2048 的中间过渡帧 `2048×1536`（下采样比正好为 2:1，且该分辨率正好复用给后续阶段 4 的待修源图 WPV 缓存，避免重复解码！）；
+     - **第二级缩放**：再从 `2048×1536` 下采样至目标 `256×256` NV12（缩放比为 8:1，处于硬件安全阈值极限内）；
+     - **环形缓冲区保护**：针对快速滑动导致的突发事件堆积，在应用层 `ins_app_handler_aigc.c` 增加了单飞行任务控制门禁（In-Flight Guard），当前一张照片的 Y2Y 解码缩放未完成前，丢弃前序请求并只保留最新的一张，避免 DSP 任务队列溢出。
+* **Result（成果与沉淀）**：
+  在修复后进行了 2000 次连续回放页快速进出 AI 修图的自动化 Monkey 压测，DSP 崩溃率直接降为 **0 次**，且中间帧 `2048×1536` 的复用直接让阶段 4 待修源图的生成耗时节省了 **120ms**（省去了一次 4K 原图解码开销）。沉淀出嵌入式异构芯片排障经验：**"专用硬件加速器（DSP/NPU）往往存在严苛的步进比例与对齐约束，跨数量级的数据变换必须采用级联分阶段降采样策略"**。
+
+---
+
+#### 故事四（端云协议兼容与流控死锁深水区）：Generate_Task 返回 errorcode=2（自拼 HEIC 容器缺陷）及 18 模板下载 RFCOMM Credit 耗尽排障
+
+* **Situation（背景情境）**：
+  在 AI 修图进行端云全链路大联调时，连续踩到了两个致命阻断问题：
+  - **现象 A**：相机向 App 发起 `GenerateAiPhotoPsTaskRequest (0x207D)` 后，云端服务端在 1 秒内直接向 App 返回业务失败，App 透传给相机 `GenerateAiPhotoPsTaskResponse (0x00F2)` 中携带 **`error_code = 2 (FAIL)`**，导致任务无法创建，修图流程在第一步就直接中断；
+  - **现象 B**：阶段 3 在 App 向相机推送 18 个模板缩略图（约 280 个分片，共 200KB+）的过程中，传输在推到第 4~5 个模板时**必定卡死**，随后触发 `AI_RETOUCH_EVENT_TEMPLATE_RECEIVE_TIME_OUT` 15 秒超时失败。
+* **Task（冲突与故障）**：
+  这两个问题一个发生在端云业务语义层（云端无情拒绝图片），另一个发生在蓝牙协议栈传输流控层（通道静默挂死）。我需要分别端到端排查两个阶段的二进制字节流，恢复端云任务创建与多模板分片下发的连贯性。
+* **Action（深入排查与重构行动）**：
+  1. **排查现象 A（自拼 HEIC 容器结构缺失）**：
+     - **抓包与云端日志回溯**：查看云端 AI 服务日志，发现报错信息为 `image_decode_failed: invalid heic bitstream, missing color profile or SPS/PPS header`。
+     - **二进制对比分析**：在 Linux 上使用 `hexdump` 与 `mp4box -info` 严格对比机内生成的 `SCN_WPV_*.heic` 与 iOS 系统导出的标准 HEIC 文件。原来，相机端 IAC3 RTOS 为了追求极速生成，直接调用安霸硬件 HEVC 编码器输出了裸 NALU 码流（Annex-B 格式），然后在固件代码 `ins_mw_hevc_heif.c` 中通过手拼 ISO Base Media File Format（ISOBMFF）容器 box 构造 HEIC 文件。
+     - **定位根因**：手拼代码仅简单拼装了 `ftyp`、`hdlr`、`mdat` box，**漏掉了关键的 `pixi`（Pixel Information Box）、`colr`（Colour Information Box）以及未在 `hvcC` box 中正确注入 Extradata（SPS/PPS/VPS 关键参数集及 VUI 色彩元数据）**。手机 iOS 和 Android 系统自带的解码器具备容错能力可以解析，但云端大模型前置的 Python/Go 高性能图片网关使用的是严格的 `libheif/libde265`，校验失败直接判死刑返回 errorcode=2！
+     - **推进闭环方案**：在固件端完善 `ins_mw_hevc_heif.c` 的 ISOBMFF box 注入逻辑，严格补齐 `hvcC` SPS/PPS 序列参数与 `colr` box；同时，在 App 侧业务层增加兜底自愈防线：App 收到源图后先通过系统库试解，若检测到云端不支持的非标头，在 App 内存中利用平台编解码器重新封装为标准 HEIC（或在必要时无损转封装为最高质量 JPEG）后再上传云端 OSS，双重保证云端入参合法。
+  2. **排查现象 B（18 模板下载 RFCOMM Credit 耗尽死锁）**：
+     - **分析传输卡死点**：抓取蓝牙 HCI snoop log 和博通协议栈事件发现，App 向相机发送 `0x00EC` 分片时，相机端博通协议栈在收到第 35 个 RFCOMM UIH 帧后，停止向手机发送带有 Credit 的流控响应帧，手机端协议栈因为没有 Credit（可发送额度为 0）停止发包，而相机端在等数据，双方陷入死锁。
+     - **定位根因**：
+       ① 固件内部的蓝牙数据接收队列 `s_bt_rx_queue` 深度被硬编码为 32。当 App 连续高速推包时，由于相机端媒体层解码单张模板小图需要消耗十几毫秒 CPU，导致接收队列被填满；
+       ② 博通协议栈在初始化时配置的 `BTA_JvRfcommStartServer` 初始 credit 仅为 7，且在接收队列堆积时，没有及时调用 `BTA_JvRfcommFlowControl` 补充信用点，导致 RFCOMM 物理通道被反压机制彻底掐死；
+       ③ 此外，当时相机端的全局模板超时定时器设为 15 秒（`15000ms`），面对 18 张模板在受阻状态下的渐进式加载，极易误判超时。
+     - **流控与超时治理落地**：
+       ① 将 RFCOMM 初始 credit 从 7 上调至 32，优化 credit 归还逻辑，只要应用层从队列取出 1 片即刻归还 1 点 credit，保证发送窗口永远处于流动状态；
+       ② 应用层与媒体层引入**异步解码工单线程池（work_queue）**，网络收包与图像解码彻底解耦，网络线程收满一张模板的 chunk 立即打成完整包丢入工作队列，网络线程立刻返回继续收包；
+       ③ 将模板接收超时时间从 15s 宽限至 30s（`AI_RETOUCH_TEMPLATES_DOWNLOAD_TIMEOUT_MS = 30000U`），并落实"收齐满 5 张即提前唤醒 UI 上屏"的交互策略，彻底消除了卡死现象。
+* **Result（成果与沉淀）**：
+  双重问题修复后，`GenerateTask` 接口成功率从不可用的 0% 提升至 **99.8%**（仅剩手机无网导致的正常网络失败）；18 个模板缩略图（约 200KB）连续下载稳定性达 **100%**，整批下载耗时收敛在 **4.8 秒以内**，首屏 5 张模板展现时间压缩至 **1.8 秒**。沉淀出经验：**"跨平台二进制多媒体传输中，自研容器封装必须通过金标合规校验（Golden Master Verification）；而底层流控协议栈与上层业务高频收发之间必须设计生产者-消费者异步解耦防线"**。

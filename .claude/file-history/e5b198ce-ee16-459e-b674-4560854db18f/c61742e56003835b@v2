@@ -1,0 +1,612 @@
+# 架构设计：五层权责契约 v1
+
+> **文档状态**：v1 架构权威文档（2026-10-03 定稿）
+> **权威关系**：本文是产品分层权责与层间契约的唯一权威来源；领域对象语义仍以
+> `docs/产品定位-工业无线诊断网关.md` 为唯一权威来源，两者互补不冲突。
+> **适用范围**：后续所有 Prediction（预测）、Network Operations Council（决策）、
+> Web（呈现与交互）改动，均以本文契约为验收依据；违背本文分层的提案，应被
+> Code Review 直接驳回。
+
+---
+
+## 总则（一句话原则）
+
+> **事实只由 L1 产生；诊断只由 L2 产生；预测只由 L3 产生；动作权限只在 L4 收口；
+> L5 只执行已批准动作。执行结果只能作为新的 L1 事实回流。
+> Web 不推断、不裁决、不直接执行，只承载展示与人工审批。**
+
+这句话是本文档的最高条款。后续任何人提出"让 Council 顺便判断根因""前端按钮直接调
+`pending_actions`""预测模型顺便修改板端告警阈值"之类的建议，均以此句作答：
+**不属于这一层的权力。**
+
+---
+
+## 一、总架构图
+
+```text
+                 工业现场（唯一事实源）
+                      │
+      ┌───────────────▼────────────────┐
+      │ L1 OBSERVATION  观测层          │  ← WeakNet 边缘（C++ / eBPF）
+      │ 边缘实时观测，权威事实源       │
+      │ device_events / site_incidents  │
+      │ baselines / env_window / SLE    │
+      └───────┬────────────────┬───────┘
+              │                │
+    【契约A：事实下行】    【契约A：事实下行】
+              │                │
+      ┌───────▼───────┐  ┌─────▼──────────┐
+      │ L2 DIAGNOSIS  │  │ L3 PREDICTION  │
+      │ 诊断层        │  │ 预测层         │
+      │ 现在为什么坏  │  │ 未来可能怎样   │
+      │ Phase 4b      │  │ RiskWindow     │
+      └───────┬───────┘  └─────┬──────────┘
+              │                │
+   【契约B：Canonical】  【契约C：RiskWindow】
+              └────────┬───────┘
+                       │ 【契约D：CouncilInput（只读消费）】
+              ┌────────▼─────────┐
+              │ L4 DECISION      │
+              │ 决策层           │  ← Network Operations Council
+              │ 现在应该做什么    │     + Action Policy Validator
+              │                  │     + Risk Policy + Human Approval
+              └────────┬─────────┘
+                       │ 【契约E1/E2：ApprovedAction】
+              ┌────────▼─────────┐
+              │ L5 EXECUTION     │
+              │ 执行层           │  ← ActionRegistry / pending_actions
+              │ 板端安全落地     │
+              └──────────────────┘
+                       ▲
+                       │ 执行结果回流（只进 L1 作为新事实）
+      ┌────────────────┴───────────────────────────────┐
+      │ PRESENTATION & HUMAN INTERACTION PLANE         │
+      │ 展示与人工交互平面（横跨 L1~L4，非数据处理层）   │
+      │ · READ L1 / L2 / L3 / L4                        │
+      │ · 人工审批意图 → 回流至 L4 Approval Service       │
+      │ · 永远不产生推断、不裁决策略、不直接触发 L5       │
+      └───────────────────────────────────────────────┘
+```
+
+---
+
+## 二、五层职责与禁止项
+
+| 层 | 可以做 | 绝对不可以做 |
+|---|---|---|
+| **L1 Observation** | 采数据、记事件、算基线、聚合区域事故、接收 L5 执行结果作为新事实 | 不猜原因、不做预测、不下发动作 |
+| **L2 Diagnosis** | 解释现象、产出 `Pattern + Hypothesis + Confidence` | 不控制设备、不预测未来、不改写历史事实 |
+| **L3 Prediction** | 基于时序趋势产出 `RiskWindow` | 不改变 L2 的诊断结论、不引用未观测指标当事实、不承诺未校准的 TTF |
+| **L4 Decision** | 消费契约 B/C/D 输入、提出动作建议（**建议权**）；Policy 产出准入决定（**准入权**）；人工产出批准（**批准权**） | Council 不发现新事实、不创造新根因；Policy 不篡改事实与历史；任何环节不越过 Approval 直接触达 L5 |
+| **L5 Execution** | 只执行 `ApprovedAction`，并把执行结果作为新事实回流 L1 | 不接受未经批准的动作、不自行判断动作是否合理 |
+
+**权力四分立（L4 内部，防止任何单一 LLM 跨权）**：
+
+```text
+Council    —— 建议权（recommended_action + rationale）
+Policy     —— 准入权（allowed / risk / preconditions / approval_required）
+Human      —— 批准权（approved_by / approved_at）
+Execution  —— 执行权（generation / nonce / claim_token 防重放）
+```
+
+没有任何一个 LLM 能独立跨完这四层。
+
+### L1/L2 边界：状态归约 vs 根因假设
+
+端侧 SLE / Assurance 引擎到底属于 L1 还是 L2，按以下判断标准拍死：
+
+> **L1 可以做确定性的状态归约和异常维度定位，但不得产生物理根因 Hypothesis。**
+
+具体而言：
+
+- `AssessmentSnapshot` 可以属于 L1。`reliability = BAD` / `state = DEGRADED` /
+  `packet_loss = 4.2%` 这类输出不是传感器原始值，但它们是**确定性规则对事实状态的
+  归约**，仍是 factual assessment：
+  ```text
+  Raw Observation → Deterministic Assessment → L1 factual state
+  ```
+- `primary_issue` 必须按语义切分：
+  - `PRIMARY_ISSUE = PACKET_LOSS`（哪个已测指标导致状态门禁失败）→ 属于 L1；
+  - `PRIMARY_ISSUE = RF_INTERFERENCE` / `GATEWAY_STACK_STALL`（回答"为什么坏"）→
+    属于 L2。
+
+归属示例表：
+
+| 归属 | 示例 |
+|---|---|
+| **L1** | `GOOD / DEGRADED / BAD`、`packet_loss_violation`、`latency_violation`、`LinkDegraded` |
+| **L2** | `COEXISTENCE_RF_INTERFERENCE`、`HOST_STALL`、`DISTANCE_OR_SHADOWING` |
+
+此边界固化后，端侧 SLE 与 Phase 4b 永远不会"抢解释权"。
+
+---
+
+## 三、层间契约
+
+### 契约 A：L1 → L2/L3（事实下行，只读）
+
+复用已建成的 `IncidentEvidenceBundle`（`network_assurance/wireless_contracts.py`）：
+
+```text
+incident (SiteIncidentView)
++ qualifying_events (WirelessEventView[])
++ baselines (BaselineView{})
++ environment (EnvironmentWindowView)
+```
+
+- 来源表：`network_wireless_events` / `network_site_incidents` /
+  `network_device_baselines` / `network_env_windows`（四张权威事实表）；
+- **约束**：L2/L3 只读，永不回写四张事实表。Phase 3a 固化的不变量
+  （`site_incidents.suspected_cause` 恒 NULL）即本契约的既有实例。
+- **权威事实源不变量（正式定义）**：
+
+  > L1 内部对象可以依据自己的领域生命周期合法演进；下游 L2/L3/L4/L5
+  > 不得为了适配诊断、预测或决策结果反向修改 L1。
+
+  各对象的合法演进形态：
+  - `WirelessDeviceEvent` —— 近似 immutable（一旦落库不再变更）；
+  - `SiteIncident` —— 按 `OPEN → ONGOING → RESOLVED` 生命周期演化；
+  - `DeviceBaseline` —— 随新观测持续更新（含追加式变更历史）；
+  - `EnvironmentWindow` —— 滑动窗口式更新；
+  - `NetworkActionOutcome`（迁移 `0094`）—— **append-only 执行事实**：一次
+    L5 执行实例的终态回执（`APPLIED/REJECTED/ROLLBACK`）在同一事务里
+    投影为 L1 行。它记录"网关上被报告发生了什么"，不判断动作是否正确、
+    安全或有效（`APPLIED` ≠ 故障已修复）。
+
+### 契约 B：L2 → L4（当前诊断）
+
+复用 `CanonicalDiagnosis`（Phase 4b 已实现，不变）：
+
+```text
+observed_pattern + hypothesis + confidence(HIGH/MEDIUM/LOW/INSUFFICIENT)
++ evidence_ids + deterministic_reasons + device_findings
+```
+
+- 纯确定性规则先决裁，LLM 只润色 `DiagnosisPresentation`，W1~W6 护栏把关。
+
+### 契约 C：L3 → L4（未来风险 PredictionResult）【v1 修订：结构化 + 三态语义】
+
+`PredictionResult` 是联合类型，**不是单一模型**。三态互不混淆：
+
+```text
+PredictionResult = RiskWindow | InsufficientPrediction
+```
+
+```text
+RiskWindow {
+    subject_type: DEVICE | SITE       # v1 只支持 DEVICE；SITE 保留枚举但返回 Unsupported
+    subject_id
+
+    risk_level: LOW | MEDIUM | HIGH   # 注意：不含 INSUFFICIENT/UNKNOWN
+
+    window_estimation_status: AVAILABLE | UNAVAILABLE
+    window_earliest_hours: int | null # 仅 AVAILABLE 时非空（机器可读，禁止 "24-72h" 字符串）
+    window_latest_hours: int | null   # 仅 AVAILABLE 时非空
+    forecast_horizon_hours: int       # 预测视野，恒为 168
+
+    prediction_confidence: LOW | MEDIUM | HIGH    # 与 risk_level 必须分离
+    data_sufficiency: PARTIAL | SUFFICIENT        # INSUFFICIENT 走 InsufficientPrediction
+
+    drivers: [{
+        metric,
+        contribution_pct,            # 产品文案一律称"风险驱动贡献度"
+        direction,                   # DETERIORATING | STABLE
+        evidence_ids
+    }]
+
+    trend_evidence: [...]            # 事实性趋势证据（如基线连续下降）
+
+    failure_criterion_id             # 失效判据的标识
+    failure_criterion_version        # 判据版本（判据演化可追溯）
+    model_version                    # 含参数指纹（阈值变化必使指纹变化）
+    generated_at
+}
+
+InsufficientPrediction {
+    subject_type, subject_id
+
+    data_sufficiency: INSUFFICIENT   # 无风险判断产生
+    missing_requirements: [...]      # 具体缺什么（哪项指标、哪项资格条件）
+    available_evidence_ids: [...]
+
+    model_version
+    generated_at
+}
+```
+
+**三态判定（互不混淆）**：
+
+| 情形 | 产出 |
+|---|---|
+| 风险无法判断 | `InsufficientPrediction`（**系统没有产生风险判断**） |
+| 风险可判断，但时间速度不可估 | `RiskWindow`（`risk_level` 有值，`window_estimation_status = UNAVAILABLE`，窗口为 null） |
+| 风险与时间均可估 | `RiskWindow`（`window_estimation_status = AVAILABLE`） |
+
+> **"没有风险判断"与"有风险判断但不知何时越界"是两件事，绝不合并。**
+> "证据不足"不是第四种风险等级。
+
+**契约 C 的七条纪律**：
+
+1. **`risk_level` 与 `prediction_confidence` 必须分开**：可能出现"风险 HIGH、置信度
+   LOW"（单一指标恶化 + 历史数据不足）。此思想与 L2 的 `Hypothesis + Confidence`
+   一脉相承。
+2. **第一版不承诺 TTF**：只交付"风险窗口"（`window_earliest_hours ~ window_latest_hours`）。
+   严禁输出 `预计 48 小时后断连` / `RUL = 51.3h` 这类确定性倒计时。
+3. **失效判据 = 相对退化 + 业务影响**，与 Phase 2 纯相对基线原则一致：
+   绝对值（如 RSSI ≤ -90）只能作为 feature 之一，禁止作为全系统统一 failure truth
+   （基线 -45 与 -82 的设备，绝对值语义完全不同）。判据本身以
+   `failure_criterion_id + version` 显式声明、可演进，并**实际驱动窗口估计**：
+   按判据各必需组件分别外推 crossing 时间，再按 AND（取 max）/ OR（取 min）聚合；
+   单个 feature 达 1.0 **不等于** failure。任一必需组件无法可靠外推 →
+   `window_estimation_status = UNAVAILABLE`，不得改用最坏 driver 兜底。
+4. **`contribution_pct` 的产品文案固定为"风险驱动贡献度 / 模型贡献度"**，
+   严禁写成"原因占比"——它只表示对模型输出的贡献，不表示现实故障的因果配比。
+   v1 确定性算法：`raw_i = weight_i × normalized_degradation_i × trend_strength_i`，
+   仅对实际存在且有效的指标归一化（Σ = 100% ± 1%）；**缺失指标不进分母、不当 0**。
+5. **`HI_link` 健康指数降级为模型内部变量**：可参与拟合，但不是产品主指标；
+   Web 主指标必须是 `risk_level + drivers`（可解释），不得以 `0.43` 这类裸分数作答。
+6. **L3 的双基线域**：`operational_baseline`（Phase 2 自适应中位数）只服务 L1/L2
+   状态判定；L3 观察的是 `prediction_reference`（窗口起点时**有效的成熟 baseline**）
+   与其后的 `baseline_trajectory`。**绝不用 `current_rssi − current_baseline` 宣称
+   发现慢性衰退**——自适应基线会把 -60→-64 的漂移吃掉，差值恒为 -1/-2dB。
+7. **参数指纹不可省**：slope 阈值、最小样本数、窗口尺寸、连续窗口数、权重、判据参数
+   等**任何会改变输出的参数**都必须进入 `model_version` 指纹；否则 threshold 从 0.3
+   改到 0.5 却仍声称同一版本，历史结果无法复现。
+
+### 契约 D：CouncilInput（L2 + L3 + 运维约束 → L4）【v1 修订：增加 DecisionEvidenceContext】
+
+```text
+CouncilInput {
+    canonical_diagnosis                 # 契约 B
+    risk_window                         # 契约 C
+
+    evidence_context {                  # DecisionEvidenceContext（只读事实上下文）
+        diagnosis_evidence_ids
+        prediction_evidence_ids
+
+        rf_facts        # 来自 L1 的空口事实（Wi-Fi 丢包、频段冲突警告、RSSI 基线…）
+        kernel_facts    # 来自 L1 的内核事实（进程画像 Top N、skb_drop 归因…）
+        device_facts    # 来自 L1 的设备事实（断连原因、事件时序…）
+    }
+
+    operational_constraints {           # 资产桥 + 生产约束
+        affected_assets
+        production_critical
+        action_registry_whitelist       # 板端 ActionRegistry 白名单（技术可执行域）
+        config_whitelist                # 板端可调参数白名单
+    }
+
+    knowledge_context                   # RAG，可选，只作参考
+}
+```
+
+**`knowledge_context` 的定位（与 evidence 的硬边界）**：
+
+```text
+knowledge_context ≠ evidence ≠ source of truth
+```
+
+- RAG 检索到的既往案例可帮助专家"解释得更好、建议得更好"，但**绝不混入
+  `evidence_context` / `source_bindings`，也绝不进入 W1~W6 护栏认可的 Evidence ID 集合**；
+- 历史案例不能让当前事故被直接判成同类原因——历史是参考书，不是证据。
+
+**为什么需要 `evidence_context`（防止三个专家失去存在价值，同时防止 Council 演变为第二套诊断系统）**：
+
+- 若 RF/Kernel 专家只能读已总结好的 Diagnosis，则无"专家会商"可言；
+  若任其自由读取一切原始指标并自行解读，则 Council 又变成第二套 Diagnosis。
+- 折中解：**Council 可以引用、比较、权衡 L1 已存在的事实，但不能生成新的
+  `ObservedPattern` / `Hypothesis`**。
+  - 允许的表述（引用事实作判断依据）：
+    > "内核事实 K12 显示 Gateway 协议栈未见异常，因此重启 Gateway 的收益依据不足。"
+  - 禁止的表述（创造新根因）：
+    > "新的根因是 USB controller crash。" ← 除非 L2 已形成该 hypothesis。
+
+所有 `*_facts` 必须来自 L1 已落库事实，带 `evidence_ids` 可回溯。
+
+### 契约 E：L4 内部与 L4 → L5【v1 修订：拆分为 E1 / E2】
+
+#### E1：Council → Policy（只有建议权）
+
+```text
+ActionProposal {                      # Council（LLM 群体）的全部输出
+    action_id | (config_key, config_value)   # 必须命中板端白名单
+    rationale                           # 为什么建议
+    proposed_preconditions              # 专家认为的执行前提（仅建议）
+    source_bindings                     # 绑定的 diagnosis_evidence_ids / prediction 窗口
+}
+```
+
+Council **只说"我建议做什么、为什么"**。它**不产出** `risk`、不产出
+`approval_required`——那属于策略域，LLM 无权决定。
+
+#### Policy：Action Policy Validator + Risk Policy（准入权）
+
+```text
+ActionDecision {
+    normalized_action
+    allowed: bool
+    risk: LOW | MEDIUM | HIGH              # 由 Risk Policy 计算，非 LLM 给出
+    required_preconditions
+    approval_required: bool                # 由 Risk Policy 计算
+    block_reason                           # 不允许时必填
+}
+```
+
+固定管线：
+
+```text
+ActionProposal
+    → Action Policy Validator（白名单 + Schema 校验）
+    → Risk Policy（情境规则，如 production_critical && affected_devices>10
+                   → 强制 approval_required=true）
+    → ActionDecision
+```
+
+职责切分：**`ActionRegistry` 只回答"技术上可执行什么"；
+Risk Policy 回答"当前情境允许不允许"。**
+
+执行通道边界（**刻意的工业安全边界，不是接入缺口**）：
+
+```text
+CONFIG_CHANGE（白名单配置键值，板端 180s 试用看门狗保护；
+               健康评估 UNKNOWN 时最多延长一次窗口至 2×，仍非 GOOD 则回滚）
+  → ExecutionMode.REMOTE_PENDING_ACTION：审批通过后可远程下发执行。
+
+ACTION_ID（命令执行类：CHECK_RESOLVER_CONFIG / PROBE_PUBLIC_RESOLVER /
+           INSPECT_DEFAULT_GATEWAY / RESTART_NETWORK_INTERFACE）
+  → ExecutionMode.MANUAL_RUNBOOK：审批通过后只生成 Runbook 手册，
+    由现场工程师在板端 weaknet-cli action <ACTION_ID> 人工执行；
+    /execute 对此类提案固定返回 409 manual_execution_not_allowed。
+```
+
+`action_policy.py::_execution_mode_for` 按提案种类**硬编码**这条分叉。
+云端不存在、也不会新增"远程执行命令"通道；把 ACTION_ID 升级为远程执行
+需要独立的威胁建模与新契约（generation/claim_token 之外的命令级防护），
+属于另立议题，不因 Council 能产出该类提案而默认开通。
+
+#### E2：L4 → L5（唯一合法的执行入口）
+
+```text
+ApprovedAction {                         # 人工批准后才生成
+    normalized_action
+    decision_id                           # 溯源至 ActionDecision
+
+    risk
+    satisfied_preconditions
+
+    approved_by
+    approved_at
+
+    generation                            # 板端防重放高水位
+    nonce
+    claim_token
+}
+```
+
+**只有 `ApprovedAction` 才允许进入 L5（`pending_actions` 队列）。**
+板端现有安全链（generation 门禁 / claim_token 绑定 / 终态不可变回执）原样生效。
+
+---
+
+## 四、Presentation & Human Interaction Plane（原 L0 重命名）
+
+不再称为 "L0 Presentation"，因为它是**横跨 L1~L4 的展示与人工交互平面**，
+不是数据处理层。
+
+**权限定义（修正版，替代"Web 永远只读"这一矛盾表述）**：
+
+> **Web 无推断权、无策略裁决权、无直接执行权；
+> Web 只展示各层产物，并作为人工意图与审批的交互入口。**
+
+```text
+Web
+ ├─ READ L1（事实）
+ ├─ READ L2（诊断）
+ ├─ READ L3（预测）
+ ├─ READ L4（提案 / 决策）
+ │
+ └─ Human approval intent（人工审批意图）
+              ↓
+        L4 Approval Service
+              ↓
+        ApprovedAction（契约 E2）
+              ↓
+           L5 执行
+```
+
+**绝对禁止的捷径**：`Web → pending_actions`。
+所有执行必须走 `Web → L4 Approval → ApprovedAction → L5`。
+
+**信息呈现顺序（工业运维 UI 铁律）**：
+
+```text
+事实（WHAT） → 影响范围 → 确定性模式（PATTERN） → 推断假说（HYPOTHESIS）
+→ 证据（EVIDENCE） → AI 解释 → 建议动作（ACTION） → 未来风险（FUTURE RISK）
+```
+
+现场人员第一眼必须看到"7 台设备异常，持续 42 秒"，而不是"综合分析表明……"。
+AI 报告永远排在事实与证据之后，不得占据页面首屏主位。
+
+### 板端现场交互终端（v1.2 新增，2026-11-07）
+
+展示平面有两个**物理落点**，权限完全相同，只是位置不同：
+
+| 落点 | 位置 | 输入设备 | 权限 |
+| -- | -- | -- | -- |
+| 云端 / Web | 远端 | 键鼠 + 大屏 | 展示 + 人工审批意图 |
+| 板端本地面板（`qt_dashboard`） | 网关机柜现场 | HDMI + 触摸（或鼠标） | **仅展示 + 展示态切换** |
+
+**板端面板的能力白名单**（与 `docs/产品定位-工业无线诊断网关.md` 第三节之二逐条一致，
+不在此表内的交互一律不做）：
+
+| 允许 | 归属 | 为什么合规 |
+| -- | -- | -- |
+| 维度切换（显示哪个指标） | 纯本地 UI 状态 | 不产生事实、不触达任何层 |
+| 时间窗切换（1h/6h/24h） | 只读查询 L1 历史 | 只读，参数变化不改变服务端状态 |
+| 截图 / 导出当前快照 | 搬运已有 L1 事实 | 不加工、不推断，与"复制粘贴"同级 |
+| 查看历史与事故详情 | READ L1 / READ L2 | 与远端 Web 同权，仅换展示位置 |
+
+**禁止项与本节总则逐条对应**，不得以"现场方便"为由放行：
+
+```text
+板端面板 → pending_actions        ❌ 违反"绝对禁止的捷径"（动作权限只在 L4）
+板端面板 → 改阈值 / 改配置         ❌ 属设备管理，产品定位第二节已排除
+板端面板 → 重启服务 / 触发重连     ❌ L5 执行权
+板端面板 → 自行产出根因推断        ❌ L2 诊断权（只展示 L2 已产出的结论）
+```
+
+> **为什么必须在契约文档里写这一节**：交互能力一旦存在，"顺手加个按钮"的压力会持续
+> 出现。展示平面横跨 L1~L4，边界天然模糊——它有 READ 权限去读四个层，于是很容易被
+> 顺延理解成"也能写回去"。本节把板端面板的能力边界与远端 Web 对齐到同一句话：
+> **只展示各层产物 + 人工审批意图；板端面板连审批入口都没有**（审批只在远端 Web）。
+
+> **触摸是这一节的输入设备，不是新能力层**：板端面板的存在先于触摸（它已能用 HDMI +
+> 鼠标运行）。触摸只是让它在"戴手套、无台面、面板密封"的现场条件下可操作。
+> 没有触摸时面板降级为只读展示，能力白名单不变。
+
+---
+
+## 五、组件级约束映射（对既有与规划中代码的约束）
+
+| 模块 | 现状 | 按本文契约的要求 |
+|---|---|---|
+| Phase 1/2/3a 事实层（C++） | 已实现 | 无需改动，本就是 L1 的基准实现 |
+| Phase 4b 诊断（`wireless_rules.py` 等） | 已实现 | 无需改动，B 契约的基准实现 |
+| 事实表与诊断表物理隔离 | 已实现 | 无需改动，契约 A 的基准实现 |
+| 动作下发安全链（generation/nonce/claim_token） | 已实现 | 保留为 E2 的 L5 防线 |
+| ~~`predictive_maintenance/wireless_rul.py`~~ | 已**退役删除**（输出 `predicted_rul_hours` 与"预计 X 小时失效"，违反纪律 2） | 由下方 L3 实现整体取代 |
+| L3 实现（已落地） | `network_assurance/risk_window.py`（确定性趋势检测 + FailureCriterion 驱动窗口估计）、`network_assurance/metric_history.py`（MetricHistoryProvider：change-log seed/carry-forward + snapshot evidence 抽取）、`persistence/models.py` 的 `NetworkDeviceBaselineHistoryRecord`（append-on-change 轨迹源，迁移 `0091`） | 已按契约 C 落地：三态 `PredictionResult`、`window_estimation_status`、独立置信度、参数指纹、缺失不进分母 |
+| ~~`MetricFeatureRegistry`~~ | 由 `MetricFeatureContract` 取代（声明式） | 每项指标声明数据来源、时间戳语义、缺失策略、**基线域**（operational vs prediction_reference）、正常值、failure 阈值与语义、适用主体、权重与判据成员资格；物理语义不同的指标不得只换字段名 |
+| Web `Tab 3: RUL` → **链路预测（L3 风险窗口）** | ✅ 已落地：真实端点数据替换 HI 占位圆环 | HI 不再出现在产品主位；展示 `risk_level + 置信度 + 风险窗口 + 驱动贡献度`，证据不足如实显示"未产生风险判断" |
+| Web 整体 | 事故行 → **Incident Detail Page**（已建：`/network/{assetId}/incidents/{incidentId}`） | ✅ 事故详情按第四节顺序呈现（事实→模式/假说→证据→AI 解释→建议→未来风险），抽屉重复渲染路径已删除；网关页保留为工作台摘要入口 |
+| Council（`council_contracts/network_council/edge_action_catalog` 等） | ✅ 已落地（④） | `CouncilInput` 含 `DecisionEvidenceContext` + `knowledge_context`（进指纹不进证据）；`ActionProposal` closed 结构**无** risk/approval/hypothesis；E1 Catalog 校验 fail closed |
+| Council 角色（RF/Kernel/Ops/Coordinator） | ✅ 已实现（④，含 `network-operations-council-v1` 提示词包） | 专家价值来自对 L1 事实的引用比较，而非重新诊断；越权字段由 closed schema 在 parse 阶段拒绝 |
+| Policy/Approval/Execution（`action_policy` / `network_action_approval` / `0093` / 4 端点） | ✅ 已落地（⑤） | 所有 E1 提案（含 BLOCKED）先铸造 `proposal_id` 与不可变快照（id=事件身份，digest=内容身份）；`ActionDecision` 机器裁决（`risk_policy_version` 进审计）与 `approval_decision` 人裁分表；`allowed=false` 零审批行；Approval 绑定 `decision_id + decision_digest + normalized_action` 快照；`ApprovalBindingGuard` 直调零复制；`EXPIRED` 为真实存储态（独立事务 lazy transition）；REMOTE 只收幂等键、载荷读批准快照、同键幂等 DB 兜底；MANUAL 永远 `NOT_EXECUTED`、runbook 从批准快照生成；`APPROVE_NETWORK_ACTION`/`EXECUTE_NETWORK_ACTION` 分权；force 新 attempt 旧审批 `SUPERSEDED` |
+| 网关目录版本漂移（`network_gateway_catalog_versions` / 迁移 `0095`） | ✅ 已落地 | `action_policy` 的「云端审阅目录 != 网关宣称目录 → `allowed=False`」此前**永不触发**（云端不设置该值、网关不上报）。现由板端按同一规范载荷算出 SHA-256 前 12 位随无线事件上行自述，云端落库并在 `build_request_from_tables` 读入会商输入，这条 fail-closed 防线才真正具备输入源。缺失=不阻断（缺数据不等于漂移）。契约见 `docs/网关动作目录版本契约.md` |
+
+---
+
+## 六、分阶段路线图
+
+```text
+① 五层架构契约正式落盘（本文档，v1）  ✅ 已落地
+        ↓
+② 重构 RiskWindow（~~wireless_rul.py~~ → `risk_window.py` + `metric_history.py`
+   + 基线历史迁移 `0091` + 声明式特征契约 + 10 项验收测试）  ✅ 已落地
+        ↓
+③ Incident Detail Page（L2 诊断 + L3 预测合并为单一现场运维视图）  ✅ 已落地
+        ↓
+④ Network Operations Council（契约 D 输入，E1 输出）  ✅ 已落地
+   （止于 ActionProposal[] 落库：closed schema + E1 Catalog 校验 + typed
+    source_bindings + 指纹幂等 + fail closed；Live 冒烟真实模型 7 条合法建议）
+        ↓
+⑤ Action Policy + Risk Policy + Approval（E1 → ActionDecision → E2）  ✅ 已落地
+   （ProposalRecord 含 BLOCKED → DecisionRecord（policy_decision）→
+    ApprovalRecord（绑定 decision 快照，approval_decision 分表）→
+    REMOTE queue_action / MANUAL runbook；EXPIRED 真实存储态；
+    Web WHAT NEXT 段内嵌 CouncilPanel）
+        ↓
+⑥ 端到端闭环验证（Observe → Detect → Diagnose → Predict → Decide
+                  → Approve → Execute → Observe）  ✅ 已落地
+   （先补齐闭环最后一跳：`network_action_outcomes`（迁移 `0094`）把 L5
+    终态回执投影为 append-only L1 事实；随后五条场景 trace
+    REMOTE_HAPPY / MANUAL_RUNBOOK / POLICY_BLOCKED / APPROVAL_INVALID /
+    ISOLATION 覆盖"存在的边"与"不存在的边"，报告器
+    `scripts/verify_end_to_end_trace.py` 输出 TRACE OK / BREAK / PARTIAL）
+```
+
+### ⑥ 补充：2026-10-08 真机排练复核（真实数据 + 真实模型）
+
+> **本节记录已被下一节取代（2026-10-09）。** 远端腿当天不可得（当时三次会商
+> 只产出 `ACTION_ID`、`recommendation_direction` 亦未设上限约束）；
+> 2026-10-09 在另一 incident 上取得真实 `CONFIG_CHANGE → REMOTE_PENDING_ACTION`
+> 闭环，见下一节。本节保留以记录问题演进过程，其中"远端腿需可控 fixture"
+> 的结论**不再成立**。
+
+在真实板端 incident 上重跑了一遍链路，结论按「真实可得 / 人工注入」分开记：
+
+- **真实跑通的上游段**：板端真实 BLE 断连事件（2 台设备亚秒级同步 `CONNECTION_TIMEOUT`）
+  → `SiteIncident` → 规范化诊断（`HIGH` / `COEXISTENCE_RF_INTERFERENCE`，`llm_used=true`，
+  guardrail `ALLOWED`）→ 真实模型会商（attempt 2、3 成功）→ 2 条 `ACTION_ID` 提案
+  → Policy 裁决（`LOW` / `MANUAL_RUNBOOK`）→ 审批（`APPROVED` / `REJECTED`）。
+- **真实触发的安全边界**（非 fixture）：SoD 自批 403 `separation_of_duties`；
+  `REJECTED` / `SUPERSEDED` 审批被 409 `approval_conflict` 拒；MANUAL 走 `/execute`
+  409 `manual_execution_not_allowed`；runbook 恒 `execution_status=NOT_EXECUTED`；
+  旧 attempt 审批被新 attempt 置 `SUPERSEDED`；异幂等键 409 `idempotency_conflict`、
+  同键重放 `idempotent_replay=true` 不产生第二条 pending action；陈旧 `If-Match`
+  409；未知 `proposal_id` 404。
+- **远端腿（CONFIG_CHANGE → REMOTE_PENDING_ACTION）在本 incident 上不可得**：
+  `action_policy` 把 `CONFIG_CHANGE` 写死映射为 REMOTE、`ACTION_ID` 写死映射为 MANUAL，
+  而超时类 incident 的真实模型只产出 `ACTION_ID`（三次会商均如此）。
+  故当前库中唯一的 REMOTE 链是**人工注入 fixture**
+  （`proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'`，`proposal_index=10`，
+  digest 为占位串，不在 council 落库的 `proposals_json` 内）——
+  **它不构成真实 Council 闭环证据**，远端腿需可控 fixture 另行设计。
+- **会商脆弱性**：`recommendation_direction` 上限 1000 字符虽已写入 system prompt，
+  模型仍偶发超长导致 `COUNCIL_SCHEMA_PARSE_FAILED` + fail-closed 409
+  （10-07 五次会商中四次失败）；`?force=true` 重跑通常可成功。
+
+### ⑥ 补充：2026-10-09 真实全链闭环验收完成（云端 → 板端 → 回流）
+
+上一节的遗留问题（远端腿只能是 fixture）**已消除**。在 incident
+`sitinc_radxa-cubie-a7a_1791472968` 上跑通了完整的真实闭环，远端腿为真实
+Council 产出、非人工注入：
+
+```text
+INCIDENT      sitinc_radxa-cubie-a7a_1791472968        state=OPEN, affected_devices=2
+DIAGNOSIS     wdiag_sitinc_..._26c224ed84c6            SUB_SECOND_SIMULTANEOUS_DISCONNECT / MEDIUM, llm_used=true
+COUNCIL       ncouncil-5f5180a7598a48f0                REVIEW_PENDING / COORDINATOR_DONE, attempt_count=3
+PROPOSAL      ncprop-5f5180a7598a48f0-a3-2             CONFIG_CHANGE rssi.interval=1000（真实模型产出）
+ACTION_DECISION ncdec-29446c303418f82db83b9ed0         ALLOWED / LOW / REMOTE_PENDING_ACTION
+APPROVAL      ncapp-4df6b44e3ed926f45d0a9a68          APPROVED, approved_by=second-engineer-approver
+PENDING_ACTION nact-3642ed5382964233ba301d58664a1e18  APPLIED, proposal_id 指向真实提案
+ACTION_OUTCOME nout-e850c9d725fd4eeda6be9b2c8080769d  APPLIED, generation=3
+```
+
+- **报告器判定 `TRACE OK`**（`scripts/verify_end_to_end_trace.py --trace-report`，
+  退出码 0，9 条 edge 断言 + 3 条真实执行断言 + 5 条安全边界断言全过）。
+  其中两条核心不变式在真实数据上成立：
+  `l5_terminal_fields_match_l1_projection`（L5 终态与 L1 投影的
+  `status` / `completed_at` / `config_key` / `config_value` 逐一相等）与
+  `council_provenance_reaches_l1_fact`（outcome 的 `proposal_id` / `approval_id`
+  直达会商出处）。
+- **板端现场生效**：`weaknet-cli get rssi` 实测返回
+  `{"rssi":{"enabled":true,"interval_ms":1000}}`，与下发参数一致。
+- **SoD 靠正式角色边界而非临时权限维持**：提案人为 `rehearsal-operator`、
+  批准人为 `second-engineer-approver`，两者不同主体；排练临时 `TENANT_ADMIN`
+  已收回，恢复为生产最小权限 `AFTER_SALES_ENGINEER`。
+- **探测目标自证约束（重要）**：本 incident 的**事件载荷是排练构造物**——
+  物理蓝牙断连会被 `QualifyingAnomalyPolicy::qualify` 判为计划内断开而排除，
+  且 `site_incident_correlator` 要求 `min_affected_devices >= 2`，
+  故本批事件由一个**用板端真实私钥 `edge_priv.pem` 签名**的上行批次注入
+  （2 条并发 `CONNECTION_TIMEOUT` + 1 条 OPEN `SiteIncident`）。
+  也就是说：入口是**真实签名链路**（Ed25519 验签、真实 ingestion 路由、
+  真实持久化），但**不含一次现场物理断连**。两个从设备地址
+  `D0:62:2C:5F:BC:4D` / `D0:96:EA:52:30:AC` 与 `btev_demo_*` 事件 ID 同理。
+  其引用的 `nsnap-*`（`network_snapshots`）与 `nblh-*`
+  （`network_device_baseline_history`）行**确实真实存在于库中**，因此会商
+  `source_bindings` 解析得到的都是真实 fact，无悬空引用；
+  但**不要**把它们当作现场实测设备。真实 BLE 设备的诊断在 incident
+  `sitinc_radxa-cubie-a7a_radxa-cubie-a7a_1791368937007`
+  （`COEXISTENCE_RF_INTERFERENCE` / `HIGH`），该次会商只产出 `ACTION_ID`。
+- **报告的落地方式**：`--trace-report` 模式必须由运行时捕获的 TraceReport 驱动
+  （`--incident-id` 的 DB 审计模式是 sqlite-only，且按设计以 `PARTIAL` 封顶）。
+  本次报告在只读读库 + 对真实 API 重新探测安全边界后生成，不写任何状态。
+
+各阶段验收均以本文契约字段为对账清单；阶段间不得跳序（未完成 ⑤ 前，
+不得出现任何 `ActionProposal` 直达 L5 的通路）。
+
+---
+
+## 七、本文档的使用方式（Code Review 判断依据）
+
+当出现以下典型提案时，用对应契约条款直接作答：
+
+| 提案 | 回答 | 依据 |
+|---|---|---|
+| "让 Council 顺便判断根因吧。" | Council 只有建议权，不产生事实与假说 | 契约 D：`evidence_context` 只读；总则"诊断只由 L2 产生" |
+| "前端按钮直接调 `pending_actions` 更简单。" | 必须走 `Web → L4 Approval → ApprovedAction → L5` | 第四节权限定义；契约 E2 唯一入口 |
+| "预测模型已经知道风险了，顺便改板端告警阈值。" | L3 不控制设备、不下发动作 | 总则"动作权限只在 L4 收口"；L3 禁止项 |
+| "输出 48 小时后断连吧，用户爱看。" | 第一版只交付风险窗口，TTF 需真实工业数据校准 | 契约 C 纪律 2 |
+| "RSSI < -90 就算失效，简单统一。" | 绝对值只能作 feature，失效判据必须相对退化+业务影响 | 契约 C 纪律 3（Phase 2 纯相对基线原则） |
+| "把这个分数做成 Web 主指标。" | HI 是内部量，主指标必须可解释驱动因子 | 契约 C 纪律 5；第四节呈现顺序 |

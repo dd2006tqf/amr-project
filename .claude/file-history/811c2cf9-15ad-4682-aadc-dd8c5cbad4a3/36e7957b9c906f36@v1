@@ -1,0 +1,21 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 网络指标采集
+
+#pragma once
+
+namespace ins {
+namespace live_broadcast {
+
+/**
+ * @brief 网络指标采集
+ */
+class NetworkMetrics {
+ public:
+  NetworkMetrics();
+  ~NetworkMetrics();
+
+  // TODO(yinjun|2025-12-30): 添加网络指标采集接口
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

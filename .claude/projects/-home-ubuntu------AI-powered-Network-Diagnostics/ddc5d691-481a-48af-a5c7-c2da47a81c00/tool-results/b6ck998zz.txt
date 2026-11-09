@@ -1,0 +1,847 @@
+diff --git a/client/client.cpp b/client/client.cpp
+index ffc91d8..41ed154 100644
+--- a/client/client.cpp
++++ b/client/client.cpp
+@@ -1147,6 +1147,55 @@ public:
+         return true;
+     }
+ 
++    /**
++     * @brief 查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
++     * 调用 QueryBtDataPath
++     */
++    bool queryBtDataPath(const std::string& device_address, int64_t start_ms, int64_t end_ms,
++                         int32_t limit, std::string& result, std::string& errorMsg) {
++        if (!isConnected()) return fail("客户端未连接", errorMsg);
++
++        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath,
++                                                        kInterface, kMethodQueryBtDataPath);
++        if (!msg) {
++            errorMsg = "创建蓝牙数传指标查询消息失败";
++            return false;
++        }
++
++        DBusMessageIter args;
++        dbus_message_iter_init_append(msg, &args);
++        const char* dev_cstr = device_address.c_str();
++        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &dev_cstr);
++        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT64, &start_ms);
++        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT64, &end_ms);
++        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &limit);
++
++        DBusError err;
++        dbus_error_init(&err);
++        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
++        dbus_message_unref(msg);
++
++        if (dbus_error_is_set(&err)) {
++            errorMsg = "蓝牙数传指标查询失败: " + std::string(err.message);
++            dbus_error_free(&err);
++            return false;
++        }
++        if (!reply) {
++            errorMsg = "未收到蓝牙数传指标查询应答";
++            return false;
++        }
++
++        const char* data = nullptr;
++        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
++            errorMsg = "解析蓝牙数传指标查询结果失败";
++            dbus_message_unref(reply);
++            return false;
++        }
++        result = data ? data : "";
++        dbus_message_unref(reply);
++        return true;
++    }
++
+ private:
+     /** @brief 统一设置错误消息并返回 false 的辅助函数 */
+     bool fail(const char* msg, std::string& errorMsg) {
+@@ -2022,4 +2071,24 @@ extern "C" bool weaknet_query_site_incidents(const char* state,
+     return false;
+ }
+ 
++extern "C" bool weaknet_query_bt_data_path(const char* device_address,
++                                           int64_t start_ms, int64_t end_ms, int32_t limit,
++                                           char* buffer, size_t buffer_size,
++                                           char* error_buffer, size_t error_size) {
++    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
++    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
++        snprintf(error_buffer, error_size, "客户端未连接");
++        return false;
++    }
++    std::string result, errorMsg;
++    const std::string dev_str = device_address ? device_address : "";
++    if (weaknet_dbus::g_client->queryBtDataPath(dev_str, start_ms, end_ms, limit,
++                                                result, errorMsg)) {
++        snprintf(buffer, buffer_size, "%s", result.c_str());
++        return true;
++    }
++    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
++    return false;
++}
++
+ // 所有的API通过C接口函数提供，供其他应用程序调用
+diff --git a/client/weaknet_cli.cpp b/client/weaknet_cli.cpp
+index a193f09..8d14350 100644
+--- a/client/weaknet_cli.cpp
++++ b/client/weaknet_cli.cpp
+@@ -40,6 +40,9 @@ static void printUsage(const char* prog) {
+         "  %s incidents [--state <STATE>]\n"
+         "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
+         "                                 # 查询区域级异常事件 SiteIncident（JSON，只读）\n"
++        "  %s bt-traffic [--device <addr>]\n"
++        "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
++        "                                 # 查询工业蓝牙 HCI ACL 数据通道流量指标（JSON，只读）\n"
+         "  %s diagnosis [--ai]            # 查询网络诊断事实（--ai 联动端侧 RAG + 板载 Qwen 深度分析）\n"
+         "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
+         "  sudo %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
+@@ -50,7 +53,7 @@ static void printUsage(const char* prog) {
+         "\n"
+         "监控器与参数目标：\n"
+         "  插件监控器（支持 get/set 及 monitor 启停）：\n"
+-        "        rtt, rssi, tcp_loss, traffic, quality, bluetooth, bt_events,\n"
++        "        rtt, rssi, tcp_loss, traffic, quality, bluetooth, bt_events, bt_hci_traffic,\n"
+         "        dns, wifi_loss, http_latency, process_profiler, tcp_retrans,\n"
+         "        tcp_conn, skb_drop, tcp_connect\n"
+         "  常驻服务/全局组件（仅支持 get/set 调参，非插件）：\n"
+@@ -59,12 +62,14 @@ static void printUsage(const char* prog) {
+         "示例：\n"
+         "  sudo %s set rtt.interval 5s\n"
+         "  %s get rtt\n"
++        "  %s bt-traffic\n"
++        "  %s bt-traffic --device 20:23:00:00:00:01\n"
+         "  %s diagnosis\n"
+         "  %s experience\n"
+         "  sudo %s action CHECK_RESOLVER_CONFIG\n"
+         "  sudo %s action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5\n"
+         "  %s list\n",
+-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
++        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+ }
+ 
+ static bool callSet(const char* key, const char* value) {
+@@ -175,6 +180,49 @@ static bool callIncidents(int argc, char** argv) {
+     return true;
+ }
+ 
++/// weaknet-cli bt-traffic：查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
++static bool callBtTraffic(int argc, char** argv) {
++    std::string device;
++    int64_t start_ms = 0, end_ms = 0;
++    int32_t limit = 100;
++
++    for (int i = 2; i < argc; ++i) {
++        auto need = [&](const char* opt) -> const char* {
++            if (i + 1 >= argc) {
++                fprintf(stderr, "缺少 %s 的值\n", opt);
++                return nullptr;
++            }
++            return argv[++i];
++        };
++        if (strcmp(argv[i], "--device") == 0) {
++            const char* v = need("--device"); if (!v) return false;
++            device = v;
++        } else if (strcmp(argv[i], "--start") == 0) {
++            const char* v = need("--start"); if (!v) return false;
++            start_ms = strtoll(v, nullptr, 10);
++        } else if (strcmp(argv[i], "--end") == 0) {
++            const char* v = need("--end"); if (!v) return false;
++            end_ms = strtoll(v, nullptr, 10);
++        } else if (strcmp(argv[i], "--limit") == 0) {
++            const char* v = need("--limit"); if (!v) return false;
++            limit = static_cast<int32_t>(strtol(v, nullptr, 10));
++        } else {
++            fprintf(stderr, "未知参数: %s\n", argv[i]);
++            return false;
++        }
++    }
++
++    std::vector<char> buf(1 << 20);
++    char err[256];
++    if (!weaknet_query_bt_data_path(device.c_str(), start_ms, end_ms, limit,
++                                    buf.data(), buf.size(), err, sizeof(err))) {
++        fprintf(stderr, "蓝牙数传指标查询失败: %s\n", err);
++        return false;
++    }
++    printf("%s\n", buf.data());
++    return true;
++}
++
+ static bool callLifecycle(const char* operation, const char* monitor) {
+     char buf[8192];
+     char err[256];
+@@ -353,6 +401,8 @@ int main(int argc, char** argv) {
+         ok = callEvents(argc, argv);
+     } else if (strcmp(cmd, "incidents") == 0) {
+         ok = callIncidents(argc, argv);
++    } else if (strcmp(cmd, "bt-traffic") == 0) {
++        ok = callBtTraffic(argc, argv);
+     } else if (strcmp(cmd, "diagnosis") == 0) {
+         bool enable_ai = (argc >= 3 && strcmp(argv[2], "--ai") == 0);
+         ok = callDiagnosis(enable_ai);
+diff --git a/client/weaknet_client.h b/client/weaknet_client.h
+index eca6211..a9ce053 100644
+--- a/client/weaknet_client.h
++++ b/client/weaknet_client.h
+@@ -759,6 +759,32 @@ bool weaknet_query_site_incidents(const char* state,
+                                   char* buffer, size_t buffer_size,
+                                   char* error_buffer, size_t error_size);
+ 
++/**
++ * @brief 查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
++ *
++ * 通过 D-Bus 调用 QueryBtDataPath 方法，从 SQLite 获取工业蓝牙数传
++ * 链路客观流量时间序列数据。
++ *
++ * D-Bus 调用：
++ *   - Method: QueryBtDataPath
++ *   - Args: STRING device_address, INT64 start_ms, INT64 end_ms, INT32 limit
++ *   - Returns: STRING（JSON 数组）
++ *
++ * @param device_address 设备 MAC 地址过滤（空字符串表示不限）
++ * @param start_ms       起始时间 Unix 毫秒（0 表示不限）
++ * @param end_ms         结束时间 Unix 毫秒（0 表示不限）
++ * @param limit          最大返回条数（上限 10000）
++ * @param buffer         结果缓冲区
++ * @param buffer_size    结果缓冲区大小
++ * @param error_buffer   错误信息缓冲区
++ * @param error_size     错误信息缓冲区大小
++ * @return true 成功；false 失败
++ */
++bool weaknet_query_bt_data_path(const char* device_address,
++                                int64_t start_ms, int64_t end_ms, int32_t limit,
++                                char* buffer, size_t buffer_size,
++                                char* error_buffer, size_t error_size);
++
+ /**
+  * @brief 查询历史监控数据
+  *
+diff --git a/server/include/bt_hci_connection_tracker.hpp b/server/include/bt_hci_connection_tracker.hpp
+index f2c2f1f..4c5be1c 100644
+--- a/server/include/bt_hci_connection_tracker.hpp
++++ b/server/include/bt_hci_connection_tracker.hpp
+@@ -85,6 +85,14 @@ public:
+      */
+     void resetController(const std::string& controller);
+ 
++    /**
++     * @brief 从内核 Linux HCI 套接字同步当前控制器的底层真实连接表 (HCIGETCONNLIST ioctl)
++     * 自动发现新建链路、更新 (handle -> MAC) 映射，并探测被内核销毁的断开连接。
++     * @param controller 控制器标识，如 "hci0"
++     * @return 实际同步成功的活跃连接数
++     */
++    size_t syncFromKernel(const std::string& controller = "hci0");
++
+     size_t activeCount() const;
+ 
+ private:
+diff --git a/server/include/common.hpp b/server/include/common.hpp
+index dfc7972..c0b5d38 100644
+--- a/server/include/common.hpp
++++ b/server/include/common.hpp
+@@ -48,6 +48,7 @@ static constexpr const char kMethodGetTcpRttStats[]         = "GetTcpRttStats";
+ static constexpr const char kMethodGetEbpfMonitorHealth[]   = "GetEbpfMonitorHealth";///< 查询所有 eBPF 监控器健康状态（是否成功加载）
+ static constexpr const char kMethodGetHistory[]              = "GetHistory";         ///< 查询 SQLite 历史快照（支持时间范围和网卡过滤）
+ static constexpr const char kMethodQueryDeviceEvents[]      = "QueryDeviceEvents";  ///< 查询规范化无线设备事件（时间范围/设备/类型过滤）
++static constexpr const char kMethodQueryBtDataPath[]        = "QueryBtDataPath";    ///< 查询工业蓝牙数传链路流量指标（Phase 1b：时间/设备过滤）
+ static constexpr const char kMethodQuerySiteIncidents[]     = "QuerySiteIncidents"; ///< 查询区域级异常事件 SiteIncident（Phase 3a：区域层）
+ static constexpr const char kMethodSetMonitorParam[]         = "SetMonitorParam";   ///< 运行时设置监控器参数（白名单校验+原子提交）
+ static constexpr const char kMethodGetMonitorParam[]         = "GetMonitorParam";   ///< 查询监控器当前参数（JSON 格式）
+diff --git a/server/include/database_manager.hpp b/server/include/database_manager.hpp
+index 2c0edaa..a804400 100644
+--- a/server/include/database_manager.hpp
++++ b/server/include/database_manager.hpp
+@@ -206,6 +206,51 @@ public:
+     std::string queryDeviceBaselines(const std::string& device_address = "",
+                                     int limit = 100);
+ 
++    // ------------------------------------------------------------------
++    // Phase 1b：工业蓝牙 HCI ACL 数据通道流量指标存储
++    // ------------------------------------------------------------------
++
++    /**
++     * @brief 记录单条蓝牙数据通道周期指标快照
++     * @param ts_ms 采样时刻（Unix 毫秒）
++     * @param controller_id 控制器名（如 "hci0"）
++     * @param handle 12位连接句柄
++     * @param generation 连接代次
++     * @param attribution_scope 归因范围 ("device"|"controller"|"unknown")
++     * @param device_address 设备 MAC（若未知传空）
++     * @param window_ms 窗口大小（毫秒）
++     * @param tx_bytes 增量 TX payload 字节
++     * @param rx_bytes 增量 RX payload 字节
++     * @param tx_packets 增量 TX 报文数
++     * @param rx_packets 增量 RX 报文数
++     * @param tx_bps 吞吐率 bits/s
++     * @param rx_bps 吞吐率 bits/s
++     * @param max_gap_ms 收发间隔（毫秒）
++     * @return true 写入成功
++     */
++    bool insertBtDataPathMetric(int64_t ts_ms,
++                                const std::string& controller_id,
++                                uint16_t handle,
++                                uint32_t generation,
++                                const std::string& attribution_scope,
++                                const std::string& device_address,
++                                uint32_t window_ms,
++                                uint64_t tx_bytes,
++                                uint64_t rx_bytes,
++                                uint64_t tx_packets,
++                                uint64_t rx_packets,
++                                double tx_bps,
++                                double rx_bps,
++                                uint32_t max_gap_ms);
++
++    /**
++     * @brief 查询蓝牙数据通道历史指标记录，返回 JSON 数组字符串
++     */
++    std::string queryBtDataPathMetrics(const std::string& device_address,
++                                       int64_t start_ms = 0,
++                                       int64_t end_ms = 0,
++                                       int limit = 100);
++
+     // ------------------------------------------------------------------
+     // Phase 3a：区域级异常事件（SiteIncident）
+     //
+diff --git a/server/include/dbus_service.hpp b/server/include/dbus_service.hpp
+index 610a8ce..ba85a5d 100644
+--- a/server/include/dbus_service.hpp
++++ b/server/include/dbus_service.hpp
+@@ -119,6 +119,7 @@ public:
+     bool handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* msg);   ///< GetBluetoothAdapter: 返回适配器状态
+     bool handleGetBluetoothAudioQuality(DBusConnection* conn, DBusMessage* msg); ///< GetBluetoothAudioQuality: 返回指定设备音频质量与 eBPF 融合诊断 JSON
+     bool handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg);     ///< QueryDeviceEvents: 查询规范化无线设备事件（只读）
++    bool handleQueryBtDataPath(DBusConnection* conn, DBusMessage* msg);       ///< QueryBtDataPath: 查询工业蓝牙数据通道历史指标（Phase 1b）
+     bool handleQuerySiteIncidents(DBusConnection* conn, DBusMessage* msg);    ///< QuerySiteIncidents: 查询区域级异常事件（Phase 3a，只读）
+     bool handleGetCoexistenceConflict(DBusConnection* conn, DBusMessage* msg);
+     bool handleGetNetworkExperience(DBusConnection* conn, DBusMessage* msg);          ///< GetNetworkExperience: 返回 schema v2 权威评估快照（只读，不重新 evaluate）   ///< GetCoexistenceConflict: 返回 Wi-Fi 与蓝牙 2.4GHz 冲突诊断 JSON
+diff --git a/server/src/bt_hci_connection_tracker.cpp b/server/src/bt_hci_connection_tracker.cpp
+index b59a21f..8c25e4e 100644
+--- a/server/src/bt_hci_connection_tracker.cpp
++++ b/server/src/bt_hci_connection_tracker.cpp
+@@ -1,6 +1,11 @@
+ #include "bt_hci_connection_tracker.hpp"
+ #include <algorithm>
+ #include <cctype>
++#include <cstring>
++#include <unistd.h>
++#include <sys/socket.h>
++#include <sys/ioctl.h>
++#include <set>
+ 
+ namespace weaknet {
+ 
+@@ -117,6 +122,89 @@ void BtHciConnectionTracker::resetController(const std::string& controller) {
+     }
+ }
+ 
++size_t BtHciConnectionTracker::syncFromKernel(const std::string& controller) {
++    // 1. 打开 HCI 控制套接字 (AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI)
++    #ifndef AF_BLUETOOTH
++    #define AF_BLUETOOTH 31
++    #endif
++    #ifndef BTPROTO_HCI
++    #define BTPROTO_HCI 1
++    #endif
++    #ifndef HCIGETCONNLIST
++    // _IOR('H', 212, int) = 0x800448d4
++    #define HCIGETCONNLIST 0x800448d4
++    #endif
++
++    int sock = ::socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
++    if (sock < 0) {
++        return activeCount();
++    }
++
++    // 解析 controller 编号，如 "hci0" -> 0
++    uint16_t dev_id = 0;
++    if (controller.rfind("hci", 0) == 0 && controller.size() > 3) {
++        try {
++            dev_id = static_cast<uint16_t>(std::stoi(controller.substr(3)));
++        } catch (...) {
++            dev_id = 0;
++        }
++    }
++
++    // 内存缓冲区：头部 4 字节 (dev_id + conn_num) + 最多 64 条 struct hci_conn_info (每条 16 字节)
++    struct RawHciConnInfo {
++        uint16_t handle;
++        uint8_t bdaddr[6];
++        uint8_t type;
++        uint8_t out;
++        uint16_t state;
++        uint32_t link_mode;
++    } __attribute__((packed));
++
++    uint8_t buf[4 + 64 * sizeof(RawHciConnInfo)] = {0};
++    *reinterpret_cast<uint16_t*>(buf) = dev_id;
++    *reinterpret_cast<uint16_t*>(buf + 2) = 64; // 最多获取 64 个连接
++
++    int ret = ::ioctl(sock, HCIGETCONNLIST, buf);
++    ::close(sock);
++
++    if (ret < 0) {
++        return activeCount();
++    }
++
++    uint16_t conn_num = *reinterpret_cast<uint16_t*>(buf + 2);
++    if (conn_num > 64) conn_num = 64;
++
++    std::set<uint16_t> live_handles;
++    const RawHciConnInfo* conns = reinterpret_cast<const RawHciConnInfo*>(buf + 4);
++
++    for (uint16_t i = 0; i < conn_num; ++i) {
++        uint16_t handle = conns[i].handle & 0x0FFF;
++        live_handles.insert(handle);
++
++        // 内核 bdaddr 反序存储 (b[0] 为低位)
++        char mac_buf[18];
++        snprintf(mac_buf, sizeof(mac_buf), "%02X:%02X:%02X:%02X:%02X:%02X",
++                 conns[i].bdaddr[5], conns[i].bdaddr[4], conns[i].bdaddr[3],
++                 conns[i].bdaddr[2], conns[i].bdaddr[1], conns[i].bdaddr[0]);
++        std::string mac(mac_buf);
++
++        std::string addr_type = (conns[i].type == 0x80) ? "LE" : "BREDR";
++
++        // 更新/建立真实连接
++        onConnectionEstablished(controller, handle, mac, addr_type);
++    }
++
++    // 检查并清理已被内核销毁但尚未收到事件的句柄
++    std::vector<HciConnectionRecord> current_actives = getActiveConnections(controller);
++    for (const auto& rec : current_actives) {
++        if (live_handles.find(rec.key.handle) == live_handles.end()) {
++            onConnectionDisconnected(controller, rec.key.handle);
++        }
++    }
++
++    return activeCount();
++}
++
+ size_t BtHciConnectionTracker::activeCount() const {
+     std::lock_guard<std::mutex> lock(mutex_);
+     size_t count = 0;
+diff --git a/server/src/database_manager.cpp b/server/src/database_manager.cpp
+index a829ece..a2df64c 100644
+--- a/server/src/database_manager.cpp
++++ b/server/src/database_manager.cpp
+@@ -346,6 +346,28 @@ bool DatabaseManager::ensureSchema() {
+             PRIMARY KEY (incident_id, event_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_site_incident_events_event ON site_incident_events(event_id);
++
++        -- bt_data_path_metrics: 工业蓝牙数传链路流量时间序列指标（Phase 1b）
++        -- 记录 ACL 双向增量与速率，守住 L1 纯净性
++        CREATE TABLE IF NOT EXISTS bt_data_path_metrics (
++            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
++            ts                 INTEGER NOT NULL,
++            controller_id      TEXT    DEFAULT 'hci0',
++            handle             INTEGER NOT NULL,
++            generation         INTEGER NOT NULL,
++            attribution_scope  TEXT    DEFAULT 'unknown',
++            device_address     TEXT    DEFAULT '',
++            window_ms          INTEGER NOT NULL,
++            tx_bytes           INTEGER NOT NULL,
++            rx_bytes           INTEGER NOT NULL,
++            tx_packets         INTEGER NOT NULL,
++            rx_packets         INTEGER NOT NULL,
++            tx_bps             REAL    NOT NULL,
++            rx_bps             REAL    NOT NULL,
++            max_gap_ms         INTEGER DEFAULT 0
++        );
++        CREATE INDEX IF NOT EXISTS idx_bt_data_path_ts ON bt_data_path_metrics(ts);
++        CREATE INDEX IF NOT EXISTS idx_bt_data_path_dev ON bt_data_path_metrics(device_address);
+     )";
+     if (!exec(schema)) return false;
+ 
+@@ -798,6 +820,17 @@ int DatabaseManager::cleanup(int retention_days) {
+         sqlite3_free(incident_err);
+     }
+ 
++    // 清理过期的工业蓝牙 HCI ACL 数据通道指标记录（Phase 1b）
++    std::ostringstream bt_metrics_sql;
++    bt_metrics_sql << "DELETE FROM bt_data_path_metrics WHERE ts < "
++                   << "(CAST(strftime('%s','now') AS INTEGER) - "
++                   << retention_days << " * 86400) * 1000";
++    char* bt_metrics_err = nullptr;
++    sqlite3_exec(db_, bt_metrics_sql.str().c_str(), nullptr, nullptr, &bt_metrics_err);
++    if (bt_metrics_err) {
++        sqlite3_free(bt_metrics_err);
++    }
++
+     return deleted;
+ }
+ 
+@@ -1796,6 +1829,150 @@ static int stringRangeCallback(void* data, int /*argc*/, char** argv, char** /*c
+     return 0;
+ }
+ 
++bool DatabaseManager::insertBtDataPathMetric(int64_t ts_ms,
++                                            const std::string& controller_id,
++                                            uint16_t handle,
++                                            uint32_t generation,
++                                            const std::string& attribution_scope,
++                                            const std::string& device_address,
++                                            uint32_t window_ms,
++                                            uint64_t tx_bytes,
++                                            uint64_t rx_bytes,
++                                            uint64_t tx_packets,
++                                            uint64_t rx_packets,
++                                            double tx_bps,
++                                            double rx_bps,
++                                            uint32_t max_gap_ms) {
++    if (!db_) return false;
++
++    std::lock_guard<std::mutex> lock(mutex_);
++
++    const char* sql = R"(
++        INSERT INTO bt_data_path_metrics (
++            ts, controller_id, handle, generation, attribution_scope,
++            device_address, window_ms, tx_bytes, rx_bytes, tx_packets,
++            rx_packets, tx_bps, rx_bps, max_gap_ms
++        ) VALUES (
++            ?, ?, ?, ?, ?,
++            ?, ?, ?, ?, ?,
++            ?, ?, ?, ?
++        );
++    )";
++
++    sqlite3_stmt* stmt = nullptr;
++    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
++    if (rc != SQLITE_OK) {
++        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtDataPathMetric prepare failed: "
++                                         << sqlite3_errmsg(db_));
++        return false;
++    }
++
++    sqlite3_bind_int64(stmt, 1, ts_ms);
++    sqlite3_bind_text(stmt, 2, controller_id.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_int(stmt, 3, static_cast<int>(handle));
++    sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(generation));
++    sqlite3_bind_text(stmt, 5, attribution_scope.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt, 6, device_address.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_int(stmt, 7, static_cast<int>(window_ms));
++    sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(tx_bytes));
++    sqlite3_bind_int64(stmt, 9, static_cast<int64_t>(rx_bytes));
++    sqlite3_bind_int64(stmt, 10, static_cast<int64_t>(tx_packets));
++    sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(rx_packets));
++    sqlite3_bind_double(stmt, 12, tx_bps);
++    sqlite3_bind_double(stmt, 13, rx_bps);
++    sqlite3_bind_int(stmt, 14, static_cast<int>(max_gap_ms));
++
++    rc = sqlite3_step(stmt);
++    sqlite3_finalize(stmt);
++
++    if (rc != SQLITE_DONE) {
++        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtDataPathMetric step failed: "
++                                         << sqlite3_errmsg(db_));
++        return false;
++    }
++    return true;
++}
++
++std::string DatabaseManager::queryBtDataPathMetrics(const std::string& device_address,
++                                                    int64_t start_ms,
++                                                    int64_t end_ms,
++                                                    int limit) {
++    if (!db_) return "[]";
++
++    std::lock_guard<std::mutex> lock(mutex_);
++
++    std::ostringstream sql;
++    sql << "SELECT ts, controller_id, handle, generation, attribution_scope, "
++        << "device_address, window_ms, tx_bytes, rx_bytes, tx_packets, rx_packets, "
++        << "tx_bps, rx_bps, max_gap_ms FROM bt_data_path_metrics WHERE 1=1";
++
++    if (!device_address.empty()) {
++        sql << " AND device_address = ?";
++    }
++    if (start_ms > 0) {
++        sql << " AND ts >= ?";
++    }
++    if (end_ms > 0) {
++        sql << " AND ts <= ?";
++    }
++    sql << " ORDER BY ts DESC LIMIT ?;";
++
++    sqlite3_stmt* stmt = nullptr;
++    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
++    if (rc != SQLITE_OK) {
++        LOG_ERROR(LogModule::SYSTEM,
++                  "DatabaseManager::queryBtDataPathMetrics prepare failed: " << sqlite3_errmsg(db_));
++        return "[]";
++    }
++
++    int bindIdx = 1;
++    if (!device_address.empty()) {
++        sqlite3_bind_text(stmt, bindIdx++, device_address.c_str(), -1, SQLITE_STATIC);
++    }
++    if (start_ms > 0) {
++        sqlite3_bind_int64(stmt, bindIdx++, start_ms);
++    }
++    if (end_ms > 0) {
++        sqlite3_bind_int64(stmt, bindIdx++, end_ms);
++    }
++    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
++
++    std::ostringstream json;
++    json << "[";
++    bool first = true;
++
++    while (sqlite3_step(stmt) == SQLITE_ROW) {
++        if (!first) json << ",";
++        first = false;
++
++        auto textOrEmpty = [&](int col) -> std::string {
++            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
++            return v ? v : "";
++        };
++
++        json << "{"
++             << "\"ts\":" << sqlite3_column_int64(stmt, 0) << ","
++             << "\"controller_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(1)) << "\","
++             << "\"handle\":" << sqlite3_column_int(stmt, 2) << ","
++             << "\"generation\":" << sqlite3_column_int64(stmt, 3) << ","
++             << "\"attribution_scope\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(4)) << "\","
++             << "\"device_address\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(5)) << "\","
++             << "\"window_ms\":" << sqlite3_column_int(stmt, 6) << ","
++             << "\"tx_bytes\":" << sqlite3_column_int64(stmt, 7) << ","
++             << "\"rx_bytes\":" << sqlite3_column_int64(stmt, 8) << ","
++             << "\"tx_packets\":" << sqlite3_column_int64(stmt, 9) << ","
++             << "\"rx_packets\":" << sqlite3_column_int64(stmt, 10) << ","
++             << "\"tx_bps\":" << sqlite3_column_double(stmt, 11) << ","
++             << "\"rx_bps\":" << sqlite3_column_double(stmt, 12) << ","
++             << "\"max_gap_ms\":" << sqlite3_column_int(stmt, 13)
++             << "}";
++    }
++
++    sqlite3_finalize(stmt);
++    json << "]";
++    return json.str();
++}
++
+ std::string DatabaseManager::getDbInfo() {
+     if (!db_) return "{\"error\":\"database not open\"}";
+     std::lock_guard<std::mutex> lock(mutex_);
+diff --git a/server/src/dbus_service.cpp b/server/src/dbus_service.cpp
+index 2b9a130..f4a9bff 100644
+--- a/server/src/dbus_service.cpp
++++ b/server/src/dbus_service.cpp
+@@ -132,6 +132,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
+         self->handleQueryDeviceEvents(conn, msg);
+         return DBUS_HANDLER_RESULT_HANDLED;
+     }
++    if (dbus_message_is_method_call(msg, kInterface, kMethodQueryBtDataPath)) {
++        self->handleQueryBtDataPath(conn, msg);
++        return DBUS_HANDLER_RESULT_HANDLED;
++    }
+     if (dbus_message_is_method_call(msg, kInterface, kMethodQuerySiteIncidents)) {
+         self->handleQuerySiteIncidents(conn, msg);
+         return DBUS_HANDLER_RESULT_HANDLED;
+@@ -1607,6 +1611,69 @@ bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg
+     return true;
+ }
+ 
++bool DbusService::handleQueryBtDataPath(DBusConnection* conn, DBusMessage* msg) {
++    LOG_INFO(LogModule::DBUS, "handleQueryBtDataPath called");
++
++    // 参数：STRING device_address, INT64 start_ms, INT64 end_ms, INT32 limit
++    std::string device_address;
++    int64_t start_ms = 0, end_ms = 0;
++    int32_t limit = 100;
++
++    DBusMessageIter args;
++    if (dbus_message_iter_init(msg, &args) == TRUE) {
++        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
++            const char* val = nullptr;
++            dbus_message_iter_get_basic(&args, &val);
++            if (val) device_address = val;
++        }
++        if (dbus_message_iter_next(&args) &&
++            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
++            dbus_message_iter_get_basic(&args, &start_ms);
++        }
++        if (dbus_message_iter_next(&args) &&
++            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
++            dbus_message_iter_get_basic(&args, &end_ms);
++        }
++        if (dbus_message_iter_next(&args) &&
++            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
++            dbus_message_iter_get_basic(&args, &limit);
++        }
++    }
++
++    constexpr int32_t kMaxLimit = 10000;
++    if (limit <= 0) {
++        limit = 1;
++    } else if (limit > kMaxLimit) {
++        limit = kMaxLimit;
++    }
++    if (start_ms > 0 && end_ms > 0 && end_ms < start_ms) {
++        std::swap(start_ms, end_ms);
++    }
++
++    std::string result = "[]";
++    if (ctx_ && ctx_->db_mgr) {
++        result = ctx_->db_mgr->queryBtDataPathMetrics(device_address, start_ms, end_ms, limit);
++    } else {
++        result = "{\"error\":\"database not available\"}";
++    }
++
++    DBusMessage* reply = dbus_message_new_method_return(msg);
++    if (!reply) return false;
++
++    DBusMessageIter out_args;
++    dbus_message_iter_init_append(reply, &out_args);
++    const char* str = result.c_str();
++    if (!dbus_message_iter_append_basic(&out_args, DBUS_TYPE_STRING, &str)) {
++        dbus_message_unref(reply);
++        return false;
++    }
++
++    dbus_connection_send(conn, reply, nullptr);
++    dbus_connection_flush(conn);
++    dbus_message_unref(reply);
++    return true;
++}
++
+ // ============================================================================
+ // 区域级异常事件查询（Phase 3a，只读）
+ //
+diff --git a/server/src/monitor_ebpf_plugins.cpp b/server/src/monitor_ebpf_plugins.cpp
+index 9a72358..f3a8adb 100644
+--- a/server/src/monitor_ebpf_plugins.cpp
++++ b/server/src/monitor_ebpf_plugins.cpp
+@@ -33,6 +33,7 @@
+ #include "bt_link_quality_tracker.hpp"
+ #include "site_incident_correlator.hpp"
+ #include "wireless_event_store.hpp"
++#include "database_manager.hpp"
+ #include "utils/bpf_map_sizing.hpp"
+ 
+ namespace weaknet_dbus {
+@@ -623,13 +624,48 @@ public:
+ 
+         stop_.store(false);
+         worker_ = std::thread([this]() {
++            int sync_countdown = 0;
+             while (!stop_.load() && ctx_ && ctx_->running.load()) {
+                 std::this_thread::sleep_for(std::chrono::seconds(2));
++                if (stop_.load()) break;
++
++                // 周期性同步内核连接表（每 4 秒同步一次，即 2 个 tick）
++                if (tracker_ && (++sync_countdown % 2 == 0)) {
++                    tracker_->syncFromKernel("hci0");
++                }
++
+                 if (analyzer_ && analyzer_->isAvailable()) {
+                     auto obs = analyzer_->collectObservations();
+                     if (!obs.empty()) {
+                         LOG_DEBUG(LogModule::BLUETOOTH, "BtDataPathAnalyzer collected "
+                                   << obs.size() << " observations");
++                        const int64_t now_ms = static_cast<int64_t>(
++                            std::chrono::duration_cast<std::chrono::milliseconds>(
++                                std::chrono::system_clock::now().time_since_epoch()).count());
++
++                        if (ctx_ && ctx_->db_mgr) {
++                            for (const auto& item : obs) {
++                                // 仅持久化有活跃流量或已知设备的观测，避免无用全零刷库
++                                if (item.tx_packets > 0 || item.rx_packets > 0 || item.device_id.has_value()) {
++                                    ctx_->db_mgr->insertBtDataPathMetric(
++                                        now_ms,
++                                        item.controller_id,
++                                        item.connection_handle,
++                                        item.connection_generation,
++                                        item.attribution_scope,
++                                        item.device_id.value_or(""),
++                                        item.window_ms,
++                                        item.tx_bytes,
++                                        item.rx_bytes,
++                                        item.tx_packets,
++                                        item.rx_packets,
++                                        item.tx_throughput_bps,
++                                        item.rx_throughput_bps,
++                                        item.max_gap_ms
++                                    );
++                                }
++                            }
++                        }
+                     }
+                 }
+             }
+diff --git a/server/test/unit/test_database_manager_gtest.cpp b/server/test/unit/test_database_manager_gtest.cpp
+index 6ad3813..2ebe2c2 100644
+--- a/server/test/unit/test_database_manager_gtest.cpp
++++ b/server/test/unit/test_database_manager_gtest.cpp
+@@ -316,3 +316,69 @@ TEST_F(DatabaseManagerTest, DefaultsNullOrEmptyAssessmentProfileToUnspecified) {
+     const std::string result = db.queryHistory("wlan0", "", "", 10);
+     EXPECT_NE(result.find("\"assessment_profile\":\"UNSPECIFIED\""), std::string::npos);
+ }
++
++// ============================================================================
++// Phase 1b：工业蓝牙 HCI ACL 数据通道指标存储与检索测试
++// ============================================================================
++TEST_F(DatabaseManagerTest, InsertAndQueryBtDataPathMetrics) {
++    DatabaseManager db(dbPath_);
++    ASSERT_TRUE(db.isOpen());
++
++    const int64_t now_ms = 1700000000000LL;
++
++    // 1. 写入第 1 条指标：设备 A (AA:BB:CC:11:22:33)
++    bool ok1 = db.insertBtDataPathMetric(
++        now_ms,
++        "hci0",
++        129,
++        1,
++        "device",
++        "AA:BB:CC:11:22:33",
++        1000,
++        5000,
++        10000,
++        50,
++        100,
++        40000.0,
++        80000.0,
++        25
++    );
++    EXPECT_TRUE(ok1);
++
++    // 2. 写入第 2 条指标：设备 B (DD:EE:FF:44:55:66)
++    bool ok2 = db.insertBtDataPathMetric(
++        now_ms + 2000,
++        "hci0",
++        130,
++        1,
++        "device",
++        "DD:EE:FF:44:55:66",
++        2000,
++        2500,
++        3500,
++        25,
++        35,
++        10000.0,
++        14000.0,
++        40
++    );
++    EXPECT_TRUE(ok2);
++
++    // 3. 全量查询
++    std::string all_res = db.queryBtDataPathMetrics("", 0, 0, 10);
++    EXPECT_NE(all_res.find("AA:BB:CC:11:22:33"), std::string::npos);
++    EXPECT_NE(all_res.find("DD:EE:FF:44:55:66"), std::string::npos);
++    EXPECT_NE(all_res.find("\"tx_bytes\":5000"), std::string::npos);
++    EXPECT_NE(all_res.find("\"rx_bps\":80000"), std::string::npos);
++
++    // 4. 按设备 MAC 过滤
++    std::string dev_a_res = db.queryBtDataPathMetrics("AA:BB:CC:11:22:33", 0, 0, 10);
++    EXPECT_NE(dev_a_res.find("AA:BB:CC:11:22:33"), std::string::npos);
++    EXPECT_EQ(dev_a_res.find("DD:EE:FF:44:55:66"), std::string::npos);
++
++    // 5. 按时间窗口过滤
++    std::string time_filtered = db.queryBtDataPathMetrics("", now_ms + 1000, now_ms + 3000, 10);
++    EXPECT_EQ(time_filtered.find("AA:BB:CC:11:22:33"), std::string::npos);
++    EXPECT_NE(time_filtered.find("DD:EE:FF:44:55:66"), std::string::npos);
++}
++

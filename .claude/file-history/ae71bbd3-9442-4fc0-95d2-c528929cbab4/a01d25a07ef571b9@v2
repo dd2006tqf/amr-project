@@ -1,0 +1,167 @@
+// 维测工具：回放一次扫描产出的数据包，验证完整性
+// 用法: packet_replay <scan_dir>
+//   读 manifest.json + ch*.bin + lidar.bin -> 四路时间线 + 同步质量报告
+#include "tools/packet_reader.h"
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <regex>
+#include <algorithm>
+#include <cstring>
+
+namespace xgrids {
+
+PacketReader::PacketReader(std::string scan_dir) : dir_(std::move(scan_dir)) {}
+
+// 极简 JSON 抽取（手写，不引第三方）：抓 "key":num / "key":str
+static std::string find_str(const std::string& s, const std::string& key) {
+    size_t p = s.find("\"" + key + "\":");
+    if (p == std::string::npos) return "";
+    p += key.size() + 3;
+    while (p < s.size() && (s[p] == ' ' || s[p] == '"')) p++;
+    size_t e = p;
+    while (e < s.size() && s[e] != ',' && s[e] != '"' && s[e] != '}' && s[e] != ']') e++;
+    return s.substr(p, e - p);
+}
+static int64_t find_i64(const std::string& s, const std::string& key) {
+    auto v = find_str(s, key);
+    return v.empty() ? -1 : std::stoll(v);
+}
+
+bool PacketReader::load_manifest() {
+    std::ifstream f(dir_ + "/manifest.json");
+    if (!f) return false;
+    std::stringstream ss; ss << f.rdbuf();
+    std::string js = ss.str();
+
+    start_us_ = find_i64(js, "scan_start_us");
+    end_us_ = find_i64(js, "scan_end_us");
+
+    // 解析 channels 数组（按 "ch":N 分段）
+    std::regex ch_re(R"("ch":(\d+))");
+    std::sregex_iterator it(js.begin(), js.end(), ch_re), end;
+    int idx = 0;
+    for (; it != end && idx < 5; ++it, ++idx) {
+        int ch = std::stoi((*it)[1]);
+        size_t pos = it->position();
+        // 在该 "ch" 到下一个 "ch" 或 "]" 之间抓数值
+        size_t next = js.find("\"ch\":", pos + 5);
+        size_t stop = js.find("]", pos);
+        size_t lim = std::min(next == std::string::npos ? js.size() : next,
+                              stop == std::string::npos ? js.size() : stop);
+        std::string seg = js.substr(pos, lim - pos);
+        auto& s = summaries_[ch];
+        s.frames = find_i64(seg, "frames");
+        s.lost = find_i64(seg, "lost");
+        s.bytes = find_i64(seg, "bytes");
+        s.first_ts = find_i64(seg, "first_ts_us");
+        s.last_ts = find_i64(seg, "last_ts_us");
+        // 缺口区间
+        std::regex gap_re(R"(\{"start_us":(-?\d+),"end_us":(-?\d+))");
+        for (std::sregex_iterator g(seg.begin(), seg.end(), gap_re), ge; g != ge; ++g)
+            s.gaps.push_back({std::stoll((*g)[1]), std::stoll((*g)[2])});
+    }
+
+    // rescan_windows
+    std::regex rw_re(R"(\{"s":(-?\d+),"e":(-?\d+)\})");
+    for (std::sregex_iterator r(js.begin(), js.end(), rw_re), re; r != re; ++r)
+        rescan_.push_back({std::stoll((*r)[1]), std::stoll((*r)[2])});
+
+    int64_t dur = std::max<int64_t>(1, end_us_ - start_us_);
+    for (auto& s : summaries_)
+        s.coverage_pct = (s.last_ts > s.first_ts)
+            ? 100.0 * (s.last_ts - s.first_ts) / dur : 0;
+    return true;
+}
+
+std::vector<PacketReader::FrameHead> PacketReader::channel_frames(int ch) const {
+    std::vector<FrameHead> out;
+    std::ifstream f(dir_ + "/ch" + std::to_string(ch) + ".bin", std::ios::binary);
+    if (!f) return out;
+    FrameHead h{};
+    while (true) {
+        h.offset = (int64_t)f.tellg();
+        f.read(reinterpret_cast<char*>(&h.ts_us), 8);
+        if (!f) break;
+        f.read(reinterpret_cast<char*>(&h.seq), 4);
+        f.seekg(4, std::ios::cur);          // w,h
+        f.read(reinterpret_cast<char*>(&h.len), 4);
+        f.seekg(h.len, std::ios::cur);
+        if (!f) break;
+        out.push_back(h);
+    }
+    return out;
+}
+
+void PacketReader::print_sync_report() const {
+    std::puts("=== sync quality ===");
+    // 每路帧间隔统计 + 组偏移
+    std::array<std::vector<int64_t>, 4> iv;
+    for (int c = 0; c < 4; ++c) {
+        auto fr = channel_frames(c);
+        for (size_t i = 1; i < fr.size(); ++i)
+            iv[c].push_back(fr[i].ts_us - fr[i-1].ts_us);
+        if (!iv[c].empty()) {
+            int64_t mn = *std::min_element(iv[c].begin(), iv[c].end());
+            int64_t mx = *std::max_element(iv[c].begin(), iv[c].end());
+            double avg = 0; for (auto x : iv[c]) avg += x; avg /= iv[c].size();
+            std::printf("ch%d: frames=%zu intv avg=%.1fus min=%lldus max=%lldus\n",
+                        c, fr.size(), avg, (long long)mn, (long long)mx);
+        }
+    }
+}
+
+void PacketReader::print_timeline(int64_t step_us) const {
+    std::puts("=== timeline ===");
+    std::array<std::vector<FrameHead>, 4> chs;
+    int64_t t0 = INT64_MAX, t1 = INT64_MIN;
+    for (int c = 0; c < 4; ++c) {
+        chs[c] = channel_frames(c);
+        if (!chs[c].empty()) {
+            t0 = std::min(t0, chs[c].front().ts_us);
+            t1 = std::max(t1, chs[c].back().ts_us);
+        }
+    }
+    if (t0 > t1) { std::puts("empty"); return; }
+    for (int64_t t = t0; t < t1; t += step_us) {
+        std::array<int,4> cnt{};
+        for (int c = 0; c < 4; ++c)
+            for (auto& h : chs[c])
+                if (h.ts_us >= t && h.ts_us < t + step_us) cnt[c]++;
+        bool gap = false;
+        for (auto& s : summaries_)
+            for (auto& g : s.gaps)
+                if (g.first >= t && g.first < t + step_us) gap = true;
+        std::printf("[%7lldms] ch0=%-2d ch1=%-2d ch2=%-2d ch3=%-2d%s\n",
+                    (long long)((t - t0) / 1000),
+                    cnt[0], cnt[1], cnt[2], cnt[3],
+                    gap ? "   <== GAP" : "");
+    }
+}
+
+void PacketReader::print_rescan_windows() const {
+    std::puts("=== rescan windows ===");
+    if (rescan_.empty()) { std::puts("  none - data complete"); return; }
+    for (auto& w : rescan_)
+        std::printf("  %.1fs - %.1fs  (need recapture)\n",
+                    (w.first - start_us_) / 1e6, (w.second - start_us_) / 1e6);
+}
+
+}  // namespace xgrids
+
+int main(int argc, char** argv) {
+    if (argc < 2) { std::fprintf(stderr, "usage: %s <scan_dir>\n", argv[0]); return 1; }
+    xgrids::PacketReader r(argv[1]);
+    if (!r.load_manifest()) { std::fprintf(stderr, "no manifest in %s\n", argv[1]); return 1; }
+    std::printf("scan duration: %.1fs\n", r.scan_duration_us() / 1e6);
+    for (int c = 0; c < 4; ++c) {
+        auto& s = r.channel_summary(c);
+        std::printf("ch%d: frames=%llu lost=%llu coverage=%.0f%% gaps=%zu\n",
+                    c, (unsigned long long)s.frames, (unsigned long long)s.lost,
+                    s.coverage_pct, s.gaps.size());
+    }
+    r.print_sync_report();
+    r.print_timeline();
+    r.print_rescan_windows();
+    return 0;
+}

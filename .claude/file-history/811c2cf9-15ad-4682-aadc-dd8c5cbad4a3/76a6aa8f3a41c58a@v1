@@ -1,0 +1,191 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// RTMP会话（librtmp封装）
+
+#pragma once
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "ins_base/mutex.h"
+#include "ins_error_code/ins_errorcode.h"
+#include "rtmp.h"
+
+namespace ins {
+namespace live_broadcast {
+
+struct RtmpPacketHolder;
+
+enum class RtmpPacketType : uint8_t {
+  kChunkSize = 0x01,        // RTMP_PACKET_TYPE_CHUNK_SIZE
+  kBytesReadReport = 0x03,  // RTMP_PACKET_TYPE_BYTES_READ_REPORT
+  kControl = 0x04,          // RTMP_PACKET_TYPE_CONTROL
+  kServerBW = 0x05,         // RTMP_PACKET_TYPE_SERVER_BW
+  kClientBW = 0x06,         // RTMP_PACKET_TYPE_CLIENT_BW
+  kAudio = 0x08,            // RTMP_PACKET_TYPE_AUDIO
+  kVideo = 0x09,            // RTMP_PACKET_TYPE_VIDEO
+
+  kMaxNum = 0xff,
+};
+
+enum class RtmpChannelId : uint8_t {
+  kControl = 0x03,
+  kAudio = 0x04,
+  kVideo = 0x05,
+
+  kMaxNum = 0xff,
+};
+// TODO(lianxingwang|2026-03-18): RTMP会话的API接口名称调整与详细注释
+/**
+ * @brief RTMP会话
+ * @details 封装librtmp库
+ */
+class RtmpSession {
+ public:
+  RtmpSession();
+  ~RtmpSession();
+
+  // 禁止拷贝和赋值
+  RtmpSession(const RtmpSession&) = delete;
+  RtmpSession& operator=(const RtmpSession&) = delete;
+
+  // 禁止移动
+  RtmpSession(RtmpSession&&) = delete;
+  RtmpSession& operator=(RtmpSession&&) = delete;
+
+  /**
+   * @brief
+   * 完整连接流程（Init/SetupURL/Connect/ConnectStream），供异步连接线程调用
+   * @param url RTMP URL
+   * @return 错误码
+   */
+  InsErrorCode Connect(const std::string& url);
+
+  /**
+   * @brief 请求取消正在进行的连接
+   * @details
+   * 当前实现采用“协作式取消 + socket 唤醒”语义：该接口先设置取消标志；
+   * 若连接阶段已经拿到底层 socket，则会尽力执行 shutdown(fd, SHUT_RDWR)
+   * 以唤醒阻塞 I/O；其中 ConnectStream 阶段优先使用已缓存的 socket fd，
+   * 避免取消路径再去竞争 rtmp_ptr_mutex_；但仍不在其他线程直接调用
+   * Reset()/RTMP_Close()/RTMP_Free()。
+   *
+   * 这样做的约束是：若取消发生得过早（例如 socket 尚未建立），
+   * Connect() 仅会在若干 checkpoint 处检查取消标志并自行收尾：
+   * - Init() 返回后
+   * - SetupURL() 返回后
+   * - RTMP_Connect() 返回后
+   * - RTMP_ConnectStream() 返回后
+   *
+   * 调用方在请求取消后，必须等待连接线程退出；
+   * 只有在线程结束后，才允许执行 Reset()/销毁等清理动作。
+   * 在 socket 已建立的典型场景下，Stop 通常能更快返回；若 socket 尚未建立，
+   * Stop 延迟仍可能受底层 RTMP 建连/读包超时影响。
+   */
+  void RequestCancelConnect();
+
+  /**
+   * @brief 读取数据
+   * @param buf 缓冲区
+   * @param size 缓冲区大小
+   * @return 错误码
+   */
+  InsErrorCode Read(char* buf, int size, int* read_size);
+
+  /**
+   * @brief 写入数据
+   * @param buf FLV Tag 数据缓冲区
+   * @param size 数据大小
+   * @return 错误码
+   */
+  InsErrorCode Write(const char* buf, int size, int* write_size);
+
+  /**
+   * @brief 发送已构造好的 RTMPPacket（受约束 API）。
+   * @details
+   * - 入参必须是 RtmpPacketHolder，避免把裸 RTMPPacket 暴露到接口边界。
+   * - holder.pkt.m_body 必须来自 RTMPPacket_Alloc，不能直接指向 std::vector
+   *   或栈内存；librtmp 在发送时可能会在 m_body 前回写 RTMP 头部。
+   * - m_nInfoField2 由本方法在持锁取出 m_stream_id 后填入，调用方不必预设。
+   * - 本方法不接管 m_body 所有权；holder 生命周期由调用方负责。
+   * @param packet_holder 待发送的 RTMP 包持有者（in/out）
+   * @return 错误码
+   */
+  InsErrorCode SendPreparedPacket(RtmpPacketHolder& packet_holder);
+
+  /**
+   * @brief 设置 Chunk Size
+   * @param size Chunk 大小
+   * @return 错误码
+   */
+  InsErrorCode SetChunkSize(int size);
+
+  /**
+   * @brief 暂停/恢复
+   * @param do_pause true 为暂停，false 为恢复
+   * @return 错误码
+   */
+  InsErrorCode Pause(bool do_pause);
+
+  /**
+   * @brief 检查是否已连接
+   * @return true 已连接, false 未连接
+   */
+  bool IsConnected();
+  /**
+   * @brief 重置会话状态 关闭并清理资源
+   */
+  void Reset();
+
+  /**
+   * @brief 设置缓冲区大小
+   * @param size 缓冲区大小（毫秒）
+   */
+  void SetBufferMS(int size);
+
+ private:
+  static constexpr size_t kUrlBufferSize = 4096;
+
+  RtmpChannelId GetChannelId(RtmpPacketType packet_type);
+
+  /**
+   * @brief 初始化 RTMP 结构
+   * @return 错误码
+   */
+  InsErrorCode Init();
+
+  /**
+   * @brief 设置推流/拉流 URL
+   * @param url RTMP URL
+   * @return 错误码
+   */
+  InsErrorCode SetupURL(const std::string& url);
+
+  /**
+   * @brief 设置连接超时时间
+   * @param timeout_sec 超时时间（秒）
+   */
+  void SetTimeout(int timeout_sec);
+
+  /**
+   * @brief 启用写入模式（用于推流）
+   * 必须在 Connect 之前调用
+   */
+  void EnableWrite();
+  /**
+   * @brief 建立流连接 (NetStream)
+   * @param seek_time 起始时间（毫秒）
+   * @return 错误码
+   */
+  InsErrorCode ConnectStream(int seek_time);
+  mutable ins::base::Mutex rtmp_ptr_mutex_;
+  RTMP* rtmp_ptr_;
+  std::unique_ptr<char[]> url_buf_;         // 存储 URL 的可写缓冲区
+  std::atomic<int> connect_socket_fd_{-1};  // 连接阶段可用于唤醒的 socket fd
+  std::atomic<bool> is_connecting_{false};
+  std::atomic<bool> is_canceling_{false};
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

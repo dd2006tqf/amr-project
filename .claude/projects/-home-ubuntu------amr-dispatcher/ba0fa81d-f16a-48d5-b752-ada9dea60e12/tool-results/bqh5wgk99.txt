@@ -1,0 +1,266 @@
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:1:#pragma once
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:2:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:3:#include <cstddef>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:4:#include <string>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:5:#include <vector>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:6:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:7:namespace amr_dispatcher_core::workflow {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:8:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:9:struct MissionEvent {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:10:  std::string stamp;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:11:  std::string mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:12:  std::string state;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:13:  std::string previous_state;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:14:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:15:  bool recoverable = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:16:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:17:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:18:MissionEvent MakeMissionEvent(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:19:    const std::string& stamp, const std::string& mission_id, const std::string& state,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:20:    const std::string& previous_state, const std::string& message, bool recoverable);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:21:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:22:std::size_t NormalizeEventLimit(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:23:    int requested_limit, std::size_t default_limit, std::size_t max_limit);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:24:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:25:std::size_t TrimMissionEvents(std::vector<MissionEvent>& events, std::size_t max_events);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:26:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:27:void AppendMissionEvent(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:28:    std::vector<MissionEvent>& events, MissionEvent event, std::size_t max_events);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:29:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:30:std::vector<MissionEvent> SelectRecentMissionEvents(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:31:    const std::vector<MissionEvent>& events, std::size_t limit,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:32:    const std::string& state_filter = "", const std::string& mission_id_filter = "");
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:33:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/mission_event_log.hpp:34:}  // namespace amr_dispatcher_core::workflow
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:1:#pragma once
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:2:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:3:#include <cstddef>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:4:#include <cstdint>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:5:#include <optional>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:6:#include <string>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:7:#include <unordered_set>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:8:#include <vector>
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:9:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:10:#include "amr_dispatcher_core/workflow/mission_preflight.hpp"
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:11:#include "amr_dispatcher_core/workflow/mission_profile.hpp"
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:12:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:13:namespace amr_dispatcher_core::workflow {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:14:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:15:struct QueuedMission {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:16:  MissionProfile profile;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:17:  std::string mission_file;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:18:  int priority = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:19:  std::uint64_t sequence = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:20:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:21:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:22:struct QueuedMissionStartRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:23:  bool start_if_idle = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:24:  bool preempt_current = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:25:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:26:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:27:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:28:struct QueuedMissionStartDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:29:  bool run_queue = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:30:  bool request_queue_start = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:31:  bool cancel_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:32:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:33:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:34:struct MissionQueueDispatchResult {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:35:  bool success = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:36:  bool queue_empty = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:37:  bool all_paused = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:38:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:39:  std::optional<QueuedMission> mission;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:40:  std::vector<QueuedMission> remaining_queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:41:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:42:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:43:struct MissionQueueAdmissionRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:44:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:45:  std::size_t queue_size = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:46:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:47:  bool set_state_when_idle = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:48:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:49:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:50:struct MissionQueueAdmissionDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:51:  bool success = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:52:  int queue_size = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:53:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:54:  bool set_state = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:55:  std::string state = "QUEUED";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:56:  std::string state_message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:57:  bool state_recoverable = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:58:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:59:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:60:struct MissionSubmitGateRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:61:  std::string mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:62:  std::string duplicate_message_prefix = "mission";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:63:  std::string preflight_message_prefix = "mission";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:64:  bool mission_already_active_or_queued = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:65:  MissionPreflightResult preflight;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:66:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:67:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:68:struct MissionSubmitGateDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:69:  bool accepted = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:70:  std::string mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:71:  std::string reject_reason;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:72:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:73:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:74:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:75:struct QueuedMissionCancelRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:76:  std::vector<QueuedMission> queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:77:  std::string mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:78:  bool cancel_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:79:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:80:  std::string active_mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:81:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:82:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:83:struct QueuedMissionCancelDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:84:  bool success = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:85:  bool active_cancel_requested = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:86:  int queue_size = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:87:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:88:  std::vector<QueuedMission> remaining_queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:89:  std::vector<std::string> release_mission_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:90:  bool set_state = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:91:  std::string state = "QUEUED";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:92:  std::string state_message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:93:  bool state_recoverable = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:94:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:95:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:96:struct StationOrderBatchCancelRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:97:  std::vector<QueuedMission> queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:98:  std::string batch_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:99:  bool cancel_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:100:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:101:  std::string active_mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:102:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:103:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:104:struct StationOrderBatchCancelDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:105:  bool success = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:106:  bool active_cancel_requested = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:107:  int queue_size = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:108:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:109:  std::vector<QueuedMission> remaining_queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:110:  std::vector<std::string> canceled_mission_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:111:  std::vector<std::string> release_mission_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:112:  bool set_state = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:113:  std::string state = "QUEUED";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:114:  std::string state_message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:115:  bool state_recoverable = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:116:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:117:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:118:struct StationOrderBatchSubmitRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:119:  std::string batch_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:120:  std::vector<std::string> original_order_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:121:  std::vector<std::string> sanitized_order_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:122:  std::vector<std::string> pickup_station_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:123:  std::vector<std::string> dropoff_station_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:124:  int priority = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:125:  bool start_if_idle = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:126:  bool preempt_current = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:127:  bool continue_on_error = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:128:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:129:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:130:struct StationOrderBatchItemPlan {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:131:  bool accepted = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:132:  std::string original_order_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:133:  std::string order_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:134:  std::string station_order_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:135:  std::string pickup_station;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:136:  std::string dropoff_station;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:137:  int priority = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:138:  bool start_if_idle = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:139:  bool preempt_current = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:140:  std::string reject_order_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:141:  std::string reject_message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:142:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:143:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:144:struct StationOrderBatchSubmitPlan {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:145:  bool accepted = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:146:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:147:  std::vector<StationOrderBatchItemPlan> items;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:148:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:149:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:150:struct StationOrderBatchSubmitSummary {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:151:  bool success = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:152:  int accepted_count = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:153:  int rejected_count = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:154:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:155:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:156:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:157:struct QueuedMissionReprioritizeRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:158:  std::vector<QueuedMission> queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:159:  std::string mission_id;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:160:  int priority = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:161:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:162:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:163:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:164:struct QueuedMissionBatchReprioritizeRequest {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:165:  std::vector<QueuedMission> queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:166:  std::vector<std::string> mission_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:167:  std::vector<int> priorities;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:168:  bool mission_active = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:169:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:170:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:171:struct QueuedMissionReprioritizeDecision {
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:172:  bool success = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:173:  int queue_size = 0;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:174:  std::string message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:175:  std::vector<QueuedMission> remaining_queue;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:176:  std::vector<std::string> updated_mission_ids;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:177:  bool set_state = false;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:178:  std::string state = "QUEUED";
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:179:  std::string state_message;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:180:  bool state_recoverable = true;
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:181:};
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:182:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:183:void SortMissionQueue(std::vector<QueuedMission>& queue);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:184:bool MissionIdQueued(const std::vector<QueuedMission>& queue, const std::string& mission_id);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:185:std::size_t RemoveQueuedMissionById(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:186:    std::vector<QueuedMission>& queue, const std::string& mission_id);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:187:bool ReprioritizeQueuedMission(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:188:    std::vector<QueuedMission>& queue, const std::string& mission_id, int priority);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:189:QueuedMissionStartDecision DecideQueuedMissionStart(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:190:    const QueuedMissionStartRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:191:bool MissionBelongsToWorkflowOrder(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:192:    const std::string& mission_id, const std::string& order_id);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:193:bool MissionBelongsToStationOrderBatch(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:194:    const std::string& mission_id, const std::string& batch_id);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:195:std::optional<std::string> PausedWorkflowForMission(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:196:    const std::string& mission_id, const std::unordered_set<std::string>& paused_order_ids);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:197:std::vector<std::string> QueuedWorkflowMissionIds(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:198:    const std::vector<QueuedMission>& queue, const std::string& order_id);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:199:std::size_t RemoveQueuedWorkflowMissions(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:200:    std::vector<QueuedMission>& queue, const std::string& order_id,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:201:    std::vector<std::string>* removed_mission_ids);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:202:std::size_t RemoveQueuedStationOrderBatchMissions(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:203:    std::vector<QueuedMission>& queue, const std::string& batch_id,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:204:    std::vector<std::string>* removed_mission_ids);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:205:std::vector<std::string> ReprioritizeQueuedMissionBatch(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:206:    std::vector<QueuedMission>& queue, const std::vector<std::string>& mission_ids,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:207:    const std::vector<int>& priorities);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:208:std::optional<std::size_t> FindNextRunnableMissionIndex(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:209:    const std::vector<QueuedMission>& queue,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:210:    const std::unordered_set<std::string>& paused_order_ids);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:211:MissionQueueDispatchResult PopNextRunnableMission(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:212:    std::vector<QueuedMission> queue,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:213:    const std::unordered_set<std::string>& paused_order_ids);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:214:MissionQueueAdmissionDecision PlanMissionQueueAdmission(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:215:    const MissionQueueAdmissionRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:216:MissionSubmitGateDecision PlanMissionSubmitGate(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:217:    const MissionSubmitGateRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:218:QueuedMissionCancelDecision PlanQueuedMissionCancel(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:219:    const QueuedMissionCancelRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:220:StationOrderBatchCancelDecision PlanStationOrderBatchCancel(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:221:    const StationOrderBatchCancelRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:222:StationOrderBatchSubmitPlan PlanStationOrderBatchSubmit(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:223:    const StationOrderBatchSubmitRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:224:StationOrderBatchSubmitSummary PlanStationOrderBatchSubmitSummary(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:225:    const std::string& batch_id, bool continue_on_error, int accepted_count,
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:226:    int rejected_count);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:227:QueuedMissionReprioritizeDecision PlanQueuedMissionReprioritize(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:228:    const QueuedMissionReprioritizeRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:229:QueuedMissionReprioritizeDecision PlanQueuedMissionBatchReprioritize(
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:230:    const QueuedMissionBatchReprioritizeRequest& request);
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:231:
+/home/ubuntu/个人学习/amr_dispatcher/src/amr_dispatcher_core/include/amr_dispatcher_core/workflow/queued_mission.hpp:232:}  // namespace amr_dispatcher_core::workflow

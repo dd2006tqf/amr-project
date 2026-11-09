@@ -1,0 +1,44 @@
+// typesupport 绑定的宏定义。
+//
+// 分工（简洁版）：
+//   - 本头文件只定义一个宏 AMR_PROTO_BIND_TYPESUPPORT(cpp_type, func_name)
+//   - 生成的 proto_typesupport_registry.inc 包含一串该宏的调用条目
+//   - py_typesupport_module.cpp 在 PYBIND11_MODULE 体内 include .inc，
+//     条目就地展开成 m.def(...)
+//
+// 之所以能"就地 include"，是因为预处理器的 #include 是纯文本插入，
+// 不要求位于文件作用域——它可以在函数体内，只要被插入的内容语法合法。
+// 这让生成器无需理解宏语义，只负责列类型清单。
+#ifndef AMR_DISPATCHER_PROTO__PY_BINDINGS_HPP_
+#define AMR_DISPATCHER_PROTO__PY_BINDINGS_HPP_
+
+#include <Python.h>
+
+#include <rosidl_runtime_c/message_type_support_struct.h>
+
+/// 为一个 protobuf 类型注册 Python 可见的 typesupport 获取函数。
+///
+/// 依赖两个在展开点可见的名字：
+///   - `m`：pybind11 的 module 对象（PYBIND11_MODULE 提供）
+///   - `MakeTypeSupportCapsule`：把 handle 包成 PyCapsule 的辅助函数
+///
+/// 注意宏体里不能出现裸逗号：预处理器会把逗号当作参数分隔符，
+/// 即使它在 lambda 的形参列表里。这里的 lambda 是无参的，但
+/// `m.def(name, fn, doc)` 的三个实参之间也有逗号——那没问题，
+/// 因为它们在**替换后的代码**里，不在宏参数里。
+///
+/// \param cpp_type  protoc 生成的 C++ 全限定类型名
+/// \param func_name Python 侧可见的函数名（模块内唯一）
+#define AMR_PROTO_BIND_TYPESUPPORT(cpp_type, func_name) \
+  m.def( \
+    #func_name, \
+    []() -> PyObject * { \
+      /* GetProtobufTypeSupport 返回 function-local static 的引用， */ \
+      /* 生命周期到进程结束，因此 capsule 无需析构器。 */ \
+      return MakeTypeSupportCapsule( \
+        &::amr_dispatcher_proto::GetProtobufTypeSupport<cpp_type>()); \
+    }, \
+    "Returns a PyCapsule wrapping the rosidl_message_type_support_t* for " \
+    #cpp_type);
+
+#endif  // AMR_DISPATCHER_PROTO__PY_BINDINGS_HPP_

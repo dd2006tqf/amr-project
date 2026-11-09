@@ -1,0 +1,44 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+
+namespace xgrids {
+
+// 单路传感器的一帧描述。
+struct FrameMeta {
+    int channel_id;   // 0..3 相机, 4 激光雷达
+    int64_t ts_us;    // MonotonicClock 时间戳
+    uint32_t seq;     // 该通道内递增帧号
+    size_t bytes;
+};
+
+// 多路同步窗口：把四路在同一时间窗内的帧聚成一组。
+// 3DGS 重建要求四路曝光对齐在毫秒级，否则纹理重影。
+struct SyncGroup {
+    int64_t anchor_ts_us;        // 组内最早帧时间戳
+    FrameMeta frames[4];         // 四路相机各一帧（可为空位）
+    int64_t max_skew_us = 0;     // 组内最大偏移 = max-min
+    bool complete = false;
+};
+
+// 把各路输入帧按时间窗聚合成 SyncGroup。
+// 窗口大小可配（如 5ms）；窗口内缺路 → 不完整组 → manifest 记缺口。
+class FrameGrouper {
+public:
+    explicit FrameGrouper(int64_t window_us = 5000);
+
+    // 喂一帧；返回是否凑齐一个完整组
+    bool push(const FrameMeta& f, SyncGroup& out);
+    // 关闭时 flush 出剩余不完整组
+    std::vector<SyncGroup> flush_incomplete();
+
+private:
+    int64_t window_us_;
+    int64_t cur_anchor_ = -1;
+    FrameMeta pending_[4];
+    bool have_[4] = {false};
+    int pending_count_ = 0;
+};
+
+}  // namespace xgrids

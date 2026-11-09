@@ -1,0 +1,121 @@
+# 端云因果双桥协同自治诊断系统实施计划 (Edge-Cloud Dual-Bridge Plan v2)
+
+## 一、定位与架构原则 (Architecture Core)
+
+本方案遵循严格的工业网关架构准则：
+**Edge Sentinel (边缘客观事实与初筛) + Cloud Assurance (云端全局统筹与复核) + Governed Execution (受控策略执行链)**
+
+### 核心铁律
+1. **L1（事实）与 L2（推断）严格物理隔离**：端侧 Qwen-0.5B 输出的是 L2 诊断假设 (`EdgeAIHypothesis`)，绝不写入 L1 事实快照 (`NetworkExperienceSnapshot`)。
+2. **端侧推理工业级非阻塞**：端侧 AI 推理必须与 eBPF 采样、SLE 评估及遥测上报主线程完全解耦，具备冷却去重 (Cooldown ≥ 300s)、10s 超时门禁与优雅降级。
+3. **四权分立受控闭环**：端侧假设仅作为云端 Council 专家只读输入；动作生成必须遵循 `Council 提议 → Policy 准入 → Approval 人审 (需审批时) → PendingAction 队列 → Edge Registry 白名单执行 → ActionOutcome 回流`。严禁任何 LLM 直接操纵执行队列。
+4. **增量演进，复用基建**：复用既有的 `pending_actions`、`network_action_outcomes`、Ed25519 签名体系与 Council/Policy 治理链，不额外建设第二套执行系统。
+
+---
+
+## 二、端云数据流与契约设计
+
+### 1. 遥测上行信封 (Uplink Telemetry Wire Contract)
+```json
+{
+  "device_id": "radxa-cubie-a7a",
+  "batch_id": "batch-1791715392",
+  "snapshots": [
+    {
+      "interface": "wlan0",
+      "overall_state": "DEGRADED",
+      "display_score": 55,
+      "network_health": { ... },
+      "service_health": { ... }
+    }
+  ],
+  "edge_ai_hypothesis": {
+    "hypothesis_id": "eh-1791715392",
+    "source": "EDGE_LOCAL_LLM",
+    "model_id": "qwen2.5-0.5b-instruct-q4_k_m",
+    "summary": "疑似蜂窝移动热点空口调度排队或反向长连接隧道拥塞",
+    "evidence_refs": ["snap-1791715392"],
+    "recommended_actions": ["PROBE_LOCAL_GATEWAY", "CHECK_CONNECTION_BANDWIDTH"],
+    "status": "UNVERIFIED",
+    "created_at": "2026-10-11T10:43:12Z",
+    "ttl_seconds": 300
+  }
+}
+```
+* `snapshots`：纯粹的 L1 观测事实（逐字节对齐既有契约）。
+* `edge_ai_hypothesis`：独立的顶级可选字段，受外层 Ed25519 签名完全覆盖保护。
+
+### 2. 闭环链路流转
+```text
+[Edge eBPF + C++ SLE] (L1 事实采集)
+        ↓ (异常劣化触发，冷却 300s，异步非阻塞)
+[Edge RAG + Local Qwen] (L2 初筛，产出 EdgeAIHypothesis: UNVERIFIED)
+        ↓ (Ed25519 签名上行 POST /api/v1/network/edge/telemetry)
+[LMA Ingest] ──┬──> 保存 L1 事实到 network_snapshots
+               └──> 保存 L2 假设到 network_edge_hypotheses (只读证据)
+                        ↓
+            [Cloud Council 专家委员会] (只读参考端侧假设与全局拓扑)
+                        ↓
+            [Council ActionProposal]
+                        ↓
+            [RiskPolicy 风险准入决策] (校验 catalog 与白名单)
+                        ↓
+            [Human Approval 审批] (按策略要求)
+                        ↓
+            [network_pending_actions] (QUEUED)
+                        ↓ (Telemetry 下行响应拉取)
+            [Edge ActionRegistry] (白名单校验并执行)
+                        ↓ (回执 POST /api/v1/network/edge/action-results)
+            [network_action_outcomes] (L1 真实执行记录归档)
+```
+
+---
+
+## 三、实施任务清单 (T0 ~ T6)
+
+### T0: 基线审计与未提交资产盘点
+- [ ] 审计当前工作区状态（`client/weaknet_cli.cpp`、`tools/ci.sh`、`edge_network_rag.py` 等）；
+- [ ] 核验 C++ `edge_telemetry_serializer.hpp` 与 Python `contracts.py` 的 Body 解析与签名覆盖边界；
+- [ ] 确认云端 `network_pending_actions` 与 `network_action_outcomes` 运行事实。
+
+### T1: 固化端侧 CLI、RAG 与本地推理服务
+- [ ] 规范化 `AI-assisted analysis/edge_network_rag.py` 输出结构为标准的 `EdgeAIHypothesis` JSON；
+- [ ] 固化板端 `tools/llama-server.service` 开机自启与守护配置；
+- [ ] 验证板端离线状态下 `weaknet-cli diagnosis --ai` 稳定返回。
+
+### T2: 类型化 EdgeAIHypothesis 契约与信封扩展
+- [ ] Python 端：在 `contracts.py` 中定义类型化的 `EdgeAiHypothesis` Pydantic 模型，在 `NetworkTelemetryBatch` 顶级增加可选字段；
+- [ ] C++ 端：在 `edge_telemetry_serializer.hpp` 中扩展信封序列化，保证与 Python 结构体字段与转义严格一致；
+- [ ] 契约测试：运行 `tools/verify_telemetry_contract.py` 验证跨语言一致性与 Ed25519 签名覆盖。
+
+### T3: 端侧后台 Edge AI 异步触发器与安全防护
+- [ ] C++ 服务端引入异步评估触发线程与任务队列；
+- [ ] 引入状态防抖与冷却机制（300s 内同一劣化类型不重复调用大模型）；
+- [ ] 引入 10s 超时门禁与异常捕获，确保模型不可用时 eBPF 监控与遥测上报零影响。
+
+### T4: 云端接收、持久化与证据关联
+- [ ] 在 LMA 数据库中创建 `network_edge_hypotheses` 表（存储假设记录、关联 snapshot_id 与 UNVERIFIED 状态）；
+- [ ] 在 `routes/network_assurance.py` 与 `service.py` 的 `ingest_batch` 中提取并落盘端侧假设。
+
+### T5: 云端 Council / Copilot 研判接入
+- [ ] 在 `network_council_service.py` 组装 Council 输入时，注入端侧小模型的分析作为参考上下文；
+- [ ] 在 `copilot.py` 中将端侧假设作为只读证据供解释器说明；
+- [ ] 严格复用既有 `Policy → Approval → PendingAction` 执行链，坚决不绕过审批。
+
+### T6: 全面验证与极限测试
+- [ ] **模型宕机测试**：关闭板端 `llama-server`，验证 C++ 服务端 telemetry 正常上报；
+- [ ] **防抖压测**：连续注入高延迟数据，验证 300s 内只触发单次端侧推理；
+- [ ] **权限与策略测试**：验证未获得 Policy 准入或未审批的动作绝不进入 `network_pending_actions`；
+- [ ] **端云全链路 E2E 测试**：端侧劣化 → 端侧推理生成假设 → 签名上行 → 云端接收落表 → Council 决策参考 → 受控下发。
+
+---
+
+## 四、验证验收标准 (Acceptance Criteria)
+
+| 场景 | 验收条件 | 结果判定 |
+| :--- | :--- | :--- |
+| **1. 离线诊断** | 断网环境下执行 `weaknet-cli diagnosis --ai` | 正常输出结构化因果建议，耗时 ≤ 10s |
+| **2. 故障隔离** | `llama-server` 进程异常崩溃或超时 | telemetry 上报主流程毫秒级畅通，不阻塞采集 |
+| **3. 冷却防抖** | 连续 10 分钟保持网络高延迟状态 | 板载大模型仅在首轮及冷却后触发，不产生推理风暴 |
+| **4. 事实不污染** | 查看云端 `network_snapshots` 表 | 快照中无任何自然语言假设，纯客观 L1 事实 |
+| **5. 策略治理** | 端侧大模型推荐了某项动作 | 动作仅作为建议进入提案，未经 Policy 准入绝不生成 `QUEUED` 行 |

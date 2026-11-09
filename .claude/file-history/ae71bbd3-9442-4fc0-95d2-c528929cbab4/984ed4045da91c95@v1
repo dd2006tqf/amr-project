@@ -1,0 +1,3 @@
+add_executable(test_sync test_sync_monitor.cpp)
+target_link_libraries(test_sync capture_common capture_sync capture_manifest)
+add_test(NAME sync_monitor COMMAND test_sync)

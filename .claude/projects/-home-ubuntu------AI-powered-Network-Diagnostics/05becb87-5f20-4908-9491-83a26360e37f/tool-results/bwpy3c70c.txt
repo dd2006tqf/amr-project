@@ -1,0 +1,237 @@
+237:function verifyTddEvidenceAt(root, change, requested, options = {}) {
+238-  const safeRoot = safeChangeRoot(root, change, requested); root = safeRoot.root; const base = safeRoot.base, snapshot = JSON.parse(fs.readFileSync(path.join(base, 'harness', 'ai_snapshot.json'))), rawVerification = JSON.parse(fs.readFileSync(path.join(base, 'harness', 'verification.json'))), planning = planningStateAt(root, change, base), own = (o, k) => Object.prototype.hasOwnProperty.call(o, k), closed = (o, keys, label) => { if (!o || typeof o !== 'object' || Array.isArray(o) || Object.keys(o).some(k => !keys.includes(k)) || keys.some(k => !own(o, k))) throw Error(label + ' schema mismatch') }, isDigest = v => typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v), checkedAt = Date.now(), date = v => { const n = Date.parse(v); if (!Number.isFinite(n) || n > checkedAt + 300000) throw Error('invalid or future evidence timestamp'); return n }, same = (a, b) => canonical(a) === canonical(b), safeFile = p => { safePattern(p, 'evidence path'); if (p.includes('*') || p.includes('?')) throw Error('evidence file path cannot be a glob'); const f = path.join(root, ...p.split('/')), st = fs.lstatSync(f); if (!st.isFile() || st.isSymbolicLink()) throw Error('unsafe or missing test file: ' + p); return { path: p, mode: (st.mode & 0o111) ? '100755' : '100644', sha256: digest(fs.readFileSync(f)) } }, secret = /(?:authorization|proxy-authorization|bearer|x-?api-?key|api[_-]?key|token|password|secret|cookie|client[_-]?secret|private[_-]?key|access[_-]?key)[\s:=]+\S+|:\/\/[^/\s:]+:[^/@\s]+@|-----BEGIN [A-Z ]*PRIVATE KEY-----/i, rejectSecrets = v => { if (typeof v === 'string') { if (secret.test(v)) throw Error('secret-like TDD evidence'); return } if (Array.isArray(v)) return v.forEach(rejectSecrets); if (v && typeof v === 'object') Object.values(v).forEach(rejectSecrets) };
+239-  const modern = snapshot.schema_version === 3 && rawVerification.schema_version === 2, integrated = snapshot.schema_version === 4 && rawVerification.schema_version === 3; if (!modern && !integrated || snapshot.planned_change_fingerprint !== planning.planning_fingerprint || snapshot.planned_tdd_policy_sha256 !== planning.tdd_policy_sha256 || integrated && snapshot.planned_integration_completeness_sha256 !== planning.integration_completeness_sha256 || !snapshot.planning_approved_at || !Number.isFinite(Date.parse(snapshot.planning_approved_at)) || typeof snapshot.implementation_base_commit !== 'string' || !/^[0-9a-f]{40,64}$/.test(snapshot.implementation_base_commit)) throw Error('approved planning/TDD/Integration baseline is missing or stale'); if (integrated) { closed(rawVerification, ['schema_version', 'change_name', 'migration', 'tasks'], 'verification v3'); if (rawVerification.change_name !== change || !Array.isArray(rawVerification.tasks)) throw Error('verification v3 identity mismatch') } const verification = integrated ? { schema_version: 2, change_name: rawVerification.change_name, migration: rawVerification.migration, tasks: rawVerification.tasks.map(t => ({ task_id: t.task_id, requirement_refs: t.requirement_refs, changed_paths: t.changed_paths, footprint_observation: t.footprint_observation, commands: t.commands.map(c => { const x = { ...c }; delete x.surface_ids; delete x.surface_evidence_roles; delete x.surface_probe_bindings; return x }) })) } : rawVerification; closed(verification, ['schema_version', 'change_name', 'migration', 'tasks'], 'verification v2'); if (verification.schema_version !== 2 || verification.change_name !== change || !Array.isArray(verification.tasks)) throw Error('verification v2 identity mismatch'); if (verification.migration !== null) { closed(verification.migration, ['from_schema_version', 'source_sha256', 'migrated_at', 'legacy_verification'], 'verification migration'); if (verification.migration.from_schema_version !== 1 || !isDigest(verification.migration.source_sha256) || !Number.isFinite(Date.parse(verification.migration.migrated_at)) || verification.migration.legacy_verification?.schema_version !== 1 || verification.migration.legacy_verification?.change_name !== change) throw Error('verification migration invalid') }
+240-  rejectSecrets(verification); const source = options.sourceFingerprint || cp.execFileSync(path.join(root, 'scripts', 'source_fingerprint.sh'), ['--kind', 'source'], { cwd: root, encoding: 'utf8' }).trim(); if (!isDigest(source)) throw Error('invalid expected source fingerprint'); const taskMap = new Map, commandKeys = ['id', 'phase', 'cycle_id', 'exception_id', 'kind', 'argv', 'working_directory', 'started_at', 'finished_at', 'expected_exit_codes', 'exit_code', 'result', 'source_fingerprint_before', 'source_fingerprint_after', 'planning_fingerprint_before', 'planning_fingerprint_after', 'tdd_policy_sha256', 'test_files', 'expected_failure', 'observed_summary', 'output_sha256']; const isCurrentCommand = c => c.result === 'Pass' && c.planning_fingerprint_after === planning.planning_fingerprint && c.tdd_policy_sha256 === planning.tdd_policy_sha256;
+241-  for (const t of verification.tasks) { closed(t, ['task_id', 'requirement_refs', 'changed_paths', 'footprint_observation', 'commands'], 'verification task'); if (taskMap.has(t.task_id) || !planning.tasks.has(t.task_id) || !Array.isArray(t.requirement_refs) || !Array.isArray(t.changed_paths) || !Array.isArray(t.commands)) throw Error('verification task invalid: ' + t.task_id); const ids = new Set; for (const c of t.commands) { closed(c, commandKeys, 'TDD command'); if (typeof c.id !== 'string' || !c.id || ids.has(c.id) || !['RED', 'GREEN', 'REGRESSION', 'ALTERNATIVE'].includes(c.phase) || !['build', 'test', 'behavior', 'static'].includes(c.kind) || !Array.isArray(c.argv) || !c.argv.length || c.argv.some(x => typeof x !== 'string') || c.working_directory !== '.' || !Array.isArray(c.expected_exit_codes) || !c.expected_exit_codes.length || !c.expected_exit_codes.every(Number.isInteger) || !Number.isInteger(c.exit_code) || !isDigest(c.source_fingerprint_before) || !isDigest(c.source_fingerprint_after) || !isDigest(c.planning_fingerprint_before) || !isDigest(c.planning_fingerprint_after) || !isDigest(c.tdd_policy_sha256) || !isDigest(c.output_sha256) || typeof c.observed_summary !== 'string' || !c.observed_summary.trim() || /[\r\n]/.test(c.observed_summary) || date(c.finished_at) < date(c.started_at)) throw Error('TDD command invalid'); ids.add(c.id); const cmdIsCurrent = isCurrentCommand(c); validateProjectCommandEvidence(root, change, c, { changeRoot: base, revalidateRuntimeIdentity: cmdIsCurrent }); if (c.planning_fingerprint_before !== c.planning_fingerprint_after || c.tdd_policy_sha256 !== planning.tdd_policy_sha256) throw Error('planning changed during command'); if (!Array.isArray(c.test_files)) throw Error('test_files array required'); if (c.phase === 'RED') { if (!c.cycle_id || c.exception_id !== null || !['test', 'behavior'].includes(c.kind) || c.expected_exit_codes.includes(0) || !c.test_files.length || !c.expected_failure) throw Error('RED contract invalid'); closed(c.expected_failure, ['class', 'reason', 'output_match_sha256', 'matched'], 'expected failure'); if (!['assertion', 'behavior', 'contract'].includes(c.expected_failure.class) || typeof c.expected_failure.reason !== 'string' || !c.expected_failure.reason.trim() || !isDigest(c.expected_failure.output_match_sha256) || typeof c.expected_failure.matched !== 'boolean' || !['ExpectedFailure', 'InvalidRed'].includes(c.result)) throw Error('RED failure contract invalid'); const valid = c.exit_code !== 0 && c.expected_exit_codes.includes(c.exit_code) && c.expected_failure.matched && c.source_fingerprint_before === c.source_fingerprint_after; if ((c.result === 'ExpectedFailure') !== valid) throw Error('RED result mismatch') } else { if (c.expected_failure !== null || c.test_files.length || !['Pass', 'Fail'].includes(c.result) || (c.result === 'Pass') !== c.expected_exit_codes.includes(c.exit_code) || c.source_fingerprint_before !== c.source_fingerprint_after) throw Error(c.phase + ' result mismatch'); if (c.phase === 'ALTERNATIVE') { if (c.cycle_id !== null || typeof c.exception_id !== 'string' || !c.exception_id) throw Error('ALTERNATIVE contract invalid') } else if (typeof c.cycle_id !== 'string' || !c.cycle_id || c.exception_id !== null) throw Error(c.phase + ' cycle contract invalid') } } taskMap.set(t.task_id, t) }
+242-  const exceptionByTask = new Map; for (const x of planning.tdd_policy.exceptions) for (const id of x.task_ids) exceptionByTask.set(id, x); const targetIds = options.taskId ? [options.taskId] : [...planning.tasks.keys()], blockingExceptionTaskIds = [];
+243-  for (const id of targetIds) {
+244-    const planned = planning.tasks.get(id); if (!planned) throw Error('unknown task: ' + id); if (options.requireDone && !planned.done) throw Error('task is not checked: ' + id); const evidence = taskMap.get(id); if (!evidence || !evidence.commands.length) throw Error('missing TDD evidence for task ' + id); const current = c => c.result === 'Pass' && c.planning_fingerprint_after === planning.planning_fingerprint && c.tdd_policy_sha256 === planning.tdd_policy_sha256, exception = exceptionByTask.get(id);
+245-    if (exception) { if (exception.category === 'disposable_prototype') throw Error('disposable prototype cannot complete'); if (!evidence.changed_paths.length || evidence.changed_paths.some(p => !matchesPattern(p, exception.paths))) throw Error('TDD exception evidence escaped approved paths: ' + id); const observability = exception.category === 'observability_only', unavailable = ['unavailable_hardware', 'unavailable_external_service'].includes(exception.category), alternatives = evidence.commands.filter(c => c.phase === 'ALTERNATIVE' && c.exception_id === exception.id), recoveries = evidence.commands.filter(c => c.phase === 'REGRESSION'), illegal = evidence.commands.filter(c => c.phase !== 'ALTERNATIVE' && !(unavailable && planned.done && c.phase === 'REGRESSION') && !(observability && (c.phase === 'REGRESSION' || c.phase === 'ALTERNATIVE'))); if (illegal.length) throw Error('TDD exception task contains an unapproved normal phase: ' + id); if (observability) { const currentRecoveries = recoveries.filter(current), currentAlts = alternatives.filter(current); for (const kind of planned.verify) if (!currentRecoveries.some(c => c.kind === kind) && !currentAlts.some(c => c.kind === kind)) throw Error('missing current REGRESSION/ALTERNATIVE ' + kind + ' for observability task ' + id); continue } for (const recovery of recoveries) { if (!unavailable || !planned.done) throw Error('only a completed unavailable-environment exception may recover with REGRESSION: ' + id); const predecessor = alternatives.some(c => c.kind === recovery.kind && c.result === 'Pass' && c.planning_fingerprint_after === planning.planning_fingerprint && c.tdd_policy_sha256 === planning.tdd_policy_sha256 && date(c.finished_at) <= date(recovery.started_at)); if (!predecessor) throw Error('environment recovery REGRESSION lacks its prior approved ALTERNATIVE: ' + id + '/' + recovery.kind) } const currentRecoveries = recoveries.filter(current), cycles = [...new Set(currentRecoveries.map(c => c.cycle_id))], recovered = unavailable && planned.done && cycles.some(cycle => planned.verify.every(kind => currentRecoveries.some(c => c.cycle_id === cycle && c.kind === kind))); if (recovered) continue; const alt = alternatives.filter(current); for (const kind of planned.verify) if (!alt.some(c => c.kind === kind)) throw Error('missing current ALTERNATIVE ' + kind + ' for task ' + id); if (unavailable) blockingExceptionTaskIds.push(id); continue }
+246-    const planningCurrent = c => c.result === 'Pass' && c.planning_fingerprint_after === planning.planning_fingerprint && c.tdd_policy_sha256 === planning.tdd_policy_sha256, reds = evidence.commands.filter(c => c.phase === 'RED' && c.result === 'ExpectedFailure'); let closedCycle = false; for (const red of reds) { const tests = red.test_files.map(x => { closed(x, ['path', 'mode', 'sha256'], 'RED test file'); if (!isDigest(x.sha256)) throw Error('RED test digest invalid'); return x }), currentTests = tests.map(x => safeFile(x.path)); if (!same(tests, currentTests)) continue; const greens = evidence.commands.filter(c => c.phase === 'GREEN' && c.cycle_id === red.cycle_id && c.kind === red.kind && same(c.argv, red.argv) && date(c.started_at) >= date(red.finished_at) && planningCurrent(c) && c.source_fingerprint_after !== red.source_fingerprint_after); for (const green of greens) { const regression = evidence.commands.filter(c => c.phase === 'REGRESSION' && c.cycle_id === red.cycle_id && date(c.started_at) >= date(green.finished_at) && current(c)); if (planned.verify.every(kind => regression.some(c => c.kind === kind))) { closedCycle = true; break } } if (closedCycle) break } if (!closedCycle) throw Error('no current RED -> GREEN -> REGRESSION closure for task ' + id)
+247-  }
+248-  return { source_fingerprint: source, planning_fingerprint: planning.planning_fingerprint, tdd_policy_sha256: planning.tdd_policy_sha256, blocking_exception_task_ids: blockingExceptionTaskIds };
+249-}
+250:function verifyTddEvidence(root, change, options = {}) {
+251:  root = path.resolve(root); return verifyTddEvidenceAt(root, change, path.join(root, 'openspec', 'changes', change), options);
+252-}
+253-function reviewInput(root, change, implementationBase, fingerprints) {
+254-  root = path.resolve(root); if (!/^[0-9a-f]{40,64}$/.test(implementationBase)) throw Error('full implementation base required'); const env = { ...process.env, GIT_EXTERNAL_DIFF: '', GIT_DIFF_OPTS: '' }, git = (args, encoding = null) => cp.execFileSync('git', args, { cwd: root, env, ...(encoding ? { encoding } : {}) }), nul = b => b.toString('utf8').split('\0').filter(Boolean), policy = loadManifest(root), controlled = p => policy.isManaged(p) || p === '.gitignore' || p === 'ai_snapshot.json' || p === 'claude-progress.txt' || p === 'session-state.md' || p === 'AGENTS.md' || p === 'CLAUDE.md' || p === 'PROJECT_ATTRIBUTION.md' || p === 'openspec' || p.startsWith('openspec/') || p === '.ai-harness' || p.startsWith('.ai-harness/'), excluded = p => controlled(p) || p === 'openspec/changes/archive' || p.startsWith('openspec/changes/archive/'), safePaths = xs => [...new Set(xs)].filter(p => { safePattern(p, 'review path'); if (p.includes('*') || p.includes('?')) throw Error('review path cannot be a glob'); if (controlled(p)) { try { if (fs.lstatSync(path.join(root, ...p.split('/'))).isSymbolicLink()) throw Error('controlled review path symlink: ' + p) } catch (error) { if (error.code !== 'ENOENT') throw error } return false } return !excluded(p) }).sort(cmp), head = git(['rev-parse', '--verify', 'HEAD'], 'utf8').trim(); if (!/^[0-9a-f]{40,64}$/.test(head)) throw Error('full HEAD required');
+255-  const tree = rev => { const out = new Map; for (const row of nul(git(['ls-tree', '-r', '-z', '--full-tree', rev]))) { const m = row.match(/^(\d+) \w+ ([0-9a-f]+)\t([\s\S]+)$/); if (m) out.set(m[3], { mode: m[1], oid: m[2] }) } return out }, index = new Map; for (const row of nul(git(['ls-files', '-s', '-z']))) { const m = row.match(/^(\d+) ([0-9a-f]+) \d+\t([\s\S]+)$/); if (m) index.set(m[3], { mode: m[1], oid: m[2] }) } const baseTree = tree(implementationBase), headTree = tree(head), missing = { mode: '000000', oid: '<deleted>' }, work = p => { const f = path.join(root, ...p.split('/')); let st; try { st = fs.lstatSync(f) } catch (e) { if (e.code === 'ENOENT') return missing; throw e } if (st.isSymbolicLink()) { if (!index.has(p)) throw Error('untracked review path symlink: ' + p); const target = fs.readlinkSync(f, 'buffer'); return { mode: '120000', oid: digest(Buffer.concat([Buffer.from('120000\0'), target])) } } if (st.isDirectory()) { const idx = index.get(p); if (idx?.mode !== '160000') throw Error('unexpected review directory: ' + p); const h = git(['-C', p, 'rev-parse', 'HEAD'], 'utf8').trim(), raw = git(['-C', p, 'status', '--porcelain=v1', '-z']); return { mode: '160000', oid: h, status: digest(raw), dirty: raw.length > 0 } } if (!st.isFile()) throw Error('unsupported review path: ' + p); return { mode: (st.mode & 0o111) ? '100755' : '100644', oid: digest(fs.readFileSync(f)) } }, makeLayer = (paths, before, after) => { paths = safePaths(paths); const records = paths.map(p => ({ path: p, before: before(p) || missing, after: after(p) || missing })); return { paths, state_fingerprint: digest(Buffer.from(canonical(records))) } };
+256-  const committedPaths = nul(git(['diff', '--no-renames', '--name-only', '-z', implementationBase, 'HEAD', '--'])), stagedPaths = nul(git(['diff', '--cached', '--no-renames', '--name-only', '-z', 'HEAD', '--'])), unstagedPaths = nul(git(['diff', '--no-renames', '--name-only', '-z', '--'])), effectivePaths = nul(git(['diff', '--no-renames', '--name-only', '-z', implementationBase, '--'])), committed = makeLayer(committedPaths, p => baseTree.get(p), p => headTree.get(p)), staged = makeLayer(stagedPaths, p => headTree.get(p), p => index.get(p)), unstaged = makeLayer(unstagedPaths, p => index.get(p), work), effective = makeLayer(effectivePaths, p => baseTree.get(p), work), untrackedPaths = safePaths(nul(git(['ls-files', '--others', '--exclude-standard', '-z']))), untrackedRecords = untrackedPaths.map(p => ({ path: p, after: work(p) })), untracked = { paths: untrackedPaths, state_fingerprint: digest(Buffer.from(canonical(untrackedRecords))) }, gitlinks = []; for (const [p, x] of index) if (x.mode === '160000' && !excluded(p)) { const w = work(p); if (w.dirty) gitlinks.push({ path: p, state: w }) } const dirty_gitlinks = { paths: gitlinks.map(x => x.path).sort(cmp), state_fingerprint: digest(Buffer.from(canonical(gitlinks))) }, layers = { effective, committed, staged, unstaged, untracked, dirty_gitlinks }, reviewPaths = safePaths(Object.values(layers).flatMap(x => x.paths)); return { schema_version: 1, implementation_base_commit: implementationBase, head_commit: head, source_fingerprint: fingerprints.source_fingerprint, artifact_fingerprint: fingerprints.artifact_fingerprint, base_specs_fingerprint: fingerprints.base_specs_fingerprint, layers, review_paths: reviewPaths, git_state_fingerprint: digest(Buffer.from(canonical(layers))), raw_diff_persisted: false };
+257-}
+258:module.exports = { loadManifest, parseTaskContracts, parseTddPolicy, planningState, planningStateAt, validateProjectCommandEvidence, persistProjectCommandEvidence, verifyTddEvidence, verifyTddEvidenceAt, reviewInput, canonical, digest, safePattern, matchesPattern };
+259-if (require.main === module) { try { const upgrade = process.env.AUTOAI_MANIFEST_ALLOW_TEMPLATE_UPGRADE === '1', result = loadManifest(process.cwd(), { allowTemplateUpgrade: upgrade }); if (process.env.AUTOAI_MANIFEST_PRINT_UPGRADE_PATHS === '1') process.stdout.write(result.missing_managed_paths.join('\n') + (result.missing_managed_paths.length ? '\n' : '')); else console.log('Manifest policy passed.') } catch (e) { console.error('[ERR] ' + e.message); process.exit(6) } }
+---
+378:function verifyIntegrationEvidenceFromChangeRoot(root, change, changeRoot, options = {}) {
+379-    root = fs.realpathSync(path.resolve(root)); changeRoot = path.resolve(changeRoot);
+380-    const plan = parsePlanFromChangeRoot(root, change, changeRoot), base = path.join(changeRoot, 'harness');
+381-    const staleTaskObligations = detail => {
+382-        const error = Error('stale_task_obligations');
+383-        error.gateStatus = 'blocked';
+384-        error.detail = detail;
+385-        throw error;
+386-    };
+387-    const verification = JSON.parse(fs.readFileSync(path.join(base, 'verification.json'))), snapshot = JSON.parse(fs.readFileSync(path.join(base, 'ai_snapshot.json')));
+388-    closed(verification, ['schema_version', 'change_name', 'migration', 'tasks'], 'verification v3');
+389-    if (verification.schema_version !== 3 || verification.change_name !== change || !Array.isArray(verification.tasks)) throw Error('verification v3 identity mismatch');
+390-    const manifestPolicy = require(path.join(root, 'scripts', 'manifest_policy.js'));
+391-    const planning=manifestPolicy.planningStateAt(root,change,changeRoot);
+392-    if (snapshot.schema_version !== 4 || snapshot.planned_change_fingerprint!==planning.planning_fingerprint || snapshot.planned_tdd_policy_sha256!==planning.tdd_policy_sha256 || snapshot.planned_integration_completeness_sha256 !== plan.block_sha256 || planning.integration_completeness_sha256!==plan.block_sha256) throw Error('approved Integration planning baseline is missing or stale');
+393-    const source = options.sourceFingerprint || cp.execFileSync(path.join(root, 'scripts', 'source_fingerprint.sh'), ['--kind', 'source'], { cwd: root, encoding: 'utf8' }).trim();
+394-    if (!DIGEST.test(source)) throw Error('invalid expected source fingerprint');
+395-    const tdd = manifestPolicy.parseTddPolicy(fs.readFileSync(path.join(changeRoot, 'design.md'), 'utf8'), fs.readFileSync(path.join(changeRoot, 'tasks.md'), 'utf8'));
+396-    const exceptionByTask = new Map; for (const exception of tdd.policy.exceptions) for (const id of exception.task_ids) exceptionByTask.set(id, exception);
+397-    const taskMap = new Map;
+398-    for (const taskEvidence of verification.tasks) {
+399-        closed(taskEvidence, ['task_id', 'requirement_refs', 'surface_ids', 'changed_paths', 'footprint_observation', 'commands'], 'verification task v3');
+400-        if (taskMap.has(taskEvidence.task_id) || !plan.tasks.has(taskEvidence.task_id) || !Array.isArray(taskEvidence.commands)) throw Error('invalid verification task');
+401-        exactSet(taskEvidence.surface_ids, expectedTaskSurfaceIds(plan, taskEvidence.task_id), 'verification task surface IDs');
+402-        const taskException = exceptionByTask.get(taskEvidence.task_id);
+403-        const unavailableException = taskException && ['unavailable_hardware', 'unavailable_external_service'].includes(taskException.category);
+404-        for (const command of taskEvidence.commands) {
+405-            if (!Array.isArray(command.surface_ids) || !Array.isArray(command.surface_evidence_roles) || !Array.isArray(command.surface_probe_bindings)) throw Error('command surface bindings missing');
+406-            const normalized = normalizeSurfaceRoles(plan, taskEvidence.task_id, command.kind, command.surface_evidence_roles, false);
+407-            if (canonical(normalized.surface_evidence_roles) !== canonical(command.surface_evidence_roles) || canonical(normalized.surface_ids) !== canonical(command.surface_ids)) throw Error('command surface bindings are not canonical');
+408-            const closesWithProbe = command.phase === 'REGRESSION' || command.phase === 'ALTERNATIVE' && taskException && !unavailableException;
+409-            if (closesWithProbe) {
+410-                if (command.phase === 'ALTERNATIVE' && command.exception_id !== taskException.id) throw Error('ALTERNATIVE surface binding does not match the approved exception');
+411-                const probes = bindSurfaceProbes(plan, taskEvidence.task_id, command.kind, command.surface_evidence_roles, command.argv, command.expected_exit_codes, false);
+412-                if (canonical(probes.surface_probe_bindings) !== canonical(command.surface_probe_bindings)) throw Error('command surface probe bindings are not canonical');
+413-            } else {
+414-                if (command.phase === 'ALTERNATIVE' && (!taskException || command.exception_id !== taskException.id)) throw Error('ALTERNATIVE surface binding does not match the approved exception');
+415-                if (command.surface_probe_bindings.length) throw Error('only REGRESSION or an approved non-environment ALTERNATIVE may carry closing surface probe bindings');
+416-            }
+417-        }
+418-        taskMap.set(taskEvidence.task_id, taskEvidence);
+--
+453:function verifyIntegrationEvidence(root, change, options = {}) {
+454-    root = path.resolve(root);
+455:    return verifyIntegrationEvidenceFromChangeRoot(root, change, path.join(root, 'openspec', 'changes', change), options);
+456-}
+457-
+458-function currentRegularFile(root, p) {
+459-    safePath(p, 'current file');
+460-    const anchor = fs.realpathSync(path.resolve(root)), prefix = anchor.endsWith(path.sep) ? anchor : anchor + path.sep;
+461-    let cursor = anchor;
+462-    try {
+463-        const parts = p.split('/');
+464-        for (let index = 0; index < parts.length; index++) {
+465-            cursor = path.join(cursor, parts[index]); const st = fs.lstatSync(cursor);
+466-            if (st.isSymbolicLink() || index < parts.length - 1 && !st.isDirectory() || index === parts.length - 1 && !st.isFile()) return false;
+467-        }
+468-        const resolved = fs.realpathSync(cursor);
+469-        return resolved.startsWith(prefix) && resolved === cursor;
+470-    } catch (error) {
+471-        if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) return false;
+472-        throw error;
+473-    }
+474-}
+475-function baseFile(root, base, p) { try { const out = cp.execFileSync('git', ['ls-tree', '-z', base, '--', p], { cwd: root }).toString('utf8'); return /^(100644|100755) blob [0-9a-f]+\t/.test(out); } catch { return false; } }
+476-
+477-function validateAstIdentityInventory(plan, astResult) {
+478-    const inventory = astResult?.identity_inventory;
+479-    if (!inventory) throw Object.assign(Error('ast_identity_inventory_missing'), { gateStatus: 'invalid' });
+480-    closed(inventory, ['base', 'current'], 'AST identity inventory');
+481-    const sets = {}, owners = { base: new Map, current: new Map };
+482-    for (const side of ['base', 'current']) {
+483-        if (!Array.isArray(inventory[side])) throw Object.assign(Error('ast_identity_inventory_invalid'), { gateStatus: 'invalid' });
+484-        const normalized = inventory[side].map(identity => normalizeSymbolIdentity(identity)), keys = normalized.map(canonical);
+485-        if (keys.length !== new Set(keys).size) throw Object.assign(Error('ast_identity_inventory_collision'), { gateStatus: 'invalid' });
+486-        sets[side] = new Set(keys);
+487-    }
+488-    for (const surface of plan.block.surfaces) {
+489-        if (surface.symbol_identities === null) continue;
+490-        for (const side of ['base', 'current']) for (const identity of surface.symbol_identities[side]) owners[side].set(canonical(identity), surface);
+491-    }
+492-    for (const surface of plan.block.surfaces) {
+493-        const symbols = surface.symbol_identities; if (symbols === null) continue;
+494-        for (const side of ['base', 'current']) for (const identity of symbols[side]) {
+495-            if (!surface.producer_paths.includes(identity.declaration_path)) throw Object.assign(Error('planned_symbol_declaration_is_not_a_producer:' + surface.id), { gateStatus: 'invalid' });
+--
+516:    const closure = verifyIntegrationEvidence(root, change, { requireDone: true });
+517-    const design = fs.readFileSync(path.join(changeRoot, 'design.md'), 'utf8'), economy = parseEconomy(design), scope = scopeLib.collectScope(root, snapshot.implementation_base_commit, economy.classification, economy.schema_version, Array.isArray(snapshot.adopted_preexisting_paths) ? snapshot.adopted_preexisting_paths : []);
+518-    if (scope.unclassified_paths.length || scope.classification_overlaps.length) throw Object.assign(Error('invalid_scope_classification'), { gateStatus: 'invalid' });
+519-    const footprintFile = path.join(harness, 'change-footprint.json'), footprintRaw = fs.readFileSync(footprintFile), footprint = JSON.parse(footprintRaw);
+520-    if (footprint.implementation_base_commit !== snapshot.implementation_base_commit || footprint.source_fingerprint !== closure.source_fingerprint) throw Object.assign(Error('stale_change_footprint'), { gateStatus: 'blocked' });
+521-    const helperFile = path.join(root, 'scripts', 'change_scope.js'), adapterFile = path.join(root, 'scripts', 'integration_surface_lib.js');
+522-    const helperIdentity = { schema_version: 1, path: 'scripts/change_scope.js', sha256: sha(fs.readFileSync(helperFile)), output_sha256: scope.output_sha256 };
+523-    let astResult = { candidates: [], compile_commands_sha256: null, ast_tool_identity: null, adapter_identity: { id: 'reviewed-inventory-v1', schema_version: 1, sha256: sha(fs.readFileSync(adapterFile)) } };
+524-    if (plan.block.discovery.mode === 'clang_ast') {
+525-        const adapter = require(path.join(root, 'scripts', 'clang_ast_surface_adapter.js'));
+526-        astResult = adapter.discover({ root, change, implementationBase: snapshot.implementation_base_commit, compileCommandsPath: plan.block.discovery.compile_commands_path, plan, scope, classification: economy.classification });
+527-        validateAstIdentityInventory(plan, astResult);
+528-    }
+529-    const classify = scopeLib.compileClassification(economy.classification), classesFor = p => classify.classes.filter(k => classify.patterns[k].some(re => re.test(p)));
+530-    const allowedConsumerClasses = {
+531-        production_caller: ['production'], representative_external: ['tests', 'examples', 'project_tooling'], registration_dispatch: ['production', 'tests'],
+532-        real_entrypoint: ['production', 'tests', 'examples', 'project_tooling'], producer_consumer_pair: ['production', 'tests', 'examples'], downstream_build: ['production', 'tests', 'examples', 'project_tooling'], compatibility_probe: ['tests', 'examples', 'project_tooling']
+533-    };
+534-    for (const surface of plan.block.surfaces) {
+535-        for (const p of surface.producer_paths) {
+536-            const now = currentRegularFile(root, p), before = baseFile(root, snapshot.implementation_base_commit, p);
+537-            if (surface.change_kind === 'added' ? !now : surface.change_kind === 'removed' ? !before : !now && !before) throw Object.assign(Error('producer_path_state:' + p), { gateStatus: 'invalid' });
+538-        }
+539-        for (const p of [...surface.consumer_paths, ...(surface.compatibility?.old_consumer_paths || []), ...(surface.compatibility?.replacement_consumer_paths || [])]) {
+540-            if (!currentRegularFile(root, p)) throw Object.assign(Error('current_consumer_path_missing:' + p), { gateStatus: 'invalid' });
+541-            const consumerClasses = classesFor(p);
+542-            if (consumerClasses.length !== 1 || !allowedConsumerClasses[surface.consumer_kind].includes(consumerClasses[0])) throw Object.assign(Error('consumer_path_classification:' + p + ' (consumer_kind=' + surface.consumer_kind + ', detected=[' + (consumerClasses.join(',') || 'none') + '], allowed=[' + allowedConsumerClasses[surface.consumer_kind].join(',') + ']. Fix: classify the path in design.md Implementation Economy as one of the allowed classes, or adjust the surface consumer_kind)'), { gateStatus: 'invalid' });
+543-        }
+544-    }
+545-    const pathCandidates = scope.logical_changes.filter(x => x.classifications.includes('production')).map(changeRecord => {
+546-        const id = crypto.createHash('sha256').update('production-path\0' + changeRecord.change_status + '\0' + (changeRecord.old_path || '') + '\0' + changeRecord.path).digest('hex').slice(0, 16);
+547-        return { candidate_id: 'path-candidate-' + id, source: 'path', path: changeRecord.path, old_path: changeRecord.old_path, change_status: changeRecord.change_status };
+548-    }).sort((a, b) => cmp(a.candidate_id, b.candidate_id));
+549-    const structuralCandidates = scope.structural_candidates.map(x => ({ candidate_id: x.candidate_id, source: 'structural', path: x.path, kind: x.kind, allowance_kind: x.allowance_kind, old_path: x.old_path, change_status: x.change_status })).sort((a, b) => cmp(a.candidate_id, b.candidate_id));
+550-    const allCandidates = [...pathCandidates, ...structuralCandidates, ...astResult.candidates]; const candidateIds = new Set;
+551-    for (const candidate of allCandidates) { if (candidateIds.has(candidate.candidate_id)) throw Object.assign(Error('candidate_id_collision'), { gateStatus: 'invalid' }); candidateIds.add(candidate.candidate_id); }
+552-    const bindings = [], mapped = new Map;
+553-    for (const surface of plan.block.surfaces) {
+554-        const candidateBindings = [];
+555-        for (const candidate of [...pathCandidates, ...structuralCandidates]) {
+556-            const candidatePaths = [candidate.path, ...(candidate.old_path ? [candidate.old_path] : [])];
+--
+615:    const plan = context.plan || parsePlan(root, change), directClosure = context.direct_closure || (context.plan ? null : verifyIntegrationEvidence(root, change, { requireDone: true }));
+616-    const fail = message => { throw Error('Evaluation v3 Integration Completeness: ' + message); };
+617-    let evaluationClassification = context.classification || null;
+618-    if (!evaluationClassification && !context.plan) {
+619-        try {
+620-            evaluationClassification = parseEconomy(fs.readFileSync(path.join(root, 'openspec', 'changes', change, 'design.md'), 'utf8')).classification;
+621-        } catch (error) {
+622-            fail('cannot load shared path classification: ' + error.message);
+623-        }
+624-    }
+625-    if (plan.block.discovery.mode === 'clang_ast' && !evaluationClassification) fail('shared path classification is required for AST validation');
+626-    let isProduction = context.is_production || (() => true), contractPathPolicy;
+627-    if (evaluationClassification) {
+628-        try {
+629-            const compiled = scopeLib.compileClassification(evaluationClassification);
+630-            if (!context.is_production) isProduction = value => compiled.patterns.production.some(pattern => pattern.test(value));
+631-            contractPathPolicy = scopeLib.compileContractPathPolicy(evaluationClassification);
+632-        } catch (error) {
+633-            fail('shared path classification is invalid: ' + error.message);
+634-        }
+635-    } else {
+636-        contractPathPolicy = value => isProduction(value) && scopeLib.contractPathSyntax(value);
+637-    }
+638-    const set = (values, label, order = cmp) => {
+639-        if (!Array.isArray(values) || values.length !== new Set(values.map(canonical)).size) fail(label + ' must be a unique array');
+640-        if (values.some((value, index) => index && order(values[index - 1], value) > 0)) fail(label + ' must use canonical order');
+641-        return values;
+642-    };
+643-    const sameSet = (actual, expected, label, order = cmp) => {
+644-        set(actual, label, order); set(expected, label + ' expected', order);
+645-        if (canonical(actual) !== canonical(expected)) fail(label + ' coverage mismatch');
+646-    };
+647-    const ids = (values, label) => set(values, label).map(value => nonempty(value, label));
+648-    const result = (value, label) => { if (!['Pass', 'Fail', 'Blocked'].includes(value)) fail(label + ' result invalid'); return value; };
+649-    const digest = (value, label) => { if (!DIGEST.test(value || '')) fail(label + ' digest invalid'); return value; };
+650-    const object = (value, fields, label) => { try { closed(value, fields, label); } catch (error) { fail(error.message); } return value; };
+651-    const paths = (values, label) => {
+652-        set(values, label);
+653-        for (const value of values) { try { safePath(value, label); } catch (error) { fail(error.message); } }
+654-        return values;
+655-    };
+--
+1160:    const directClosure = verifyIntegrationEvidenceFromChangeRoot(root, change, changeRoot, { requireDone: true, sourceFingerprint });
+1161-    if (directClosure.provisionally_blocked.length && evaluation.verdict === 'Pass') fail('provisional Generator closure cannot Pass');
+1162-    const tasks = plan.tasks;
+1163-    if ([...tasks.values()].some(task => !task.done)) fail('all tasks must be complete');
+1164-    const deltaUniverse = parseDeltaUniverse(changeRoot);
+1165-    exact([...new Set([...tasks.values()].flatMap(task => task.refKeys))], [...deltaUniverse], 'task/delta references');
+1166-    closedObject(verification, ['schema_version', 'change_name', 'migration', 'tasks'], 'verification');
+1167-    if (verification.schema_version !== 3 || verification.change_name !== change || !Array.isArray(verification.tasks)) fail('verification identity');
+1168-    const verificationTasks = new Map;
+1169-    for (const task of verification.tasks) {
+1170-        closedObject(task, ['task_id', 'requirement_refs', 'surface_ids', 'changed_paths', 'footprint_observation', 'commands'], 'verification task');
+1171-        if (typeof task.task_id !== 'string' || verificationTasks.has(task.task_id) || !tasks.has(task.task_id) ||
+1172-            !Array.isArray(task.requirement_refs) || !Array.isArray(task.surface_ids) ||
+1173-            !Array.isArray(task.changed_paths) || !Array.isArray(task.commands) || !task.commands.length) fail('verification task contract');
+1174-        exact(task.requirement_refs.map(refKey), tasks.get(task.task_id).refKeys, 'verification task requirement refs');
+1175-        task.changed_paths.forEach(value => safePath(value, 'verification changed path'));
+1176-        closedObject(task.footprint_observation, ['status', 'drift_reason'], 'verification footprint observation');
+1177-        if (!['within_expected', 'drift_warning'].includes(task.footprint_observation.status) ||
+1178-            task.footprint_observation.status === 'within_expected' && task.footprint_observation.drift_reason !== null ||
+1179-            task.footprint_observation.status === 'drift_warning' &&
+1180-            (typeof task.footprint_observation.drift_reason !== 'string' || !task.footprint_observation.drift_reason.trim())) {
+1181-            fail('verification footprint observation contract');
+1182-        }
+1183-        verificationTasks.set(task.task_id, task);
+1184-    }
+1185-    exact([...verificationTasks.keys()], [...tasks.keys()], 'verification task coverage');
+1186-
+1187-    const economyPlan = parseEconomy(fs.readFileSync(path.join(changeRoot, 'design.md'), 'utf8'));
+1188-    const compiledClassification = scopeLib.compileClassification(economyPlan.classification);
+1189-    const isProduction = value => compiledClassification.patterns.production.some(pattern => pattern.test(value));
+1190-    const scope = scopeLib.collectScope(root, snapshot.implementation_base_commit, economyPlan.classification, economyPlan.schema_version, Array.isArray(snapshot.adopted_preexisting_paths) ? snapshot.adopted_preexisting_paths : []);
+1191-    if (scope.unclassified_paths.length || scope.classification_overlaps.length) fail('scope classification is invalid');
+1192-    const implementationPaths = [...new Set(scope.logical_changes.flatMap(item => [item.path, ...(item.old_path ? [item.old_path] : [])]))].sort(cmp);
+1193-    const declaredImplementationPaths = new Set(verification.tasks.flatMap(task => task.changed_paths));
+1194-    const undeclaredImplementationPaths = implementationPaths.filter(value => !declaredImplementationPaths.has(value));
+1195-    if (undeclaredImplementationPaths.length) fail('undeclared implementation paths: ' + undeclaredImplementationPaths.join(', '));
+1196-    if (footprint.schema_version !== 1 || footprint.change_name !== change ||
+1197-        footprint.implementation_base_commit !== snapshot.implementation_base_commit ||
+1198-        footprint.source_fingerprint !== sourceFingerprint ||
+1199-        footprint.budget_block_sha256 !== sha(Buffer.from(canonical(economyPlan))) ||
+1200-        !['within_expected', 'drift_warning'].includes(footprint.status)) fail('footprint identity or freshness drift');
+--
+1632:module.exports = { parsePlan, parsePlanFromChangeRoot, parseEconomy, parseTasks, parseDeltaUniverse, normalizeSymbolIdentity, normalizeSurfaceRoles, bindSurfaceProbes, expectedTaskSurfaceIds, verifyIntegrationEvidence, verifyIntegrationEvidenceFromChangeRoot, buildReviewedReport, validateEvaluationV3, validateCompleteEvaluationV3, discoveryIdentity, reportBytes, diagnostic, requiredRoles, currentRegularFile, canonical, sha, DIGEST, KINDS, VERIFY_KINDS, ROLE_ORDER };

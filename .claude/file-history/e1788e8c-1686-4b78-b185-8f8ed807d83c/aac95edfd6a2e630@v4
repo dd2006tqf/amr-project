@@ -1,0 +1,14 @@
+# MEMORY.md
+
+- [简历知识库同步流程](resume-kb-sync-workflow.md) — 简历文本是准绳，改简历后同步 机器人项目简历知识库.md 并用源码核对备注支撑
+- [多车与 VDA 5050 契约裁定](vda5050-fleet-contract-rulings.md) — 执行后端分离/选车三态/强清隔离，多车化前必读
+- [相位 11 运维可观测性要点](phase11-ops-observability.md) — 探针/守护/拓扑叠加层的不可让渡语义与测试域分配，改相关代码前必读
+- [拆分工作树前必须备份 diff](working-tree-separation-discipline.md) — `git checkout` 掉未提交改动不可逆，先用 diff/stash 兜底
+- [Claude Code 配置单一事实源](claude-code-single-source-config.md) — 只改 `~/.claude/settings.json`，`ANTHROPIC_MODEL` 留空串中和残留，勿写模型名
+- [protobuf typesupport 的 Jazzy 硬约束](protobuf-typesupport-jazzy-constraints.md) — 四个强制回调缺一即崩 + CDR 载荷前 4 字节不是本方案的，改相关代码前必读
+- [构建入口的包列表](build-entry-package-lists.md) — 新增包/新增 depend 后要同步四处硬编码列表，只有干净工作区才暴露
+- [低内存构建约束](low-memory-build-constraints.md) — 3.7 GB 机器必须两级限并发，否则整机 swap 颠簸、SSH 卡死且无 oom-kill 记录
+- [只在部署环境显形的故障](deploy-only-failure-modes.md) — protobuf API 版本 / 镜像缺 .so，开发机全绿那种；含 `ros2 topic hz` 读不到 proto 话题的误判陷阱
+- [验证 ROS 话题行为的四个陷阱](verification-traps-multiwriter.md) — 多 writer 混淆来源/`hz` 与 `echo` 对 proto 不可用/新参数需重启才可见/图查询会漏报，`--no-daemon` 不是万能药、要轮询
+- [干净工作区才暴露的构建故障](clean-build-only-failures.md) — install 漏 shared lib 导致节点 127、CI 从不跑 colcon test；干净验证必须 build+test 两步
+- [分层后的仓库结构与下位机编译环境](lower-layer-firmware-build-env.md) — vendor/ 已拆为 upper/lower/hardware 三层；固件本机**已能完整构建**（单条 `idf.py build`），含子模块/网络接口/预编译库/lock/target+分区共 5+2 个坑的修法

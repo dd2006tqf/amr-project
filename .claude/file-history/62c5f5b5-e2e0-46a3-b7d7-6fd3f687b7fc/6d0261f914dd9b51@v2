@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# 验证修复后的 scripts/build.sh 在容器内能走通 colcon 分支。
+# 注意：不套外层 set -u，否则验证脚本自己就会撞上同一个坑。
+set -o pipefail
+
+cd /workspace || exit 1
+
+echo "=== 1) 确认 --base-paths src 的差异（修复前的静默失败）==="
+source /opt/ros/jazzy/setup.bash
+echo "--- 不带 base-paths（修复前的行为）---"
+colcon list 2>/dev/null | head -3
+echo "--- 带 base-paths src（修复后）---"
+colcon list --base-paths src 2>/dev/null | wc -l
+
+echo
+echo "=== 2) 运行修复后的 build.sh（观察 set +u 是否救活了 source）==="
+# build.sh 自己会做 cmake + ctest + colcon，这里只关心它是否走到 colcon 且不因 -u 报错
+bash /workspace/scripts/build.sh 2>&1 | tail -20

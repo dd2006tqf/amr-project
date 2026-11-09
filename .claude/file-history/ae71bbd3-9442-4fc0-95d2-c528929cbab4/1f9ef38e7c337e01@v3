@@ -1,0 +1,98 @@
+// 端到端剧本驱动测试：
+//   1) 正常场景 -> manifest 应为 clean
+//   2) 故障剧本 -> manifest 应捕获所有注入异常
+//   3) 同一剧本跑两次 -> manifest 快照应一致（回归）
+#include "capture_session.h"
+#include "testing/fault_injector.h"
+#include <thread>
+#include <chrono>
+#include <cstdio>
+#include <cassert>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+
+using namespace xgrids;
+
+static ManifestSnapshot run_scenario(const std::string& name,
+                                     const std::string& scenario_file,
+                                     int duration_ms,
+                                     const char* data_root) {
+    system(("rm -rf " + std::string(data_root)).c_str());
+
+    CaptureSession::Config cfg;
+    cfg.data_root = data_root;
+    cfg.cam_fps = 20;
+    cfg.device_sn = "TEST001";
+    cfg.frame_width = 640;      // 测试用低分辨率，控制磁盘占用
+    cfg.frame_height = 480;
+
+    CaptureSession sess(cfg,
+        [](const QualityReport& r) {
+            if (r.level == QualityLevel::kError)
+                std::printf("  [ERR] %s\n", r.headline.c_str());
+        },
+        [](const SessionReport&){});
+
+    std::ifstream f(scenario_file);
+    std::stringstream ss; ss << f.rdbuf();
+    auto scenario = FaultScenario::parse(ss.str());
+
+    sess.start(name);
+    auto t0 = std::chrono::steady_clock::now();
+    const bool has_actions = !scenario.actions().empty();
+    while (true) {
+        double el = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0).count();
+        scenario.step(sess, el);
+        // 空剧本（正常场景）必须跑满时长；有剧本则等全部动作执行完再停
+        bool all_done = !has_actions || scenario.done();
+        if (el * 1000 > duration_ms) break;
+        if (all_done && el * 1000 > duration_ms * 0.8) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    auto rep = sess.stop();
+    return ManifestSnapshot::from(rep.manifest);
+}
+
+int main() {
+    AsyncLogger::instance().init("/tmp/test_pipeline.log");
+    std::puts("=== scenario: normal ===");
+    auto s1 = run_scenario("normal", "config/scenario_normal.txt",
+                           3000, "/tmp/t_normal");
+    std::printf("clean=%d ch0=%llu lidar=%llu\n",
+                s1.clean, (unsigned long long)s1.frames[0],
+                (unsigned long long)s1.frames[4]);
+    assert(s1.clean);           // 正常场景必须 clean
+    assert(s1.frames[0] > 0);
+
+    std::puts("=== scenario: drops ===");
+    auto s2 = run_scenario("drops", "config/scenario_drops.txt",
+                           8000, "/tmp/t_drops");
+    std::printf("clean=%d gaps=%d rescan=%d\n", s2.clean,
+                s2.gap_count[0]+s2.gap_count[1]+s2.gap_count[2]+s2.gap_count[3],
+                s2.rescan_windows);
+    assert(!s2.clean);
+    assert(s2.rescan_windows > 0);
+
+    std::puts("=== scenario: drops again (regression) ===");
+    auto s3 = run_scenario("drops2", "config/scenario_drops.txt",
+                           8000, "/tmp/t_drops2");
+    auto diff = s2.diff(s3);
+    std::printf("snapshot diff: %s\n", diff.empty() ? "none" : diff.c_str());
+    // 回归：同一剧本两次跑，结构性结果必须一致——
+    //   lost[]（由注入的丢帧数决定，确定性）与 clean 必须完全一致；
+    //   frames/gap 数受调度时序影响允许 ±1 的抖动，不做强断言。
+    for (int i = 0; i < 5; ++i) {
+        std::string ctx = "lost[" + std::to_string(i) + "] ";
+        assert(s2.lost[i] == s3.lost[i]);
+    }
+    assert(s2.clean == s3.clean);
+    assert(s2.rescan_windows == s3.rescan_windows);
+
+    // 清理测试数据，避免占满磁盘
+    system("rm -rf /tmp/t_normal /tmp/t_drops /tmp/t_drops2");
+
+    std::puts("=== all tests passed ===");
+    return 0;
+}

@@ -1,0 +1,59 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sync/frame_timestamp.h"
+
+namespace xgrids {
+
+// 一次丢帧/缺口区间
+struct GapEvent {
+    int channel_id;
+    int64_t start_ts_us;
+    int64_t end_ts_us;
+    uint32_t lost_seq_from;   // 丢失起始帧号
+    uint32_t lost_seq_to;
+    const char* reason;       // "frame_drop" / "sensor_fault" / "backpressure"
+};
+
+// 单通道完整性汇总
+struct ChannelManifest {
+    int channel_id;
+    uint64_t total_frames = 0;
+    uint64_t lost_frames = 0;
+    std::vector<GapEvent> gaps;
+    int64_t first_ts_us = -1;
+    int64_t last_ts_us = -1;
+};
+
+// 对应简历“采集数据完整性 manifest 设计与实现”：
+// 逐路记录帧计数、时间戳与丢帧区间，扫描结束生成清单随包上传，
+// 后端据此判断“该区域是否需要现场重扫”。
+class ManifestRecorder {
+public:
+    // 采集线程喂帧（不阻塞：只做计数与区间检测，不做 I/O）
+    void on_frame(const FrameMeta& f);
+
+    // 手动标记缺口（如传感器故障、背压丢帧）
+    void record_gap(int channel, int64_t ts_us, const char* reason,
+                    uint32_t lost_from, uint32_t lost_to);
+
+    // 扫描结束：生成 manifest（JSON 字符串）传给上传模块
+    std::string serialize() const;
+
+    // 判定“本次扫描数据是否整体完好”
+    bool is_clean() const;
+
+    const std::array<ChannelManifest, 4>& channels() const { return ch_; }
+
+private:
+    mutable std::mutex mu_;
+    std::array<ChannelManifest, 4> ch_{};
+    std::array<uint32_t, 4> last_seq_{};
+    std::array<bool, 4> have_last_{};
+};
+
+}  // namespace xgrids

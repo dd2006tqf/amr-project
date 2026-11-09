@@ -1,0 +1,112 @@
+# 编译产物
+*.o
+*.so
+*.a
+*.ko
+*.bpf.o
+*.bpf.o.d
+*.elf
+bin/
+build/
+build-x86/
+build-arm64/
+
+# 内核模块（kmod/）构建副产物
+#
+# `make -C ... M=... modules` 会就地写一堆中间文件；`*.o` 和 `*.ko` 上面
+# 已覆盖，这里只补它们没覆盖到的。用前导 `/kmod/` 锚定，避免误伤别的目录。
+/kmod/*.mod
+/kmod/*.mod.c
+/kmod/modules.order
+/kmod/Module.symvers
+/kmod/.*.cmd
+/kmod/.tmp_versions/
+
+# 交叉编译部署产物（tools/deploy_and_test.sh 每次重建）
+dist-arm64/
+
+# IDE
+.vscode/
+.idea/
+.codex/
+.trae/
+*.swp
+*.swo
+*~
+.cursorrules
+
+# 日志
+logs/
+*.log
+
+# 运行时序列化文件
+*.bin
+signal_changed.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+
+# CMake
+CMakeFiles/
+cmake-build-*/
+CMakeCache.txt
+Testing/
+
+# eBPF 内核头文件（由 bpftool 自动生成）
+#
+# 只忽略 bpftool 生成到**仓库根与 server/ 下**的副本；board-assets/ 里那份
+# 是**预置的构建输入**，必须入库。
+#
+# 踩过的坑：写成裸 `vmlinux.h` 会按 gitignore 的任意层级匹配规则，把
+# board-assets/vmlinux.h 一并忽略——于是 `git clone` 拿不到它，CI 里
+# generate_vmlinux.sh 落到 "vmlinux.h not found" 分支写了个占位文件，
+# eBPF 编译随即报 `unknown type name '__u64'`。本地能过是因为开发机上
+# 有这份文件，CI 是全新 clone 所以必然失败。用前导 `/` 锚定层级。
+/vmlinux.h
+/server/vmlinux.h
+
+# 客户端构建副产物
+client/test_client
+
+# AI 助手个人配置与临时会话文件
+.claude/
+claude-progress.txt
+session-state.md
+
+# 测试二进制文件
+server/test/net_info
+server/test/test_ebpf
+server/test/test_net_info
+server/test/bin/
+server/test_logs/
+
+# 生成文件
+Makefile.autogen
+.env
+.env.*
+.claude/settings.local.json
+.vscode/*.log
+.ai-harness/locks/
+.ai-harness/logs/
+.ai-harness/migrations/
+.ai-harness/derived/
+server/test/reports/
+
+# AutoAI-Harness 运行时审计记录（本地生成，不提交）
+openspec/changes/*/harness/project-command-evidence/
+openspec/changes/*/harness/change-footprint.json
+ci-reports/
+
+# 个人知识库（本地维护，不提交）
+简历知识库.md
+弱网项目简历知识库.md
+
+# 凭据（不入库；tools/ci.sh 部署时读取注入板端）
+secrets/
+build-arm64-native/
+build-qt-arm64/
+artifacts/

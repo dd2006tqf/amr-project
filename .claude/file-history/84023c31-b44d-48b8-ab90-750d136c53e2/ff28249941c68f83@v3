@@ -1,0 +1,22 @@
+# Tier 1 执行台账
+
+计划：`2026-10-11-tier1-nav-adapter-reservation-topology.md`
+工作区：直接在 main 上（用户 2026-10-11 明确授权，不建分支/worktree）
+基线：`bash scripts/build.sh` 461/461 通过（2026-10-11）
+
+## 任务状态
+
+| Task | 状态 | Commit | 审查 | 备注 |
+|---|---|---|---|---|
+| 1 NavigateSequence 桥接 + Action 接线 | 修复轮 R1 进行中 | `364f88b` | R0: NEEDS_FIXES（Critical×1 槽位锁死 + Important×4 + Minor×2，报告 /tmp/amr-tier1-task1-review-r1.md） | 修复范围 7 项（含裁决并入的孤儿 goal、批量取消终结） |
+| 2 派发预留路网锁 + WFG 数据上环 | 待办 | — | — | brief 已备：briefs/task2.md |
+| 3 topology 发布 | 待办 | — | — | brief 已备：briefs/task3.md |
+
+## Rulings（执行期裁决，均有据可查）
+
+- R1: 工作区不隔离，直接 main 提交（用户选择）。
+- R2: 基线实测 461 用例，README/check_all.sh 中"453"为过时数字，Task 3 统一修正。
+
+## 审查记录
+
+（按 轮次/结论/遗留 填写）

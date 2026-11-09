@@ -1,0 +1,116 @@
+#include "manifest/manifest_recorder.h"
+#include <sstream>
+#include <algorithm>
+
+namespace xgrids {
+
+void ManifestRecorder::on_frame(const FrameMeta& f) {
+    if (f.channel_id < 0 || f.channel_id > 3) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& c = ch_[f.channel_id];
+    if (c.channel_id < 0) c.channel_id = f.channel_id;
+    c.frames++; c.bytes += f.bytes;
+    if (c.first_ts_us < 0) c.first_ts_us = f.ts_us;
+    c.last_ts_us = f.ts_us;
+
+    if (have_last_[f.channel_id]) {
+        uint32_t expected = last_seq_[f.channel_id] + 1;
+        if (f.seq > expected) {
+            c.gaps.push_back({f.channel_id, c.last_ts_us, f.ts_us,
+                              expected, f.seq - 1, GapReason::kFrameDrop});
+            c.lost += f.seq - expected;
+        }
+    }
+    last_seq_[f.channel_id] = f.seq;
+    have_last_[f.channel_id] = true;
+}
+
+void ManifestRecorder::on_lidar(const LidarFrame& f) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& c = ch_[4];
+    if (c.channel_id < 0) c.channel_id = 4;
+    c.frames++; c.bytes += f.point_count * 12;
+    if (c.first_ts_us < 0) c.first_ts_us = f.ts_us;
+    c.last_ts_us = f.ts_us;
+
+    if (have_last_[4] && f.seq > last_seq_[4] + 1) {
+        c.gaps.push_back({4, c.last_ts_us, f.ts_us,
+                          last_seq_[4] + 1, f.seq - 1, GapReason::kFrameDrop});
+        c.lost += f.seq - last_seq_[4] - 1;
+    }
+    last_seq_[4] = f.seq;
+    have_last_[4] = true;
+}
+
+void ManifestRecorder::on_gap(int channel, int64_t ts_us, GapReason r,
+                              uint32_t from, uint32_t to) {
+    if (channel < 0 || channel > 4) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& c = ch_[channel];
+    c.gaps.push_back({channel, ts_us, ts_us, from, to, r});
+    if (to >= from) c.lost += to - from + 1;
+}
+
+void ManifestRecorder::on_rtk_window(int64_t s, int64_t e) {
+    std::lock_guard<std::mutex> lk(mu_);
+    rtk_windows_.push_back({-1, s, e, 0, 0, GapReason::kRtkLossLock});
+}
+
+// 对齐器产出"不完整组"：把缺失路记为同步缺口（不算丢帧算同步不完整）
+void ManifestRecorder::on_sync_incomplete(int64_t ts_us,
+                                          const std::array<bool,4>& valid) {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (int c = 0; c < 4; ++c)
+        if (!valid[c])
+            ch_[c].gaps.push_back({c, ts_us, ts_us, 0, 0, GapReason::kSyncIncomplete});
+}
+
+bool ManifestRecorder::is_clean() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& c : ch_) {
+        for (const auto& g : c.gaps)
+            if (g.reason != GapReason::kSyncIncomplete) return false;
+    }
+    return true;
+}
+
+// 相邻缺口在 500ms 内合并为一个重扫窗口
+std::vector<std::pair<int64_t,int64_t>>
+ManifestRecorder::compute_rescan_windows() const {
+    std::vector<std::pair<int64_t,int64_t>> wins;
+    for (const auto& c : ch_) {
+        for (const auto& g : c.gaps)
+            wins.push_back({g.start_ts_us, g.end_ts_us});
+    }
+    for (const auto& g : rtk_windows_)
+        wins.push_back({g.start_ts_us, g.end_ts_us});
+    if (wins.empty()) return {};
+    std::sort(wins.begin(), wins.end());
+    std::vector<std::pair<int64_t,int64_t>> merged;
+    int64_t cs = wins[0].first, ce = wins[0].second;
+    for (size_t i = 1; i < wins.size(); ++i) {
+        if (wins[i].first - ce <= 500'000) ce = std::max(ce, wins[i].second);
+        else { merged.push_back({cs, ce}); cs = wins[i].first; ce = wins[i].second; }
+    }
+    merged.push_back({cs, ce});
+    return merged;
+}
+
+ScanManifest ManifestRecorder::finish(int64_t t_us) {
+    std::lock_guard<std::mutex> lk(mu_);
+    ScanManifest m;
+    m.scan_start_us = scan_start_;
+    m.scan_end_us = t_us;
+    m.channels = ch_;
+    m.rtk_loss_windows = rtk_windows_;
+    m.total_imu_samples = imu_samples_;
+    m.rescan_windows = compute_rescan_windows();
+    m.clean = true;
+    for (const auto& c : ch_)
+        for (const auto& g : c.gaps)
+            if (g.reason != GapReason::kSyncIncomplete &&
+                g.reason != GapReason::kRtkLossLock) { m.clean = false; break; }
+    return m;
+}
+
+}  // namespace xgrids

@@ -1,0 +1,51 @@
+# B7：按 ROS 参数文件规范组织——节点名顶层键 + ros__parameters，
+# 由 launch/full_system.launch.py 通过 ament_index_python 解析 share 路径注入；
+# launch 内联字典保留同样 key 的覆盖位（值仍与下发一致，保证行为不变）。
+dispatcher_node:
+  ros__parameters:
+    queue_capacity: 128
+    comparator: "priority_fifo"      # priority_fifo / earliest_deadline / shortest_job / weighted_score
+    schedule_rate_hz: 10.0
+    deadlock_check_rate_hz: 1.0
+    max_active_missions: 4
+    # stations_file 由 launch 用 share 绝对路径注入（修复 cwd 依赖），
+    # 此处不写默认值，避免节点声明时被相对路径覆盖。
+    recovery_dock_station: "station_charge_1"
+    navigation_backend: "plan"
+    path_step_size_m: 0.1
+    # P0.6 / A6：多车选车参数
+    # fleet_catalog_file: 车辆静态目录（空 = 用 vehicle_ids / vda5050_vehicles 清单 + 默认静态字段）
+    fleet_catalog_file: ""
+    required_capability: "transport"
+    min_battery_percent: 0.0
+    vehicle_state_max_age_ms: 5000
+    # T1：/battery_state/{vid} 样本保鲜期（毫秒）。超龄样本不参与选车与自动充电——
+    # 底盘掉线后不能拿掉线前的最后一帧电压当现状。必须小于 vehicle_state_max_age_ms。
+    battery_state_timeout_ms: 3000
+    # 队首阻塞规避：一次 tick 最多考察前 N 个排队任务
+    assignment_scan_depth: 8
+    # 物理设施目录（Phase 8）：空 = 关闭物理设施控制；配置路径则加载并在靠近设施站点时联锁
+    facility_catalog_file: ""
+    # 批次 6.2：低电量自动插充电单（默认关闭；开启需配置 station，电量低时自动向对应车插入 charge 任务）
+    auto_charging_enabled: false
+    auto_charging_station: ""
+    auto_charging_opportunity_threshold_percent: 30.0
+    auto_charging_critical_threshold_percent: 15.0
+    auto_charging_opportunity_priority: 0
+    auto_charging_critical_priority: 5
+    # B3：交通协调模式 static（静态排他锁）/ time_space（时空窗预约）/ cbs（高层冲突树协同与PBS降级）
+    traffic_mode: "static"
+    # 时空窗运动时序参数（把几何长度换算成时间占用区间）
+    time_space_cruise_speed_mps: 1.0
+    time_space_accel_overhead_sec: 1.0
+    time_space_turn_overhead_sec: 0.5
+    time_space_safety_margin_m: 0.2
+    time_space_min_headway_sec: 2.0
+    # 相位 11：运行时拓扑叠加层（临时施工区/单向/临时站点）的持久化文件。
+    # 空 = 功能关闭（在线拓扑热生效不可用，/api/v1/topology/* 的写操作回 501）。
+    # 生产由 launch 注入**绝对路径**并指向 config/generated/ 下的独立文件；
+    # 绝不与 map_ingest 生成的 stations.yaml 同路径（那会被地图上传整份覆盖）。
+    topology_overlay_file: ""
+    # 允许"车辆可能正压在被封边上"时仍提交（该边的锁留给在途车，等它自行驶离）。
+    # 默认 false = 严格拒绝（409 edge_occupied_in_flight）。单向反转不受此参数影响。
+    topology_allow_edge_under_vehicle: false

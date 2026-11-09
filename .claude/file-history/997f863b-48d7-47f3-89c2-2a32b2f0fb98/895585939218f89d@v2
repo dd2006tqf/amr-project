@@ -1,0 +1,212 @@
+# OTA P0-C1 救援模式持久化启动门禁与 systemd 启动顺序加固
+
+> 日期：2026-10-29
+> 分类：工作流外实施（承接 [[2026-10-22-ota-p0b-boot-recovery]]，属 P0-C 序列第一项）
+> 结果：已完成（门禁 + 接线 + 单测 27 项 + 真机三段演练）
+
+## 构思
+
+### 要解决什么
+
+P0-B 交付的救援模式有一个**可绕过性缺口**：`systemctl stop` + `mask`/`disable`
+只挡住 systemd 的**自动拉起**。任何人手动 `systemctl start weaknet-server`、
+或者别的 unit 用 `Wants=` 拉它，救援态就被绕过——设备会跑起一个未经验证
+（甚至已被判死刑）的版本，而事务状态还停在 `RECOVERY_REQUIRED`。
+
+用户给的 P0-C1 判据是三件事：
+
+1. 救援模式下无论正常重启还是手动启动业务服务，都**不会绕过保护**
+2. 恢复器必须在业务服务**启动前完成判定**
+3. 故障情况下 **SSH 救援通道仍然独立可用**
+
+### 为什么不做进 OpenSpec change
+
+交付面是板端启动闸门与运维接口：不新增对外协议、不改云端契约、不新增服务端
+DBus surface。与 P0-A / P0-B 同构，按 `docs/ai/implementation-economy.md`
+判据走工作流外实施并在此留记录。
+
+### 先做实验再设计（这次的关键）
+
+用户明确要求「**不建议未经审查就直接修改服务依赖**」。所以先在一台真板上把
+systemd 247 的各种"看起来像门禁"的写法逐个试了一遍，用结果反推设计：
+
+| 候选写法 | 板端实测 | 结论 |
+|---------|---------|------|
+| `ExecStartPre=` 检查脚本 | 失败 → `Restart=on-failure` **重启循环**（NRestarts=3），加 `RestartPreventExitStatus` 也拦不住 | ❌ 拒绝启动会变成烧电循环 |
+| `ExecCondition=` 检查脚本 | 跳过执行、`Result=success`、无风暴；但自动重启时会**重跑** | △ 语义是"跳过"不是"禁止"，且无独立审计单元 |
+| `Wants=` + `After=` | 依赖失败时业务服务**照样启动**（CONSUMER-RAN） | ❌ 完全不是门禁 |
+| 门禁单元内写 `ConditionPathExists=!flag` | 被 Condition 跳过的单元对 `Requires` 而言**不算失败** → 业务服务照样起 | ❌ 单靠 Condition 不是门禁 |
+| `Requires=` + `After=` + 独立 oneshot 门禁单元 | 门禁非零退出 → 业务单元 `rc=1` / `Result=dependency` / 进程零次执行 / `NRestarts=0` | ✅ **采用** |
+
+一个附带发现：`ConditionPathExists` 写进 `[Service]` 段会被 systemd 当
+"Unknown key name" 忽略（我第一次的探针 unit 写错了，白测一轮）——必须写
+`[Unit]` 段。
+
+### 救援标记的定位（用户明确的约束）
+
+用户要求「可以增加持久化 `rescue.flag` 作为额外保护，**但不能让这个标记变成
+另一套相互矛盾的权威状态**」。落实为三条硬规矩：
+
+1. **权威永远是 `transaction.json`**。门禁本体 `weaknet-ota-gate` **不读**
+   `rescue.flag`（单测两个方向锁死：只有 flag 不放行也不拒绝；只有救援态
+   没 flag 也拒绝）。
+2. **flag 只作为第二层廉价防线**给 `weaknet-server` 的
+   `ConditionPathExists=!` 用（systemd 读不了 JSON，只能看存在性）。
+3. **投影可以陈旧，但修正方向永远朝"更安全"**：进入救援 → 先写 flag 再落
+   状态；离开救援 → 先落状态再清 flag。任意中途失败都落在"多挡一次"。
+   恢复器每轮判定前调 `sync_rescue_flag()` 修复投影并留 `rescue.flag.stale`。
+
+### 备选方案与取舍
+
+| 方案 | 取舍 |
+|------|------|
+| A. 在 `weaknet-server` 单元里塞 `ExecStartPre` + `RestartPreventExitStatus` | ❌ 实测仍有重启循环；且判定逻辑与业务单元耦合，改业务单元会误伤门禁 |
+| B. 只加 `ConditionPathExists=!rescue.flag` | ❌ flag 缺失/陈旧即失守；单测能证明"标记不是权威" |
+| C. 独立 oneshot 门禁单元 + `Requires=` + 第二层 Condition（**选中**） | ✅ 权威判定与廉价防线分离；失败方向零重启风暴；门禁自身可单测、可独立排障 |
+| D. 改成 socket/target 依赖编排 | △ 能行，但改动面大、对 systemd 247 行为需要更多实验，收益不足 |
+
+## 实现方式
+
+### 改动文件
+
+| 文件 | 性质 | 内容 |
+|------|------|------|
+| `tools/weaknet-ota-gate` | 新增 | 门禁本体（~200 行纯标准库）：`read_state()` fail-closed 读状态、`decide()` 纯函数判定、CLI 输出 JSON 判定 + 人读日志 |
+| `tools/weaknet-ota-gate.service` | 新增 | `Type=oneshot`（**无** `RemainAfterExit`，故每次业务启动/崩溃重启都重跑）、`TimeoutStartSec=15`、`NoNewPrivileges`、`ProtectSystem=strict`、`ReadOnlyPaths=/var/lib/weaknet-ota` |
+| `tools/weaknet-server.service` | 修改 | `[Unit]` 增加 `Requires=`/`After=weaknet-ota-gate.service` + `ConditionPathExists=!/var/lib/weaknet-ota/rescue.flag`，并写清为什么必须是 `Requires` 而不是 `Wants` |
+| `tools/weaknet-ota-ctl` | 修改 | 新增 `enter-rescue` / `sync-rescue-flag`；`require-recovery`、`commit`、`abort`、`recover`、`bootstrap` 全部按"先标记后状态 / 先状态后清标记"的顺序维护 flag |
+| `tools/weaknet-ota-recover` | 修改 | `enter_rescue()` 先写 flag 再 `ctl enter-rescue`；`run_once()` 每轮先 `sync_rescue_flag()` 修投影；`RESCUE.md` 增加门禁状态段与修正后的退出步骤 |
+| `tools/test_weaknet_ota_gate.py` | 新增 | 27 项：`decide()` 矩阵、`read_state()` 错误路径、"门禁不读 flag"两方向、CLI 退出码、**systemd 接线断言**（Requires 不是 Wants / oneshot 无 RemainAfterExit / 门禁不依赖 weaknet-server / 门禁单元自身不靠 Condition） |
+| `tools/test_weaknet_ota_ctl.py` | 修改 | 新增 `TestRescueFlag`（9 项）：flag 的写/清/同步时序与陈旧修复 |
+| `tools/ci.sh` | 修改 | 部署顺序调整：门禁单元必须先于带 `Requires` 的 `weaknet-server` 单元落盘，否则 `daemon-reload` 后业务单元因依赖单元不存在而起不来 |
+| `.github/workflows/ci.yml` | 修改 | 增加门禁单测门禁 |
+| `docs/OTA固件更新与安全发布指南.md` | 修改 | v1.4：新增 §1.5（门禁设计、判定表、四方案实测对比、人工出口），§5.1 补门禁自测，§5.2 补部署顺序，§1.4 的退出步骤补 `enable` |
+| `CLAUDE.md` / `docs/架构设计-模块与代码结构.md` | 修改 | 意图表补 2 条；目录树补门禁与其单元 |
+
+### 关键决策
+
+1. **门禁不读 flag，只读权威状态**。flag 是投影，读它就等于承认两套权威。
+   单测用两个反方向锁死这一点。
+2. **门禁自身必须是一个独立单元**，不能挂在业务单元的 `ExecStartPre` 上。
+   实测 `ExecStartPre` 失败会进重启循环；独立单元 + `Requires` 不会。
+3. **`Requires` 不是 `Wants`**。这条在板端实测过（`Wants` 时业务服务照样起），
+   已写成单测断言，防止未来"简化"回退。
+4. **门禁不依赖 weaknet-server / weaknet-ota-recover**。它只看状态文件，
+   保证恢复器挂了门禁仍然有效（单测锁死）。
+5. **`read_state()` 的三态区分**：文件不存在（`(None, None)`，全新设备放行）
+   vs 读到了 vs 读不出来（`(None, str)`，必须拒绝）。坏了就拒绝，不猜。
+6. **`ci.sh` 的落盘顺序**：门禁单元 → `weaknet-server` 单元。反了就是
+   "依赖单元不存在"，新部署的设备直接起不来。
+
+### 真机演练暴露的一个真缺陷
+
+| 缺陷 | 根因 | 修法 |
+|------|------|------|
+| `recover --accept` 之后服务只能手动 `start`，重启又没了 | 恢复器救援时 `mask` 失败退到 `disable`；`recover --accept` 是**状态机**，不动 systemd 的 enable/disable 状态 | 文档与 `RESCUE.md` 的人工恢复步骤补 `systemctl enable weaknet-server`，并把"顺序不能反"写成显式告诫。这是**文档缺陷而非代码缺陷**：让状态机去管引导状态是越界，正确修法是让操作步骤完整 |
+
+（演练中还发现板端 `weaknet-server` 停在 `disabled` 状态——正是上面这条路径的
+残留：上一轮 P0-B 演练退出救援后没 `enable`。已在本次演练中恢复。）
+
+### 验证手段
+
+**本地（x86 宿主机）**
+
+```
+python3 tools/test_weaknet_ota_ctl.py       → Ran 83 tests, OK
+python3 tools/test_weaknet_ota_recover.py   → Ran 35 tests, OK
+python3 tools/test_weaknet_ota_gate.py      → Ran 27 tests, OK
+bash tools/ota_p0a_drill.sh                 → PASS=44  FAIL=0
+bash tools/ota_p0b_drill.sh                 → PASS=21  FAIL=0
+```
+
+Python 3.9 语法兼容性用 `ast.parse(..., feature_version=(3,9))` 逐个校验通过。
+
+**板端（Radxa Cubie A7A，aarch64，systemd 247，Python 3.9.2）**
+
+前置：`weaknet-ota-gate` / `weaknet-ota-gate.service` / `weaknet-server.service`
+三个文件与仓库 sha256 一致；事务基线 `COMMITTED / stable 1.1.0 / previous 1.0.0`
+备份为 `transaction.json.p0c1-baseline`（演练后已删除）。
+
+**证明一：救援模式不能被绕过**
+
+```
+# 进入救援：controller enter-rescue → phase=RECOVERY_REQUIRED + rescue.flag 生成
+sudo systemctl start weaknet-server
+  → rc=1  "A dependency job for weaknet-server.service failed"
+  → server=inactive / pgrep none / ConditionResult=no / NRestarts=0
+
+# 删掉 rescue.flag，只剩权威门禁那一层
+sudo rm -f /var/lib/weaknet-ota/rescue.flag
+sudo systemctl start weaknet-server
+  → rc=1 同样失败
+  → gate journal: {"allow": false, "phase": "RECOVERY_REQUIRED", ...}
+    gate: Main process exited code=exited status=1/FAILURE
+  → server=inactive / pgrep none / NRestarts=0
+```
+
+第二段是关键：**证明挡人的不是标记，而是门禁读的权威状态**。
+
+**证明二：门禁必须先于业务服务完成判定，且每次启动都重跑**
+
+```
+# 活跃事务（SWITCH_PENDING，恢复器先停掉以免它秒级判定掉事务）
+sudo systemctl start weaknet-server
+  → rc=1 / server=inactive / pgrep none / NRestarts=0
+  → gate: "事务处于 SWITCH_PENDING：升级尚未结束，版本未经验证，拒绝启动"
+
+# 顺序与重跑
+gate "Finished" 计数 4 → sudo kill -9 <MainPID> → 计数 5，server=active，NRestarts=1
+  → 崩溃后的自动重启**重新经过门禁**
+```
+
+**证明三：SSH 救援通道独立可用**
+
+救援态全程 `systemctl is-active ssh` = `active`、`weaknet-tunnel` = `active`、
+`weaknet-ota-recover.service` = `active`。门禁只挡 `weaknet-server`，不碰任何
+救援通道（单元依赖图上无交集）。
+
+**撤退与基线恢复**
+
+```
+abort → phase=ABORTED → start rc=0 → server=active
+cp transaction.json.p0c1-baseline → 恢复 COMMITTED / 1.1.0
+rm RESCUE.md、history/c1-drill2-COMMITTED.json、transaction.json.p0c1-baseline
+```
+
+最终板端状态：`weaknet-server` / `weaknet-ota-gate` / `weaknet-ota-recover` 三个
+单元全部 `enabled`，服务 `active`，`readlink current` = `releases/1.1.0`，
+`weaknet-cli update status` = `installed_version 1.1.0, current_committed true`，
+`/var/lib/weaknet-ota/` 只剩 `lock` 与 `transaction.json`（无 flag、无 RESCUE.md、
+无演练历史），`/tmp` 无残留探针 unit。
+
+## 结果
+
+### 已完成
+
+- 门禁本体 + systemd 单元 + 业务单元接线 + 部署链路 + 单测 + 文档全部落地
+- 三项判据都在真机上拿到可复现证据（见上），其中"删掉 flag 仍然拦住"这一条
+  直接证明了权威状态而非标记在起作用
+- 设计依据是先做 systemd 247 行为实验再定，四种候选写法的实测结果已写进
+  代码注释、门禁 docstring、指南 §1.5 和单测断言，避免未来回退
+
+### 遗留（**明确未做，不得宣称完成**）
+
+1. **断电场景仍未验证**：本阶段的全部"故障"都是用状态构造 + `kill -9` 制造的，
+   **不等于掉电**。P0-B 遗留的 fsync/写缓存边界依然成立。
+2. **未做真实的重启循环演练（P0-C2 范围）**：本次只验证了"单次 kill 后自动重启
+   会重新过门禁"，没有验证"连续崩溃超过试运行次数后确定性进入救援"的完整矩阵。
+3. **未跑完整 `./tools/ci.sh`**（用户明确暂缓）：本次部署是分别 scp + `install`
+   到位，`ci.sh` 里新增的"门禁先于业务单元落盘"顺序**未在真实部署流程中跑过**，
+   只做了 `bash -n` 语法校验。
+4. **未做完整功能回归**：救援 → 退出救援之后只验证了 `is-active` 与版本基线，
+   没跑 `weaknet-test-full.sh`。
+5. **门禁的"状态文件存在但事务为 null"分支放行**：这是按"上次升级已完全结束"
+   的语义设计的，但如果有人手工把 `transaction` 洗成 null，门禁会放行。当前
+   依赖"控制器是唯一写者"这一约定，未做防篡改。
+
+### 后续方向
+
+- **P0-C2**：重启循环与试运行次数上限的故障注入矩阵（含"恢复器自身启动失败"
+  一行：本设计已由"门禁不依赖恢复器"覆盖，但仍需演练证明）。
+- **P0-C3**：真实断电测试台。
+- **P0-C4**：完整 `./tools/ci.sh` 部署准入。

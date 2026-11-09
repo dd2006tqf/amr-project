@@ -1,0 +1,82 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <functional>
+#include <mutex>
+#include "sync/sync_monitor.h"
+#include "manifest/manifest_recorder.h"
+
+namespace xgrids {
+
+// ============================================================
+// 实时质量反馈：对应简历
+//   "基于运动状态、存储余量与传感器健康度在设备端实时提示"
+// ============================================================
+
+enum class QualityLevel { kOk, kWarn, kError };
+
+struct QualityReport {
+    QualityLevel level = QualityLevel::kOk;
+    std::string headline;              // 主提示（"请放慢速度"）
+    std::vector<std::string> details;  // 辅助项
+    double scanned_area_m2 = 0;
+    double remain_minutes = 0;
+    double coverage_pct = 0;           // 预估已覆盖百分比
+};
+
+// 质量输入：把各来源的实时信号聚到一起
+struct QualityInput {
+    // 运动
+    double motion_speed_mps = 0;
+    double motion_blur_score = 255;    // 0-255
+    // 环境
+    double ambient_lux = 300;
+    // 存储
+    double storage_free_gb = 0;
+    double write_rate_gbps = 0;
+    double buffer_fill = 0;            // 环形缓冲水位 0..1
+    // 热
+    int cpu_temp_x10 = 250;
+    int throttle_pct = 0;              // 降频百分比
+    // 完整性
+    uint64_t sync_violations = 0;
+    uint64_t frame_gaps = 0;
+    bool rtk_locked = true;
+};
+
+class QualityFeedback {
+public:
+    using Callback = std::function<void(const QualityReport&)>;
+
+    struct Thresholds {
+        double motion_blur_warn_mps = 1.5;
+        double motion_blur_err_mps = 2.2;
+        double lux_warn = 80.0;
+        double buffer_warn = 0.7, buffer_err = 0.9;
+        int temp_warn_x10 = 720, temp_err_x10 = 800;
+        double remain_warn_min = 5.0;
+    };
+
+    QualityFeedback(Thresholds t, Callback cb);
+
+    // 采集过程中周期调用（如 2Hz）
+    void update(const QualityInput& in);
+    QualityReport current() const;
+
+    // 扫描结束汇总：数据整体评分 + 是否建议立即重扫
+    QualityLevel final_verdict() const;
+
+private:
+    Thresholds th_;
+    Callback cb_;
+    mutable std::mutex mu_;
+    QualityReport cur_;
+    // 全程累积的"最差等级"（供 finish 判定）
+    QualityLevel worst_ = QualityLevel::kOk;
+    double area_m2_ = 0;
+    int64_t last_update_us_ = -1;
+};
+
+}  // namespace xgrids

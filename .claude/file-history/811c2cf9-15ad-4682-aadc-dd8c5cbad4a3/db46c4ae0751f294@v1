@@ -1,0 +1,109 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+
+#include "state_machine/live_state_running.h"
+
+#include "ins_base/log.h"
+#include "manager/live_broadcast_manager.h"
+#include "state_machine/live_state_stopping.h"
+
+namespace ins {
+namespace live_broadcast {
+
+namespace {
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
+#define LOG_TAG "LiveStateRunning"
+}  // namespace
+
+LiveStateRunning::LiveStateRunning()
+    : LiveStateMachine(LiveBroadcastState::kRunning) {}
+
+void LiveStateRunning::OnEntry() {
+  ILOGS_I << "Entering Running state";
+  if (manager_) {
+    manager_->StartLiveBroadcastDurationTimer();
+    manager_->StartLiveBroadcastMonitor();
+    manager_->SaveConnectedWifiSsid();
+  } else {
+    ILOGS_E << "Manager not set, cannot start duration timer and live monitor";
+  }
+}
+
+void LiveStateRunning::OnExit() {
+  ILOGS_I << "Exiting Running state";
+  if (manager_) {
+    manager_->StopLiveBroadcastDurationTimer();
+    manager_->StopLiveBroadcastMonitor();
+  } else {
+    ILOGS_E << "Manager not set, cannot stop duration timer and live monitor";
+  }
+}
+
+void LiveStateRunning::OnEvent(const EventStopRequest& event) {
+  ILOGS_I << "Received EventStopRequest in Running state, reason="
+          << static_cast<int32_t>(event.reason);
+
+  // 根据停止原因判断是否需要保存续播记录
+  if (ShouldSaveResumeRecord(event.reason)) {
+    if (resume_manager_) {
+      // TODO(yinjun|2025-12-30):
+      // resume_manager_->SaveResumeRecord(event.reason);
+      ILOGS_I << "Resume record saved for reason: "
+              << static_cast<int32_t>(event.reason);
+    }
+  }
+
+  // 转换到Stopping状态
+  ChangeState<LiveStateStopping>();
+}
+
+void LiveStateRunning::OnEvent(const EventError& event) {
+  ILOGS_E << "Received EventError in Running state, error_code="
+          << static_cast<int32_t>(event.error_code)
+          << ", message=" << event.message;
+
+  // 根据错误类型决定处理策略
+  if (event.error_code == LiveBroadcastErrorCode::kNetworkError) {
+    // 网络错误，尝试重连
+    ILOGS_W << "Network error detected, attempting reconnect";
+
+    // TODO(yinjun|2025-12-30): 实现重连逻辑
+    // 如果重连失败次数超过阈值，则进入Stopping状态
+    return;
+  }
+
+  // 其他错误，保存续播记录并进入Stopping状态
+  if (resume_manager_) {
+    if (ShouldSaveResumeRecord(LiveBroadcastStopReason::kSystemError)) {
+      // TODO(yinjun|2025-12-30): resume_manager_->SaveResumeRecord(
+      //     LiveBroadcastStopReason::kSystemError);
+      ILOGS_I << "Resume record saved due to error";
+    }
+  }
+
+  ChangeState<LiveStateStopping>();
+}
+
+bool LiveStateRunning::ShouldSaveResumeRecord(
+    LiveBroadcastStopReason reason) const {
+  // 根据停止原因判断是否需要保存续播记录
+  switch (reason) {
+    case LiveBroadcastStopReason::kUserStop:
+      return false;  // 用户主动停止，不保存
+
+    case LiveBroadcastStopReason::kSystemOverheat:
+    case LiveBroadcastStopReason::kNetworkError:
+    case LiveBroadcastStopReason::kSystemError:
+    case LiveBroadcastStopReason::kBatteryLow:
+    case LiveBroadcastStopReason::kTokenExpired:
+    case LiveBroadcastStopReason::kPowerOff:
+      return true;  // 异常停止，保存续播记录
+
+    default:
+      return false;
+  }
+}
+
+}  // namespace live_broadcast
+}  // namespace ins

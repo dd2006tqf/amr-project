@@ -1,0 +1,44 @@
+import json, urllib.request
+
+def get(url, timeout=90):
+    req = urllib.request.Request(url, headers={'User-Agent': 'curl/8', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'ignore')
+
+def jget(url):
+    try:
+        return json.loads(get(url))
+    except Exception as e:
+        return {'__err__': str(e)}
+
+print('=== A) arisc 仓库里有没有 riscv / e902 ===')
+d = jget('https://api.github.com/repos/radxa/allwinner-arisc/git/trees/main?recursive=1')
+paths = [x['path'] for x in d.get('tree', [])]
+print('total paths:', len(paths))
+for k in ('riscv', 'e902', 'e907', 'xtensa', 'nds32', 'openrisc'):
+    sub = [p for p in paths if k in p.lower()]
+    print(f'  {k:10s} {len(sub)}  {sub[:3]}')
+
+print('\n=== B) sun60iw2p1 defconfig ===')
+try:
+    s = get('https://raw.githubusercontent.com/radxa/allwinner-arisc/main/ar100s/arch/configs/sun60iw2p1_defconfig')
+    print(s[:700])
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== C) cubie_a7a board.dts 里的 amp 关键字 ===')
+try:
+    s = get('https://raw.githubusercontent.com/radxa/allwinner-device/device-a733-v1.4.6/configs/cubie_a7a/linux-5.15/board.dts')
+    print('bytes:', len(s))
+    for kw in ('msgbox', 'mbox', 'e902', 'riscv', 'arisc', 'mcu', 'remoteproc', 'rproc', 'hwspinlock'):
+        lines = [l.strip() for l in s.splitlines() if kw in l.lower()]
+        print(f'  [{kw}] {len(lines)}', lines[:3])
+except Exception as e:
+    print('ERR', e)
+
+print('\n=== D) Linux rpmsg Kconfig symbols ===')
+try:
+    s = get('https://raw.githubusercontent.com/radxa/kernel/allwinner-aiot-linux-5.15/drivers/rpmsg/Kconfig')
+    print('\n'.join([l for l in s.splitlines() if l.startswith('config ')]))
+except Exception as e:
+    print('ERR', e)

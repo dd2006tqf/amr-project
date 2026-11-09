@@ -1,0 +1,56 @@
+#include "quality/quality_feedback.h"
+#include <cstdio>
+
+namespace xgrids {
+
+QualityFeedback::QualityFeedback(Callback cb) : cb_(std::move(cb)) {}
+
+void QualityFeedback::update(const Input& in) {
+    QualityReport r;
+
+    // 1) 运动过快 → 运动模糊
+    if (in.motion_speed_mps > 1.6) {
+        r.level = QualityLevel::kWarn;
+        r.message = "please slow down (motion blur risk)";
+    }
+    // 2) 光照不足 → 3DGS 质量差
+    if (in.ambient_lux < 80.0 && (int)r.level < (int)QualityLevel::kError) {
+        r.level = std::max(r.level, QualityLevel::kWarn);
+        r.message = "low light, result may be noisy";
+    }
+    // 3) 过热 → 同步/丢帧风险（最严重）
+    if (in.cpu_temp_x10 > 750) {
+        r.level = QualityLevel::kError;
+        r.message = "device overheating, pause and cool down";
+    }
+    // 4) 存储余量估算可扫时长
+    if (in.storage_rate_gbps > 1e-6) {
+        r.remain_minutes = in.storage_free_gb / in.storage_rate_gbps;
+        if (r.remain_minutes < 5.0) {
+            r.level = std::max(r.level, QualityLevel::kWarn);
+            if (r.message.empty()) r.message = "low storage";
+        }
+    }
+    // 5) 同步违规上升 → 数据完整性告警
+    if (in.sync_violations > 0 && (int)r.level < (int)QualityLevel::kError) {
+        r.level = std::max(r.level, QualityLevel::kWarn);
+        if (r.message.empty()) r.message = "sync anomaly detected";
+    }
+
+    area_accum_ += in.motion_speed_mps * 0.5;  // 粗略按速度*时间累加面积
+    r.scanned_area_m2 = area_accum_;
+    r.remain_storage_gb = in.storage_free_gb;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        cur_ = r;
+    }
+    if (cb_) cb_(r);
+}
+
+QualityReport QualityFeedback::current() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return cur_;
+}
+
+}  // namespace xgrids

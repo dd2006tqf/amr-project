@@ -1,0 +1,16 @@
+# 本仓库不提交 sdkconfig（见 .gitignore），首次 `idf.py set-target esp32s3`
+# 会用 IDF 默认的 partitions_singleapp.csv 生成 1 MB 的 factory 分区。
+#
+# 但本固件全功能构建后 leap_ros.bin 约 1.06 MB（text 892 KB + data 227 KB），
+# 会溢出 1 MB 分区约 57 KB，导致最后一步 app_check_size 失败：
+#     Error: app partition is too small for binary leap_ros.bin size 0x10e600
+#       - Part 'factory' 0/0 @ 0x10000 size 0x100000 (overflow 0xe600)
+#
+# 因此改用 IDF 自带的 partitions_singleapp_large.csv（factory 是 1500K），
+# 余量约 454 KB。代价是放弃 OTA 双分区 —— 本仓库当前也没有 OTA 流程
+# （scripts/ docker/ .github/ 里没有任何 idf.py 调用）。
+#
+# 注意：这里只覆盖分区表选项，其余配置仍走 IDF 默认值。若将来要接 OTA，
+# 应改成 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y（两个 1.5 MB app 分区，
+# 需要 4 MB flash 且分区表起始偏移调整为 0x9000）。
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

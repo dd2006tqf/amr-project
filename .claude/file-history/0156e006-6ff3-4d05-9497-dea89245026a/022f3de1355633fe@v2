@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""探测 laneai.dev 网关支持哪些 API 形态（决定能否接入 Codex）。"""
+import json
+import urllib.request
+import urllib.error
+
+BASE = "https://laneai.dev"
+KEY = "sk-cnb-8142a2bc344415b90eeb106bd5273973819d74d5ac188bd9"
+MODEL = "deepseek-v4.1-flash"
+
+
+def probe(name, path, payload=None, headers=None):
+    url = BASE + path
+    hdrs = {"content-type": "application/json"}
+    hdrs.update(headers or {})
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode("utf-8", "replace")
+            print(f"[{name}] HTTP {r.status}")
+            print(f"          {body[:400]}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        print(f"[{name}] HTTP {e.code}  <-- 失败")
+        print(f"          {body[:400]}")
+    except Exception as e:
+        print(f"[{name}] ERROR {type(e).__name__}: {e}")
+    print()
+
+
+bearer = {"Authorization": f"Bearer {KEY}"}
+anthropic_hdr = {**bearer, "x-api-key": KEY, "anthropic-version": "2023-06-01"}
+
+print("=" * 70)
+print("目标网关:", BASE, " 模型:", MODEL)
+print("=" * 70, "\n")
+
+# 1. OpenAI Chat Completions（Codex 的 wire_api="chat" 走这个）
+probe(
+    "OpenAI /v1/chat/completions",
+    "/v1/chat/completions",
+    {"model": MODEL, "messages": [{"role": "user", "content": "say ok"}], "max_tokens": 16},
+    bearer,
+)
+
+# 2. OpenAI Responses API（Codex 新版默认的 wire_api="responses"）
+probe(
+    "OpenAI /v1/responses",
+    "/v1/responses",
+    {"model": MODEL, "input": "say ok", "max_output_tokens": 16},
+    bearer,
+)
+
+# 3. Anthropic Messages（Claude Code 走这个，已知可用，做对照）
+probe(
+    "Anthropic /v1/messages (对照)",
+    "/v1/messages",
+    {"model": MODEL, "max_tokens": 16, "messages": [{"role": "user", "content": "say ok"}]},
+    anthropic_hdr,
+)
+
+# 4. 模型列表
+probe("GET /v1/models", "/v1/models", None, bearer)

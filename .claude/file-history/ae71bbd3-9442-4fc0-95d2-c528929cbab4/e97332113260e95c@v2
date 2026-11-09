@@ -1,0 +1,54 @@
+#include "sync/clock_model.h"
+#include <numeric>
+#include <cmath>
+
+namespace xgrids {
+
+void ClockModel::add_sample(int64_t local, int64_t sys) {
+    std::lock_guard<std::mutex> lk(mu_);
+    samples_.push_back({local, sys});
+    if (samples_.size() > p_.max_samples) samples_.pop_front();
+    if (samples_.size() < 8) return;
+
+    double n = samples_.size();
+    double sl = 0, ss = 0, sll = 0, sls = 0;
+    for (const auto& s : samples_) {
+        sl += s.local; ss += s.sys;
+        sll += (double)s.local * s.local;
+        sls += (double)s.local * s.sys;
+    }
+    double denom = n * sll - sl * sl;
+    if (std::abs(denom) < 1e-9) return;
+    double a = (n * sls - sl * ss) / denom;
+    double b = (ss - a * sl) / n;
+
+    double drift = (a - 1.0) * 1e6;
+    if (std::abs(drift) > p_.drift_max_ppm) return;
+
+    double err = 0;
+    for (const auto& s : samples_)
+        err += std::abs(a * s.local + b - s.sys);
+    residual_us_ = err / n;
+
+    a_ = a; b_ = b;
+    converged_ = residual_us_ < p_.outlier_thresh_us;
+}
+
+bool ClockModel::estimate(int64_t local_ts_us, int64_t& sys_ts_us) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!converged_) { sys_ts_us = local_ts_us; return false; }
+    sys_ts_us = (int64_t)(a_ * local_ts_us + b_);
+    return true;
+}
+
+double ClockModel::drift_ppm() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return (a_ - 1.0) * 1e6;
+}
+
+double ClockModel::residual_us() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return residual_us_;
+}
+
+}  // namespace xgrids

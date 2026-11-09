@@ -1,0 +1,35 @@
+# Subagent Execution Ledger: VDA 5050 Fleet Protocol Adapter
+
+Plan: `docs/superpowers/plans/2026-10-20-vda5050-fleet-adapter.md`
+Spec: `docs/superpowers/specs/vda5050_fleet_adapter.md`
+Branch: `feat/vda5050-fleet-adapter`
+Started: 2026-10-20
+
+## Tasks Progress
+
+| Task | Description | Status | Commit | Review Status |
+|---|---|---|---|---|
+| Task 1 | 核心库抽象车队控制接口与数据模型 (IVehicleAdapter) | Completed | `0b6c84e` | PASSED (574 tests pass) |
+| Task 2 | 纯 C++ VDA 5050 报文序列化与反序列化引擎 | Completed | `080b488` + `6b30d8c` | PASSED (C1/I1/I2/I3 resolved, 584 tests) |
+| Task 3 | 拓扑折线转 VDA 5050 订单构建引擎 Vda5050OrderBuilder | Completed | `2e76b99` + `34c29d7` | PASSED (I1/I2 fixed, 591 tests) |
+| Task 4 | ROS 2 VDA 5050 MQTT 通信适配网关 vda5050_gateway_node | Completed | `f0185db` + `7a19d58` + `a3b3644` | PASSED (C1/I1/M1-M7 fixed, N1 sealed, 591 tests + live broker-restart verified) |
+| Task 5 | 逐段路权动态释放与断链安全守卫 | Completed | `93fc817` + `82cc6f0` | PASSED (C1/M1 fixed, I1/I2 deferred to Task 6, 606 tests) |
+| Task 6 | Python 虚拟小车模拟器与端到端联合验收 | Completed | `fac1fa1` + `870843e` + `94eb039` | PASSED (`./scripts/check_vda5050_e2e.sh` 7 阶段两轮连跑全 PASS (62s / idempotent re-run, EXIT=0)，606 tests；I2 发布端补齐于 fac1fa1) |
+| Task 7 | 运维闭环：人工强清离线链路 + 生命周期清理 | In Review | `fab6630` + `0ca760c` | Pending (e2e Stage 6.8 全 PASS，606 tests) |
+
+## Rulings & Decisions
+- 2026-10-20: 核心库保持零 ROS 依赖、零 MQTT 依赖，协议编解码与 Order 映射位于 `src/amr_dispatcher_core/src/fleet/`。
+- 2026-10-20: 遵循 TDD 规范，所有 Task 必须先写失败单测，验证红灯后再写实现。
+- 2026-10-20: 安全铁律：通信断链绝对不等于释放路权，防止后车物理追尾。
+- 2026-10-20: `ResourceTable::RouteEdgeId` 实际格式为 `route_edge:A__B`（词法序、双下划线），计划文案中的 `route_edge:A->B` 仅为示意，实现以 `ResourceTable` 静态方法为准。
+- 2026-10-20 (Task 3 评审 I3): `StationTransportRequest::traffic_intersection_locks_enabled` 默认 `false` 会导致 builder 全 Horizon 订单（小车不动）；Task 4/5 接线必须走 `PlanMissionRouteLocks`（强制 true）或显式置位。
+- 2026-10-20 (Task 3 评审 Observ.): VDA 5050 线上 `edgeId` 目前携带内部 `route_edge:...__...` 前缀，Task 4 需显式决策是否保留该形式（影响 Task 5 的 `ParseRouteEdge` 反解）。**裁定：保留**（方向由 start/end node id 承载，Task 5 反解走 `ResourceTable` 静态方法）。
+- 2026-10-20 (Task 4 评审): 网关向 dispatcher 暴露的 `/fleet/{vid}/state` 为 VDA 5050 原始 JSON 透传，Task 5 需自行调 `DeserializeVda5050State` 取字段；`/fleet/{vid}/online` 为 transient_local Bool；网关绝不出手解锁。
+- 2026-10-20 (Task 4 评审 M8): 计划文档 pose→`/odom` 措辞与实现 `/fleet/{vid}/pose` 不一致（`/odom` 已被 chassis_driver_node 占用且无法多车），实现正确，plan 文本无需对齐即可（以规格 §4.1 为准）。
+- 2026-10-20 (Task 4 复审 N1): 首连后不清 `need_resubscribe_`，允许一次幂等冗余补订阅，封堵首连窗口内重连导致的订阅永久缺失。
+- 2026-10-20 (Task 5 评审 I1, 延后): 离线车辆全队派发阻塞无操作员强制恢复路径（`link.online` 无法人工清除）。Spec §5.2 的"人工强解"半边未接线。延后至运维层任务；当前恢复路径 = 车辆重连。
+- 2026-10-20 (Task 5 评审 I2, 并入 Task 6): 订单发布链路缺失——dispatcher 已在核心构建 VDA 5050 订单但无 ROS 发布端，`sequence=i*2` 契约在真实流量上无强制。裁定：Task 6 e2e 必须补发布端并断言该契约。
+- 2026-10-20 (Task 5 评审 M2/M3, 记录): 路径含重复节点 id 时 LocateConfirmedNode 保守不确认（安全方向）；state 到达无条件置 online=true 的竞态影响可忽略（锁不受影响）。
+- 2026-10-20 (Task 5 足迹裁定 Design B): 确认 lastNodeId=path[k] 释放 nodes[0..k-1] + edges(i→i+1, i∈[0..k-2])；保留 node[k]、后方刚离开边(k-1→k)（车尾悬出）、前方在驶边(k→k+1)。
+- 2026-10-21 (Task 6 e2e, **推翻** 10-20 "state 竞态影响可忽略" 记录): Stage 6.4 实测证明该竞态**实质性**绕过 Spec §5.2 —— kill -9 后 11us，断链前最后一帧 state 经 DDS 跨话题乱序晚于 LWT online=false 送达，旧代码无条件回置 `link.online=true`，调度挂起守卫被旁路（e2e_m3 被错误派发）。**裁定**: `Vda5050StateCb` 离线期间收到 state 绝不回置在线态（仅节流告警）；链路存活的唯一权威判据 = 网关 MQTT 有序流确认断链后、重连新 state/connection=ONLINE 触发的 online=true 重发。MQTT broker 网关侧保序，HandleState 回置安全。修复于 `870843e`，Stage 6.4 现稳定 PASS。
+- 2026-10-21 (Task 7, 闭合终审 I1): 新增 `ForceClearVda5050Link` srv —— Spec §5.2"人工强解"半边。**裁定 A**：锁归属必须经 `vda5050_mission_vehicle_`（mission->vehicle 绑定，下发时登记）反查，不得用"路径存档存在"推断（那会把其他车 mission 的锁误判为本车名下，多车场景误释放）。**裁定 B**：在途任务收口**不走 `FailMission`**——其恢复行为树可能判定 retry/dock 把死车任务重新入队，且资源释放取决于 BT 决策（可能保留锁），与"人工强解"相悖；改为手工收口（释放槽位 + 全量 Release + abort goal + ForgetMissionDispatchState + ReArmQueueStartRequest），不重试不回坞。**裁定 C**：在线车强清必须拒绝（防误杀活车）。修复于 `fab6630` + `0ca760c`，e2e Stage 6.8 覆盖 拒绝/断链保留/释锁/收口/解除挂起 五断言。

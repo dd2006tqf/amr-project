@@ -1,0 +1,140 @@
+#include "sync/time_aligner.h"
+#include <algorithm>
+
+namespace xgrids {
+
+bool TimeAligner::on_event(const SensorEvent& e, AlignedSlice& out) {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    switch (e.type) {
+    case SensorType::kCamera: {
+        const FrameMeta& fm = e.image.meta;
+        if (fm.channel_id < 0 || fm.channel_id >= 4) return false;
+
+        // 新帧时间超出当前窗口 → 现有 pending 若已有内容则是"不完整组"
+        if (cam_anchor_ >= 0 && fm.ts_us - cam_anchor_ > cfg_.cam_window_us) {
+            // 结束当前窗口（不完整），把残组打包
+            out.t_us = cam_anchor_;
+            out.cams.anchor_ts_us = cam_anchor_;
+            out.cams.complete = false;
+            out.cams.group_seq = group_seq_++;
+            int64_t mn = -1, mx = -1;
+            for (int i = 0; i < 4; ++i) {
+                out.cams.valid[i] = cam_have_[i];
+                if (cam_have_[i]) {
+                    out.cams.frames[i] = cam_pending_[i];
+                    mn = (mn < 0) ? cam_pending_[i].ts_us : std::min(mn, cam_pending_[i].ts_us);
+                    mx = std::max(mx, cam_pending_[i].ts_us);
+                }
+            }
+            out.cams.max_skew_us = (cam_cnt_ > 1) ? (mx - mn) : 0;
+            // 当前帧归入新组——新窗口锚定其自身时间戳
+            cam_anchor_ = fm.ts_us;
+            cam_have_.fill(false); cam_cnt_ = 0;
+            cam_pending_[fm.channel_id] = fm;
+            cam_have_[fm.channel_id] = true;
+            cam_cnt_ = 1;
+
+            // 填充切片内其他传感器（以被关闭组的锚点为中心）
+            fill_slice(out.t_us, out.t_us + cfg_.cam_window_us, out);
+            return true;
+        }
+
+        if (cam_anchor_ < 0) cam_anchor_ = fm.ts_us;
+        if (!cam_have_[fm.channel_id]) {
+            cam_pending_[fm.channel_id] = fm;
+            cam_have_[fm.channel_id] = true;
+            cam_cnt_++;
+        }
+
+        // 四路齐 → 完整组立即输出
+        if (cam_cnt_ == 4) {
+            out.t_us = cam_anchor_;
+            out.cams.anchor_ts_us = cam_anchor_;
+            out.cams.complete = true;
+            out.cams.group_seq = group_seq_++;
+            int64_t mn = cam_pending_[0].ts_us, mx = mn;
+            for (int i = 0; i < 4; ++i) {
+                out.cams.valid[i] = true;
+                out.cams.frames[i] = cam_pending_[i];
+                mn = std::min(mn, cam_pending_[i].ts_us);
+                mx = std::max(mx, cam_pending_[i].ts_us);
+            }
+            out.cams.max_skew_us = mx - mn;
+            cam_have_.fill(false); cam_cnt_ = 0;
+            cam_anchor_ = -1;   // 重置：下一帧开新窗口
+
+            fill_slice(out.t_us, out.t_us + cfg_.cam_window_us, out);
+            last_slice_t_ = out.t_us;
+            return true;
+        }
+        return false;
+    }
+    case SensorType::kLidar:
+        lidar_q_.push_back(e.lidar);
+        return false;
+    case SensorType::kImu:
+        imu_q_.push_back(e.imu);
+        return false;
+    case SensorType::kGnss:
+        gnss_q_.push_back(e.gnss);
+        return false;
+    }
+    return false;
+}
+
+void TimeAligner::fill_slice(int64_t t0, int64_t t1, AlignedSlice& out) {
+    // LiDAR：取时间戳落在窗口 slack 内最近一帧
+    int64_t best = -1; size_t bi = 0;
+    for (size_t i = 0; i < lidar_q_.size(); ++i) {
+        int64_t d = std::llabs(lidar_q_[i].ts_us - t0);
+        if (d <= cfg_.lidar_slack_us && (best < 0 || d < best)) { best = d; bi = i; }
+    }
+    if (best >= 0) {
+        out.lidar = lidar_q_[bi];
+        lidar_q_.erase(lidar_q_.begin(), lidar_q_.begin() + bi + 1);
+    }
+
+    // IMU：窗口内所有采样
+    for (size_t i = 0; i < imu_q_.size(); ++i) {
+        if (imu_q_[i].ts_us >= t0 - cfg_.cam_window_us &&
+            imu_q_[i].ts_us <= t1 + cfg_.cam_window_us)
+            out.imu_in_slice.push_back(imu_q_[i]);
+    }
+    // 清掉明显过期的 IMU
+    while (!imu_q_.empty() && imu_q_.front().ts_us < t0 - 200'000)
+        imu_q_.erase(imu_q_.begin());
+
+    // GNSS：取时间最近一条
+    for (const auto& g : gnss_q_) {
+        if (!out.has_gnss ||
+            std::llabs(g.ts_us - t0) < std::llabs(out.nearest_gnss.ts_us - t0))
+            out.nearest_gnss = g, out.has_gnss = true;
+    }
+    while (!gnss_q_.empty() && gnss_q_.front().ts_us < t0 - 1'000'000)
+        gnss_q_.erase(gnss_q_.begin());
+}
+
+bool TimeAligner::flush(AlignedSlice& out) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (cam_cnt_ == 0) return false;
+    out.t_us = cam_anchor_;
+    out.cams.anchor_ts_us = cam_anchor_;
+    out.cams.complete = false;
+    out.cams.group_seq = group_seq_++;
+    int64_t mn = -1, mx = -1;
+    for (int i = 0; i < 4; ++i) {
+        out.cams.valid[i] = cam_have_[i];
+        if (cam_have_[i]) {
+            out.cams.frames[i] = cam_pending_[i];
+            mn = (mn < 0) ? cam_pending_[i].ts_us : std::min(mn, cam_pending_[i].ts_us);
+            mx = std::max(mx, cam_pending_[i].ts_us);
+        }
+    }
+    out.cams.max_skew_us = (cam_cnt_ > 1) ? (mx - mn) : 0;
+    fill_slice(cam_anchor_, cam_anchor_ + cfg_.cam_window_us, out);
+    cam_have_.fill(false); cam_cnt_ = 0; cam_anchor_ = -1;
+    return true;
+}
+
+}  // namespace xgrids

@@ -1,0 +1,70 @@
+// Copyright (c) 2025 Insta360. All rights reserved.
+// 网络指标采集
+
+#pragma once
+#include <atomic>
+#include <cstdint>
+
+namespace ins {
+namespace live_broadcast {
+
+/**
+ * @brief 网络指标采集（推流发送侧计数器，进程级单例）
+ * @details 采样点在 RtmpPusher 发送成功处：发送线程调用
+ * OnVideoFrameSent/OnAudioFrameSent 累计帧数与字节数；
+ *          监控线程（LiveMonitor tick）调用 TakeSnapshot 取走增量并归零。
+ *          计数全部使用 atomic，采集与采样之间无锁。
+ * @note 指标语义是"实际发送成功的帧"：RTMP 服务端不收包时发送失败不计数，
+ *       fps 自然归零，正是断流恢复的判定依据（见 LiveMonitor 停摆检测）。
+ * @todo RSSI 等无线侧指标待接入 netd WifiStaConnectionStatus 周期心跳
+ *       （需扩展 NetdSubscriber 订阅，IDL 已定义该 topic）后再补充。
+ */
+class NetworkMetrics {
+ public:
+  static NetworkMetrics& GetInstance();
+
+  // 禁止拷贝/移动
+  NetworkMetrics(const NetworkMetrics&) = delete;
+  NetworkMetrics& operator=(const NetworkMetrics&) = delete;
+  NetworkMetrics(NetworkMetrics&&) = delete;
+  NetworkMetrics& operator=(NetworkMetrics&&) = delete;
+
+  /// 一次采样的指标快照（自上次 TakeSnapshot 以来的增量）
+  struct Snapshot {
+    uint32_t video_fps = 0;  ///< 每秒发送成功的视频帧数
+    uint32_t audio_fps = 0;  ///< 每秒发送成功的音频帧数
+    uint32_t send_kbps = 0;  ///< 每秒发送成功的总码率（kbps，音视频合计）
+  };
+
+  /**
+   * @brief 记录一帧视频发送成功（推流线程调用）
+   * @param bytes 该帧负载字节数
+   */
+  void OnVideoFrameSent(uint32_t bytes);
+
+  /**
+   * @brief 记录一帧音频发送成功（推流线程调用）
+   * @param bytes 该帧负载字节数
+   */
+  void OnAudioFrameSent(uint32_t bytes);
+
+  /**
+   * @brief 取走自上次采样以来的增量并归零（监控线程调用）
+   * @return 1 秒窗口内的帧数与码率（假定采样周期为 1s，与
+   * config::kMonitorTickIntervalMs 对应）
+   */
+  Snapshot TakeSnapshot();
+
+  /// 清零全部计数（监控 Start 时调用，避免上一场直播的残留）
+  void Reset();
+
+ private:
+  NetworkMetrics() = default;
+
+  std::atomic<uint32_t> video_frames_{0};
+  std::atomic<uint32_t> audio_frames_{0};
+  std::atomic<uint32_t> sent_bytes_{0};
+};
+
+}  // namespace live_broadcast
+}  // namespace ins

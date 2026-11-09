@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# 只验证 build.sh 的 colcon 分支：set +u 是否救活了 source，--base-paths src 是否生效。
+# 不复用整个 build.sh，避免 build/core 的宿主机/容器路径缓存冲突干扰判断。
+set -o pipefail
+
+cd /workspace || exit 1
+echo "=== 模拟 build.sh 里 colcon 分支的代码路径 ==="
+echo "--- 当前 shell: $(set -o | grep '^nounset' ) ---"
+
+# 与 build.sh 修复后完全一致的三行
+set +u
+# shellcheck disable=SC1091
+source /opt/ros/jazzy/setup.bash
+set -u
+
+echo "source 成功（修复前会在上一行因 AMENT_TRACE_SETUP_FILES unbound 失败）"
+
+cd /workspace || exit 1
+echo "--- colcon list --base-paths src ---"
+colcon list --base-paths src 2>/dev/null | wc -l

@@ -1,0 +1,85 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+#include <mutex>
+#include "sensors/sensor_frame.h"
+
+namespace xgrids {
+
+// ============================================================
+// 数据完整性 manifest：对应简历
+//   "逐路记录帧计数、时间戳与丢帧区间，随数据包上传至 LixelStudio 后端，
+//    支撑'该区域是否需要现场重扫'的自动判定"
+// ============================================================
+
+enum class GapReason : uint8_t {
+    kFrameDrop = 0,      // seq 跳变检出丢帧
+    kSensorFault,        // 驱动上报故障
+    kBackpressure,       // 缓冲满被动丢
+    kSyncIncomplete,     // 对齐窗口缺路
+    kRtkLossLock,        // RTK 失锁期间的区间（精度降级，不算丢）
+};
+
+struct GapEvent {
+    int channel_id;
+    int64_t start_ts_us;
+    int64_t end_ts_us;
+    uint32_t seq_from;
+    uint32_t seq_to;
+    GapReason reason;
+};
+
+struct ChannelManifest {
+    int channel_id = -1;
+    uint64_t frames = 0;
+    uint64_t lost = 0;
+    int64_t first_ts_us = -1;
+    int64_t last_ts_us = -1;
+    uint64_t bytes = 0;
+    std::vector<GapEvent> gaps;
+};
+
+// 一次扫描的完整性清单
+struct ScanManifest {
+    int64_t scan_start_us;
+    int64_t scan_end_us;
+    std::array<ChannelManifest, 5> channels;  // 0-3 cam, 4 lidar
+    std::vector<GapEvent> rtk_loss_windows;   // RTK 失锁窗口（影响绝对精度）
+    uint64_t total_imu_samples = 0;
+    bool clean = false;
+    // 由后端消费：判定"哪段区间数据不完整 → 需重扫"
+    std::vector<std::pair<int64_t,int64_t>> rescan_windows;
+};
+
+class ManifestRecorder {
+public:
+    void on_frame(const FrameMeta& f);                 // 相机帧计数 + seq 跳变检测
+    void on_lidar(const LidarFrame& f);
+    void on_imu_count(uint64_t n) { imu_samples_ += n; }
+    void on_gap(int channel, int64_t ts_us, GapReason r, uint32_t from, uint32_t to);
+    void on_rtk_window(int64_t start_us, int64_t end_us);
+    void on_sync_incomplete(int64_t ts_us, const std::array<bool,4>& valid);
+
+    void begin_scan(int64_t t_us) { scan_start_ = t_us; }
+    ScanManifest finish(int64_t t_us);
+
+    // 是否完好：无任何丢帧/缺口（RTK 失锁不算"丢"，只降级）
+    bool is_clean() const;
+
+private:
+    std::array<ChannelManifest, 5> ch_{};
+    std::array<uint32_t, 5> last_seq_{};
+    std::array<bool, 5> have_last_{};
+    std::vector<GapEvent> rtk_windows_;
+    uint64_t imu_samples_ = 0;
+    int64_t scan_start_ = -1;
+    mutable std::mutex mu_;
+
+    // 聚合缺口为"需重扫时间窗"（把 <X 秒内相邻缺口合并）
+    std::vector<std::pair<int64_t,int64_t>> compute_rescan_windows() const;
+};
+
+}  // namespace xgrids

@@ -1,0 +1,165 @@
+# OTA 收敛链路与孤立接口修复（full-code-review 修复批次 3）
+
+> 日期：2026-11-01
+> 分类：工作流外实施（承接 [[2026-10-29-ota-p0c1-startup-gate]]，属 P0-C 序列）
+> 结果：已完成（本机全量验证通过；板端 systemd 247 复验**未完成**，见遗留）
+
+## 构思
+
+### 要解决什么
+
+对 P0-C1 交付做了一次全仓代码评审，发现 **1 个会毁掉 OTA 闭环的缺陷** +
+若干确定性缺陷与孤立接口。最严重的一条是「恢复服务在健康窗口耗尽后静默死亡」：
+
+```
+恢复器：return EXIT_RETRY(75)   // "我还没收敛，请重启我再试一轮"
+单元  ：Restart=on-failure + SuccessExitStatus=75
+```
+
+`SuccessExitStatus=75` 的含义是「75 算干净退出」，于是 `Restart=on-failure` **不重启**。
+设备停在未验证候选上：不推进、不回滚、不进救援。修法有两半，缺一不可：
+
+1. **接线**：`SuccessExitStatus=75` → `RestartForceExitStatus=75`；
+2. **计数**：退出前必须先把这次"窗口耗尽"落进持久计数，否则重启后计数不动。
+
+第二半更容易被忽略：原实现依赖"重启后 boot_attempts 会加一"，但 systemd 重启的是
+**恢复进程本身**，内核 `boot_id` 不变 → 控制器按 boot_id 幂等 → 计数原地不动；
+而 `elapsed` 取自 `updated_at`（TRIAL 期间不变）→ 每轮立刻又"窗口耗尽"。
+接上 `RestartForceExitStatus` 就直接变成重启风暴。
+
+### 为什么不做进 OpenSpec change
+
+交付面是板端启动闸门与运维接口：不新增对外 D-Bus 协议、不改云端契约。
+与 P0-A / P0-B / P0-C1 同构，按 `docs/ai/implementation-economy.md` 判据
+走工作流外实施并在此留记录。
+
+### 先复现再改
+
+`SuccessExitStatus` 与 `RestartForceExitStatus` 的差异**不靠推断**，直接拿 systemd
+跑对照（退出码固定 75）：
+
+| 配置 | `Result` | `NRestarts` | `ActiveState` |
+|---|---|---|---|
+| `on-failure` + `SuccessExitStatus=75` | `success` | 0 | `inactive`（**静默死亡**） |
+| `on-failure` + `RestartForceExitStatus=75` | `exit-code` | 递增 | `activating`（**持续重启**） |
+
+（本机 systemd 255 实测。板端是 247，复验未完成，见遗留 1。）
+
+## 实现方式
+
+### 改动文件
+
+| 文件 | 性质 | 内容 |
+|------|------|------|
+| `tools/weaknet-ota-recover.service` | 修改 | `SuccessExitStatus=75` → `RestartForceExitStatus=75`；`StartLimitIntervalSec=0` 移到 **`[Unit]` 段** |
+| `tools/weaknet-ota-recover` | 修改 | 窗口耗尽时先调 `bump-trial-round` 再 `return EXIT_RETRY`；控制器不可用时 **fail-closed 进救援**（不返回 75，否则无界重启）；`phase_started_at` 改用 `calendar.timegm`；`decide()` 默认参数不再在定义时绑定常量；`wait_trial`/`wait_rollback` 两支合并 |
+| `tools/weaknet-ota-ctl` | 修改 | 新增 `bump-trial-round`（**不按 boot_id 幂等**，并刷新 `updated_at`）；`cmd_rolled_back` 补 `clear_rescue_flag`；删除零调用者的模块级 `sync_rescue_flag` |
+| `tools/weaknet-ota-gate` | 修改 | 删除 `--dry-run`（解析后从不读取，且仍返回非零） |
+| `tools/test_weaknet_ota_recover.py` | 修改 | 42 → 52 项：EXIT_RETRY 单元契约（含段位校验）、窗口耗尽计数、时区解析、wait 分支、两份 sync 规则一致性 |
+| `tools/test_weaknet_ota_ctl.py` | 修改 | +5 项：`bump-trial-round` 四例（不幂等/刷新起点/仅 TRIAL/对照组）、`ROLLED_BACK` 清理派生视图 |
+| `tools/test_weaknet_ota_gate.py` | 修改 | 28 → 32 项：恢复服务单元重启契约、门禁无 `--dry-run`、恢复单元不依赖业务服务 |
+| `tools/ota_p0b_drill.sh` | 修改 | 21 → 30 项，新增第 9 节：窗口耗尽 → 持久计数 → 下一轮判定真的变化 → 次数耗尽转回滚 → 控制器不可用时 fail-closed |
+| `.github/workflows/build-and-deploy.yml` | **删除** | 见下「孤立接口处置」O3 |
+| `tools/ci.sh` | 修改 | 补「反向隧道收尾重启」（I5）；修正已过时的注释 |
+| `tools/llama-server.service` | 修改 | 补齐 `MemoryMax=4.5G` + `CPUAffinity=0 1`，标注为唯一权威来源 |
+| `server/include/bt_monitor.hpp` / `server/src/bt_monitor.cpp` | 修改 | `calculateAudioScore` 从私有成员提成命名空间自由函数，删 `friend class ::BtMonitorAudioScoreTest` |
+| `server/src/active_connectivity_monitor.cpp` | 修改 | 删零调用者 `probeTcpConnect`、恒返回 `"A"` 的 `qtypeName` |
+| `server/src/net_iface.cpp` / `server/src/net_wifiriss.cpp` | 修改 | 删零调用者 `ifFlagsToString` / `getInterfaceBssid` |
+| `client/weaknet_client.h` | 修改 | 事件订阅族加失效声明与 `@deprecated` |
+| `client/example_usage.cpp` | 修改 | 不再演示空转的订阅路径，改为真实可用的 `get_*` 查询 |
+| `docs/OTA固件更新与安全发布指南.md` | 修改 | §1.4 补「两种计数分工」与「恢复进程重启契约」；§5.1 同步测试数量 |
+| `docs/架构设计-模块与代码结构.md` | 修改 | 订阅族失效行为逐条精确化；llama 单元单源化说明 |
+| `docs/本地LLM部署方案.md` | 修改 | 删自带 heredoc，改为引用仓库 `tools/llama-server.service` |
+| `docs/ci-测试使用指南.md` | 修改 | workflow 表更新（删已失效的 build-and-deploy，补 release.yml 与四个作业） |
+
+### 孤立接口处置（full-code-review 必产交付物）
+
+| ID | 接口 | 证据 | 处置 |
+|---|---|---|---|
+| O1 | `weaknet_subscribe_*` / `weaknet_check_*` 订阅族 | 服务端 2026-10-19 已停发全部信号，零生产订阅者 | **标注失效**（头文件 + `@deprecated` + 文档），示例改走查询路径。彻底删除属独立变更 |
+| O2 | `ListInterfaces` | 与 `GetInterfaces` 是同一 handler 的别名（`dbus_service.cpp:99/105`），文档列为兼容别名 | **保留并确认**为有意向后兼容 |
+| O3 | `.github/workflows/build-and-deploy.yml` | build job 被 `release.yml` 完全覆盖且更弱（不签名、不产 OTA 包）；deploy job 直接 `rsync --delete dist-arm64/ → /home/radxa/weaknet/` + `restart`，**绕过 `adopt` 的 releases/current 原子翻链与健康窗口，并跳过验签** | **删除**（板端唯一入口是 `tools/ci.sh`，发布走 `release.yml`） |
+| O4 | `tools/llama-server.service` | 仓库副本无任何安装方（`ci.sh`/`release.sh`/`.github` 均不引用），且与文档声称的现网值（`MemoryMax`/`CPUAffinity`）不一致 | **单源化**：仓库文件为唯一权威并补齐两项限制，文档改为引用 |
+| O5 | `weaknet_get_bluetooth_*` | `test_client.cpp`（集成示例）消费 | **保留并确认**，非孤立 |
+| O6 | 模块级 `weaknet-ota-ctl:sync_rescue_flag` | 零调用者（CLI 有独立的 `cmd_sync_rescue_flag`） | **删除**，并加测试锁死两份判定规则一致 |
+| O7 | `weaknet-ota-gate --dry-run` | 解析后从不读取，仍返回非零 | **删除** |
+| O8 | `BtMonitor::calculateAudioScore` + `friend class ::BtMonitorAudioScoreTest` | 生产头文件为测试开后门 | **提成自由函数**，删友元 |
+
+### 关键决策
+
+1. **两种计数必须分开**。`bump-boot-attempt` 按 boot_id 幂等（进程重启 ≠ 设备重启）；
+   `bump-trial-round` **不**幂等（窗口耗尽就是新的一轮）。合成一个就不可能同时正确。
+2. **`bump-trial-round` 顺带刷新 `updated_at`**。窗口起点就是它，不刷新则下一轮一进来
+   就超时，等于没换窗口。
+3. **控制器不可用时 fail-closed 进救援，绝不返回 75**。计数落不下去还请求重启，
+   进程重启后内存计数归零 → 无界重启。
+4. **`StartLimitIntervalSec` 属于 `[Unit]`**。写进 `[Service]` 被 systemd 当
+   `Unknown key name` 静默忽略（只有 `systemd-analyze verify` 给一行 warning）。
+   这与 P0-C1 那次 `ConditionPathExists` 写错段位是同类陷阱，已写成测试断言。
+5. **`decide()` 的默认参数不能在定义时绑定常量**。`max_rounds=MAX_TRIAL_ROUNDS`
+   在定义时求值，之后再改模块常量完全无效——演练里改上限失败就是撞到这里。
+
+### 本机验证
+
+```
+x86 全量编译                          → 0 error（2 条 warning 均为既有）
+ctest --test-dir build-x86/server     → 53/53 通过（4.6s）
+python3 tools/test_weaknet_ota_ctl.py     → Ran 91 tests, OK
+python3 tools/test_weaknet_ota_recover.py → Ran 52 tests, OK
+python3 tools/test_weaknet_ota_gate.py    → Ran 32 tests, OK
+bash tools/ota_p0a_drill.sh           → PASS=44  FAIL=0
+bash tools/ota_p0b_drill.sh           → PASS=30  FAIL=0
+bash tools/ota_p0c1_drill.sh          → PASS=36  FAIL=0
+```
+
+补充检查：`ast.parse(feature_version=(3,9))` 全部通过（板端 Python 3.9.2）；
+`bash -n` 四个脚本通过；两个 workflow YAML 可解析；
+`systemd-analyze verify` 四个单元无 `Unknown key/section` 告警；
+`example_usage` 编译通过。
+
+### 已知的口径修正
+
+- 板端 CPU **是 8× Cortex-A55，没有 A76 大核**（实测 `/proc/cpuinfo` 与
+  `scaling_available_frequencies`）。文档旧称"绑定两颗 A76 大核"已改写为
+  "固定两颗核、其余留给弱网服务与系统"。
+
+## 结果
+
+### 已完成
+
+- C1（恢复服务静默死亡）两半都修了，并用真实 systemd 做对照实验验证方向
+- I1 时区、I2 派生视图生命周期、I3 死分支、I5 隧道不重启、O6/O7/O8 死代码
+- O3 删除会破坏 OTA 布局的遗留部署 workflow
+- O4 llama 单元单源化（文档/仓库/板端三处漂移收敛为一处）
+- 测试从 86/42/28 增至 91/52/32，演练从 44/21/36 增至 44/30/36
+
+### 遗留（**明确未做，不得宣称完成**）
+
+1. **板端 systemd 247 未复验**：本次 `RestartForceExitStatus` 的对照实验是在
+   本机 systemd 255 上做的。板端 247 的同构验证命令已备好，但执行时板端
+   SSH 通道「banner exchange 超时」不可达，**未取得证据**。上线前必须在板上
+   补跑一次（P0-C2 剩余项）。
+2. **未跑完整 `./tools/ci.sh`**：本次改动只做了 `bash -n` 语法校验，未在真实
+   部署链路里跑过（其中「反向隧道收尾重启」这条路径尤其需要真机验证）。
+   属 P0-C4 内容。
+3. **O1 订阅族只做了标注，没有删除**：删除会牵动 `client/test_client.cpp`、
+   `client/test_network_quality.cpp` 与 `libweaknet.so` 的 ABI，属独立变更；
+   且"删除还是重建发射"需要产品决策（重建必须先有真实订阅者）。
+4. **`weaknet-tunnel` 重启的实际效果未验证**：只确认命令会执行，没确认重启后
+   反向通道确实重建（需要板端可达）。
+5. **O2/O5 是"确认非孤立"而非"新增消费者"**：本次只做了判定，没有改动它们。
+
+### 后续方向
+
+- **P0-C2 剩余**：板端 247 复验 `RestartForceExitStatus` + 真实物理重启。
+- **P0-C3**：真实断电测试台（用户已明确暂缓）。
+- **P0-C4**：完整 `./tools/ci.sh` 部署准入。
+- **订阅族处置**：删除或在建好真实订阅者后重建发射（须走 OpenSpec change）。
+
+---
+
+## 附：工作区里的非本批次改动
+
+`server/src/looper.cpp` 在本工作区存在一份**不属于本批次**的未提交修改
+（D-Bus 派发循环，mtime 17:47，早于本批次任何改动）。多个会话共享同一
+worktree 时会出现这种情况，本批次未触碰该文件，也未将其纳入任何验证结论。

@@ -1,0 +1,609 @@
+
+--- [2282] user text ---
+先查一下ci。然后开始做p0c2
+
+--- [2293] assistant text ---
+我先查 CI 状态，本机没有 `gh`，改用 GitHub API。
+
+--- [2294] assistant tool:Bash ---
+{"command": "which gh 2>/dev/null || ls /usr/local/bin/gh /opt/gh/bin/gh 2>/dev/null || echo \"gh 未安装\"", "description": "再次确认 gh 是否可用"}
+
+--- [2295] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && git remote -v | head -2 && echo \"---\" && ls .github/workflows/", "description": "查看远端与 workflow 列表"}
+
+--- [2296] user result ---
+gh 未安装
+
+--- [2297] user result ---
+origin	https://github.com/dd2006tqf/internet-bluetooth-diagnose.git (fetch)
+origin	https://github.com/dd2006tqf/internet-bluetooth-diagnose.git (push)
+---
+ci.yml
+release.yml
+
+--- [2299] assistant text ---
+`gh` 未安装。我用两种方式查：先看 CI 里有没有硬编码的套件数，再查远端运行状态。
+
+--- [2300] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== ci.yml 中的套件数/ctest 断言 ===\" && grep -n \"ctest\\|55\\|56\\|54\\|test_lifecycle\\|suite\" .github/workflows/ci.yml | head -20", "description": "检查 CI 是否有硬编码套件数"}
+
+--- [2301] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 远端 CI 运行状态（GitHub API）===\" && curl -s -m 20 \"https://api.github.com/repos/dd2006tqf/internet-bluetooth-diagnose/actions/runs?branch=dev/feature&per_page=3\" 2>/dev/null | python3 -c \"\nimport json,sys\ntry:\n    d=json.load(sys.stdin)\nexcept Exception as e:\n    print('API 解析失败:', e); sys.exit()\nruns=d.get('workflow_runs',[])\nif not runs: print('无运行记录（或 API 受限）')\nfor r in runs[:3]:\n    print(f\\\"#{r['run_ ...[trunc]
+
+--- [2302] user result ---
+=== ci.yml 中的套件数/ctest 断言 ===
+190:        run: ctest --test-dir build-x86 --output-on-failure
+
+--- [2303] user result ---
+=== 远端 CI 运行状态（GitHub API）===
+#142 CI                             completed  success    66ac0064 2026-11-03T08:14:07Z
+#141 CI                             completed  success    50f7d88c 2026-11-03T08:09:10Z
+#140 CI                             completed  success    df041f2e 2026-11-02T06:13:15Z
+
+--- [2305] assistant text ---
+CI 已确认通过。
+
+- **CI 里没有硬编码套件数**：`ci.yml:190` 只运行 `ctest` 并检查退出码，不会因为套件从 55 变成 56 而失败。
+- **run #140 对应我推送的 `df041f2`**：`completed / success` ✅
+
+注意 #142、#141 对应的提交是 `66ac0064`、`50f7d88c`，不是我推送的（并行会话又推了新提交）。
+
+接下来开始 P0-C2。先摸清当前状态和验证方法：
+
+--- [2306] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== P0-C2 相关文档 ===\" && grep -rn \"P0-C2\" docs/ OTA* CLAUDE.md 2>/dev/null | head -10 && echo && echo \"=== 板端重启矩阵现有覆盖 ===\" && grep -n \"P0-C2\\|重启矩阵\\|reboot\" tools/test_weaknet_ota_recover.py | head -10", "description": "调研 P0-C2 范围"}
+
+--- [2307] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复服务单元文件 ===\" && cat tools/weaknet-ota-recover.service && echo && echo \"=== 门禁单元（若有）===\" && ls tools/*.service tools/*.target 2>/dev/null", "description": "查看开机自启链路配置"}
+
+--- [2308] user result ---
+Exit code 2
+=== 恢复服务单元文件 ===
+[Unit]
+Description=WeakNet OTA Boot Recovery Service (P0-B)
+# 关键：恢复服务**不能**依赖被恢复的对象。
+#
+# 不写 Requires=weaknet-server.service，也不写 After=weaknet-server.service
+# 的强依赖——那会让 weaknet-server 起不来时恢复服务也起不来，正好把
+# "独立于被升级对象"的设计意图毁掉。
+#
+# 只在网络就绪后启动（隧道与 SSH 救援入口需要网络），但**不**等待
+# weaknet-server：它可能正是起不来的那个。
+After=network-online.target
+Wants=network-online.target
+# 真正的收敛靠 TRIAL 计数 +「次数耗尽就回滚」，不靠重启限流。
+# 注意 StartLimitIntervalSec 属于 **[Unit]** 段——写进 [Service] 会被 systemd
+# 当作 Unknown key name 静默忽略（`systemd-analyze verify` 只给一行 warning，
+# 运行时毫无提示）。P0-C1 那次 ConditionPathExists 写错段位就是同类陷阱。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# 与 weaknet-server 同为 root：需要读 /var/lib/weaknet-ota（ ...[trunc]
+
+--- [2309] user result ---
+=== P0-C2 相关文档 ===
+docs/OTA固件更新与安全发布指南.md:260:"有限次数内结束"是 P0-B / P0-C2 的职责，不是门禁的。门禁不去猜"这个 TRIAL
+docs/OTA固件更新与安全发布指南.md:580:# P0-C2 重启矩阵（回滚续跑 / 崩溃循环救援 / 尝试耗尽回滚 / 同 boot_id 不重复计数）、
+CLAUDE.md:297:| "OTA 恢复自测" | `python3 tools/test_weaknet_ota_recover.py` + `bash tools/ota_p0b_drill.sh` | P0-B：55 项单元测试（含 P0-C2 重启矩阵与 Py3.9 兼容守护）+ 30 项沙盒演练断言（不碰真机） |
+
+=== 板端重启矩阵现有覆盖 ===
+560:# P0-C2 重启矩阵（离线可验证的部分）
+562:# 这里是用户给的 P0-C2 验收矩阵中"不依赖真机重启"的几行，直接驱动
+
+--- [2316] assistant text ---
+关键点已经清楚：P0-C2 的离线可验证部分已经覆盖，缺的是**真实重启链路**。我看一下现有覆盖与真机缺口：
+
+--- [2317] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && sed -n '555,640p' tools/test_weaknet_ota_recover.py", "description": "查看 P0-C2 重启矩阵已覆盖的行"}
+
+--- [2318] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 门禁 service ===\" && cat tools/weaknet-ota-gate.service", "description": "查看启动门禁 unit"}
+
+--- [2319] user result ---
+=== 门禁 service ===
+[Unit]
+Description=WeakNet OTA Startup Gate (P0-C1)
+Documentation=man:systemd.unit(5)
+# 启动门禁：weaknet-server 启动**之前**必须先过这一关。
+#
+# 语义（板端 systemd 247 实测）：
+#   * gate 成功 → weaknet-server 正常启动
+#   * gate 失败 → Requires 依赖不成立，weaknet-server **根本不会被启动**
+#     （实测：start 返回 rc=1，"Job ... failed with result 'dependency'"，
+#      业务进程一次都没跑，NRestarts=0 —— **没有重启风暴**）
+#
+# 为什么用独立单元 + Requires/After，而不是把检查塞进 weaknet-server 的
+# ExecStartPre：
+#   * ExecStartPre 失败 → 单元 Result=exit-code，Restart=on-failure 会
+#     **触发重启循环**（实测 NRestarts=3）。门禁失败意味着"状态不可信"，
+#     重启只会烧电 —— 这是不可接受的。
+#   * 独立 gate 单元失败 → 依赖方直接不启动，无重启循环。
+#
+# gate 是 Type=oneshot 且**没有** RemainAfterExit：所以每次业务服务启动
+# （含崩溃后的自动重启，实测 g ...[trunc]
+
+--- [2320] user result ---
+self.assertFalse(ok)
+        self.assertIn("不存在", detail)
+
+
+# ---------------------------------------------------------------------------
+# P0-C2 重启矩阵（离线可验证的部分）
+#
+# 这里是用户给的 P0-C2 验收矩阵中"不依赖真机重启"的几行，直接驱动
+# Watcher.run_once 走真实恢复链路（假 systemctl / busctl / 控制器）：
+#   * ROLLBACK_PENDING 期间重启 → 继续回滚，不重启失败候选
+#   * 连续重启超过试运行次数 → 确定性回滚，不无限试运行
+#   * 崩溃循环 → 提前回滚，不无限等健康窗口
+#   * 恢复器判定与门禁判定必须一致（门禁放行的阶段不能让恢复器拒绝，
+#     反之亦然——"每次重启都掉进救援"就是这两者打架的症状）
+# ---------------------------------------------------------------------------
+
+class TestRestartMatrix(unittest.TestCase):
+    def setUp(self):
+        self.sb = Sandbox()
+        self.ctl_path = self.sb.make_fake_ctl()
+        # 服务已崩：is-active 不 active、D-Bus 全不可达、N ...[trunc]
+
+--- [2322] assistant text ---
+现在情况清楚了。P0-C2 的离线部分已经覆盖，缺口是**真机真实重启链路**。我先确认板端实际安装状态：
+
+--- [2323] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 板端已安装的 OTA 单元 ===\" && timeout 40 ssh board 'systemctl list-unit-files 2>/dev/null | grep -E \"weaknet\" ; echo \"---\"; ls -l /etc/systemd/system/weaknet-server.service /etc/systemd/system/weaknet-ota-gate.service 2>&1 | tail -5' 2>&1 | tail -20", "description": "查看板端已安装单元"}
+
+--- [2324] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== weaknet-server.service 的 gate 依赖 ===\" && timeout 40 ssh board 'systemctl cat weaknet-server.service 2>/dev/null | grep -E \"Requires|After|Wants|ExecStart\" ; echo \"---boot---\"; cat /proc/sys/kernel/random/boot_id; uptime -s' 2>&1 | tail -12", "description": "查看 gate 依赖与当前 boot_id"}
+
+--- [2325] user result ---
+=== 板端已安装的 OTA 单元 ===
+weaknet-bt-agent.service                   enabled         enabled
+weaknet-ota-gate.service                   enabled         enabled
+weaknet-ota-recover.service                enabled         enabled
+weaknet-server.service                     enabled         enabled
+weaknet-tunnel.service                     enabled         enabled
+---
+-rw-r--r-- 1 root root 2148 Nov  3 08:11 /etc/systemd/system/weaknet-ota-gate.service
+-rw-r--r-- 1 root root 3041 Nov  3 08:11 /etc/systemd/system/weaknet-server.service
+
+--- [2326] user result ---
+=== weaknet-server.service 的 gate 依赖 ===
+After=network-online.target dbus.service
+Wants=network-online.target
+#   Requires=  门禁失败 → 本单元根本不被启动（实测 rc=1 / result=dependency /
+#   After=    保证先做判定再启动业务
+# 必须是 Requires 而不是 Wants：实测 Wants + After 在依赖失败时**照样启动**
+Requires=weaknet-ota-gate.service
+After=weaknet-ota-gate.service
+ExecStart=/home/radxa/weaknet/current/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml
+---boot---
+e78f6b9a-ce00-427c-a8d1-472042e3b0c5
+2026-11-03 07:27:12
+
+--- [2328] assistant text ---
+板端准备就绪：gate、recover、server 均 enabled，`Requires=` 依赖正确。当前 boot_id `e78f6b9a`，开机于 07:27。
+
+现在检查一个关键问题：**部署是否会把 gate/recover 从 enabled 状态冲掉**：
+
+--- [2329] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== ci.sh 如何安装这些单元 ===\" && grep -n \"ota-gate\\|ota-recover\\|systemctl enable\\|daemon-reload\" tools/ci.sh | head -20", "description": "检查 ci.sh 的单元安装与启用逻辑"}
+
+--- [2330] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== P0-C2 在指南里的描述 ===\" && sed -n '250,270p' \"docs/OTA固件更新与安全发布指南.md\"", "description": "查看指南对 P0-C2 的定义"}
+
+--- [2331] user result ---
+=== P0-C2 在指南里的描述 ===
+
+- 健康窗口必然超时 → 自动回滚 → 回滚的 restart 又被拒 → 升级 100% 失败
+- 回滚验证同样永远无法通过 → 每次回滚直接掉进救援
+
+板端实测复现：`do-switch → TRIAL` 后 `systemctl restart weaknet-server` 返回
+`rc=1`、`A dependency job ... failed`，gate 日志
+`事务处于 TRIAL：升级尚未结束，版本未经验证，拒绝启动`。
+
+所以门禁的职责边界只有一条：**挡住"已被判定为不可运行"的状态**——救援态
+与不可信状态。活跃阶段的收敛由 `boot_attempts` 持久计数 + 恢复器负责，
+"有限次数内结束"是 P0-B / P0-C2 的职责，不是门禁的。门禁不去猜"这个 TRIAL
+会不会自己收敛"——猜错就是把设备变砖。
+
+fail-closed 仍然成立，只是拒绝集合是"**不确定能不能跑**"，而不是"没跑完"。
+
+**`rescue.flag` 只是派生投影，不是第二套权威。**
+
+- 控制器写状态时的顺序：进入救援 → **先写 flag 再落状态**；离开救援 →
+  **先落状态再清 flag**。任何中途失败都落在"多挡一次"的方向上。
+- 门禁本体**不读 flag**，只读 `transaction.json`（权威状态）。flag 由
+  `weaknet-server.service` 的 `ConditionPathExists=!` 使用——systemd 在
+
+--- [2332] user result ---
+=== ci.sh 如何安装这些单元 ===
+233:        sudo systemctl daemon-reload 2>/dev/null || true"
+263:    # `Requires=weaknet-ota-gate.service`，必须等门禁单元先安装（见下方
+264:    # P0-C1 一段），否则 daemon-reload 后即出现"依赖单元不存在"。
+268:        sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true"
+288:            sudo systemctl daemon-reload && \
+289:            sudo systemctl enable weaknet-tunnel.service" \
+311:    scp "${ROOT}/tools/weaknet-ota-recover" "${BOARD}:/tmp/weaknet-ota-recover" 2>/dev/null \
+313:    scp "${ROOT}/tools/weaknet-ota-recover.service" "${BOARD}:/tmp/weaknet-ota-recover.service" 2>/dev/null \
+315:    ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-ota-recover \
+316:         ...[trunc]
+
+--- [2339] assistant text ---
+部署流程会保留 enabled 状态。现在设计 P0-C2 的真机验证，先确认要验的具体断言：
+
+--- [2340] assistant tool:Bash ---
+{"command": {"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器 MAX_TRIAL_ROUNDS / 退出码 75 逻辑 ===\" && grep -n \"MAX_TRIAL_ROUNDS\\|EXIT_NEED_REBOOT\\|75\\b\" tools/weaknet-ota-recover | head -20", "description": "查看恢复器的尝试次数与退出码逻辑"}}
+
+--- [2341] user result ---
+<tool_use_error>InputValidationError: Bash failed due to the following issue:
+The parameter `command` type is expected as `string` but provided as `unknown`</tool_use_error>
+
+--- [2342] assistant tool:Bash ---
+{"command": {"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器 bump-trial-round 与 boot_id 处理 ===\" && grep -n \"boot_id\\|bump-trial-round\\|trial_round\\|last_boot\" tools/weaknet-ota-recover | head -25", "description": "查看 boot_id 与试运行计数逻辑"}}
+
+--- [2343] user result ---
+<tool_use_error>InputValidationError: Bash failed due to the following issue:
+The parameter `command` type is expected as `string` but provided as `unknown`</tool_use_error>
+
+--- [2345] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器 MAX_TRIAL_ROUNDS / 退出码 75 ===\" && grep -n \"MAX_TRIAL_ROUNDS\\|EXIT_NEED_REBOOT\\|need_reboot\\|return 75\" tools/weaknet-ota-recover | head -20", "description": "查看恢复器的尝试次数与退出码逻辑"}
+
+--- [2346] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== boot_id 与试运行计数 ===\" && grep -n \"boot_id\\|bump-trial-round\\|trial_round\\|last_boot\" tools/weaknet-ota-recover | head -25", "description": "查看 boot_id 与试运行计数逻辑"}
+
+--- [2347] user result ---
+=== boot_id 与试运行计数 ===
+789:        boot_id 取 `/proc/sys/kernel/random/boot_id`：它在内核每次启动时
+791:        systemd 重启（它退出会请求重启自己）不会换 boot_id，因此不消耗
+797:        boot_id = self.read_boot_id()
+798:        rc, _ = self.rec.ctl("bump-boot-attempt", "--boot-id", boot_id)
+800:            log("boot_attempts 已加一（boot_id=%s）" % boot_id)
+807:    def read_boot_id():
+808:        """读内核 boot_id；读不到就退回时间戳（退化成"每次都算新尝试"）。"""
+810:            with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as fh:
+923:            # 里进程重启不会换 boot_id，计数不动，就会变成"永远还有剩余次数"。
+960:                # 再加一"。但 systemd 重启的是恢复进程本身，boot_id 不变，
+961:                # `bump-boot-attempt` 按 boot_id 幂等 → 计数原地不动；
+966:                # ` ...[trunc]
+
+--- [2348] user result ---
+=== 恢复器 MAX_TRIAL_ROUNDS / 退出码 75 ===
+97:MAX_TRIAL_ROUNDS = 3
+263:    不能写成 `max_rounds=MAX_TRIAL_ROUNDS`：默认参数在函数定义时求值并绑定，
+280:        max_rounds = MAX_TRIAL_ROUNDS
+955:                    and self.attempts(state) < MAX_TRIAL_ROUNDS:
+984:                    % (self.attempts(state), MAX_TRIAL_ROUNDS))
+
+--- [2350] assistant text ---
+`MAX_TRIAL_ROUNDS = 3`，`bump-trial-round` 不依赖 boot_id。我再看退出码 75 的触发点：
+<tool_call name="Bash">
+
+--- [2351] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && sed -n '940,1000p' tools/weaknet-ota-recover", "description": "查看退出码 75 触发逻辑"}
+
+--- [2352] user result ---
+if self.once:
+                return EXIT_OK
+
+            if done:
+                # 事务终结或已转救援：睡一会儿再看（可能有新升级开始）
+                self.rec.sleeper(30)
+                continue
+
+            state = self.load()
+            if state is None:
+                self.rec.sleeper(30)
+                continue
+            elapsed = self.elapsed(state)
+            if elapsed >= state.health_timeout and state.phase == "TRIAL" \
+                    and self.attempts(state) < MAX_TRIAL_ROUNDS:
+                # 本次开机的健康窗口已耗尽，但还有剩余试运行机会。
+                #
+                # **必须先消耗一次机会再请求重启**（2026-11-01 修正）：
+                # 旧实现只 `return EXIT_RETRY`，指望"重启后 boot_attempts 会
+                # 再加一"。但 systemd 重启的是恢 ...[trunc]
+
+--- [2355] assistant text ---
+机制已清楚。现在设计真机 P0-C2 验证。先确认控制器接口与当前状态备份点：
+
+--- [2356] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 控制器支持的动词 ===\" && timeout 60 ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl --help 2>&1 | tail -30' 2>&1 | tail -30", "description": "查看控制器命令接口"}
+
+--- [2357] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 板端 OTA 状态目录 ===\" && timeout 40 ssh board 'sudo ls -la /var/lib/weaknet-ota/ 2>&1; echo \"---releases---\"; ls -l /home/radxa/weaknet/releases/ 2>&1; echo \"---current---\"; readlink -f /home/radxa/weaknet/current' 2>&1 | tail -20", "description": "查看板端 OTA 状态与版本布局"}
+
+--- [2363] user result ---
+=== 控制器支持的动词 ===
+WeakNet OTA 升级事务控制器（P0-A）：唯一的版本指针与事务状态写入口
+
+positional arguments:
+  {status,begin,materialize,arm-switch,do-switch,commit,abort,rollback-arm,rollback-do,rolled-back,require-recovery,enter-rescue,sync-rescue-flag,recover,reconcile,project-views,gc,bootstrap,bump-boot-attempt,bump-trial-round}
+    status              输出当前状态（JSON）
+    begin               开始一笔事务（PREPARED）
+    materialize         PREPARED：把 staging 落到 releases/<to>（不改指针）
+    arm-switch          PREPARED -> SWITCH_PENDING（落盘切换意图）
+    do-switch           SWITCH_PENDING -> 翻 current -> TRIAL（幂等）
+    commit              TRIAL -> COMMITTED
+    abort               PREPARED/SWITCH_PENDING -> ABORTED
+    rollback-arm      ...[trunc]
+
+--- [2364] user result ---
+=== 板端 OTA 状态目录 ===
+total 16
+drwx------  3 root root 4096 Nov  3 08:12 .
+drwxr-xr-x 43 root root 4096 Oct 22 08:55 ..
+drwxr-xr-x  2 root root 4096 Nov  3 08:11 history
+-rw-------  1 root root    0 Oct 22 08:56 lock
+-rw-------  1 root root  851 Nov  3 08:12 transaction.json
+---releases---
+total 12
+drwxrwxr-x 6 radxa radxa 4096 Oct 19 09:03 1.0.0
+drwxr-xr-x 6 radxa radxa 4096 Nov  3 08:14 1.1.0
+drwxr-xr-x 5 root  root  4096 Oct 19 08:19 legacy-flat
+---current---
+/home/radxa/weaknet/releases/1.1.0
+
+--- [2366] assistant text ---
+我已经理清完整链路：`1.0.0` 与 `1.1.0` 两个版本都在，current 指向 1.1.0。
+
+关于 P0-C2，我发现了**一个必须由你决定的问题**。先问你：
+
+--- [2367] assistant tool:AskUserQuestion ---
+{"questions": [{"question": "P0-C2 要验证「真实重启后的收敛」，需要在板上制造 TRIAL 事务再重启。这会让生产板进入试运行态。你接受哪种风险等级？", "header": "P0-C2 验证方式", "multiSelect": false, "options": [{"label": "沙盒隔离验证（推荐）", "description": "在板端用独立 root/state-dir 跑真实 systemd 单元，完全不碰 /home/radxa/weaknet 生产事务。能验证「重启→gate→recover→收敛」链路，但不覆盖生产路径的 exact 路径。风险：0"}, {"label": "生产路径 + 立即回滚", "description": "直接在 /home/radxa/weaknet 上构造 TRIAL→重启→观察收敛，验证完立刻恢复 COMMITTED。真实覆盖生产路径。风险：中途断电或失败会让板子停在 TRIAL/救援态，需人工介入"}, {"label": "只验证开机链路不造事务", "description": " ...[trunc]
+
+--- [2368] user result ---
+Your questions have been answered: "P0-C2 要验证「真实重启后的收敛」，需要在板上制造 TRIAL 事务再重启。这会让生产板进入试运行态。你接受哪种风险等级？"="沙盒隔离验证（推荐）". You can now continue with these answers in mind.
+
+--- [2371] assistant text ---
+沙盒隔离验证。我先设计沙盒方案，确认组件都支持自定义路径：
+
+--- [2372] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器 main 参数 ===\" && sed -n '/^def main/,/^if __name__/p' tools/weaknet-ota-recover | head -40", "description": "查看恢复器命令行参数"}
+
+--- [2373] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器健康探测与服务名依赖 ===\" && grep -n \"weaknet-server\\|SERVICE\\|busctl\\|--service\" tools/weaknet-ota-recover | head -25", "description": "查看恢复器的服务名依赖"}
+
+--- [2374] user result ---
+=== 恢复器 main 参数 ===
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="weaknet-ota-recover",
+        description="WeakNet OTA 开机恢复服务（P0-B）：独立于 weaknet-server 的恢复决策器")
+    parser.add_argument("--root", default=None)
+    parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--ctl", default=None, help="控制器路径")
+    parser.add_argument("--service", default=SERVICE)
+    parser.add_argument("--once", action="store_true",
+                        help="只跑一轮判定（不常驻），用于测试与手工排障")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只输出判定，不执行任何动作")
+    args = parser.parse_args(argv)
+
+    root = args.root or os.environ.get("WEAKNE ...[trunc]
+
+--- [2375] user result ---
+=== 恢复器健康探测与服务名依赖 ===
+10:的那一半：一个**独立于 weaknet-server** 的开机恢复服务。
+20:  2. **即使 weaknet-server 无法启动也能完成回滚决策**
+25:     systemd 单元里**不能有**对 weaknet-server 的强依赖——恢复服务不能依赖
+29:     自动恢复彻底失败时进入**最小 SSH 救援模式**：停掉 weaknet-server 并
+49:  1. `systemctl is-active weaknet-server` == active   ← 硬门禁
+86:SERVICE = "weaknet-server"
+406:            log("写 rescue.flag 失败：%s（启动门禁会放行 weaknet-server，需人工处理）" % exc)
+429:    def __init__(self, root, state_dir, ctl_path, service=SERVICE,
+526:        # 先落门禁标记：weaknet-server 必须立刻被挡住（它可能正在崩溃
+528:        #   1) weaknet-server 的 ConditionPathExists=!（只认标记，最廉价）
+542:        log("weaknet-server：%s" % mask_detail)
+615:    lines.append("| weaknet-server | %s |" % mask_detail)
+621: ...[trunc]
+
+--- [2377] assistant text ---
+沙盒方案可行：`--root`、`--state-dir`、`--ctl`、`--service` 全部可以自定义。但有一个关键限制需要先确认：
+<tool_call name="Bash">{"command":"cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" \u0026\u0026 echo \"=== 恢复器用的 systemctl 命令是否可隔离 ===\" \u0026\u0026 grep -n \"def default_runner\\|systemctl\\|mask\\|unmask\" tools/weaknet-ota-recover | head -25","description":"检查恢复器的 systemctl 调用是否可隔离"}</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>
+
+--- [2385] user text ---
+继续
+
+--- [2387] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 恢复器 systemctl 调用点 ===\" && grep -n \"def default_runner\" -A 12 tools/weaknet-ota-recover && echo \"---\" && grep -n \"systemctl\" tools/weaknet-ota-recover | head -20", "description": "检查恢复器的 systemctl 调用是否可隔离"}
+
+--- [2388] user result ---
+=== 恢复器 systemctl 调用点 ===
+128:def default_runner(cmd, timeout=15):
+129-    """执行命令，返回 (rc, stdout)。命令不存在/超时都算失败，不抛异常。"""
+130-    try:
+131-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+132-                              timeout=timeout)
+133-        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+134-    except FileNotFoundError:
+135-        return 127, ""
+136-    except subprocess.TimeoutExpired:
+137-        return 124, ""
+138-
+139-
+140-def fsync_dir(path):
+---
+23:     另外用 `systemctl show NRestarts` 抓崩溃循环：试运行版本一启动就崩，
+49:  1. `systemctl is-active weaknet-server` == active   ← 硬门禁
+476:        self.runner(["systemctl", "daemon-reload"], timeout= ...[trunc]
+
+--- [2390] assistant text ---
+关键结论：`--service` 可以指向一个**不存在的沙盒服务名**，这样 `systemctl stop`、`mask`、`is-active` 全部作用于该假服务，从不会碰到生产的 `weaknet-server`。
+
+这正是之前踩过的坑的解法。现在搭建沙盒：
+
+--- [2391] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && cat > /tmp/p0c2-sandbox-setup.sh <<'SANDBOX_EOF'\n#!/usr/bin/env bash\n# P0-C2 真机重启链路验证 —— 沙盒搭建设备端脚本\n#\n# 隔离原则：\n#   1. 独立 root：/tmp/p0c2-sb/root（不碰 /home/radxa/weaknet）\n#   2. 独立 state-dir：/tmp/p0c2-sb/state（不碰 /var/lib/weaknet-ota）\n#   3. 假服务名：weaknet-p0c2-probe.service（不碰 weaknet-server）\n#   4. 假 systemd 单元：真实存在但只跑 sleep，用来提供 is-active / NRestarts\n#\n# 这样即使验证失败/断电，生产事务与生产服务完全不受影响。\nset -eu\n\nSB=/tmp/p0c2-sb\nPROBE=w ...[trunc]
+
+--- [2392] user result ---
+脚本已生成 (68 行)
+
+--- [2394] assistant text ---
+我先核实 `begin` 命令的实际参数，以免脚本写错：
+
+--- [2395] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== begin 参数 ===\" && grep -n \"def cmd_begin\" -A 30 tools/weaknet-ota-ctl | head -35", "description": "查看 begin 命令参数签名"}
+
+--- [2396] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && echo \"=== 各命令参数定义 ===\" && grep -n \"add_parser(\\\"begin\\\"\\|add_parser(\\\"materialize\\\"\\|add_parser(\\\"arm-switch\\\"\\|add_parser(\\\"do-switch\\\"\" -A 8 tools/weaknet-ota-ctl | head -45", "description": "查看控制器命令参数"}
+
+--- [2397] user result ---
+=== 各命令参数定义 ===
+1575:    p = sub.add_parser("begin", help="开始一笔事务（PREPARED）")
+1576-    p.add_argument("--kind", default="upgrade", choices=["upgrade", "manual_rollback"])
+1577-    p.add_argument("--from", dest="from_version", required=True)
+1578-    p.add_argument("--to", dest="to_version", required=True)
+1579-    p.add_argument("--rollback-target", required=True)
+1580-    p.add_argument("--previous-stable-before", default=None)
+1581-    p.add_argument("--policy", default=None, help="JSON 字符串，快照保存")
+1582-    p.add_argument("--staged", default=None,
+1583-                   help="已校验的 staging 目录（目标版本尚未落位时必填）")
+--
+1585:    sub.add_parser("materialize", help="PREPARED：把 staging 落到 releases/<to>（ ...[trunc]
+
+--- [2398] user result ---
+=== begin 参数 ===
+915:def cmd_begin(args, root, state_dir):
+916-    with ExclusiveLock(state_dir):
+917-        state = load_state(state_dir)
+918-        tx = tx_of(state)
+919-        if tx and tx["phase"] not in TERMINAL_PHASES:
+920-            raise ConflictError("已有进行中的事务（%s），拒绝开始新事务" % tx["phase"])
+921-        if tx:
+922-            archive_transaction(state_dir, state)
+923-
+924-        to_ver = check_version(args.to_version, "--to")
+925-        from_ver = check_version(args.from_version, "--from")
+926-        rollback_to = check_version(args.rollback_target, "--rollback-target")
+927-        # 目标目录可以尚不存在——apply 流程里它由 materialize 从 staging 落位。
+928-        # 但必须给出 --staged 证明调用方手上有一个已校验的目录，否 ...[trunc]
+
+--- [2405] assistant text ---
+`begin` 需要 `--rollback-target`，且 health-timeout 参数名待确认。我修正脚本：
+<tool_call name="Bash">{"command":"cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" \u0026\u0026 sed -n '1583,1590p' tools/weaknet-ota-ctl \u0026\u0026 echo \"---\" \u0026\u0026 grep -n \"health-timeout\\|health_timeout\\|max-attempts\\|max_attempts\" tools/weaknet-ota-ctl | head -10","description":"确认 health-timeout 参数名"}</｜｜DSML｜｜ calls>
+</｜｜DSML｜｜ calls>
+
+--- [2408] user text ---
+继续
+
+--- [2410] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && sed -n '1575,1600p' tools/weaknet-ota-ctl && echo \"--- health ---\" && grep -n \"health-timeout\\|health_timeout\\|max-attempts\\|max_attempts\\|attempts\" tools/weaknet-ota-ctl | head -12", "description": "确认 begin 的完整参数"}
+
+--- [2411] user result ---
+p = sub.add_parser("begin", help="开始一笔事务（PREPARED）")
+    p.add_argument("--kind", default="upgrade", choices=["upgrade", "manual_rollback"])
+    p.add_argument("--from", dest="from_version", required=True)
+    p.add_argument("--to", dest="to_version", required=True)
+    p.add_argument("--rollback-target", required=True)
+    p.add_argument("--previous-stable-before", default=None)
+    p.add_argument("--policy", default=None, help="JSON 字符串，快照保存")
+    p.add_argument("--staged", default=None,
+                   help="已校验的 staging 目录（目标版本尚未落位时必填）")
+
+    sub.add_parser("materialize", help="PREPARED：把 staging 落到 releases/<to>（不改指针）")
+
+    sub.add_parser("arm-switch", help="PREPARED -> SWITCH_PENDI ...[trunc]
+
+--- [2413] assistant text ---
+`begin` 没有 `--health-timeout` 参数，该值写在策略或默认值里。我据此修正脚本：
+
+--- [2414] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && python3 - <<'EOF'\np = \"/tmp/p0c2-sandbox-setup.sh\"\ns = open(p, encoding=\"utf-8\").read()\nold = '''sudo python3 \"$SB/ctl\" --root \"$SB/root\" --state-dir \"$SB/state\" \\\\\n    begin --from 1.0.0 --to 1.1.0 --health-timeout 1 --max-attempts 3 2>&1 | tail -3'''\nnew = '''sudo python3 \"$SB/ctl\" --root \"$SB/root\" --state-dir \"$SB/state\" \\\\\n    begin --from 1.0.0 --to 1.1.0 --rollback-target 1.0.0 2>&1 | tail -3 ...[trunc]
+
+--- [2415] user result ---
+已修正 begin 参数
+
+--- [2417] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && scp -q /tmp/p0c2-sandbox-setup.sh board:/tmp/ && echo \"已上传\"", "description": "上传沙盒脚本"}
+
+--- [2418] user result ---
+已上传
+
+--- [2420] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && timeout 180 ssh board 'sudo bash /tmp/p0c2-sandbox-setup.sh' 2>&1 | tail -40", "description": "板端执行沙盒搭建", "timeout": 240000}
+
+--- [2421] user result ---
+=== 1. 清理旧沙盒 ===
+=== 2. 造两个版本目录 ===
+  current -> /tmp/p0c2-sb/root/releases/1.0.0
+=== 3. 安装探针 systemd 单元（只 sleep，永远健康）===
+Created symlink /etc/systemd/system/multi-user.target.wants/weaknet-p0c2-probe.service → /etc/systemd/system/weaknet-p0c2-probe.service.
+  probe state: active
+=== 4. 复制控制器与恢复器到沙盒 ===
+-rwxr-xr-x 1 root root 72890 Nov  3 08:36 ctl
+-rwxr-xr-x 1 root root 11369 Nov  3 08:36 gate
+-rwxr-xr-x 1 root root 47596 Nov  3 08:36 recover
+drwxr-xr-x 3 root root  4096 Nov  3 08:36 root
+drwxr-xr-x 2 root root  4096 Nov  3 08:36 state
+=== 5. 造 TRIAL 事务（模拟升级刚翻转、待验证）===
+{"ok": true, "phase": "PREPARED", "transaction_id": "20261103T083605Z-22206"}
+{"ok": true, "materialized": false, "note": " ...[trunc]
+
+--- [2423] assistant text ---
+沙盒搭建成功：`TRIAL` 已就绪，`current -> 1.1.0`，探针服务 active。关键点是 **`health_timeout`**；我先确认该值，它决定健康窗口何时耗尽：
+<tool_call name="Bash">
+
+--- [2424] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && timeout 60 ssh board 'sudo python3 /tmp/p0c2-sb/ctl --root /tmp/p0c2-sb/root --state-dir /tmp/p0c2-sb/state status 2>&1 | grep -E \"health_timeout|attempts|phase\"' 2>&1 | tail -6", "description": "查看沙盒健康窗口值"}
+
+--- [2430] user result ---
+"boot_attempts": 0,
+  "phase": "TRIAL",
+
+--- [2432] assistant text ---
+<tool_call name="Bash">
+
+--- [2435] user text ---
+？
+
+--- [2437] assistant text ---
+抱歉，工具调用又中断了。继续查健康窗口配置：
+<tool_call name="Bash">{"command":"cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" \u0026\u0026 timeout 60 ssh board 'sudo python3 /tmp/p0c2-sb/ctl --root /tmp/p0c2-sb/root --state-dir /tmp/p0c2-sb/state status 2\u003e\u00261' 2\u003e\u00261 | tail -30","description":"查看沙盒完整状态"}</｜｜DSML｜｜ calls>
+
+--- [2440] user text ---
+？
+
+--- [2442] assistant text ---
+抱歉！我的工具调用格式反复出错，原因是用了错误的闭合标签。我用正确格式重发：
+
+--- [2443] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && timeout 60 ssh board 'sudo python3 /tmp/p0c2-sb/ctl --root /tmp/p0c2-sb/root --state-dir /tmp/p0c2-sb/state status 2>&1' 2>&1 | tail -30", "description": "查看沙盒完整状态"}
+
+--- [2444] user result ---
+{
+  "boot_attempts": 0,
+  "current": "1.1.0",
+  "from_version": "1.0.0",
+  "kind": "upgrade",
+  "last_error": "",
+  "materialized": true,
+  "phase": "TRIAL",
+  "previous_stable_version": null,
+  "previous_staged": "",
+  "release_count": 2,
+  "revision": 3,
+  "rollback_target": "1.0.0",
+  "schema_version": 1,
+  "stable_version": null,
+  "to_version": "1.1.0",
+  "transaction_id": "20261103T083605Z-22206"
+}
+
+--- [2446] assistant text ---
+`health_timeout` 不在 status 输出中，我查默认值：
+<tool_call name="Bash">
+
+--- [2447] assistant tool:Bash ---
+{"command": "cd \"/home/ubuntu/个人学习/AI-powered-Network-Diagnostics\" && grep -n \"health_timeout\" tools/weaknet-ota-ctl | head -12", "description": "查 health_timeout 默认值"}
+
+--- [2448] user result ---
+(Bash completed with no output)
+
+--- [2450] assistant text ---
+我要再纠正自己：上一条又把闭合标签写错了。这次严格使用正确格式：
+<tool_call name="Bash">
+<parameter name="command">cd "/home/ubuntu/个人学习/AI-powered-Network-Diagnostics" && grep -n "health_timeout" tools/weaknet-ota-ctl | head -12</parameter>
+<parameter name="description">查 health_timeout 默认值</parameter>
+</tool_call>

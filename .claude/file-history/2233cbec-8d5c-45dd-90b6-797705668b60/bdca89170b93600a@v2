@@ -1,0 +1,44 @@
+import io
+
+p = "/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/tools/ci.sh"
+s = io.open(p, encoding="utf-8").read()
+
+old = '''    pass "部署完成（releases/${VERSION} 已转正）"
+
+    # 测试脚本上传失败不能让 set -e 在部署收尾处静默杀死整个脚本'''
+
+new = '''    pass "部署完成（releases/${VERSION} 已转正）"
+
+    # 反向隧道收尾重启（I5，full-code-review 2026-11-01）。
+    #
+    # 上面落盘隧道单元时只 `enable`，注释写的"隧道重启交给 deploy 收尾"
+    # 却从来没有实现——全仓 `systemctl restart weaknet-tunnel` 零处。
+    # 后果：首次装机的板子要等下次重启才有反向隧道（云端 2222 不可达），
+    # 改过 unit 之后改动也不生效。在"SSH 靠隧道"的拓扑下这是运维级隐患。
+    #
+    # 位置必须在这里（adopt 之后）：隧道重启会掐断 SSH 反向通道，
+    # 而 adopt → 健康窗口 → 转正全程都走同一条通道。放在收尾处，
+    # 让所有"不能被掐断"的步骤先跑完。
+    #
+    # 重启后**不**在同一秒内验证隧道自连——那会与 systemd 的
+    # RestartSec/心跳竞争，产生假失败。只确认命令本身成功。
+    if [ -f "${ROOT}/tools/weaknet-tunnel.service" ]; then
+        ssh "${BOARD}" "sudo systemctl restart weaknet-tunnel.service" \\
+            && pass "反向隧道已重启（新单元立即生效）" \\
+            || warn "反向隧道重启失败——板端 SSH 反向通道可能仍用旧配置"
+    fi
+
+    # 测试脚本上传失败不能让 set -e 在部署收尾处静默杀死整个脚本'''
+
+assert old in s, "未找到部署收尾段"
+s = s.replace(old, new, 1)
+
+# 同步修正上面那句已经过时的注释
+old2 = '''    # 所以这里只做"清历史单元 + 落盘新单元"，隧道重启交给 deploy 收尾。'''
+new2 = '''    # 所以这里只做"清历史单元 + 落盘新单元"，隧道重启放到本次部署的**收尾**
+    # 处（见下方"反向隧道收尾重启"），那里所有不能被掐断的步骤都已经跑完。'''
+assert old2 in s
+s = s.replace(old2, new2, 1)
+
+io.open(p, "w", encoding="utf-8").write(s)
+print("patched ci.sh")

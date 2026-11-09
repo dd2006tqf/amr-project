@@ -1,0 +1,679 @@
+===== launch/bringup.launch.py =====
+     1	from launch import LaunchDescription
+     2	from launch_ros.actions import Node
+     3	
+     4	def generate_launch_description():
+     5	    chassis_driver_node = Node(
+     6	        package='amr_dispatcher_ros',
+     7	        executable='chassis_driver_node',
+     8	        name='chassis_driver_node',
+     9	        output='screen',
+    10	        parameters=[{
+    11	            'serial_device': '/dev/ttyUSB0',
+    12	            'serial_baud': 115200,
+    13	            'poll_rate_hz': 50.0,
+    14	            'health_rate_hz': 2.0,
+    15	        }]
+    16	    )
+    17	
+    18	    safety_gate_node = Node(
+    19	        package='amr_dispatcher_ros',
+    20	        executable='safety_gate_node',
+    21	        name='safety_gate_node',
+    22	        output='screen'
+    23	    )
+    24	
+    25	    link_health_pub = Node(
+    26	        package='amr_dispatcher_ros',
+    27	        executable='link_health_publisher',
+    28	        name='link_health_publisher',
+    29	        output='screen'
+    30	    )
+    31	
+    32	    return LaunchDescription([
+    33	        chassis_driver_node,
+    34	        safety_gate_node,
+    35	        link_health_pub,
+    36	    ])
+===== launch/core_only.launch.py =====
+     1	from ament_index_python.packages import get_package_share_directory
+     2	import os
+     3	from launch import LaunchDescription
+     4	from launch_ros.actions import LifecycleNode, Node
+     5	from launch_ros.event_handlers import OnStateTransition
+     6	from launch_ros.events.lifecycle import ChangeState
+     7	from launch.actions import RegisterEventHandler, EmitEvent
+     8	import lifecycle_msgs.msg
+     9	
+    10	def generate_launch_description():
+    11	    # B7：与 full_system 同源的参数文件——core_only 用内联覆盖
+    12	    # （容量 64 / 并发 2），仍走 yaml + 覆盖的读取路径
+    13	    ros_share = get_package_share_directory('amr_dispatcher_ros')
+    14	    dispatcher_yaml = os.path.join(ros_share, 'config', 'dispatcher.yaml')
+    15	    stations_file_share = os.path.join(ros_share, 'config', 'stations.yaml')
+    16	    safety_yaml = os.path.join(ros_share, 'config', 'safety.yaml')
+    17	
+    18	    dispatcher_node = LifecycleNode(
+    19	        package='amr_dispatcher_ros',
+    20	        executable='dispatcher_node',
+    21	        name='dispatcher_node',
+    22	        namespace='',
+    23	        output='screen',
+    24	        parameters=[
+    25	            dispatcher_yaml,
+    26	            {
+    27	                # core_only 尺寸更小：容量/并发收紧、站点表 share 绝对路径
+    28	                'queue_capacity': 64,
+    29	                'max_active_missions': 2,
+    30	                'stations_file': stations_file_share,
+    31	            },
+    32	        ]
+    33	    )
+    34	
+    35	    # B7 补齐：core_only 之前缺 configure/activate 事件，节点永远停在 unconfigured。
+    36	    # 复用 full_system 的同款模式：触发 configure，成功后 on_state_transition -> activate。
+    37	    configure_event = EmitEvent(
+    38	        event=ChangeState(
+    39	            lifecycle_node_matcher=lambda node: node == dispatcher_node,
+    40	            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+    41	        )
+    42	    )
+    43	
+    44	    activate_event = RegisterEventHandler(
+    45	        OnStateTransition(
+    46	            target_lifecycle_node=dispatcher_node,
+    47	            goal_state='inactive',
+    48	            entities=[
+    49	                EmitEvent(
+    50	                    event=ChangeState(
+    51	                        lifecycle_node_matcher=lambda node: node == dispatcher_node,
+    52	                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+    53	                    )
+    54	                )
+    55	            ],
+    56	        )
+    57	    )
+    58	
+    59	    safety_gate_node = Node(
+    60	        package='amr_dispatcher_ros',
+    61	        executable='safety_gate_node',
+    62	        name='safety_gate_node',
+    63	        output='screen',
+    64	        parameters=[safety_yaml]
+    65	    )
+    66	
+    67	    return LaunchDescription([
+    68	        dispatcher_node,
+    69	        configure_event,
+    70	        activate_event,
+    71	        safety_gate_node,
+    72	    ])
+===== launch/full_system.launch.py =====
+     1	import os
+     2	from ament_index_python.packages import get_package_share_directory
+     3	from launch import LaunchDescription
+     4	from launch_ros.actions import LifecycleNode, Node
+     5	from launch_ros.event_handlers import OnStateTransition
+     6	from launch_ros.events.lifecycle import ChangeState
+     7	from launch.actions import (DeclareLaunchArgument, RegisterEventHandler, EmitEvent,
+     8	                            OpaqueFunction)
+     9	from launch.conditions import IfCondition
+    10	from launch.substitutions import LaunchConfiguration, PythonExpression
+    11	from launch_ros.parameter_descriptions import ParameterValue
+    12	import lifecycle_msgs.msg
+    13	
+    14	def launch_config_value(context, name):
+    15	    """读取 launch 参数的字符串值（OpaqueFunction 上下文用）。"""
+    16	    return context.perform_substitution(LaunchConfiguration(name))
+    17	
+    18	
+    19	def generate_launch_description():
+    20	    # 可覆盖参数，默认值与改动前保持一致，不影响本机开发
+    21	    serial_device = LaunchConfiguration('serial_device')
+    22	    health_rate_hz = LaunchConfiguration('health_rate_hz')
+    23	    # Task 8：可选地图导入链路（默认关闭，完全向后兼容）
+    24	    use_map_server = LaunchConfiguration('use_map_server')
+    25	    map_yaml = LaunchConfiguration('map_yaml')
+    26	    markers_file = LaunchConfiguration('markers_file')
+    27	    # C1：站点目录路径可覆盖，默认值随 use_map_server 在静态/生成目录间切换
+    28	    stations_file = LaunchConfiguration('stations_file')
+    29	    # Task 4：VDA 5050 MQTT 网关（默认关闭，完全向后兼容）
+    30	    use_vda5050 = LaunchConfiguration('use_vda5050')
+    31	    mqtt_broker_host = LaunchConfiguration('mqtt_broker_host')
+    32	    mqtt_port = LaunchConfiguration('mqtt_port')
+    33	    # M5：网关身份与协议参数必须可从 launch 暴露——两实例同 serial 会撞 client_id
+    34	    manufacturer = LaunchConfiguration('manufacturer')
+    35	    serial_number = LaunchConfiguration('serial_number')
+    36	    protocol_version = LaunchConfiguration('protocol_version')
+    37	    heartbeat_ms = LaunchConfiguration('heartbeat_ms')
+    38	    # Task 5：受管 VDA 5050 车辆列表（逗号分隔，默认空 = 功能关闭）
+    39	    vda5050_vehicles = LaunchConfiguration('vda5050_vehicles')
+    40	    # P0.6 / A4：多车并发的 local_sim 车辆清单（逗号分隔；空 = 单车兼容模式）
+    41	    vehicle_ids = LaunchConfiguration('vehicle_ids')
+    42	    # 多车底盘串口清单（逗号分隔，与 vehicle_ids 一一对应；空 = 沿用 serial_device）
+    43	    serial_devices = LaunchConfiguration('serial_devices')
+    44	    # 相位 11：进程守护（节点崩溃自动重启）。置 false 恢复改动前的"死了就一直死"。
+    45	    respawn_enabled = LaunchConfiguration('respawn_enabled')
+    46	    respawn_delay = LaunchConfiguration('respawn_delay')
+    47	    # 相位 11：在线拓扑叠加层（施工区/单向/临时站点）的独立持久化文件。
+    48	    # 必须是**绝对路径**：HandleMapUpload 写的是相对 config/generated/stations.yaml，
+    49	    # 叠加层再走相对路径就会踩同一个 cwd 陷阱（容器 working_dir 变了就写丢）。
+    50	    topology_overlay_file = LaunchConfiguration('topology_overlay_file')
+    51	
+    52	    def supervision():
+    53	        """全节点共用的守护参数。
+    54	
+    55	        ExecuteProcess 接受 respawn / respawn_delay（LifecycleNode 经 **kwargs 透传，
+    56	        已在 jazzy 镜像内实测）。respawn_max_retries 保持默认（无限重试）：崩溃循环
+    57	        由日志与 /metrics 的 amr_ready 暴露，人工设上限只会让第三次崩溃变成永久停机。
+    58	        """
+    59	        return {
+    60	            'respawn': ParameterValue(
+    61	                PythonExpression(["'", respawn_enabled, "'.lower() "
+    62	                                  "in ('true', '1', 'yes', 'on')"]),
+    63	                value_type=bool),
+    64	            'respawn_delay': ParameterValue(respawn_delay, value_type=float),
+    65	        }
+    66	
+    67	    declared_arguments = [
+    68	        DeclareLaunchArgument(
+    69	            'serial_device',
+    70	            default_value='/dev/ttyUSB0',
+    71	            description='底盘串口设备路径（服务器部署时由入口脚本传入 PTY 路径）',
+    72	        ),
+    73	        DeclareLaunchArgument(
+    74	            'health_rate_hz',
+    75	            default_value='5.0',
+    76	            description='底盘链路健康/心跳发布频率。安全门的 heartbeat_timeout_ms '
+    77	                        '默认 500ms，5Hz 留足 2.5 倍心跳余量避免看门狗误触发（B1）。',
+    78	        ),
+    79	        DeclareLaunchArgument(
+    80	            'use_map_server',
+    81	            default_value='false',
+    82	            description='为 true 时拉起 nav2_map_server 发布 /map 并启动 map_ingest_node '
+    83	                        '自动生成 stations.yaml 与拓扑 Marker（默认 false，保持向后兼容）。',
+    84	        ),
+    85	        DeclareLaunchArgument(
+    86	            'map_yaml',
+    87	            default_value='',
+    88	            description='nav2 map_server 的地图 yaml 路径（use_map_server:=true 时必填，'
+    89	                        '指向含 map.yaml/map.pgm 的地图包目录内 yaml 文件）。',
+    90	        ),
+    91	        DeclareLaunchArgument(
+    92	            'markers_file',
+    93	            default_value='',
+    94	            description='站点语义 anchors yaml（id/type/x/y/yaw 列表），供 map_ingest_node '
+    95	                        '吸附生成业务站点；为空时 map_ingest_node 等待有效文件。',
+    96	        ),
+    97	        DeclareLaunchArgument(
+    98	            'use_vda5050',            default_value='false',
+    99	            description='为 true 时拉起 vda5050_gateway_node（VDA 5050 <-> ROS 2 MQTT 网关，'
+   100	                        '订阅 uagv/v2/+/+/{state,connection} 并发布 /fleet/* 话题）；'
+   101	                        '默认 false 保持向后兼容。',
+   102	        ),
+   103	        DeclareLaunchArgument(
+   104	            'vda5050_vehicles',
+   105	            default_value='',
+   106	            description='受管 VDA 5050 小车清单（逗号分隔 vehicle_id，如 agv_001,agv_002）。'
+   107	                        'dispatcher_node 据此订阅 /fleet/{vid}/{state,online}，'
+   108	                        '启用 Task 5 逐段路权动态释放与断链锁保留守卫；空 = 关闭（现网行为）。',
+   109	        ),
+   110	        DeclareLaunchArgument(
+   111	            'vehicle_ids',
+   112	            default_value='',
+   113	            description='P0.6 多车并发的 local_sim 车辆清单（逗号分隔 vehicle_id，如 amr_01,amr_02）。'
+   114	                        '非空时为每台车各起一组 path_tracker/safety_gate/chassis，'
+   115	                        '话题按 /plan/{vid}、/odom/{vid}、/tracking/error/{vid} 隔离；'
+   116	                        '空 = 单车兼容模式（话题名逐字不变）。',
+   117	        ),
+   118	        DeclareLaunchArgument(
+   119	            'serial_devices',
+   120	            default_value='',
+   121	            description='多车底盘串口清单（逗号分隔，与 vehicle_ids 一一对应）。'
+   122	                        '为空时所有车沿用 serial_device 参数（单机/仿真场景）。',
+   123	        ),
+   124	        DeclareLaunchArgument(
+   125	            'mqtt_broker_host',
+   126	            default_value='127.0.0.1',
+   127	            description='VDA 5050 网关连接的 MQTT Broker 地址（容器部署可传 broker 容器名）。',
+   128	        ),        DeclareLaunchArgument(
+   129	            'mqtt_port',
+   130	            default_value='1883',
+   131	            description='VDA 5050 网关连接的 MQTT Broker 端口。',
+   132	        ),
+   133	        DeclareLaunchArgument(
+   134	            'manufacturer',
+   135	            default_value='RobotManufacturer',
+   136	            description='VDA 5050 网关身份 manufacturer：决定 MQTT topic 前缀与入站'
+   137	                        '消息厂商匹配；多网关同机部署时各实例必须不同（M5）。',
+   138	        ),
+   139	        DeclareLaunchArgument(
+   140	            'serial_number',
+   141	            default_value='default',
+   142	            description='VDA 5050 网关 serialNumber：参与 client_id'
+   143	                        '（amr_dispatcher_gateway_{serial}）与自身心跳过滤，'
+   144	                        '两实例取值相同会互相顶掉 MQTT 连接（M5）。',
+   145	        ),
+   146	        DeclareLaunchArgument(
+   147	            'protocol_version',
+   148	            default_value='v2',
+   149	            description='VDA 5050 协议版本：v2 -> uagv/v2 topic 前缀，'
+   150	                        'v3 -> vda5050/v3 topic 前缀。',
+   151	        ),
+   152	        DeclareLaunchArgument(
+   153	            'heartbeat_ms',
+   154	            default_value='5000',
+   155	            description='网关 connection 心跳（retained ONLINE）发布周期，毫秒。',
+   156	        ),
+   157	        DeclareLaunchArgument(
+   158	            'respawn_enabled',
+   159	            default_value='true',
+   160	            description='节点崩溃后自动重启（进程守护）。置 false 恢复相位 11 之前的'
+   161	                        '行为（节点死了就一直是死的），仅用于对照实验与故障演练。',
+   162	        ),
+   163	        DeclareLaunchArgument(
+   164	            'respawn_delay',
+   165	            default_value='2.0',
+   166	            description='重启前等待秒数。给 DDS 一点时间回收同名的旧参与者，'
+   167	                        '也避免崩溃循环把日志刷爆。',
+   168	        ),
+   169	        DeclareLaunchArgument(
+   170	            'topology_overlay_file',
+   171	            default_value='',
+   172	            description='运行时拓扑叠加层（临时施工区/单向/临时站点）的持久化文件绝对路径。'
+   173	                        '空 = 功能关闭（现网行为）。生产建议放在 config/generated/ 下的'
+   174	                        '独立文件，绝不与 map_ingest 生成的 stations.yaml 同路径。',
+   175	        ),
+   176	    ]
+   177	
+   178	    # B7：节点参数文件集中放 share/amr_dispatcher_ros/config/，launch 只负责注入；
+   179	    # 字典条目叠在 yaml 之后，方便运行时按 LaunchConfiguration 覆盖。
+   180	    ros_share = get_package_share_directory('amr_dispatcher_ros')
+   181	    stations_file_share = os.path.join(ros_share, 'config', 'stations.yaml')
+   182	    dispatcher_yaml = os.path.join(ros_share, 'config', 'dispatcher.yaml')
+   183	    chassis_yaml = os.path.join(ros_share, 'config', 'chassis.yaml')
+   184	    safety_yaml = os.path.join(ros_share, 'config', 'safety.yaml')
+   185	    # 相位 11：网关参数集中到文件（探针阈值 / 告警 webhook / 拓扑操作超时）。
+   186	    # 全部新参数默认关闭或取合理值，因此行为与改动前一致；
+   187	    # port 仍由下方字典条目覆盖，保持 8080 这个对外契约不变。
+   188	    rest_gateway_yaml = os.path.join(ros_share, 'config', 'rest_gateway.yaml')
+   189	    # Task 8：map_ingest_node 的生成产物目录（节点负责 create_directories，
+   190	    # tmp+rename 原子写出后由 StationCatalogReloader 按 mtime 热重载）。
+   191	    generated_stations_share = os.path.join(ros_share, 'config', 'generated', 'stations.yaml')
+   192	
+   193	    # C1：stations_file 默认值随 use_map_server 切换——开启地图导入后，调度与
+   194	    # 可视化必须监听 map_ingest 的生成目录，否则 StationCatalogReloader 一直
+   195	    # 盯着旧的静态 config/stations.yaml，生成链路与调度链路脱节。
+   196	    # 判定与 IfCondition 同款布尔词表，保证 use_map_server:=1/True 等写法一致。
+   197	    stations_file_default = PythonExpression([
+   198	        "'", generated_stations_share, "' if str('", use_map_server,
+   199	        "').lower() in ('true', '1', 'yes', 'on') else '", stations_file_share, "'",
+   200	    ])
+   201	    declared_arguments.append(
+   202	        DeclareLaunchArgument(
+   203	            'stations_file',
+   204	            default_value=stations_file_default,
+   205	            description='站点目录 YAML 路径。默认 use_map_server:=true 时指向 '
+   206	                        'config/generated/stations.yaml（map_ingest 生成物，闭环热重载），'
+   207	                        '否则指向静态 config/stations.yaml；可显式覆盖。',
+   208	        )
+   209	    )
+   210	
+   211	    dispatcher_node = LifecycleNode(
+   212	        package='amr_dispatcher_ros',
+   213	        executable='dispatcher_node',
+   214	        name='dispatcher_node',
+   215	        namespace='',
+   216	        output='screen',
+   217	        parameters=[
+   218	            dispatcher_yaml,
+   219	            # stations_file 用 share 绝对路径：摆脱 colcon 工作区 cwd 依赖；
+   220	            # C1：默认随 use_map_server 指向 map_ingest 生成目录（见上方参数声明）。
+   221	            {'stations_file': stations_file},
+   222	            # Task 5：受管小车清单透传（空 = 逐段解锁/断链守卫关闭）
+   223	            {'vda5050_vehicles': ParameterValue(vda5050_vehicles, value_type=str)},
+   224	            # P0.6 / A4：local_sim 车辆清单（空 = 单车兼容模式，话题名逐字不变）
+   225	            {'vehicle_ids': ParameterValue(vehicle_ids, value_type=str)},
+   226	            # 相位 11：拓扑叠加层文件（空 = 在线拓扑热生效关闭，行为与改动前一致）
+   227	            {'topology_overlay_file': ParameterValue(topology_overlay_file, value_type=str)},
+   228	        ],
+   229	        # 相位 11：重生后节点回到 unconfigured；launch 的 CONFIGURE/ACTIVATE
+   230	        # 只发一次，二次提拉由 lifecycle_coordinator_node（auto_bringup，500ms
+   231	        # 轮询 /dispatcher_node/get_state）完成——协调器自己也在 respawn 名单里，
+   232	        # 所以"调度器自愈依赖协调器存活"这条依赖必须有守护兜底。
+   233	        **supervision(),
+   234	    )
+   235	
+   236	    # 声明自动触发 configure 事件
+   237	    configure_event = EmitEvent(
+   238	        event=ChangeState(
+   239	            lifecycle_node_matcher=lambda node: node == dispatcher_node,
+   240	            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+   241	        )
+   242	    )
+   243	
+   244	    # 当 configure 成功后自动触发 activate 事件
+   245	    activate_event = RegisterEventHandler(
+   246	        OnStateTransition(
+   247	            target_lifecycle_node=dispatcher_node,
+   248	            goal_state='inactive',
+   249	            entities=[
+   250	                EmitEvent(
+   251	                    event=ChangeState(
+   252	                        lifecycle_node_matcher=lambda node: node == dispatcher_node,
+   253	                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+   254	                    )
+   255	                )
+   256	            ],
+   257	        )
+   258	    )
+   259	
+   260	    # 单车兼容模式专用节点：仅当 vehicle_ids 为空时启用。
+   261	    # 多车并发时由 _multi_vehicle_nodes() 逐车起同名节点（namespace 隔离）。
+   262	    single_vehicle_only = IfCondition(PythonExpression([
+   263	        "'", vehicle_ids, "' == ''",
+   264	    ]))
+   265	
+   266	    safety_gate_node = Node(
+   267	        package='amr_dispatcher_ros',
+   268	        executable='safety_gate_node',
+   269	        name='safety_gate_node',
+   270	        output='screen',
+   271	        condition=single_vehicle_only,
+   272	        parameters=[safety_yaml],
+   273	        **supervision(),
+   274	    )
+   275	
+   276	    chassis_driver_node = Node(
+   277	        package='amr_dispatcher_ros',
+   278	        executable='chassis_driver_node',
+   279	        name='chassis_driver_node',
+   280	        output='screen',
+   281	        condition=single_vehicle_only,
+   282	        parameters=[
+   283	            chassis_yaml,
+   284	            {
+   285	                # LaunchConfiguration 产出字符串，需显式声明为 double 以免参数类型不匹配；
+   286	                # serial_device 同理保留 CLI 覆盖位。
+   287	                'serial_device': serial_device,
+   288	                'health_rate_hz': ParameterValue(health_rate_hz, value_type=float),
+   289	            },
+   290	        ],
+   291	        **supervision(),
+   292	    )
+   293	
+   294	    path_tracker_node = Node(
+   295	        package='amr_dispatcher_ros',
+   296	        executable='path_tracker_node',
+   297	        name='path_tracker_node',
+   298	        output='screen',
+   299	        condition=single_vehicle_only,
+   300	        parameters=[{
+   301	            'controller_type': 'pure_pursuit',
+   302	            'lookahead_distance': 0.6,
+   303	            'target_speed': 0.5,
+   304	            'control_rate_hz': 20.0,
+   305	        }],
+   306	        **supervision(),
+   307	    )
+   308	
+   309	    # B3：navigate_sequence_bridge_node 入 full_system——/navigate_sequence action
+   310	    # 由 bridge 提供，dispatcher 的 navigation_backend:=action 才能接通。
+   311	    navigate_sequence_bridge_node = Node(
+   312	        package='amr_dispatcher_ros',
+   313	        executable='navigate_sequence_bridge_node',
+   314	        name='navigate_sequence_bridge_node',
+   315	        output='screen',
+   316	        parameters=[{
+   317	            'use_nav2': False,
+   318	            'nav2_action_name': '/navigate_to_pose',
+   319	            'plan_topic': '/plan',
+   320	        }],
+   321	        **supervision(),
+   322	    )
+   323	
+   324	    rest_gateway_parameters = []
+   325	    if os.path.exists(rest_gateway_yaml):
+   326	        rest_gateway_parameters.append(rest_gateway_yaml)
+   327	    rest_gateway_parameters.append({'port': 8080})
+   328	
+   329	    rest_gateway_node = Node(
+   330	        package='amr_dispatcher_tools',
+   331	        executable='rest_gateway',
+   332	        name='rest_gateway_node',
+   333	        output='screen',
+   334	        parameters=rest_gateway_parameters,
+   335	        **supervision(),
+   336	    )
+   337	
+   338	    dispatcher_visualizer_node = Node(
+   339	        package='amr_dispatcher_ros',
+   340	        executable='dispatcher_visualizer_node',
+   341	        name='dispatcher_visualizer_node',
+   342	        output='screen',
+   343	        parameters=[{
+   344	            'frame_id': 'map',
+   345	            'marker_topic': '/dispatcher/markers',
+   346	            # 与 dispatcher 一致：stations_file 用 share 绝对路径（B7），
+   347	            # 且 C1 下默认随 use_map_server 指向生成目录。
+   348	            'stations_file': stations_file,
+   349	        }],
+   350	        **supervision(),
+   351	    )
+   352	
+   353	    lifecycle_coordinator_node = Node(
+   354	        package='amr_dispatcher_ros',
+   355	        executable='lifecycle_coordinator_node',
+   356	        name='lifecycle_coordinator_node',
+   357	        output='screen',
+   358	        parameters=[{
+   359	            'auto_bringup': True,
+   360	            'check_period_ms': 500
+   361	        }],
+   362	        **supervision(),
+   363	    )
+   364	
+   365	    # ---- Task 8：可选地图导入链路（use_map_server:=true 时启用，默认关闭） ----
+   366	    # nav2_map_server 按官方格式解析 map.yaml/map.pgm 并以 latched 语义发布 /map。
+   367	    map_server_node = LifecycleNode(
+   368	        package='nav2_map_server',
+   369	        executable='map_server',
+   370	        name='map_server',
+   371	        namespace='',
+   372	        output='screen',
+   373	        condition=IfCondition(use_map_server),
+   374	        parameters=[{
+   375	            'yaml_filename': map_yaml,
+   376	            'topic_name': 'map',
+   377	            'frame_id': 'map',
+   378	        }],
+   379	        # 重生后的 map_server 同样回到 unconfigured；下方的 CONFIGURE/ACTIVATE
+   380	        # 只在首启触发一次。地图链路属于可选功能，重生后不自动提拉（保持现状），
+   381	        # 人工 `ros2 lifecycle set /map_server configure/activate` 即可，写在此处备查。
+   382	        **supervision(),
+   383	    )
+   384	
+   385	    map_server_configure_event = EmitEvent(
+   386	        condition=IfCondition(use_map_server),
+   387	        event=ChangeState(
+   388	            lifecycle_node_matcher=lambda node: node == map_server_node,
+   389	            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+   390	        )
+   391	    )
+   392	
+   393	    map_server_activate_event = RegisterEventHandler(
+   394	        condition=IfCondition(use_map_server),
+   395	        event_handler=OnStateTransition(
+   396	            target_lifecycle_node=map_server_node,
+   397	            goal_state='inactive',
+   398	            entities=[
+   399	                EmitEvent(
+   400	                    event=ChangeState(
+   401	                        lifecycle_node_matcher=lambda node: node == map_server_node,
+   402	                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+   403	                    )
+   404	                )
+   405	            ],
+   406	        )
+   407	    )
+   408	
+   409	    # map_ingest_node：订阅 /map，跑核心库算法流水线，原子写出
+   410	    # share/config/generated/stations.yaml 并发布 RViz 拓扑 Marker。
+   411	    map_ingest_node = Node(
+   412	        package='amr_dispatcher_ros',
+   413	        executable='map_ingest_node',
+   414	        name='map_ingest_node',
+   415	        namespace='',
+   416	        output='screen',
+   417	        condition=IfCondition(use_map_server),
+   418	        parameters=[{
+   419	            'map_topic': '/map',
+   420	            'markers_file': markers_file,
+   421	            'output_stations_file': generated_stations_share,
+   422	            'publish_markers': True,
+   423	            'marker_topic': '/dispatcher/topology_markers',
+   424	        }],
+   425	        **supervision(),
+   426	    )
+   427	
+   428	    # ---- Task 4：VDA 5050 MQTT 网关（use_vda5050:=true 时启用，默认关闭） ----
+   429	    # 薄壳网关：MQTT <-> ROS 2 话题转换；安全铁律——在线/离线只翻转
+   430	    # /fleet/{vehicle_id}/online，绝不释放路权锁（锁保留归调度核心，Spec §3）。
+   431	    vda5050_gateway_node = Node(
+   432	        package='amr_dispatcher_ros',
+   433	        executable='vda5050_gateway_node',
+   434	        name='vda5050_gateway_node',
+   435	        namespace='',
+   436	        output='screen',
+   437	        condition=IfCondition(use_vda5050),
+   438	        parameters=[{
+   439	            # 节点参数与启动门控同源，保证 use_vda5050:=true/false 语义一致
+   440	            'use_vda5050': ParameterValue(use_vda5050, value_type=bool),
+   441	            'mqtt_broker_host': mqtt_broker_host,
+   442	            'mqtt_port': ParameterValue(mqtt_port, value_type=int),
+   443	            # M5：身份/协议参数透传（默认与节点内默认值一致，保持向后兼容）
+   444	            'manufacturer': manufacturer,
+   445	            'serial_number': serial_number,
+   446	            'protocol_version': protocol_version,
+   447	            'heartbeat_ms': ParameterValue(heartbeat_ms, value_type=int),
+   448	        }],
+   449	        **supervision(),
+   450	    )
+   451	
+   452	
+   453	    # ---- P0.6 / A4：多车并发（local_sim 后端）逐车节点 ----
+   454	    # 每台车一组 path_tracker / safety_gate / chassis_driver：
+   455	    #   * namespace = vehicle_id  -> 节点名唯一（/amr_01/safety_gate_node）
+   456	    #   * vehicle_id 参数         -> 话题按后缀派生（/plan/amr_01、/odom/amr_01、
+   457	    #                                /cmd_vel_safe/amr_01 …），绝对名不受 namespace 影响
+   458	    #   * TF frame 唯一化        -> {vid}/odom、{vid}/base_link
+   459	    # 兼容性红线：vehicle_ids 为空时，本函数不产生任何节点，单车路径逐字不变。
+   460	    def _multi_vehicle_nodes(context):
+   461	        raw_ids = launch_config_value(context, 'vehicle_ids')
+   462	        ids = [t.strip() for t in raw_ids.split(',') if t.strip()]
+   463	        if not ids:
+   464	            return []
+   465	        raw_serials = launch_config_value(context, 'serial_devices')
+   466	        serials = [t.strip() for t in raw_serials.split(',') if t.strip()]
+   467	        default_serial = launch_config_value(context, 'serial_device')
+   468	        health = launch_config_value(context, 'health_rate_hz')
+   469	        nodes = []
+   470	        for idx, vid in enumerate(ids):
+   471	            serial = serials[idx] if idx < len(serials) else default_serial
+   472	            ns = vid
+   473	            nodes.append(Node(
+   474	                package='amr_dispatcher_ros',
+   475	                executable='path_tracker_node',
+   476	                name='path_tracker_node',
+   477	                namespace=ns,
+   478	                output='screen',
+   479	                parameters=[{
+   480	                    'vehicle_id': vid,
+   481	                    'controller_type': 'pure_pursuit',
+   482	                    'lookahead_distance': 0.6,
+   483	                    'target_speed': 0.5,
+   484	                    'control_rate_hz': 20.0,
+   485	                }],
+   486	                **supervision(),
+   487	            ))
+   488	            nodes.append(Node(
+   489	                package='amr_dispatcher_ros',
+   490	                executable='safety_gate_node',
+   491	                name='safety_gate_node',
+   492	                namespace=ns,
+   493	                output='screen',
+   494	                parameters=[
+   495	                    safety_yaml,
+   496	                    {'vehicle_id': vid},
+   497	                ],
+   498	                **supervision(),
+   499	            ))
+   500	            nodes.append(Node(
+   501	                package='amr_dispatcher_ros',
+   502	                executable='chassis_driver_node',
+   503	                name='chassis_driver_node',
+   504	                namespace=ns,
+   505	                output='screen',
+   506	                parameters=[
+   507	                    chassis_yaml,
+   508	                    {
+   509	                        'vehicle_id': vid,
+   510	                        'serial_device': serial,
+   511	                        'health_rate_hz': ParameterValue(health, value_type=float),
+   512	                    },
+   513	                ],
+   514	                **supervision(),
+   515	            ))
+   516	        return nodes
+   517	
+   518	    multi_vehicle_nodes = OpaqueFunction(function=_multi_vehicle_nodes)
+   519	
+   520	    return LaunchDescription(declared_arguments + [
+   521	        dispatcher_node,
+   522	        configure_event,
+   523	        activate_event,
+   524	        safety_gate_node,
+   525	        chassis_driver_node,
+   526	        path_tracker_node,
+   527	        multi_vehicle_nodes,
+   528	        navigate_sequence_bridge_node,
+   529	        rest_gateway_node,
+   530	        dispatcher_visualizer_node,
+   531	        lifecycle_coordinator_node,
+   532	        map_server_node,
+   533	        map_server_configure_event,
+   534	        map_server_activate_event,
+   535	        map_ingest_node,
+   536	        vda5050_gateway_node,
+   537	    ])
+===== launch/ros2_control.launch.py =====
+     1	from launch import LaunchDescription
+     2	from launch_ros.actions import Node
+     3	
+     4	def generate_launch_description():
+     5	    controller_manager = Node(
+     6	        package='controller_manager',
+     7	        executable='ros2_control_node',
+     8	        parameters=[],
+     9	        output='screen',
+    10	    )
+    11	
+    12	    diff_drive_spawner = Node(
+    13	        package='controller_manager',
+    14	        executable='spawner',
+    15	        arguments=['diff_drive_base_controller'],
+    16	        output='screen',
+    17	    )
+    18	
+    19	    joint_state_broadcaster_spawner = Node(
+    20	        package='controller_manager',
+    21	        executable='spawner',
+    22	        arguments=['joint_state_broadcaster'],
+    23	        output='screen',
+    24	    )
+    25	
+    26	    return LaunchDescription([
+    27	        controller_manager,
+    28	        diff_drive_spawner,
+    29	        joint_state_broadcaster_spawner,
+    30	    ])

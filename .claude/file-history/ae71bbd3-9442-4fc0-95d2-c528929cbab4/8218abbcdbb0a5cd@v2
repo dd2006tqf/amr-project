@@ -1,0 +1,51 @@
+#pragma once
+
+#include <cstdint>
+#include <deque>
+#include <mutex>
+
+namespace xgrids {
+
+// ============================================================
+// 传感器本地时钟模型
+//
+// 真实设备上，每路传感器有自己的时钟源（计数器/晶振），各自漂移。
+// ClockModel 记录 (local_ts, sys_ts) 采样对，最小二乘拟合：
+//   sys_ts = a * local_ts + b   (a ≈ 1 + drift_ppm/1e6)
+// ============================================================
+
+class ClockModel {
+public:
+    struct Params {
+        size_t max_samples;
+        int64_t outlier_thresh_us;
+        double drift_max_ppm;
+        Params() : max_samples(64), outlier_thresh_us(50'000),
+                   drift_max_ppm(100.0) {}
+    };
+
+    ClockModel() = default;
+    explicit ClockModel(Params p) : p_(p) {}
+    ClockModel(const ClockModel&) = delete;
+    ClockModel& operator=(const ClockModel&) = delete;
+    ClockModel(ClockModel&& o) : p_(o.p_) {}
+    ClockModel& operator=(ClockModel&&) = default;
+
+    void add_sample(int64_t local_ts_us, int64_t sys_ts_us);
+    bool estimate(int64_t local_ts_us, int64_t& sys_ts_us) const;
+    double drift_ppm() const;
+    bool converged() const { return converged_; }
+    double residual_us() const;
+
+private:
+    Params p_;
+    mutable std::mutex mu_;
+
+    struct Sample { int64_t local; int64_t sys; };
+    std::deque<Sample> samples_;
+    double a_ = 1.0, b_ = 0.0;
+    bool converged_ = false;
+    double residual_us_ = 0;
+};
+
+}  // namespace xgrids

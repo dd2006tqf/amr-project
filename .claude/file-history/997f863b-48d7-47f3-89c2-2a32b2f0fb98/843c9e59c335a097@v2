@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# 复现 .github/workflows/release.yml 的容器内路径（修好 --user root 之后）
+# 目的：证明 release.yml 修好后真的能跑通（sysroot 装得上 → cmake 找得到 →
+# 编译出带 TLS/curl 的二进制 → 打包签名自验通过）
+set -uo pipefail
+
+ROOT=/home/ubuntu/个人学习/AI-powered-Network-Diagnostics
+C=arm64-rel
+LOG=/tmp/rehearse.log
+: > "$LOG"
+
+say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
+
+docker rm -f "$C" >/dev/null 2>&1
+docker run -d --name "$C" --platform linux/arm64 --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp -v "$ROOT":/src -w /src debian:11-slim sleep infinity >/dev/null
+
+say "容器已起（user=$(id -u)）"
+
+# ---- Step A: 依赖安装（必须是 root：/usr/local、dpkg 锁）----
+say "Step A: apt 安装构建依赖（--user root）"
+docker exec --user root "$C" bash -c '
+  set -e
+  # GitHub runner 上 deb.debian.org 可达；本机被墙 → 走镜像站
+  if ! timeout 20 apt-get update -qq >/dev/null 2>&1; then
+    echo "[A] deb.debian.org 不可达，切镜像站"
+    printf "%s\n" \
+      "deb http://mirrors.tuna.tsinghua.edu.cn/debian bullseye main" \
+      "deb http://mirrors.tuna.tsinghua.edu.cn/debian-security bullseye-security main" \
+      > /etc/apt/sources.list
+    apt-get update -qq
+  fi
+  apt-get install -y -qq --no-install-recommends \
+    build-essential g++ make cmake pkg-config clang llvm git ca-certificates \
+    libdbus-1-dev libgoogle-glog-dev libelf-dev zlib1g-dev libcap-dev \
+    libnl-3-dev libnl-genl-3-dev libsqlite3-dev libgtest-dev zstd
+  git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
+  make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
+  ldconfig
+  echo "[A] deps OK"
+' 2>&1 | tail -25 | tee -a "$LOG"
+
+say "Step A done"
+
+# ---- Step B: 私有 sysroot（/opt 要 root）----
+say "Step B: 私有 sysroot（--user root）"
+docker exec --user root "$C" bash -c '
+  cd /src
+  bash scripts/setup_openssl_sysroot.sh && bash scripts/setup_libcurl_sysroot.sh
+' 2>&1 | tail -40 | tee -a "$LOG"
+
+say "Step B done"
+
+# ---- Step C: 编译（uid1000，与 CI 一致）----
+say "Step C: cmake configure + build"
+docker exec "$C" bash -c '
+  cd /src
+  rm -rf build-arm64-ci && mkdir -p build-arm64-ci
+  cmake -B build-arm64-ci -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -25
+  cmake --build build-arm64-ci --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j1 2>&1 | tail -25
+  echo "[C] build rc=$?"
+' 2>&1 | tail -60 | tee -a "$LOG"
+
+say "Step C done"
+
+# ---- Step D: 打包 + 签名 + 自验 ----
+say "Step D: 打包签名"
+docker exec "$C" bash -c '
+  cd /src
+  rm -rf dist-arm64-ci
+  mkdir -p dist-arm64-ci/server/bin dist-arm64-ci/server/build dist-arm64-ci/server/test \
+           dist-arm64-ci/client/bin dist-arm64-ci/client/lib dist-arm64-ci/lib
+  install -m 0755 build-arm64-ci/server/weaknet-dbus-server dist-arm64-ci/server/bin/
+  install -m 0755 build-arm64-ci/server/history_query_tool dist-arm64-ci/server/bin/
+  install -m 0755 build-arm64-ci/server/test/test_ebpf dist-arm64-ci/server/test/
+  for f in build-arm64-ci/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64-ci/server/build/ 2>/dev/null || true; done
+  install -m 0755 build-arm64-ci/client/bin/test_client_bin dist-arm64-ci/client/bin/test-client
+  install -m 0755 build-arm64-ci/client/bin/weaknet_cli dist-arm64-ci/client/bin/weaknet-cli
+  install -m 0755 client/weaknet-offline-diag dist-arm64-ci/client/bin/weaknet-offline-diag
+  install -m 0644 build-arm64-ci/client/lib/libweaknet.so dist-arm64-ci/client/lib/
+  install -m 0644 VERSION dist-arm64-ci/VERSION
+  install -m 0755 tools/weaknet-local-update.sh dist-arm64-ci/weaknet-local-update.sh
+  echo "[D] dist files: $(find dist-arm64-ci -type f | wc -l)"
+  readelf -d dist-arm64-ci/server/bin/weaknet-dbus-server | grep -E "libssl|libcrypto|libcurl"
+' 2>&1 | tail -20 | tee -a "$LOG"
+
+say "Step D done — rehearsal finished"
+docker rm -f "$C" >/dev/null 2>&1
+say "ALL DONE (log: $LOG)"
