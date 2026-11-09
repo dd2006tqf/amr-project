@@ -1518,6 +1518,32 @@ docker run -d --name amr_dispatcher \
 >       --packages-select amr_dispatcher_ros'
 > ```
 > 实测 `amr_dispatcher_ros` 单包串行约 7 分钟，内存峰值未触发 OOM。
+>
+> ---
+>
+> **⚠️ 2026-11-09 补充：内存比核数更重要，判据是 `MemAvailable` + swap，不是 `nproc`/`MemTotal`。**
+>
+> 在 2 vCPU / 7.5 GiB / swap 2.0 GiB（已满）的虚拟机上验证过：`MemTotal`
+> 看着有 7.5 GB，按 `scripts/lib/build_workers.sh` 的 "每 worker 2 GB" 公式
+> 会算出 **2** 路并发，但 `MemAvailable` 实际只有约 3.1 GB，2 路并行
+> 构建 15 分钟只推进到 31%，最终超时被杀。**该脚本只看 MemTotal，不能作为
+> 低可用内存机器的判据。**
+>
+> 另外，`build_workers.sh` 是**可执行脚本**（`bash build_workers.sh` 输出一个整数），
+> **不是 shell 函数**。用 `source` 加载只会打印数字、不赋值变量，接着
+> `cmake --build . -j"$W"` 会退化成 `-j""` —— 在 cmake 里这表示**不限并发**，
+> 不是"默认值"。正确写法：
+>
+> ```bash
+> W=$(bash scripts/lib/build_workers.sh); [ -n "$W" ] || W=1
+> ```
+>
+> 宿主机原生构建（非容器）同样必须显式限并发：
+>
+> ```bash
+> export CMAKE_BUILD_PARALLEL_LEVEL=1
+> cmake --build build/core -j1
+> ```
 
 另外 `test_report_matrix.json` 里的 `watchdog_200ms_timeout_cutoff: PASSED` 容易误读：`scripts/check_watchdog_estop.sh` 实际只跑了 50–500ms 的**单元测试**，200ms 是 **MCU 设计值**，不是端到端测出来的。§11 已把它标成 `(设计值)`，请保持这个口径。
 

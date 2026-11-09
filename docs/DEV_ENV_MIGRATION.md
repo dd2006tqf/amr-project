@@ -495,6 +495,29 @@ battery_empty_voltage: 6.0     # 原 11.0
 | 内存 | **≥ 8 GB**（推荐 16 GB） | 原服务器只有 3.6 GB，必须 `-j1` 串行构建；虚拟机配置够就不用受限 |
 | 磁盘 | ≥ 20 GB 可用 | 源码 1.2 GB + 编译产物约 1 GB + Docker 镜像 |
 
+> ⚠️ **"内存够就不用受限" 这句话在实践中反复翻车，2026-11-09 再次复现。**
+> 判据不是 `nproc`，也不是 `MemTotal`，而是 **`MemAvailable` 与 swap 水位**：
+>
+> ```bash
+> free -m    # 看 available 与 swap used，不看 total
+> ```
+>
+> 只要 `available` < 4 GB **或** swap 已接近用满，就必须 `-j1`。
+> 实测反例：本机 `MemTotal` 7.5 GB（按 `scripts/lib/build_workers.sh` 的
+> "每 worker 2 GB" 公式会算出 **2**），但 `MemAvailable` 只有约 3.1 GB、
+> swap 2.0/2.0 GiB 已满 —— 用 2 路并行构建 15 分钟只推进到 31%，
+> 最终被超时杀掉。**`build_workers.sh` 只看 MemTotal，对本机不安全。**
+>
+> **另一个必须避开的坑**：`build_workers.sh` 是**可执行脚本**（输出一个整数），
+> 不是 shell 函数。用 `source` 加载它只会把数字打印到屏幕，变量不会被赋值；
+> 此时 `cmake --build . -j"$W"` 会退化成 `-j""`，语义是**不限并发**，
+> 而不是"默认值"。传并发度前务必校验非空：
+>
+> ```bash
+> W=$(bash scripts/lib/build_workers.sh); [ -n "$W" ] || W=1
+> ```
+
+
 > **如果直接装 ROS 2 而非用容器**：需要 `ros-jazzy-ros-base` 及
 > `ros-jazzy-robot-localization`、`ros-jazzy-behaviortree-cpp`、
 > `python3-serial`、`libprotobuf-dev`、`protobuf-compiler` 等。**不建议**，
